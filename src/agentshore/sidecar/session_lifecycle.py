@@ -377,10 +377,15 @@ async def _run_init_beads(project_path: Path, cfg: RuntimeConfig | None = None) 
 
     Mirrors the CLI's ``run_beads_init`` sequence:
       1. ``bd_init_project`` — run ``bd init`` when ``.beads/`` is absent.
-      2. ``reconcile_stale_remote_clone`` — best-effort recovery when this
-         clone is stuck behind a remote-backed store's schema (#316); runs
-         ``bd bootstrap`` to catch up safely before anything else reads or
-         writes the store.
+      2. ``reconcile_beads_schema`` — schema-drift preflight (generalizes the
+         original #316 stale-remote-clone recovery): silently heals every
+         state it safely can (adopt via ``bd bootstrap``, or a local-only
+         ``bd migrate`` with no remote to fork), and only ever prompts for
+         the one action that could unrecoverably fork a shared schema. This
+         path is headless, so that prompt never fires here — consent comes
+         only from ``AGENTSHORE_ALLOW_REMOTE_MIGRATE=1``; without it, an
+         unresolved drift is logged and left for a human, same as any other
+         best-effort step below (never blocks session start).
       3. ``bd_setup_for_agent_types`` — run ``bd hooks install`` (best-effort).
       4. Version-consistency check (best-effort) — the CLI's ``agentshore
          init`` runs ``ensure_bd_installed()`` (which calls
@@ -391,16 +396,19 @@ async def _run_init_beads(project_path: Path, cfg: RuntimeConfig | None = None) 
          instead of a session-start warning.
 
     Step 1 failure is fatal (blocks session.start). Steps 2-4 are logged but
-    not propagated — stale-clone recovery, hooks, and the version check are
+    not propagated — schema reconciliation, hooks, and the version check are
     all best-effort conveniences that shouldn't block a session that may
-    still work without them.
+    still work without them (a session that starts with an unresolved schema
+    drift still surfaces it correctly downstream via ``BeadsSchemaDriftError``
+    in ``core.orchestrator``/``core.phases`` rather than misreading it as an
+    empty graph — see those modules for that half of the fix).
     """
     from agentshore.beads import resolve_bd_binary
     from agentshore.beads.setup import (
         _check_bd_version,
         bd_init_project,
         bd_setup_for_agent_types,
-        reconcile_stale_remote_clone,
+        reconcile_beads_schema,
     )
 
     beads_dir = project_path / ".beads"
@@ -411,9 +419,9 @@ async def _run_init_beads(project_path: Path, cfg: RuntimeConfig | None = None) 
         raise SessionStartError(STEP_INIT_BEADS, -32602, msg) from exc
 
     try:
-        await reconcile_stale_remote_clone(project_path)
+        await reconcile_beads_schema(project_path)
     except Exception as exc:
-        _logger.warning("beads_stale_remote_clone_recovery_skipped", error=str(exc))
+        _logger.warning("beads_schema_reconcile_skipped", error=str(exc))
 
     enabled_types = _enabled_agent_types_from_config(cfg)
     try:

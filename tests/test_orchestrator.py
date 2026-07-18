@@ -1686,6 +1686,42 @@ def test_bootstrap_open_start_no_epics_routes_to_seed_recipe() -> None:
     assert entries[3].wait_for_play_type == PlayType.SEED_PROJECT
 
 
+def test_bootstrap_graph_read_failed_routes_to_open_not_seed() -> None:
+    """A failed graph read must never be treated as "no epics, go seed".
+
+    graph_has_epics=False here could mean two very different things: the
+    graph genuinely has no epics (route to seed), or the read itself failed
+    (e.g. beads schema drift) and we simply don't know. Conflating the two
+    previously let a live session re-run SEED_PROJECT over a project that
+    already had real epics/tasks because a schema-drift read failure looked
+    identical to an empty graph. graph_read_failed=True must route to the
+    same "full open" recipe as a successful graph_has_epics=True read —
+    spawning agents never touches the beads store, so it's the only safe
+    move when the graph couldn't be confirmed either way.
+    """
+    cfg = _bootstrap_cfg()
+    orch = _make_mock_orch()
+    _phase_queue_agent_instantiation(
+        orch=orch,
+        cfg=cfg,
+        seed_path=None,
+        open_issues_count=44,
+        graph_has_epics=False,
+        graph_read_failed=True,
+    )
+
+    entries = []
+    while not orch._overrides.empty():
+        entries.append(orch._overrides.get_nowait())
+
+    # Same shape as the graph_has_epics=True open-start recipe — NOT the
+    # seed recipe (no SEED_PROJECT anywhere in this queue).
+    assert [e.play_type for e in entries] == [PlayType.INSTANTIATE_AGENT] * 6 + [
+        PlayType.GROOM_BACKLOG
+    ]
+    assert PlayType.SEED_PROJECT not in [e.play_type for e in entries]
+
+
 def test_bootstrap_open_start_skips_groom_when_user_disabled() -> None:
     """A user-disabled GROOM_BACKLOG must not be bootstrap-queued.
 

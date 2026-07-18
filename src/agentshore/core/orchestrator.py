@@ -214,24 +214,43 @@ class Orchestrator(_OrchestratorBase):
                 # An epic-less graph on the no-seed path must route to the seed recipe
                 # (seedless SEED_PROJECT bootstraps epics) instead of grooming an empty
                 # graph and deadlocking.
-                from agentshore.beads import GraphReadError
+                from agentshore.beads import BeadsSchemaDriftError, GraphReadError
                 from agentshore.beads import load_graph as _load_graph
 
+                _bootstrap_graph = None
+                # Distinct from a genuinely empty graph (_bootstrap_graph is None /
+                # has_epics=False): the read itself failed because this clone's
+                # schema has drifted, not because there's nothing there. Conflating
+                # the two previously let a live session seedless-bootstrap
+                # (SEED_PROJECT) over a project that already had real epics/tasks
+                # — see beads.setup.reconcile_beads_schema for the preflight that
+                # heals what it safely can before this ever runs, and
+                # phases._phase_queue_agent_instantiation for the other half: a
+                # failed read must never be treated as "no epics, go seed".
+                graph_read_failed = False
                 try:
                     _bootstrap_graph = await _load_graph(repo_root)
+                except BeadsSchemaDriftError as exc:
+                    _logger.warning(
+                        "beads_schema_drift_blocks_bootstrap",
+                        error=str(exc),
+                        session_id=sid,
+                    )
+                    graph_read_failed = True
                 except GraphReadError as exc:
                     _logger.warning(
                         "beads_graph_read_failed_at_bootstrap",
                         error=str(exc),
                         session_id=sid,
                     )
-                    _bootstrap_graph = None
+                    graph_read_failed = True
                 phases._phase_queue_agent_instantiation(
                     orch=orch,
                     cfg=cfg,
                     seed_path=effective_seed,
                     open_issues_count=len(open_issues_at_bootstrap),
                     graph_has_epics=_bootstrap_graph is not None and _bootstrap_graph.has_epics,
+                    graph_read_failed=graph_read_failed,
                 )
 
             with suppress(Exception):

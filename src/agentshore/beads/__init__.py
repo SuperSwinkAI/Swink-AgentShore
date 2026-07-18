@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, TypedDict, cast
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Iterable
+    from collections.abc import AsyncIterator, Iterable, Mapping
 
 from agentshore.command import CommandTimeoutError, run_command
 from agentshore.logging import get_logger
@@ -336,6 +336,49 @@ class GraphReadError(BdError):
     """
 
 
+# Stable coordination-decision markers from bd's own "refusing to auto-apply
+# ... to a remote-backed database" guard (bd issue #4259). A clone stuck
+# behind its remote's schema surfaces this on every read/write until either
+# the designated migrator runs `bd migrate` and pushes, or a non-designated
+# clone runs `bd bootstrap` to catch up without forking the schema. Matched
+# against the stable coordination-decision text rather than the downstream
+# "column ... could not be found"-style error, which varies by command and
+# column and isn't guaranteed stable across bd releases. Lives here (rather
+# than in beads/setup.py, the only prior user) so the low-level subprocess
+# and retry layer can classify a schema-drift failure without a circular
+# import — setup.py imports this instead of keeping its own copy.
+SCHEMA_DRIFT_MARKERS = ("refusing to auto-apply", "remote-backed", "#4259")
+
+
+def is_schema_drift_error(error_text: str) -> bool:
+    """True when *error_text* carries bd's schema-drift/remote-migration-gate signature."""
+    return any(marker in error_text for marker in SCHEMA_DRIFT_MARKERS)
+
+
+class BeadsSchemaDriftError(GraphReadError):
+    """Raised when bd refuses to read/write because this clone's schema has
+    drifted from a shared remote-backed store (bd's #4259 coordination guard).
+
+    A ``GraphReadError`` subclass — not a plain sibling — on purpose: every
+    existing ``except GraphReadError`` call site in the codebase (per-tick
+    alignment reload, issue sync, the RL selector's live-drift confirm, the
+    reports collector) already treats a failed read as "beads temporarily
+    unavailable, degrade gracefully" — the correct behavior for schema drift
+    too, everywhere except the one place that used the failure to decide
+    "the graph is empty, so seed it". Subclassing means those call sites need
+    no changes at all: they keep working exactly as before. Only the
+    bootstrap path (``agentshore.core.orchestrator`` /
+    ``agentshore.core.phases``) adds a specific ``except
+    BeadsSchemaDriftError`` *before* its ``except GraphReadError``, so it can
+    tell "unreadable" apart from "genuinely empty" instead of collapsing both
+    into ``graph_has_epics=False`` and silently re-running the seed-project
+    bootstrap play over a project that already had real epics/tasks — the
+    live bug this type exists to prevent. See
+    ``agentshore.beads.setup.reconcile_beads_schema`` for the preflight that
+    heals what it safely can before any of this is ever reached.
+    """
+
+
 def resolve_bd_binary() -> str | None:
     """Resolve the bd binary path from env override first, then PATH."""
     env_value = os.environ.get("AGENTSHORE_BD_BIN")
@@ -432,6 +475,7 @@ async def bd(
     cwd: Path,
     stdin_data: bytes | None = None,
     timeout_seconds: float = _BD_TIMEOUT_SECONDS,
+    env_overlay: Mapping[str, str] | None = None,
 ) -> str:
     """Run a bd subcommand in *cwd* and return stdout as a string.
 
@@ -443,6 +487,12 @@ async def bd(
     the exclusive writer side (C5). A successful mutation also drops any
     cached graph snapshot for *cwd* so the next ``load_graph`` call re-reads
     instead of serving data that predates this write.
+
+    *env_overlay* merges on top of the current process environment for this
+    call only (e.g. ``{"BD_ALLOW_REMOTE_MIGRATE": "1"}`` for the one-shot,
+    consent-gated schema-migration command in ``beads.setup`` — never set as
+    ambient process/session env, since that would leave the dangerous flag
+    live for every subsequent bd call).
     """
     bd_binary = resolve_bd_binary()
     if bd_binary is None:
@@ -459,6 +509,7 @@ async def bd(
                 stdin_data=stdin_data,
                 timeout_seconds=timeout_seconds,
                 resolve_executable=False,
+                env={**os.environ, **env_overlay} if env_overlay else None,
             )
         except CommandTimeoutError as exc:
             raise BdTimeoutError(f"bd {' '.join(args)} timed out: {exc}") from exc
@@ -769,6 +820,23 @@ async def _read_graph_raw(project_path: Path) -> list[RawBead]:
                 f"bd list timed out after {_BD_GRAPH_TIMEOUT_SECONDS}s for {project_path}"
             ) from exc
         except BdError as exc:
+            if is_schema_drift_error(str(exc)):
+                # Fail fast — same rationale as the BdTimeoutError branch above:
+                # this is a structural refusal (bd's #4259 remote-migration
+                # gate), not a transient blip, so retrying 3x just re-pays the
+                # same deterministic failure. Raising a distinct exception type
+                # (rather than falling through to the generic GraphReadError
+                # below) lets callers tell "graph unreadable due to schema
+                # drift" apart from "graph load failed" / "graph is empty" —
+                # conflating those previously caused a bogus seed_project.
+                _logger.warning(
+                    "beads_graph_load_schema_drift",
+                    project_path=str(project_path),
+                    error=str(exc),
+                )
+                raise BeadsSchemaDriftError(
+                    f"bd list refused due to schema drift for {project_path}: {exc}"
+                ) from exc
             last_exc = exc
             _logger.warning(
                 "beads_graph_load_failed",

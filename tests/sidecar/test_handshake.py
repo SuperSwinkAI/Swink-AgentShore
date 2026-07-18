@@ -638,7 +638,7 @@ def test_session_start_recovers_stale_remote_clone_via_bootstrap(tmp_path: objec
 
 
 def test_session_start_succeeds_when_stale_clone_recovery_raises(tmp_path: object) -> None:
-    """An unexpected error inside the stale-remote-clone recovery is logged and
+    """An unexpected error inside the schema-drift reconciliation is logged and
     swallowed — it is best-effort, matching bd-hooks and the version check,
     and must never block session.start."""
     from pathlib import Path
@@ -653,7 +653,7 @@ def test_session_start_succeeds_when_stale_clone_recovery_raises(tmp_path: objec
 
     with (
         patch(
-            "agentshore.beads.setup.reconcile_stale_remote_clone",
+            "agentshore.beads.setup.reconcile_beads_schema",
             AsyncMock(side_effect=RuntimeError("boom")),
         ),
         structlog.testing.capture_logs() as captured,
@@ -664,9 +664,7 @@ def test_session_start_succeeds_when_stale_clone_recovery_raises(tmp_path: objec
         outcome = asyncio.run(run_session_start(state, start_bridge=False))
         assert outcome.session_id
 
-    matching = [
-        e for e in captured if e.get("event") == "beads_stale_remote_clone_recovery_skipped"
-    ]
+    matching = [e for e in captured if e.get("event") == "beads_schema_reconcile_skipped"]
     assert len(matching) == 1, captured
     assert "boom" in matching[0]["error"]
 

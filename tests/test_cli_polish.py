@@ -500,6 +500,41 @@ def test_init_without_force_preserves_database(tmp_path: Path) -> None:
     assert "Reset AgentShore database" not in result.output
 
 
+def test_init_blocks_on_beads_schema_drift(tmp_path: Path) -> None:
+    """A BeadsSchemaDriftError from beads setup blocks `agentshore init`, not just a warning.
+
+    Every other beads-setup failure (missing bd binary, failed hooks install)
+    is a swallowed warning — `agentshore init` still exits 0, matching the
+    "beads is a dependency, not blocking" convention. Schema drift is the one
+    exception: proceeding past an unreadable beads store previously let a
+    live session misread it as empty and silently reseed a real project (see
+    beads.setup.reconcile_beads_schema), so this must surface as a blocking,
+    actionable failure — same shape as `agentshore identity`'s diagnostic
+    SystemExit(1) — with the exact remediation command in the output.
+    """
+    from agentshore.beads import BeadsSchemaDriftError
+
+    repo = _make_git_repo(tmp_path)
+
+    runner = CliRunner()
+    with (
+        patch("agentshore.skills.install_skills", return_value=[]),
+        patch(
+            "agentshore.beads.setup.run_beads_init",
+            side_effect=BeadsSchemaDriftError(
+                "beads store is behind its remote's schema and `bd bootstrap` could not catch "
+                "it up. On exactly ONE machine (the designated migrator), run: "
+                "BD_ALLOW_REMOTE_MIGRATE=1 bd migrate && bd dolt push"
+            ),
+        ),
+    ):
+        result = runner.invoke(main, ["init", "--project", str(repo)])
+
+    assert result.exit_code != 0
+    assert "schema drift" in result.output
+    assert "BD_ALLOW_REMOTE_MIGRATE=1 bd migrate" in result.output
+
+
 def test_init_without_force_preserves_config_and_offers_force(tmp_path: Path) -> None:
     """When agentshore.yaml exists and --force is absent, init re-runs the
     setup wizards without rewriting the file, and points the user at

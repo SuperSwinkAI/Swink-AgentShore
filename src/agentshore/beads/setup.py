@@ -14,14 +14,24 @@ async graph-loading machinery.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import re
+import shutil
 import subprocess
+import sys
 from typing import TYPE_CHECKING
 
 import structlog
+import yaml
 
-from agentshore.beads import BdError, bd, resolve_bd_binary
+from agentshore.beads import (
+    BdError,
+    BeadsSchemaDriftError,
+    bd,
+    is_schema_drift_error,
+    resolve_bd_binary,
+)
 from agentshore.state import AgentType
 
 if TYPE_CHECKING:
@@ -116,46 +126,176 @@ def ensure_bd_installed() -> None:
             "bd from https://github.com/gastownhall/beads and re-run agentshore init."
         )
     _check_bd_version(bd_binary)
+    _warn_on_bd_path_skew(bd_binary)
     _logger.info("bd_available", path=bd_binary, required_version=REQUIRED_BD_VERSION)
 
 
-# Stable coordination-decision markers from bd's own "refusing to auto-apply
-# ... to a remote-backed database" guard (bd issue #4259). A clone stuck
-# behind its remote's schema surfaces this on every read/write until either
-# the designated migrator runs `bd migrate` and pushes, or a non-designated
-# clone runs `bd bootstrap` to catch up without forking the schema. Matched
-# against the stable coordination-decision text rather than the downstream
-# "column ... could not be found"-style error, which varies by command and
-# column and isn't guaranteed stable across bd releases.
-_STALE_REMOTE_CLONE_MARKERS = ("refusing to auto-apply", "remote-backed", "#4259")
+def _warn_on_bd_path_skew(bd_binary: str) -> None:
+    """Log when the ambient-PATH ``bd`` differs from the pinned/resolved *bd_binary*.
+
+    The desktop app pins a bundled sidecar bd via ``AGENTSHORE_BD_BIN``
+    (``resolve_bd_binary`` prefers it), but a bare ``bd`` typed in a terminal
+    — or run by anything that doesn't go through AgentShore's own resolution
+    — still follows the ambient PATH and can land on a different, unpinned
+    install. Two writers at different schema versions against the same
+    embedded Dolt store is a direct schema-drift vector (this is exactly what
+    happened in practice: PATH bd was 1.0.4 while the pinned sidecar was
+    1.1.0, and the two eventually disagreed badly enough that the newer
+    binary could not even open the store).
+
+    This function only detects and logs the skew — it does not rewrite the
+    user's shell PATH or reinstall their standalone bd, which isn't something
+    that can be done invisibly/safely. The one vector this module *can* and
+    does fix invisibly is git hooks (see ``_pin_bd_in_hook_scripts``), since
+    those are AgentShore-managed files, not the user's own environment.
+    """
+    path_bd = shutil.which("bd")
+    if path_bd is None:
+        return
+    with contextlib.suppress(OSError):
+        if os.path.samefile(path_bd, bd_binary):
+            return
+    try:
+        completed = subprocess.run(
+            [path_bd, "--version"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=True,
+            stdin=subprocess.DEVNULL,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return
+    match = re.search(r"\d+\.\d+\.\d+", completed.stdout or completed.stderr or "")
+    path_version = match.group(0) if match else (completed.stdout or "").strip()
+    expected = os.environ.get("AGENTSHORE_BD_VERSION", REQUIRED_BD_VERSION).strip()
+    if path_version == expected:
+        return  # different binary, same version — not a drift risk
+    _logger.warning(
+        "bd_path_skew_detected",
+        resolved_bd=bd_binary,
+        resolved_version=expected,
+        path_bd=path_bd,
+        path_bd_version=path_version,
+        hint=(
+            "ambient PATH bd differs from AgentShore's pinned binary; bd git hooks are "
+            "routed around this automatically, but a `bd` typed manually in a shell still "
+            f"resolves the ambient one. Consider updating it to {expected} from "
+            "https://github.com/gastownhall/beads."
+        ),
+    )
 
 
-def _is_stale_remote_clone_error(error_text: str) -> bool:
-    return any(marker in error_text for marker in _STALE_REMOTE_CLONE_MARKERS)
+# Opt-in env var for headless/CI consent to the one dangerous recovery path:
+# migrating a *remote-backed* store's schema and pushing it. Mirrors
+# AGENTSHORE_AUTO_INSTALL_BD's shape (downloader.py) — must be explicitly set,
+# default is conservative (never silently fork a shared schema).
+_ALLOW_REMOTE_MIGRATE_ENV_VAR = "AGENTSHORE_ALLOW_REMOTE_MIGRATE"
+
+_REMOTE_MIGRATE_COMMAND = "BD_ALLOW_REMOTE_MIGRATE=1 bd migrate && bd dolt push"
 
 
-async def reconcile_stale_remote_clone(project_path: Path) -> None:
-    """Best-effort recovery for a Dolt clone stuck behind its remote's schema (#316).
+def _beads_store_has_remote(project_path: Path) -> bool:
+    """True when ``.beads/config.yaml`` declares a ``sync.remote``.
 
-    A remote-backed beads store can end up with the local clone several
-    migrations behind the remote (e.g. another clone migrated and pushed).
-    bd refuses to auto-apply those migrations itself — doing so from a
-    non-designated clone would fork the shared schema (bd's own #4259 guard)
-    — so every read/write fails with a "refusing to auto-apply ... to a
-    remote-backed database" error until the clone is caught up.
+    A purely local (never-shared) beads store can always migrate itself
+    safely — there is nothing to fork against. Read directly from the YAML
+    file rather than shelling out to ``bd context``/``bd info``: both have
+    been observed to warn or misbehave on this exact repo's config (a
+    duplicate ``sync.remote`` key — both the flat ``sync.remote:`` form and
+    the nested ``sync: {remote: ...}`` form present in the same file, a
+    config-format drift artifact of its own) even though PyYAML parses it
+    fine (last-key-wins, no error). Best-effort: a missing/unreadable file or
+    parse error is treated as "no remote" (nothing more this function can
+    safely infer), never raised.
+    """
+    config_path = project_path / ".beads" / "config.yaml"
+    if not config_path.is_file():
+        return False
+    try:
+        config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+    except (OSError, yaml.YAMLError) as exc:
+        _logger.warning("beads_config_read_failed", project_path=str(project_path), error=str(exc))
+        return False
+    if not isinstance(config, dict):
+        return False
+    if config.get("sync.remote"):
+        return True
+    sync_section = config.get("sync")
+    return bool(isinstance(sync_section, dict) and sync_section.get("remote"))
 
-    bd's own error message names two recovery paths: the designated migrator
-    runs ``BD_ALLOW_REMOTE_MIGRATE=1 bd migrate && bd dolt push`` (dangerous —
-    forks the schema if more than one clone does it, so this function never
-    runs it), or every other clone runs ``bd bootstrap`` to catch up safely.
-    This function detects the signature and runs only the safe path.
 
-    Probes with a cheap read (``bd list --all --json --limit 0``); a healthy
-    store no-ops. On the stale-remote-clone signature, runs ``bd bootstrap``
-    once and re-probes. Any other bd error, or the signature persisting after
-    bootstrap, is logged and left alone — this never blocks or raises, it is
-    a session-start convenience only. bd's designated-migrator path stays a
-    manual, deliberate action for a human to take on exactly one machine.
+def _remote_migrate_consented(*, assume_yes: bool) -> bool:
+    """Consent gate for the one action that can unrecoverably fork a shared schema.
+
+    Mirrors ``downloader.provision_bd``'s consent shape: an explicitly
+    consented caller (``assume_yes``), the opt-in env var, or an interactive
+    TTY confirmation. Everywhere else in this module auto-heals silently —
+    this is the deliberate exception, because bd's own remote-migrate refusal
+    is explicitly a human coordination decision (its error payload marks it
+    ``human_decision_required: true``): only one clone may ever run this, and
+    nothing in the local state can prove which one that is.
+    """
+    if assume_yes:
+        return True
+    if os.environ.get(_ALLOW_REMOTE_MIGRATE_ENV_VAR, "").strip() == "1":
+        _logger.info("beads_remote_migrate_env_consent", env_var=_ALLOW_REMOTE_MIGRATE_ENV_VAR)
+        return True
+    if sys.stdin.isatty():
+        try:
+            answer = (
+                input(
+                    "\nThis beads store is behind its remote's schema and bd's safe recovery "
+                    "(bootstrap) could not catch it up. If — and only if — this is the single "
+                    "machine designated to migrate the shared schema, AgentShore can run:\n"
+                    f"  {_REMOTE_MIGRATE_COMMAND}\n"
+                    "Running this from more than one clone forks the schema unrecoverably. "
+                    "Proceed? [y/N] "
+                )
+                .strip()
+                .lower()
+            )
+        except (EOFError, KeyboardInterrupt):
+            answer = ""
+        return answer in ("y", "yes")
+    return False
+
+
+async def reconcile_beads_schema(project_path: Path, *, assume_yes: bool = False) -> None:
+    """Detect and — wherever it is safe to do so silently — heal beads schema drift.
+
+    Generalizes the original #316 stale-remote-clone recovery into a full
+    schema-drift preflight. The guiding principle is invisibility: every
+    state below except one resolves with no user interaction (at most a log
+    line). The one exception is the single action that can unrecoverably
+    fork a shared schema — migrating a *remote-backed* store — which bd's own
+    design marks ``human_decision_required: true`` because no local signal
+    can prove this is the sole designated-migrator clone.
+
+    States, in order:
+      1. Healthy — the probe read succeeds. No-op.
+      2. Remote-backed, behind — bd's "refusing to auto-apply ... to a
+         remote-backed database" signature (``is_schema_drift_error``).
+         Always try the safe ``bd bootstrap`` adopt path first (silent) — in
+         practice this resolves the common case (another clone already
+         migrated and pushed). If the signature persists after bootstrap,
+         fall through to the consent gate for the dangerous migrate+push
+         path; declining leaves it logged and raises ``BeadsSchemaDriftError``
+         with the exact remediation commands so callers can surface (not
+         swallow) a drift that nothing here could fix.
+      3. Local-only, behind — no ``sync.remote`` configured
+         (``_beads_store_has_remote``), so a plain ``bd migrate`` cannot fork
+         anything. Runs automatically and silently.
+      4. Unrecognized failure — logged only; this function isn't equipped to
+         diagnose it, and the normal ``load_graph`` retry path already
+         surfaces it through the ordinary ``GraphReadError``/error-line
+         channels.
+
+    *assume_yes* is for already-consented callers (e.g. an interactive
+    installer wizard that already confirmed with the user); everywhere else
+    consent for state 2's dangerous path comes from the
+    ``AGENTSHORE_ALLOW_REMOTE_MIGRATE`` env var or an interactive prompt (see
+    ``_remote_migrate_consented``).
     """
     try:
         await bd("list", "--all", "--json", "--limit", "0", cwd=project_path)
@@ -163,45 +303,73 @@ async def reconcile_stale_remote_clone(project_path: Path) -> None:
     except BdError as exc:
         probe_error = str(exc)
 
-    if not _is_stale_remote_clone_error(probe_error):
+    if is_schema_drift_error(probe_error):
         _logger.warning(
-            "beads_graph_probe_failed_at_session_start",
+            "beads_stale_remote_clone_detected",
             project_path=str(project_path),
             error=probe_error,
         )
+        try:
+            await bd("bootstrap", cwd=project_path)
+        except BdError as exc:
+            _logger.warning(
+                "beads_bootstrap_recovery_failed",
+                project_path=str(project_path),
+                error=str(exc),
+            )
+        else:
+            try:
+                await bd("list", "--all", "--json", "--limit", "0", cwd=project_path)
+            except BdError as exc:
+                probe_error = str(exc)  # still drifted — fall through to the consent gate
+            else:
+                _logger.info("beads_bootstrap_recovery_ran", project_path=str(project_path))
+                return
+
+        if not _remote_migrate_consented(assume_yes=assume_yes):
+            _logger.warning(
+                "beads_remote_migrate_declined",
+                project_path=str(project_path),
+                remediation=_REMOTE_MIGRATE_COMMAND,
+            )
+            raise BeadsSchemaDriftError(
+                "beads store is behind its remote's schema and `bd bootstrap` could not catch "
+                f"it up. On exactly ONE machine (the designated migrator), run: "
+                f"{_REMOTE_MIGRATE_COMMAND}\nOr set {_ALLOW_REMOTE_MIGRATE_ENV_VAR}=1 to consent "
+                f"non-interactively. Original error: {probe_error}"
+            )
+
+        _logger.warning("beads_remote_migrate_consented", project_path=str(project_path))
+        try:
+            await bd("migrate", cwd=project_path, env_overlay={"BD_ALLOW_REMOTE_MIGRATE": "1"})
+            await bd("dolt", "push", cwd=project_path)
+        except BdError as exc:
+            raise BeadsSchemaDriftError(
+                f"consented remote migrate+push failed for {project_path}: {exc}"
+            ) from exc
+        _logger.info("beads_remote_migrate_ran", project_path=str(project_path))
+        return
+
+    if not _beads_store_has_remote(project_path):
+        # No remote configured — a local schema mismatch can't fork a shared
+        # store, so it's always safe to migrate automatically and silently.
+        try:
+            await bd("migrate", cwd=project_path)
+        except BdError as exc:
+            _logger.warning(
+                "beads_local_migrate_failed", project_path=str(project_path), error=str(exc)
+            )
+            raise BeadsSchemaDriftError(
+                f"bd migrate failed for local-only store {project_path}: {exc}"
+            ) from exc
+        _logger.info("beads_local_migrate_ran", project_path=str(project_path))
         return
 
     _logger.warning(
-        "beads_stale_remote_clone_detected",
+        "beads_graph_probe_failed_at_session_start",
         project_path=str(project_path),
         error=probe_error,
     )
-    try:
-        await bd("bootstrap", cwd=project_path)
-    except BdError as exc:
-        _logger.warning(
-            "beads_bootstrap_recovery_failed",
-            project_path=str(project_path),
-            error=str(exc),
-        )
-        return
-
-    try:
-        await bd("list", "--all", "--json", "--limit", "0", cwd=project_path)
-    except BdError as exc:
-        _logger.warning(
-            "beads_stale_remote_clone_unresolved",
-            project_path=str(project_path),
-            error=str(exc),
-            remediation=(
-                "bd bootstrap did not resolve the schema skew. The remote itself may need "
-                "migrating: on exactly ONE clone, run "
-                "`BD_ALLOW_REMOTE_MIGRATE=1 bd migrate && bd dolt push`."
-            ),
-        )
-        return
-
-    _logger.info("beads_bootstrap_recovery_ran", project_path=str(project_path))
 
 
 async def _configure_dolt_auto_commit(project_path: Path) -> None:
@@ -250,6 +418,59 @@ async def bd_init_project(project_path: Path) -> None:
     await _configure_dolt_auto_commit(project_path)
 
 
+def _pin_bd_in_hook_scripts(project_path: Path, bd_binary: str) -> None:
+    """Rewrite installed bd git hooks to invoke the pinned bd by absolute path.
+
+    ``bd hooks install`` writes shell scripts (default target ``.beads/hooks/``,
+    wired via git's ``core.hooksPath``) that resolve bd through
+    ``command -v bd`` / a bare ``bd hooks run ...`` — i.e. whatever ``bd`` the
+    hook's ambient shell PATH finds when git invokes it, independently of
+    ``resolve_bd_binary()``. When that differs from the pinned binary (see
+    ``_warn_on_bd_path_skew``), a commit-time hook silently runs a
+    version-skewed bd against the same embedded Dolt store AgentShore itself
+    just wrote — a direct schema-drift vector, and the one concretely
+    observed in practice. Absolute-path invocation sidesteps PATH order
+    entirely, so this fixes the vector without touching the user's shell
+    environment.
+
+    Patches the ``command -v bd`` resolution check and every ``bd hooks run``
+    invocation inside bd's own "BEGIN/END BEADS INTEGRATION" marker block to
+    reference *bd_binary* directly. Idempotent and best-effort: ``bd hooks
+    install`` regenerates these files from scratch on every run, so this is
+    called after every install; a hook file that doesn't match the expected
+    template (e.g. a future bd release changing it) is left untouched and
+    logged rather than corrupted.
+    """
+    hooks_dir = project_path / ".beads" / "hooks"
+    if not hooks_dir.is_dir():
+        return
+    quoted = bd_binary.replace('"', '\\"')
+    pinned = 0
+    for hook_path in sorted(hooks_dir.glob("*")):
+        if not hook_path.is_file():
+            continue
+        try:
+            original = hook_path.read_text(encoding="utf-8")
+        except OSError as exc:
+            _logger.warning("bd_hook_pin_read_failed", hook=str(hook_path), error=str(exc))
+            continue
+        if "BEGIN BEADS INTEGRATION" not in original:
+            continue  # not a bd-generated hook — leave it alone
+        patched = original.replace(
+            "command -v bd >/dev/null 2>&1", f'command -v "{quoted}" >/dev/null 2>&1'
+        ).replace("bd hooks run", f'"{quoted}" hooks run')
+        if patched == original:
+            continue  # already pinned, or a template shape this doesn't recognize
+        try:
+            hook_path.write_text(patched, encoding="utf-8")
+        except OSError as exc:
+            _logger.warning("bd_hook_pin_write_failed", hook=str(hook_path), error=str(exc))
+            continue
+        pinned += 1
+    if pinned:
+        _logger.info("bd_hooks_pinned", project_path=str(project_path), count=pinned)
+
+
 async def bd_setup_for_agent_types(
     project_path: Path,
     enabled_agent_types: set[AgentType],
@@ -273,6 +494,16 @@ async def bd_setup_for_agent_types(
         _logger.info("bd_hooks_installed", project_path=str(project_path))
     except BdError as exc:
         _logger.warning("bd_hooks_install_failed", error=str(exc))
+    else:
+        # Route the hooks we just installed through the pinned bd (see
+        # _pin_bd_in_hook_scripts) so commit-time hook runs can't silently
+        # drift onto a different bd version than everything else uses.
+        bd_binary = resolve_bd_binary()
+        if bd_binary is not None:
+            try:
+                _pin_bd_in_hook_scripts(project_path, bd_binary)
+            except OSError as exc:
+                _logger.warning("bd_hook_pin_failed", error=str(exc))
 
     actors = [_BD_ACTOR_NAMES[at] for at in enabled_agent_types if at in _BD_ACTOR_NAMES]
     if actors:
@@ -283,22 +514,36 @@ async def bd_setup_for_agent_types(
 def run_beads_init(
     project_path: Path,
     enabled_agent_types: set[AgentType],
+    *,
+    assume_yes: bool = False,
 ) -> None:
     """Synchronous entry point called from `agentshore init` (Click context).
 
     Runs the full beads setup sequence:
-      1. ensure_bd_installed (synchronous check)
+      1. ensure_bd_installed  (synchronous check)
       2. bd_init_project      (async, run in a new event loop)
-      3. bd_setup_for_agent_types (async, same event loop)
+      3. reconcile_beads_schema (async, same loop) — schema-drift preflight
+      4. bd_setup_for_agent_types (async, same loop)
 
-    Any failure in step 1 propagates to the caller; steps 2–3 log warnings
-    rather than aborting init so a failed beads step never blocks the rest
-    of `agentshore init`.
+    Any failure in step 1 propagates to the caller, as does a
+    ``BeadsSchemaDriftError`` from step 3 (schema drift that nothing here
+    could safely auto-heal must reach the caller so it can block ``agentshore
+    init`` with the remediation command — see ``cli/commands/init.py`` —
+    rather than silently proceeding against a store the rest of setup can't
+    actually read). Step 2 and step 4 failures still only log warnings;
+    a failed `bd init` or hooks install is a lesser problem than proceeding
+    on top of unreadable schema drift, but still shouldn't block the rest of
+    `agentshore init` on its own.
+
+    *assume_yes* is threaded through to ``reconcile_beads_schema`` for an
+    already-consented interactive caller (e.g. a wizard that confirmed with
+    the user before calling this).
     """
     ensure_bd_installed()
 
     async def _run() -> None:
         await bd_init_project(project_path)
+        await reconcile_beads_schema(project_path, assume_yes=assume_yes)
         await bd_setup_for_agent_types(project_path, enabled_agent_types)
 
     asyncio.run(_run())

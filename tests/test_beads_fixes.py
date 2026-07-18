@@ -11,6 +11,7 @@ Coverage:
 from __future__ import annotations
 
 import asyncio
+import os
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -773,8 +774,15 @@ async def test_add_blocking_dependency_detects_cycle_conflict(tmp_path: Path) ->
 
 
 # ---------------------------------------------------------------------------
-# #316 — stale remote-backed Dolt clone recovery (reconcile_stale_remote_clone)
+# #316 / schema-drift installer upgrade — reconcile_beads_schema
 # ---------------------------------------------------------------------------
+#
+# reconcile_beads_schema generalizes the original #316 stale-remote-clone
+# recovery into a full schema-drift preflight (see beads/setup.py). Every
+# state below except "ambiguous remote-backed drift bootstrap couldn't fix"
+# resolves silently, with no user interaction — that one state is the single
+# action that could unrecoverably fork a shared schema, so it's gated behind
+# explicit consent (env var or interactive prompt) rather than ever auto-run.
 
 _STALE_REMOTE_CLONE_ERROR = (
     "bd list --all --json --limit 0 failed (rc=1): Warning: refusing to auto-apply 21 pending "
@@ -787,39 +795,48 @@ _STALE_REMOTE_CLONE_ERROR = (
 )
 
 
+def _write_beads_config(project_path: Path, *, remote: str | None) -> None:
+    beads_dir = project_path / ".beads"
+    beads_dir.mkdir(parents=True, exist_ok=True)
+    if remote is None:
+        (beads_dir / "config.yaml").write_text("actor: test\n", encoding="utf-8")
+    else:
+        (beads_dir / "config.yaml").write_text(f'sync:\n  remote: "{remote}"\n', encoding="utf-8")
+
+
 @pytest.mark.asyncio
-async def test_reconcile_stale_remote_clone_noop_on_healthy_store(tmp_path: Path) -> None:
-    """A healthy store's probe read succeeds — bootstrap is never invoked."""
-    from agentshore.beads.setup import reconcile_stale_remote_clone
+async def test_reconcile_beads_schema_noop_on_healthy_store(tmp_path: Path) -> None:
+    """A healthy store's probe read succeeds — nothing else is invoked."""
+    from agentshore.beads.setup import reconcile_beads_schema
 
     calls: list[tuple[str, ...]] = []
 
-    async def _fake_bd(*args: str, cwd: object, stdin_data: object = None) -> str:
+    async def _fake_bd(*args: str, cwd: object, stdin_data: object = None, **_: object) -> str:
         calls.append(args)
         return "[]"
 
     with patch("agentshore.beads.setup.bd", side_effect=_fake_bd):
-        await reconcile_stale_remote_clone(tmp_path)
+        await reconcile_beads_schema(tmp_path)
 
     assert calls == [("list", "--all", "--json", "--limit", "0")]
 
 
 @pytest.mark.asyncio
-async def test_reconcile_stale_remote_clone_recovers_via_bootstrap(tmp_path: Path) -> None:
-    """The stale-remote-clone signature triggers bootstrap, then a successful re-probe."""
+async def test_reconcile_beads_schema_recovers_via_bootstrap(tmp_path: Path) -> None:
+    """The stale-remote-clone signature triggers bootstrap, then a successful re-probe — silent."""
     from agentshore.beads import BdError
-    from agentshore.beads.setup import reconcile_stale_remote_clone
+    from agentshore.beads.setup import reconcile_beads_schema
 
     calls: list[tuple[str, ...]] = []
 
-    async def _fake_bd(*args: str, cwd: object, stdin_data: object = None) -> str:
+    async def _fake_bd(*args: str, cwd: object, stdin_data: object = None, **_: object) -> str:
         calls.append(args)
         if args[0] == "list" and len(calls) == 1:
             raise BdError(_STALE_REMOTE_CLONE_ERROR)
         return "[]"
 
     with patch("agentshore.beads.setup.bd", side_effect=_fake_bd):
-        await reconcile_stale_remote_clone(tmp_path)
+        await reconcile_beads_schema(tmp_path)  # must not raise, must not prompt
 
     assert calls == [
         ("list", "--all", "--json", "--limit", "0"),
@@ -829,21 +846,35 @@ async def test_reconcile_stale_remote_clone_recovers_via_bootstrap(tmp_path: Pat
 
 
 @pytest.mark.asyncio
-async def test_reconcile_stale_remote_clone_bootstrap_unresolved(tmp_path: Path) -> None:
-    """Bootstrap runs but the signature persists — logged, never raised."""
-    from agentshore.beads import BdError
-    from agentshore.beads.setup import reconcile_stale_remote_clone
+async def test_reconcile_beads_schema_bootstrap_unresolved_no_consent_raises(
+    tmp_path: Path,
+) -> None:
+    """Bootstrap can't fix it and no consent is available — raises BeadsSchemaDriftError.
+
+    Unlike the original #316 recovery (which swallowed this case), an
+    unresolved remote-backed drift must not be silently absorbed here: the
+    caller (agentshore init / session start) needs to know reconciliation
+    genuinely failed rather than proceeding against an unreadable store.
+    """
+    from agentshore.beads import BdError, BeadsSchemaDriftError
+    from agentshore.beads.setup import reconcile_beads_schema
 
     calls: list[tuple[str, ...]] = []
 
-    async def _fake_bd(*args: str, cwd: object, stdin_data: object = None) -> str:
+    async def _fake_bd(*args: str, cwd: object, stdin_data: object = None, **_: object) -> str:
         calls.append(args)
         if args[0] == "list":
             raise BdError(_STALE_REMOTE_CLONE_ERROR)
         return ""
 
-    with patch("agentshore.beads.setup.bd", side_effect=_fake_bd):
-        await reconcile_stale_remote_clone(tmp_path)  # must not raise
+    with (
+        patch("agentshore.beads.setup.bd", side_effect=_fake_bd),
+        patch("agentshore.beads.setup.sys.stdin.isatty", return_value=False),
+        patch.dict("os.environ", {}, clear=False),
+    ):
+        os.environ.pop("AGENTSHORE_ALLOW_REMOTE_MIGRATE", None)
+        with pytest.raises(BeadsSchemaDriftError, match="BD_ALLOW_REMOTE_MIGRATE"):
+            await reconcile_beads_schema(tmp_path)
 
     assert calls == [
         ("list", "--all", "--json", "--limit", "0"),
@@ -853,38 +884,172 @@ async def test_reconcile_stale_remote_clone_bootstrap_unresolved(tmp_path: Path)
 
 
 @pytest.mark.asyncio
-async def test_reconcile_stale_remote_clone_bootstrap_call_fails(tmp_path: Path) -> None:
-    """bd bootstrap itself erroring (e.g. remote unreachable) is swallowed, not raised."""
+async def test_reconcile_beads_schema_bootstrap_unresolved_env_consent_migrates(
+    tmp_path: Path,
+) -> None:
+    """With AGENTSHORE_ALLOW_REMOTE_MIGRATE=1, the consented migrate+push path runs."""
     from agentshore.beads import BdError
-    from agentshore.beads.setup import reconcile_stale_remote_clone
+    from agentshore.beads.setup import reconcile_beads_schema
 
     calls: list[tuple[str, ...]] = []
 
-    async def _fake_bd(*args: str, cwd: object, stdin_data: object = None) -> str:
+    async def _fake_bd(*args: str, cwd: object, stdin_data: object = None, **_: object) -> str:
+        calls.append(args)
+        if args[0] == "list":
+            raise BdError(_STALE_REMOTE_CLONE_ERROR)
+        return ""
+
+    with (
+        patch("agentshore.beads.setup.bd", side_effect=_fake_bd),
+        patch.dict("os.environ", {"AGENTSHORE_ALLOW_REMOTE_MIGRATE": "1"}),
+    ):
+        await reconcile_beads_schema(tmp_path)  # must not raise
+
+    assert calls == [
+        ("list", "--all", "--json", "--limit", "0"),
+        ("bootstrap",),
+        ("list", "--all", "--json", "--limit", "0"),
+        ("migrate",),
+        ("dolt", "push"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_reconcile_beads_schema_bootstrap_call_fails_falls_through_to_consent(
+    tmp_path: Path,
+) -> None:
+    """bd bootstrap itself erroring (e.g. remote unreachable) falls through to the consent gate."""
+    from agentshore.beads import BdError, BeadsSchemaDriftError
+    from agentshore.beads.setup import reconcile_beads_schema
+
+    calls: list[tuple[str, ...]] = []
+
+    async def _fake_bd(*args: str, cwd: object, stdin_data: object = None, **_: object) -> str:
         calls.append(args)
         if args[0] == "list":
             raise BdError(_STALE_REMOTE_CLONE_ERROR)
         raise BdError("bd bootstrap failed (rc=1): could not reach remote")
 
-    with patch("agentshore.beads.setup.bd", side_effect=_fake_bd):
-        await reconcile_stale_remote_clone(tmp_path)  # must not raise
+    with (
+        patch("agentshore.beads.setup.bd", side_effect=_fake_bd),
+        patch("agentshore.beads.setup.sys.stdin.isatty", return_value=False),
+        patch.dict("os.environ", {}, clear=False),
+    ):
+        os.environ.pop("AGENTSHORE_ALLOW_REMOTE_MIGRATE", None)
+        with pytest.raises(BeadsSchemaDriftError):
+            await reconcile_beads_schema(tmp_path)
 
     assert calls == [("list", "--all", "--json", "--limit", "0"), ("bootstrap",)]
 
 
 @pytest.mark.asyncio
-async def test_reconcile_stale_remote_clone_ignores_unrelated_bd_error(tmp_path: Path) -> None:
-    """A bd error that doesn't match the stale-remote-clone signature is left alone."""
+async def test_reconcile_beads_schema_local_only_migrates_silently(tmp_path: Path) -> None:
+    """No sync.remote configured — a plain `bd migrate` can't fork anything, runs automatically."""
     from agentshore.beads import BdError
-    from agentshore.beads.setup import reconcile_stale_remote_clone
+    from agentshore.beads.setup import reconcile_beads_schema
 
+    _write_beads_config(tmp_path, remote=None)
     calls: list[tuple[str, ...]] = []
 
-    async def _fake_bd(*args: str, cwd: object, stdin_data: object = None) -> str:
+    async def _fake_bd(*args: str, cwd: object, stdin_data: object = None, **_: object) -> str:
+        calls.append(args)
+        if args[0] == "list":
+            raise BdError("bd list --all --json --limit 0 failed (rc=1): schema mismatch")
+        return ""
+
+    with patch("agentshore.beads.setup.bd", side_effect=_fake_bd):
+        await reconcile_beads_schema(tmp_path)  # must not raise, must not prompt
+
+    assert calls == [("list", "--all", "--json", "--limit", "0"), ("migrate",)]
+
+
+@pytest.mark.asyncio
+async def test_reconcile_beads_schema_local_only_migrate_failure_raises(tmp_path: Path) -> None:
+    """A local-only migrate that itself fails is surfaced, not swallowed."""
+    from agentshore.beads import BdError, BeadsSchemaDriftError
+    from agentshore.beads.setup import reconcile_beads_schema
+
+    _write_beads_config(tmp_path, remote=None)
+
+    async def _fake_bd(*args: str, cwd: object, stdin_data: object = None, **_: object) -> str:
+        raise BdError(f"bd {args[0]} failed (rc=1): boom")
+
+    with patch("agentshore.beads.setup.bd", side_effect=_fake_bd):
+        with pytest.raises(BeadsSchemaDriftError):
+            await reconcile_beads_schema(tmp_path)
+
+
+@pytest.mark.asyncio
+async def test_reconcile_beads_schema_ignores_unrelated_bd_error(tmp_path: Path) -> None:
+    """An unrecognized bd failure on a remote-backed store is logged, not acted on or raised.
+
+    This function only knows how to fix schema drift; an unrelated failure
+    (e.g. a genuine connection error) is left for the normal load_graph retry
+    / error-line channels rather than this preflight inventing a remediation.
+    """
+    from agentshore.beads import BdError
+    from agentshore.beads.setup import reconcile_beads_schema
+
+    _write_beads_config(tmp_path, remote="git+ssh://git@github.com/example/repo.git")
+    calls: list[tuple[str, ...]] = []
+
+    async def _fake_bd(*args: str, cwd: object, stdin_data: object = None, **_: object) -> str:
         calls.append(args)
         raise BdError("bd list --all --json --limit 0 failed (rc=1): connection refused")
 
     with patch("agentshore.beads.setup.bd", side_effect=_fake_bd):
-        await reconcile_stale_remote_clone(tmp_path)  # must not raise, must not bootstrap
+        await reconcile_beads_schema(tmp_path)  # must not raise, must not bootstrap/migrate
 
     assert calls == [("list", "--all", "--json", "--limit", "0")]
+
+
+def test_beads_store_has_remote_reads_nested_and_flat_keys(tmp_path: Path) -> None:
+    """Both the nested `sync: {remote: ...}` and flat `sync.remote:` config shapes are detected.
+
+    Noodle's real config.yaml had *both* forms in the same file (a
+    config-format drift artifact of its own) — bd's Go YAML parser rejects
+    that as a duplicate key, but PyYAML's last-key-wins semantics parse it
+    fine, so this reads the file directly rather than shelling out to a bd
+    introspection command that has been observed to choke on it.
+    """
+    from agentshore.beads.setup import _beads_store_has_remote
+
+    _write_beads_config(tmp_path, remote=None)
+    assert _beads_store_has_remote(tmp_path) is False
+
+    _write_beads_config(tmp_path, remote="git+ssh://git@github.com/example/repo.git")
+    assert _beads_store_has_remote(tmp_path) is True
+
+    (tmp_path / ".beads" / "config.yaml").write_text(
+        'sync:\n  remote: "git+ssh://git@github.com/example/repo.git"\n'
+        'sync.remote: "git+ssh://git@github.com/example/repo.git"\n',
+        encoding="utf-8",
+    )
+    assert _beads_store_has_remote(tmp_path) is True
+
+
+def test_pin_bd_in_hook_scripts_rewrites_bare_bd_invocations(tmp_path: Path) -> None:
+    """Hook scripts calling bare `bd` get rewritten to the pinned binary's absolute path."""
+    from agentshore.beads.setup import _pin_bd_in_hook_scripts
+
+    hooks_dir = tmp_path / ".beads" / "hooks"
+    hooks_dir.mkdir(parents=True)
+    hook = hooks_dir / "pre-commit"
+    hook.write_text(
+        "#!/usr/bin/env sh\n"
+        "# --- BEGIN BEADS INTEGRATION v1.1.0 ---\n"
+        "if command -v bd >/dev/null 2>&1; then\n"
+        '  timeout 300 bd hooks run pre-commit "$@"\n'
+        "fi\n"
+        "# --- END BEADS INTEGRATION v1.1.0 ---\n",
+        encoding="utf-8",
+    )
+    not_a_bd_hook = hooks_dir / "custom-hook"
+    not_a_bd_hook.write_text("#!/usr/bin/env sh\necho unrelated\n", encoding="utf-8")
+
+    _pin_bd_in_hook_scripts(tmp_path, "/pinned/bin/bd")
+
+    patched = hook.read_text(encoding="utf-8")
+    assert 'command -v "/pinned/bin/bd" >/dev/null 2>&1' in patched
+    assert '"/pinned/bin/bd" hooks run pre-commit "$@"' in patched
+    assert not_a_bd_hook.read_text(encoding="utf-8") == "#!/usr/bin/env sh\necho unrelated\n"

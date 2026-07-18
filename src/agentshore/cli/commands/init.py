@@ -137,10 +137,20 @@ def _maybe_prompt_target_branch(
 def _run_beads_init(project_path: Path, config_path: Path | None) -> None:
     """Verify bd is installed, run bd init, and install bd git hooks.
 
-    Called as the final step of `agentshore init`. Any failure is reported as a
-    warning rather than aborting init — beads is a dependency but a missing
-    bd binary should not block the rest of project setup.
+    Called as the final step of `agentshore init`. Most failures are reported
+    as a warning rather than aborting init — beads is a dependency but a
+    missing bd binary should not block the rest of project setup. The one
+    exception is ``BeadsSchemaDriftError``: unlike a missing binary or a
+    failed hooks install, schema drift that nothing could safely auto-heal
+    means the beads store the rest of setup (and every later session) would
+    read from is not actually readable — silently continuing past that
+    previously caused a live session to misread an empty-looking graph and
+    re-run project seeding over real data. Surfaced the same way
+    `agentshore identity`'s diagnostic mode blocks on a bad row: an
+    actionable message (with the exact remediation command) and a non-zero
+    exit, not a swallowed warning.
     """
+    from agentshore.beads import BeadsSchemaDriftError
     from agentshore.beads.setup import run_beads_init
     from agentshore.config import load_config
     from agentshore.errors import ConfigError
@@ -162,6 +172,9 @@ def _run_beads_init(project_path: Path, config_path: Path | None) -> None:
     try:
         run_beads_init(project_path, enabled_types)
         click.echo("Beads project graph initialised (bd).")
+    except BeadsSchemaDriftError as exc:
+        click.echo(f"beads schema drift blocks project setup — {exc}", err=True)
+        raise SystemExit(1) from exc
     except RuntimeError as exc:
         click.echo(f"Warning: beads setup skipped — {exc}", err=True)
 
