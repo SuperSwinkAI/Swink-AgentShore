@@ -428,6 +428,20 @@ def test_circuit_breaker_lifts_after_cooldown():
     assert mask[PLAY_TO_INDEX[PlayType.ISSUE_PICKUP]]
 
 
+def test_circuit_breaker_benches_seed_project_after_three_failures():
+    state = _state(
+        plays_since_last_play_type={PlayType.SEED_PROJECT: 0},
+        last_play_success_by_type={PlayType.SEED_PROJECT: False},
+        consecutive_nonproductive_by_type={PlayType.SEED_PROJECT: 3},
+    )
+
+    mask = compute_action_mask(state, _registry_all_true())
+    reasons = compute_mask_reasons(state, _registry_all_true())
+
+    assert not mask[PLAY_TO_INDEX[PlayType.SEED_PROJECT]]
+    assert reasons[PlayType.SEED_PROJECT].source == MaskSource.CIRCUIT_BREAKER
+
+
 def test_circuit_breaker_excludes_reconcile_state():
     """Self-heal (reconcile_state) is never benched — it must stay available."""
     state = _state(
