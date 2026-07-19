@@ -372,20 +372,33 @@ def _enabled_agent_types_from_config(cfg: RuntimeConfig | None) -> set[AgentType
         return {AgentType.CLAUDE_CODE}
 
 
-async def _run_init_beads(project_path: Path, cfg: RuntimeConfig | None = None) -> None:
+async def _run_init_beads(
+    project_path: Path,
+    cfg: RuntimeConfig | None = None,
+    *,
+    session_id: str | None = None,
+    notify: Callable[[JsonRpcNotification], None] | None = None,
+) -> None:
     """Initialise the beads project graph and install git hooks.
 
     Mirrors the CLI's ``run_beads_init`` sequence:
       1. ``bd_init_project`` — run ``bd init`` when ``.beads/`` is absent.
       2. ``reconcile_beads_schema`` — schema-drift preflight (generalizes the
          original #316 stale-remote-clone recovery): silently heals every
-         state it safely can (adopt via ``bd bootstrap``, or a local-only
-         ``bd migrate`` with no remote to fork), and only ever prompts for
-         the one action that could unrecoverably fork a shared schema. This
-         path is headless, so that prompt never fires here — consent comes
-         only from ``AGENTSHORE_ALLOW_REMOTE_MIGRATE=1``; without it, an
-         unresolved drift is logged and left for a human, same as any other
-         best-effort step below (never blocks session start).
+         state it safely can (adopt via ``bd bootstrap``, a designated-clone
+         remote migrate, or a local-only ``bd migrate`` with no remote to
+         fork), and only ever prompts for the one action that could
+         unrecoverably fork a shared schema, and only once per clone (see
+         ``_is_designated_migrator``/``_mark_designated_migrator`` in
+         ``beads.setup``). This path is headless, so that prompt never fires
+         here — consent comes only from ``AGENTSHORE_ALLOW_REMOTE_MIGRATE=1``.
+         An unresolved drift (``BeadsSchemaDriftError``) is logged (durably,
+         now that the per-session log file is bound before this phase runs —
+         see ``agentshore.logging.attach_session_file_handler``, issue #356)
+         and, when a live ``notify`` channel is available, surfaced to the
+         desktop immediately via ``$/beads_schema_drift`` — independent of
+         both the log file and the dashboard bridge, since this runs
+         pre-bridge. Either way it never blocks session start.
       3. ``bd_setup_for_agent_types`` — run ``bd hooks install`` (best-effort).
       4. Version-consistency check (best-effort) — the CLI's ``agentshore
          init`` runs ``ensure_bd_installed()`` (which calls
@@ -403,8 +416,9 @@ async def _run_init_beads(project_path: Path, cfg: RuntimeConfig | None = None) 
     in ``core.orchestrator``/``core.phases`` rather than misreading it as an
     empty graph — see those modules for that half of the fix).
     """
-    from agentshore.beads import resolve_bd_binary
+    from agentshore.beads import BeadsSchemaDriftError, resolve_bd_binary
     from agentshore.beads.setup import (
+        _REMOTE_MIGRATE_COMMAND,
         _check_bd_version,
         bd_init_project,
         bd_setup_for_agent_types,
@@ -420,6 +434,21 @@ async def _run_init_beads(project_path: Path, cfg: RuntimeConfig | None = None) 
 
     try:
         await reconcile_beads_schema(project_path)
+    except BeadsSchemaDriftError as exc:
+        _logger.warning("beads_schema_reconcile_skipped", error=str(exc))
+        if notify is not None and session_id is not None:
+            from agentshore.sidecar.rpc.router_helpers import (
+                build_beads_schema_drift_notification,
+            )
+
+            notify(
+                build_beads_schema_drift_notification(
+                    session_id=session_id,
+                    project_path=str(project_path),
+                    remediation=_REMOTE_MIGRATE_COMMAND,
+                    error=str(exc),
+                )
+            )
     except Exception as exc:
         _logger.warning("beads_schema_reconcile_skipped", error=str(exc))
 
@@ -511,6 +540,15 @@ async def run_session_start(
             raise
     _emit(notify, progress_token, STEP_CONFIG_MERGE, "ok")
 
+    # Bind the per-session NDJSON log file handler now — cfg and session_id
+    # are both available, and later phases (init_beads in particular) log
+    # warnings that would otherwise vanish before Orchestrator.bootstrap
+    # attaches a file sink in first_snapshot (gh-356).
+    if project_path is not None and cfg is not None and cfg.logging.file:
+        from agentshore.logging import attach_session_file_handler
+
+        attach_session_file_handler(project_path / cfg.logging.log_dir, session_id)
+
     # Phase 2: check_agent_auth — probe each configured CLI agent's backend
     # auth (e.g. the Codex CLI's cached chatgpt.com session) now that cfg is
     # resolved but before anything expensive boots. A definitively-expired
@@ -543,7 +581,7 @@ async def run_session_start(
     _emit(notify, progress_token, STEP_INIT_BEADS, "running")
     if project_path is not None:
         try:
-            await _run_init_beads(project_path, cfg=cfg)
+            await _run_init_beads(project_path, cfg=cfg, session_id=session_id, notify=notify)
         except SessionStartError as exc:
             _emit(notify, progress_token, exc.step, "failed", error=str(exc))
             raise

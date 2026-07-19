@@ -99,3 +99,46 @@ export async function subscribeProgress(
     });
   });
 }
+
+/**
+ * Params for the ``$/beads_schema_drift`` notification the sidecar emits
+ * during session start when a remote-backed beads store is behind its
+ * shared schema and can't be auto-healed headlessly.
+ */
+export interface SchemaDriftWarning {
+  sessionId: string;
+  projectPath: string;
+  remediation: string;
+  error: string;
+}
+
+/**
+ * Subscribe to ``$/beads_schema_drift`` notifications routed through
+ * ``sidecar.notification``. Returns an unlisten function.
+ *
+ * Malformed payloads (missing/mistyped fields) are ignored rather than
+ * handed to ``handler`` — mirrors ``subscribeProgress``'s narrowing.
+ */
+export async function subscribeBeadsSchemaDrift(
+  handler: (warning: SchemaDriftWarning) => void,
+): Promise<UnlistenFn> {
+  return subscribeSidecarNotification((payload) => {
+    if (payload.method !== "$/beads_schema_drift") {
+      return;
+    }
+    const raw = (payload.params ?? {}) as Record<string, unknown>;
+    const sessionId = typeof raw.session_id === "string" ? raw.session_id : undefined;
+    const projectPath = typeof raw.project_path === "string" ? raw.project_path : undefined;
+    const remediation = typeof raw.remediation === "string" ? raw.remediation : undefined;
+    const error = typeof raw.error === "string" ? raw.error : undefined;
+    if (
+      sessionId === undefined ||
+      projectPath === undefined ||
+      remediation === undefined ||
+      error === undefined
+    ) {
+      return;
+    }
+    handler({ sessionId, projectPath, remediation, error });
+  });
+}

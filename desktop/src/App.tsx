@@ -53,8 +53,10 @@ import {
 import { subscribeCompleted } from "./services/sessionClient";
 import { currentSession } from "./rpc/sessionClient";
 import {
+  subscribeBeadsSchemaDrift,
   subscribeSidecarCrashed,
   subscribeSidecarNotification,
+  type SchemaDriftWarning,
   type SidecarCrashedPayload,
 } from "./services/sidecarEvents";
 import { DemoDashboardScreen } from "./screens/DemoDashboardScreen";
@@ -79,6 +81,7 @@ import { TargetBranchScreen } from "./screens/TargetBranchScreen";
 import { StartingProgressRoute } from "./StartingProgressRoute";
 import { AppMenu } from "./components/AppMenu";
 import { WelcomeCarousel } from "./components/WelcomeCarousel";
+import { SchemaDriftBanner } from "./components/SchemaDriftBanner";
 import { listen } from "@tauri-apps/api/event";
 
 type UiState = {
@@ -972,6 +975,7 @@ export function App() {
   // Declare these early so the reattach effect can gate on them.
   const [crashPayload, setCrashPayload] = useState<SidecarCrashedPayload | null>(null);
   const [fatalInfo, setFatalInfo] = useState<FatalShellInfo | null>(null);
+  const [schemaDrift, setSchemaDrift] = useState<SchemaDriftWarning | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -1156,6 +1160,29 @@ export function App() {
       unlisten?.();
     };
   }, [navigate, setEsr]);
+
+  // $/beads_schema_drift: a remote-backed beads store fell behind its shared
+  // schema and couldn't be auto-healed headlessly. Unlike esr_ready this is
+  // not a route change — it's a persistent, dismissable banner shown across
+  // every route until the user dismisses it or designates this machine as
+  // the migrator.
+  useEffect(() => {
+    let cancelled = false;
+    let unlisten: (() => void) | null = null;
+    void subscribeBeadsSchemaDrift((warning) => {
+      if (cancelled) return;
+      setSchemaDrift(warning);
+    })
+      .then((fn) => {
+        if (cancelled) fn();
+        else unlisten = fn;
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, [setSchemaDrift]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1375,6 +1402,11 @@ export function App() {
         onSeen={markWelcomeSeen}
         onSeenChange={setWelcomeSeen}
         onClose={() => setWelcomeOpen(false)}
+      />
+      <SchemaDriftBanner
+        warning={schemaDrift}
+        onDismiss={() => setSchemaDrift(null)}
+        onDesignated={() => setSchemaDrift(null)}
       />
       {!chromeHidden && (
         <nav className="desktop-nav">

@@ -128,6 +128,21 @@ export async function stopSession(params: StopSessionParams = {}): Promise<EsrPa
   return callJsonRpc<EsrPayload>("session.stop", rpcParams);
 }
 
+// ---------------------------------------------------------------------------
+// Beads schema drift — designate this machine as the migrator
+// ---------------------------------------------------------------------------
+
+/**
+ * Designate this machine as the migrator for the active project's beads
+ * store (``beads.designate_migrator``). No params — the backend resolves
+ * the active project from server state. Runs ``bd migrate`` + ``bd dolt
+ * push`` over the network remote, so it can take a while; the method is
+ * registered as ``uncapped`` in ``rpc-method-classes.json``.
+ */
+export async function designateBeadsMigrator(): Promise<{ designated: boolean }> {
+  return callJsonRpc<{ designated: boolean }>("beads.designate_migrator");
+}
+
 /**
  * Subscribe to ``session.completed`` events forwarded by the Tauri bridge.
  *

@@ -18,6 +18,7 @@
     "session.start",
     "session.stop",
     "project.install_timelapse",
-    "agents.refresh_models"
+    "agents.refresh_models",
+    "beads.designate_migrator"
   ]
 }

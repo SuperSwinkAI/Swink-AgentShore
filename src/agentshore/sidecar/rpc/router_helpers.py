@@ -139,3 +139,37 @@ def build_sidecar_health_notification() -> JsonRpcNotification:
         "sidecar.health",
         {"status": "ok", "timestamp": datetime.now(UTC).isoformat()},
     )
+
+
+def build_beads_schema_drift_notification(
+    *,
+    session_id: str,
+    project_path: str,
+    remediation: str,
+    error: str,
+) -> JsonRpcNotification:
+    """Build the ``$/beads_schema_drift`` JSON-RPC notification (issue #356).
+
+    Fires from ``init_beads`` when ``reconcile_beads_schema`` ends in the one
+    state it cannot silently heal: a remote-backed store still behind its
+    schema after ``bd bootstrap``, on a clone that isn't yet the designated
+    migrator and hasn't granted consent. That case previously only reached a
+    structlog warning emitted before the per-session log file existed (see
+    ``agentshore.logging.attach_session_file_handler``) — durable now, but
+    still not something a human would see without reading logs. This
+    notification is the live, desktop-visible half of the fix: the shell can
+    render a persistent banner with *remediation* (the exact command) and a
+    designate action, independent of both the log file and the dashboard
+    bridge (this fires pre-bridge, from the ``init_beads`` phase). Session
+    start is NOT blocked by this — ``init_beads`` still reports its
+    ``$/progress`` step ``ok``.
+    """
+    return notification(
+        "$/beads_schema_drift",
+        {
+            "session_id": session_id,
+            "project_path": project_path,
+            "remediation": remediation,
+            "error": error,
+        },
+    )

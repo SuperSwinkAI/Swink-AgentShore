@@ -85,10 +85,17 @@ _REVERSE_FAILSAFE_CONTROL_PLAYS: Final[frozenset[PlayType]] = frozenset(
 # control plays are excluded.
 _CIRCUIT_BREAKER_THRESHOLD: Final[int] = 3
 _CIRCUIT_BREAKER_COOLDOWN_PLAYS: Final[int] = 20
+# SEED_PROJECT (#357): its only cooldown, seed_audit_is_fresh(), keys off a
+# prior *success* and never engages on failure, so a persistently-failing
+# seed_project (e.g. an unreadable/schema-drifted beads store) had zero
+# backoff and could re-dispatch every few minutes. Circuit-breaker membership
+# gives it the same 3-consecutive-fail/skip -> benched-for-20-plays -> retry
+# pattern every other candidate-required play already has.
 _CIRCUIT_BREAKER_ELIGIBLE_PLAYS: Final[frozenset[PlayType]] = CANDIDATE_REQUIRED_PLAY_TYPES | {
     PlayType.RUN_QA,
     PlayType.DESIGN_AUDIT,
     PlayType.CALIBRATE_ALIGNMENT,
+    PlayType.SEED_PROJECT,
 }
 
 # Lifecycle-churn breaker (#163): when work is undispatchable the PPO can

@@ -20,6 +20,7 @@ import re
 import shutil
 import subprocess
 import sys
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 import structlog
@@ -194,6 +195,17 @@ _ALLOW_REMOTE_MIGRATE_ENV_VAR = "AGENTSHORE_ALLOW_REMOTE_MIGRATE"
 
 _REMOTE_MIGRATE_COMMAND = "BD_ALLOW_REMOTE_MIGRATE=1 bd migrate && bd dolt push"
 
+# Marker file recording that this clone was, at some point, granted consent
+# (via any of the three gates in _remote_migrate_consented) to run the
+# dangerous remote migrate+push path. Once written, every future session on
+# THIS SAME CLONE skips the consent gate and auto-migrates silently (still
+# bootstrap-first — see reconcile_beads_schema) instead of re-prompting or
+# raising forever. It lives under .beads/, which bd_init_project already
+# gitignores wholesale (".beads/.gitignore" containing "*"), so it is
+# inherently clone-local and never travels to another clone via git — the
+# human decision is made exactly once per clone, never automatically.
+_SCHEMA_MIGRATOR_MARKER_NAME = ".agentshore_schema_migrator"
+
 
 def _beads_store_has_remote(project_path: Path) -> bool:
     """True when ``.beads/config.yaml`` declares a ``sync.remote``.
@@ -234,7 +246,12 @@ def _remote_migrate_consented(*, assume_yes: bool) -> bool:
     this is the deliberate exception, because bd's own remote-migrate refusal
     is explicitly a human coordination decision (its error payload marks it
     ``human_decision_required: true``): only one clone may ever run this, and
-    nothing in the local state can prove which one that is.
+    at the point this gate is consulted nothing in local state yet proves
+    which one that is. Callers only reach this function on a clone that
+    hasn't been designated yet (see ``_is_designated_migrator`` in
+    ``reconcile_beads_schema``) — once consent is granted here, the caller
+    durably marks this clone as the designated migrator so this exact gate is
+    never consulted again for it.
     """
     if assume_yes:
         return True
@@ -261,6 +278,32 @@ def _remote_migrate_consented(*, assume_yes: bool) -> bool:
     return False
 
 
+def _is_designated_migrator(project_path: Path) -> bool:
+    """True when this clone was previously granted consent to migrate this store.
+
+    The marker lives under ``.beads/`` (already wholesale-gitignored by
+    ``bd_init_project``), so it is inherently clone-local: it is written once
+    consent is granted (see ``reconcile_beads_schema``) and never travels to
+    another clone via git. Presence alone is sufficient — content is
+    diagnostic only (see ``_mark_designated_migrator``).
+    """
+    return (project_path / ".beads" / _SCHEMA_MIGRATOR_MARKER_NAME).is_file()
+
+
+def _mark_designated_migrator(project_path: Path) -> None:
+    """Durably record that this clone is the designated schema migrator.
+
+    Best-effort: a failure to write the marker is logged but never raised —
+    the migrate+push this follows already succeeded, and losing the marker
+    only costs a future re-prompt, not correctness or safety.
+    """
+    marker_path = project_path / ".beads" / _SCHEMA_MIGRATOR_MARKER_NAME
+    try:
+        marker_path.write_text(f"designated at {datetime.now(UTC).isoformat()}\n", encoding="utf-8")
+    except OSError as exc:
+        _logger.warning("beads_schema_migrator_marker_write_failed", error=str(exc))
+
+
 async def reconcile_beads_schema(project_path: Path, *, assume_yes: bool = False) -> None:
     """Detect and — wherever it is safe to do so silently — heal beads schema drift.
 
@@ -278,11 +321,18 @@ async def reconcile_beads_schema(project_path: Path, *, assume_yes: bool = False
          remote-backed database" signature (``is_schema_drift_error``).
          Always try the safe ``bd bootstrap`` adopt path first (silent) — in
          practice this resolves the common case (another clone already
-         migrated and pushed). If the signature persists after bootstrap,
-         fall through to the consent gate for the dangerous migrate+push
-         path; declining leaves it logged and raises ``BeadsSchemaDriftError``
-         with the exact remediation commands so callers can surface (not
-         swallow) a drift that nothing here could fix.
+         migrated and pushed). If the signature persists after bootstrap and
+         this clone is already the designated migrator (see
+         ``_is_designated_migrator`` — a human granted consent once before,
+         on this same clone), the migrate+push runs again automatically and
+         silently, with no re-prompt. Otherwise it falls through to the
+         consent gate for the dangerous migrate+push path; declining leaves
+         it logged and raises ``BeadsSchemaDriftError`` with the exact
+         remediation commands so callers can surface (not swallow) a drift
+         that nothing here could fix. Consent granted here — by any of the
+         three gates in ``_remote_migrate_consented`` — is durably recorded
+         (``_mark_designated_migrator``) immediately after a successful
+         migrate+push, so this is the last time THIS clone is ever prompted.
       3. Local-only, behind — no ``sync.remote`` configured
          (``_beads_store_has_remote``), so a plain ``bd migrate`` cannot fork
          anything. Runs automatically and silently.
@@ -326,7 +376,8 @@ async def reconcile_beads_schema(project_path: Path, *, assume_yes: bool = False
                 _logger.info("beads_bootstrap_recovery_ran", project_path=str(project_path))
                 return
 
-        if not _remote_migrate_consented(assume_yes=assume_yes):
+        designated = _is_designated_migrator(project_path)
+        if not designated and not _remote_migrate_consented(assume_yes=assume_yes):
             _logger.warning(
                 "beads_remote_migrate_declined",
                 project_path=str(project_path),
@@ -339,7 +390,10 @@ async def reconcile_beads_schema(project_path: Path, *, assume_yes: bool = False
                 f"non-interactively. Original error: {probe_error}"
             )
 
-        _logger.warning("beads_remote_migrate_consented", project_path=str(project_path))
+        if designated:
+            _logger.info("beads_remote_migrate_auto", project_path=str(project_path))
+        else:
+            _logger.warning("beads_remote_migrate_consented", project_path=str(project_path))
         try:
             await bd("migrate", cwd=project_path, env_overlay={"BD_ALLOW_REMOTE_MIGRATE": "1"})
             await bd("dolt", "push", cwd=project_path)
@@ -347,6 +401,8 @@ async def reconcile_beads_schema(project_path: Path, *, assume_yes: bool = False
             raise BeadsSchemaDriftError(
                 f"consented remote migrate+push failed for {project_path}: {exc}"
             ) from exc
+        if not designated:
+            _mark_designated_migrator(project_path)
         _logger.info("beads_remote_migrate_ran", project_path=str(project_path))
         return
 

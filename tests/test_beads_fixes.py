@@ -887,10 +887,20 @@ async def test_reconcile_beads_schema_bootstrap_unresolved_no_consent_raises(
 async def test_reconcile_beads_schema_bootstrap_unresolved_env_consent_migrates(
     tmp_path: Path,
 ) -> None:
-    """With AGENTSHORE_ALLOW_REMOTE_MIGRATE=1, the consented migrate+push path runs."""
+    """With AGENTSHORE_ALLOW_REMOTE_MIGRATE=1, the consented migrate+push path runs.
+
+    Also asserts that a successful consented migrate+push durably marks this
+    clone as the designated migrator, so future sessions on the same clone
+    never hit this consent gate again (see the "designated migrator" tests
+    below).
+    """
     from agentshore.beads import BdError
     from agentshore.beads.setup import reconcile_beads_schema
 
+    # In production .beads/ (and its config.yaml) already exist by the time
+    # reconcile_beads_schema runs (bd_init_project creates them first); the
+    # marker write needs a real .beads/ dir to land in, same as production.
+    _write_beads_config(tmp_path, remote="git+ssh://git@github.com/example/repo.git")
     calls: list[tuple[str, ...]] = []
 
     async def _fake_bd(*args: str, cwd: object, stdin_data: object = None, **_: object) -> str:
@@ -912,6 +922,7 @@ async def test_reconcile_beads_schema_bootstrap_unresolved_env_consent_migrates(
         ("migrate",),
         ("dolt", "push"),
     ]
+    assert (tmp_path / ".beads" / ".agentshore_schema_migrator").is_file()
 
 
 @pytest.mark.asyncio
@@ -940,6 +951,97 @@ async def test_reconcile_beads_schema_bootstrap_call_fails_falls_through_to_cons
             await reconcile_beads_schema(tmp_path)
 
     assert calls == [("list", "--all", "--json", "--limit", "0"), ("bootstrap",)]
+
+
+@pytest.mark.asyncio
+async def test_reconcile_beads_schema_designated_migrator_skips_consent_gate_silently(
+    tmp_path: Path,
+) -> None:
+    """A clone already designated migrates silently — no env var, no TTY, no prompt.
+
+    This is the headless-session-start shape (assume_yes=False, no consent
+    env var, non-interactive) that would otherwise always raise
+    BeadsSchemaDriftError forever. With the marker already present from a
+    prior consented run on this same clone, it must instead migrate and push
+    automatically, with bootstrap still tried first.
+    """
+    from agentshore.beads import BdError
+    from agentshore.beads.setup import _SCHEMA_MIGRATOR_MARKER_NAME, reconcile_beads_schema
+
+    _write_beads_config(tmp_path, remote="git+ssh://git@github.com/example/repo.git")
+    (tmp_path / ".beads" / _SCHEMA_MIGRATOR_MARKER_NAME).write_text(
+        "designated at 2026-01-01T00:00:00+00:00\n", encoding="utf-8"
+    )
+
+    calls: list[tuple[str, ...]] = []
+
+    async def _fake_bd(*args: str, cwd: object, stdin_data: object = None, **_: object) -> str:
+        calls.append(args)
+        if args[0] == "list":
+            raise BdError(_STALE_REMOTE_CLONE_ERROR)
+        return ""
+
+    with (
+        patch("agentshore.beads.setup.bd", side_effect=_fake_bd),
+        patch("agentshore.beads.setup.sys.stdin.isatty", return_value=False),
+        patch.dict("os.environ", {}, clear=False),
+    ):
+        os.environ.pop("AGENTSHORE_ALLOW_REMOTE_MIGRATE", None)
+        await reconcile_beads_schema(tmp_path)  # must not raise, must not prompt
+
+    assert calls == [
+        ("list", "--all", "--json", "--limit", "0"),
+        ("bootstrap",),
+        ("list", "--all", "--json", "--limit", "0"),
+        ("migrate",),
+        ("dolt", "push"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_reconcile_beads_schema_marker_not_written_on_failed_migrate(
+    tmp_path: Path,
+) -> None:
+    """A failed consented migrate+push must not mark this clone as designated."""
+    from agentshore.beads import BdError, BeadsSchemaDriftError
+    from agentshore.beads.setup import _SCHEMA_MIGRATOR_MARKER_NAME, reconcile_beads_schema
+
+    async def _fake_bd(*args: str, cwd: object, stdin_data: object = None, **_: object) -> str:
+        if args[0] == "list":
+            raise BdError(_STALE_REMOTE_CLONE_ERROR)
+        if args[0] == "bootstrap":
+            return ""
+        raise BdError(f"bd {' '.join(args)} failed (rc=1): boom")
+
+    with (
+        patch("agentshore.beads.setup.bd", side_effect=_fake_bd),
+        patch.dict("os.environ", {"AGENTSHORE_ALLOW_REMOTE_MIGRATE": "1"}),
+        pytest.raises(BeadsSchemaDriftError),
+    ):
+        await reconcile_beads_schema(tmp_path)
+
+    assert not (tmp_path / ".beads" / _SCHEMA_MIGRATOR_MARKER_NAME).exists()
+
+
+def test_is_designated_migrator_absent_then_present(tmp_path: Path) -> None:
+    """`_is_designated_migrator` is False before the marker exists, True after."""
+    from agentshore.beads.setup import _is_designated_migrator, _mark_designated_migrator
+
+    assert _is_designated_migrator(tmp_path) is False
+
+    (tmp_path / ".beads").mkdir()
+    _mark_designated_migrator(tmp_path)
+
+    assert _is_designated_migrator(tmp_path) is True
+
+
+def test_mark_designated_migrator_unwritable_path_is_best_effort(tmp_path: Path) -> None:
+    """A marker write to a nonexistent parent dir is logged, not raised."""
+    from agentshore.beads.setup import _mark_designated_migrator
+
+    # tmp_path / ".beads" is never created, so the write fails with ENOENT —
+    # this must be swallowed (logged), not propagated.
+    _mark_designated_migrator(tmp_path)
 
 
 @pytest.mark.asyncio
@@ -974,9 +1076,11 @@ async def test_reconcile_beads_schema_local_only_migrate_failure_raises(tmp_path
     async def _fake_bd(*args: str, cwd: object, stdin_data: object = None, **_: object) -> str:
         raise BdError(f"bd {args[0]} failed (rc=1): boom")
 
-    with patch("agentshore.beads.setup.bd", side_effect=_fake_bd):
-        with pytest.raises(BeadsSchemaDriftError):
-            await reconcile_beads_schema(tmp_path)
+    with (
+        patch("agentshore.beads.setup.bd", side_effect=_fake_bd),
+        pytest.raises(BeadsSchemaDriftError),
+    ):
+        await reconcile_beads_schema(tmp_path)
 
 
 @pytest.mark.asyncio

@@ -1,6 +1,6 @@
 [package]
 name = "agentshore-desktop"
-version = "0.9.0"
+version = "0.9.1"
 description = "AgentShore desktop shell"
 authors = ["SuperSwink"]
 license = "MIT"

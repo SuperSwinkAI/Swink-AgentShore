@@ -483,6 +483,49 @@ def test_circuit_breaker_emits_reason():
     assert reasons[PlayType.ISSUE_PICKUP].source == MaskSource.CIRCUIT_BREAKER
 
 
+def _seed_project_breaker_state(strikes: int, plays_since: int) -> OrchestratorState:
+    """SEED_PROJECT with a given strike count / cooldown age (#357)."""
+    return _state(
+        plays_since_last_play_type={PlayType.SEED_PROJECT: plays_since},
+        consecutive_nonproductive_by_type={PlayType.SEED_PROJECT: strikes},
+    )
+
+
+def test_circuit_breaker_benches_seed_project_after_three_strikes():
+    """#357: 3 consecutive fail/skip within the cooldown window benches SEED_PROJECT.
+
+    Previously SEED_PROJECT had no failure-side cooldown at all —
+    seed_audit_is_fresh() only engages after a *successful* run — so a
+    persistently-failing seed_project re-dispatched every few minutes.
+    """
+    mask = compute_action_mask(
+        _seed_project_breaker_state(strikes=3, plays_since=0), _registry_all_true()
+    )
+    assert not mask[PLAY_TO_INDEX[PlayType.SEED_PROJECT]]
+
+
+def test_circuit_breaker_below_threshold_not_benched_seed_project():
+    mask = compute_action_mask(
+        _seed_project_breaker_state(strikes=2, plays_since=0), _registry_all_true()
+    )
+    assert mask[PLAY_TO_INDEX[PlayType.SEED_PROJECT]]
+
+
+def test_circuit_breaker_lifts_after_cooldown_seed_project():
+    """Once 20 plays elapse since the last attempt the mask lifts for a retry."""
+    mask = compute_action_mask(
+        _seed_project_breaker_state(strikes=3, plays_since=20), _registry_all_true()
+    )
+    assert mask[PLAY_TO_INDEX[PlayType.SEED_PROJECT]]
+
+
+def test_circuit_breaker_emits_reason_seed_project():
+    reasons = compute_mask_reasons(
+        _seed_project_breaker_state(strikes=3, plays_since=0), _registry_all_true()
+    )
+    assert reasons[PlayType.SEED_PROJECT].source == MaskSource.CIRCUIT_BREAKER
+
+
 def test_mask_blocks_seed_project_when_precondition_fails():
     reg = MagicMock()
     reg.preconditions_met.side_effect = lambda pt, _s: pt != PlayType.SEED_PROJECT
