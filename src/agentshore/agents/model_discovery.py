@@ -6,6 +6,8 @@ currently-selectable models without spending API tokens:
     codex debug models   -> JSON catalog (slug / display_name / visibility / ...)
     grok models            -> plain text, one model per line, default marked
     agy models              -> plain text, one display-name per line
+    swink-coding tiers --json -> JSON tier->backend map; selectable "models" are
+                                 the tier aliases themselves (see the function)
 
 (Confirmed against codex-cli 0.141.0, the current grok CLI, and agy; see the
 model-catalog spike notes in docs/design/agents/DESIGN.md.)
@@ -215,12 +217,61 @@ def discover_antigravity_models(
     return DiscoveryResult("antigravity", models, "ok")
 
 
+def discover_swink_coding_models(
+    *, binary: str = "swink-coding", timeout: float = DEFAULT_DISCOVERY_TIMEOUT_S
+) -> DiscoveryResult:
+    """Probe `swink-coding tiers --json` (local config read, no API key needed).
+
+    swink-coding's ``--model`` accepts ONLY the tier aliases small|medium|large;
+    the alias->backend-model mapping lives in its own config and raw model ids
+    are rejected at dispatch. So the *selectable* models are always the aliases —
+    this probe returns them (only tiers that actually resolve; the CLI exits
+    non-zero otherwise) and carries the resolved ``provider:model`` per alias in
+    ``detail`` for display. Never surface the backend ids as models: they are
+    invalid ``--model`` values (SuperSwink-Coding#279 orchestrator contract).
+    """
+    resolved = shutil.which(binary)
+    if resolved is None:
+        return DiscoveryResult("swink_coding", (), "unavailable", f"{binary!r} not found on PATH")
+    result = _run_probe([resolved, "tiers", "--json"], timeout=timeout)
+    terminal = _result_from_proc("swink_coding", result, timeout=timeout)
+    if terminal is not None:
+        return terminal
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return DiscoveryResult(
+            "swink_coding", (), "error", "unparseable `swink-coding tiers --json` output"
+        )
+    if not isinstance(payload, list):
+        return DiscoveryResult(
+            "swink_coding", (), "error", "unexpected `swink-coding tiers --json` shape"
+        )
+    aliases: list[str] = []
+    resolutions: list[str] = []
+    for row in payload:
+        if not isinstance(row, dict) or not isinstance(row.get("tier"), str):
+            continue
+        tier = row["tier"]
+        aliases.append(tier)
+        provider = row.get("provider")
+        model = row.get("model")
+        if isinstance(provider, str) and isinstance(model, str):
+            resolutions.append(f"{tier}->{provider}:{model}")
+    if not aliases:
+        return DiscoveryResult(
+            "swink_coding", (), "error", "no tiers in `swink-coding tiers --json` output"
+        )
+    return DiscoveryResult("swink_coding", tuple(aliases), "ok", ", ".join(resolutions))
+
+
 # Ordered so discover_all's dict preserves a stable, deterministic iteration
 # order regardless of dict-construction timing.
 _FREE_DISCOVERY_FUNCS: tuple[tuple[str, Callable[..., DiscoveryResult]], ...] = (
     ("codex", discover_codex_models),
     ("grok", discover_grok_models),
     ("antigravity", discover_antigravity_models),
+    ("swink_coding", discover_swink_coding_models),
 )
 
 
@@ -234,7 +285,7 @@ def discover_all(*, timeout: float = DEFAULT_DISCOVERY_TIMEOUT_S) -> dict[str, D
     Runs sequentially (matching auth_probe.probe_configured_cli_auth); each
     probe is individually timeout-bounded, so one hung CLI adds at most
     *timeout* seconds rather than blocking indefinitely. Callers that need
-    the three probes to run concurrently should fan this out via
+    the probes to run concurrently should fan this out via
     ``asyncio.gather(*(asyncio.to_thread(func, timeout=timeout) for _, func in ...))``
     themselves.
     """

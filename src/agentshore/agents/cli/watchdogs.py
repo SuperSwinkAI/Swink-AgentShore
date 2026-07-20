@@ -68,12 +68,12 @@ _FIRST_BYTE_DEADLINE_BY_TYPE: dict[AgentType, float] = {
     # tuning — collapsing it to the global
     # 600s would kill healthy long-running agy tasks.
     AgentType.ANTIGRAVITY: 1800.0,
-    # swink-coding streams a ``session.started`` event that should flush early,
-    # but it can run local/small-tier models whose time-to-first-byte is not yet
-    # guaranteed by the upstream binary. 240s is a pessimistic placeholder (Grok's
-    # slow-reasoning-model precedent) until the real first-byte distribution is
-    # measured in production; tighten once that data exists.
-    AgentType.SWINK_CODING: 240.0,
+    # swink-coding (>= 0.2.0) contractually emits and flushes ``session.started``
+    # before the first backend request (SuperSwink-Coding#278, pinned upstream by
+    # a hung-backend test), so first byte arrives at spawn regardless of model
+    # TTFB. 60s is pure spawn/config headroom; only a genuinely wedged launch
+    # reaches it.
+    AgentType.SWINK_CODING: 60.0,
 }
 
 # Effectively-infinite sleep used to park the first-byte watchdog once it has

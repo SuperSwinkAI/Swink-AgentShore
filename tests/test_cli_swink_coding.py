@@ -345,7 +345,9 @@ def test_swink_coding_registered_in_parsers_and_terminal_events_and_watchdog() -
 
     assert AgentType.SWINK_CODING in _PARSERS
     assert _TERMINAL_EVENT_TYPES[AgentType.SWINK_CODING] == frozenset({"result"})
-    assert _FIRST_BYTE_DEADLINE_BY_TYPE[AgentType.SWINK_CODING] == 240.0
+    # 60s spawn headroom only: swink-coding >= 0.2.0 contractually flushes
+    # session.started before the first backend request (SuperSwink-Coding#278).
+    assert _FIRST_BYTE_DEADLINE_BY_TYPE[AgentType.SWINK_CODING] == 60.0
 
     terminal_line = b'{"type":"result","text":"done"}'
     assert _is_terminal_event(terminal_line, AgentType.SWINK_CODING) is True

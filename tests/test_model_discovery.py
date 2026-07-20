@@ -23,6 +23,7 @@ from agentshore.agents.model_discovery import (
     discover_antigravity_models,
     discover_codex_models,
     discover_grok_models,
+    discover_swink_coding_models,
 )
 
 if TYPE_CHECKING:
@@ -159,15 +160,56 @@ def test_discover_antigravity_missing_binary_is_unavailable(tmp_path: Path) -> N
 
 
 # ---------------------------------------------------------------------------
+# swink-coding
+# ---------------------------------------------------------------------------
+
+
+def test_discover_swink_coding_ok_returns_aliases_not_backend_ids(tmp_path: Path) -> None:
+    payload = json.dumps(
+        [
+            {"tier": "small", "provider": "ollama", "model": "qwen3.5:4b"},
+            {"tier": "medium", "provider": "ollama", "model": "qwen2.5-coder:32b"},
+            {"tier": "large", "provider": "vllm", "model": "big-model"},
+        ]
+    )
+    binary = _make_fake_cli(tmp_path, "fake-swink", body=f"print({payload!r}); sys.exit(0)")
+    result = discover_swink_coding_models(binary=binary)
+    assert result.status == "ok"
+    # Selectable models are the tier aliases — backend ids are invalid --model
+    # values and must never surface as models (SuperSwink-Coding#279).
+    assert result.models == ("small", "medium", "large")
+    assert "medium->ollama:qwen2.5-coder:32b" in result.detail
+
+
+def test_discover_swink_coding_unparseable_json_is_error(tmp_path: Path) -> None:
+    binary = _make_fake_cli(tmp_path, "fake-swink", body="print('not json'); sys.exit(0)")
+    result = discover_swink_coding_models(binary=binary)
+    assert result.status == "error"
+    assert result.models == ()
+
+
+def test_discover_swink_coding_nonzero_exit_is_error(tmp_path: Path) -> None:
+    binary = _make_fake_cli(tmp_path, "fake-swink", body="sys.stderr.write('bad\\n'); sys.exit(1)")
+    result = discover_swink_coding_models(binary=binary)
+    assert result.status == "error"
+    assert "exit 1" in result.detail
+
+
+def test_discover_swink_coding_missing_binary_is_unavailable(tmp_path: Path) -> None:
+    result = discover_swink_coding_models(binary=str(tmp_path / "does-not-exist"))
+    assert result.status == "unavailable"
+
+
+# ---------------------------------------------------------------------------
 # discover_all
 # ---------------------------------------------------------------------------
 
 
-def test_discover_all_covers_the_three_free_harnesses_and_excludes_claude() -> None:
+def test_discover_all_covers_the_free_harnesses_and_excludes_claude() -> None:
     # Real PATH lookup (no fakes) — just verifies shape/keys, not live content,
     # since CI has no guarantee any of these binaries are installed.
     results = discover_all(timeout=1.0)
-    assert set(results) == {"codex", "grok", "antigravity"}
+    assert set(results) == {"codex", "grok", "antigravity", "swink_coding"}
     assert "claude_code" not in results
     for key, result in results.items():
         assert result.agent_key == key
