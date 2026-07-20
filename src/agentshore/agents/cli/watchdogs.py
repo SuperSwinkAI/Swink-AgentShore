@@ -58,8 +58,8 @@ _POST_RESPONSE_GRACE_S: Final[float] = 60.0
 _FIRST_BYTE_DEADLINE_S: Final[float] = 600.0
 
 # Per-agent-type override of the global first-byte deadline. Streaming agents
-# (codex, claude, grok) all use the global 600s above; the only override
-# is antigravity, which is structurally non-streaming.
+# (codex, claude, grok) all use the global 600s above; the overrides are
+# antigravity (structurally non-streaming) and swink-coding (below).
 _FIRST_BYTE_DEADLINE_BY_TYPE: dict[AgentType, float] = {
     # agy uses an async task system and emits no stdout until the task completes
     # (#217); first byte = task done, which can take up to ~30 min for a heavy
@@ -68,6 +68,12 @@ _FIRST_BYTE_DEADLINE_BY_TYPE: dict[AgentType, float] = {
     # tuning — collapsing it to the global
     # 600s would kill healthy long-running agy tasks.
     AgentType.ANTIGRAVITY: 1800.0,
+    # swink-coding streams a ``session.started`` event that should flush early,
+    # but it can run local/small-tier models whose time-to-first-byte is not yet
+    # guaranteed by the upstream binary. 240s is a pessimistic placeholder (Grok's
+    # slow-reasoning-model precedent) until the real first-byte distribution is
+    # measured in production; tighten once that data exists.
+    AgentType.SWINK_CODING: 240.0,
 }
 
 # Effectively-infinite sleep used to park the first-byte watchdog once it has

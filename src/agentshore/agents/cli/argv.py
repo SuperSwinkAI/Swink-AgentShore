@@ -82,18 +82,21 @@ _DEFAULT_YOLO_FLAGS: dict[AgentType, tuple[str, ...]] = {
     ),
     AgentType.GROK: ("--permission-mode", "bypassPermissions"),
     AgentType.ANTIGRAVITY: ("--dangerously-skip-permissions",),
+    AgentType.SWINK_CODING: ("--yolo",),
 }
 
 # Agent types whose CLI exposes a resume-by-id flag AND for which AgentShore
-# holds a stable session id (claude/codex/grok parse it from stdout; agy
-# resolves it from its on-disk conversation cache). The narrow JSON-retry path
-# (desktop-dy2j) re-enters that one session to recover the omitted result block.
+# holds a stable session id (claude/codex/grok/swink-coding parse it from
+# stdout; agy resolves it from its on-disk conversation cache). The narrow
+# JSON-retry path (desktop-dy2j) re-enters that one session to recover the
+# omitted result block.
 _RESUMABLE_AGENT_TYPES: frozenset[AgentType] = frozenset(
     {
         AgentType.CLAUDE_CODE,
         AgentType.CODEX,
         AgentType.GROK,
         AgentType.ANTIGRAVITY,
+        AgentType.SWINK_CODING,
     }
 )
 
@@ -144,7 +147,7 @@ def build_argv(
 
     Exported so tests can assert command shape without spawning a subprocess.
     """
-    from agentshore.agents import cli_antigravity, cli_grok
+    from agentshore.agents import cli_antigravity, cli_grok, cli_swink_coding
 
     extra_flags = _apply_yolo_default(agent_type, tuple(extra_flags))
     if agent_type == AgentType.CLAUDE_CODE:
@@ -206,6 +209,18 @@ def build_argv(
             prompt_file=prompt_file,
         )
 
+    if agent_type == AgentType.SWINK_CODING:
+        return cli_swink_coding.build_argv(
+            prompt=prompt,
+            binary=binary,
+            model=model,
+            reasoning_effort=reasoning_effort,
+            extra_flags=extra_flags,
+            project_dir=project_dir,
+            prompt_on_stdin=prompt_on_stdin,
+            prompt_file=prompt_file,
+        )
+
     msg = f"build_argv: unsupported CLI agent type {agent_type!r}"
     raise ValueError(msg)
 
@@ -234,7 +249,7 @@ def build_resume_argv(
 
     Exported so tests can assert command shape without spawning a subprocess.
     """
-    from agentshore.agents import cli_antigravity, cli_grok
+    from agentshore.agents import cli_antigravity, cli_grok, cli_swink_coding
 
     extra_flags = _apply_yolo_default(agent_type, tuple(extra_flags))
 
@@ -303,6 +318,19 @@ def build_resume_argv(
 
     if agent_type == AgentType.ANTIGRAVITY:
         return cli_antigravity.build_resume_argv(
+            resume_session_id=resume_session_id,
+            prompt=prompt,
+            binary=binary,
+            model=model,
+            reasoning_effort=reasoning_effort,
+            extra_flags=extra_flags,
+            project_dir=project_dir,
+            prompt_on_stdin=prompt_on_stdin,
+            prompt_file=prompt_file,
+        )
+
+    if agent_type == AgentType.SWINK_CODING:
+        return cli_swink_coding.build_resume_argv(
             resume_session_id=resume_session_id,
             prompt=prompt,
             binary=binary,

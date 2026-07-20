@@ -77,3 +77,14 @@ models:
     - Claude Sonnet 4.6 (Thinking)
     - Claude Opus 4.6 (Thinking)
     - GPT-OSS 120B (Medium)
+
+  swink_coding:
+    # swink-coding's `--model` flag only accepts these three literal tier
+    # aliases; the CLI itself resolves each alias to a concrete model id from
+    # its own local config (~/.swink-coding/config.toml), which can point at
+    # local backends such as Ollama. AgentShore has no visibility into what an
+    # alias actually resolves to, so the catalog is just the three aliases —
+    # no pinned model IDs, no live-fetch branch.
+    - small
+    - medium
+    - large

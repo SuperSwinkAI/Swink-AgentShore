@@ -18,8 +18,8 @@ setup screen provably means the launch gate will pass:
 * the desktop agents/identities setup screen (``agents.check_auth`` RPC).
 
 The probe is intentionally conservative: agent types with a reliable,
-non-mutating auth-status command (codex) are probed via that command; agy is
-probed actively (it has no status verb). On Windows the agy probe must run under
+non-mutating auth-status command (codex, swink-coding) are probed via that
+command; agy is probed actively (it has no status verb). On Windows the agy probe must run under
 a ConPTY (see ``agents/cli/conpty.py``): in ``-p`` mode agy blocks on a terminal
 Device-Attributes query until the terminal replies, so over plain pipes it hangs
 *regardless of auth* — which would make this probe a false-negative that gates
@@ -64,12 +64,14 @@ _BLOCKING_STATUSES = frozenset({AUTH_EXPIRED})
 # and keeps the setup screen / launch gate responsive.
 DEFAULT_PROBE_TIMEOUT_S = 10.0
 
-# Per-type auth-status command (args appended to the resolved binary). Only the
-# Codex CLI exposes a reliable, non-interactive, non-mutating status verb today;
-# the others fall through to UNPROBEABLE until a trustworthy command is
-# confirmed (a wrong probe that blocks launch is worse than no probe).
+# Per-type auth-status command (args appended to the resolved binary). Only
+# Codex and swink-coding expose a reliable, non-interactive, non-mutating
+# status verb today; the others fall through to UNPROBEABLE until a
+# trustworthy command is confirmed (a wrong probe that blocks launch is worse
+# than no probe).
 _PROBE_ARGV: dict[AgentType, tuple[str, ...]] = {
     AgentType.CODEX: ("login", "status"),
+    AgentType.SWINK_CODING: ("auth", "status"),
 }
 
 _DEFAULT_BINARY: dict[AgentType, str] = {
@@ -77,6 +79,7 @@ _DEFAULT_BINARY: dict[AgentType, str] = {
     AgentType.CODEX: "codex",
     AgentType.GROK: "grok",
     AgentType.ANTIGRAVITY: "agy",
+    AgentType.SWINK_CODING: "swink-coding",
 }
 
 # agy has no non-mutating status verb, and — unlike the other CLIs — a dead

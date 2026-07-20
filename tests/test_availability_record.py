@@ -137,6 +137,7 @@ def test_refresh_picks_up_gh_accounts(tmp_path: Path) -> None:
         ("codex", "codex"),
         ("grok", "grok"),
         ("grok-build", "grok"),
+        ("swink-coding", "swink_coding"),
     ],
 )
 def test_binary_to_agent_type_mapping(tmp_path: Path, binary: str, expected_type: str) -> None:
