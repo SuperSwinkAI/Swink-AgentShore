@@ -4,9 +4,13 @@ yolo, --cwd, resume), NDJSON result/error parsing, and terminal-event detection.
 
 from __future__ import annotations
 
+import pytest
+
 from agentshore.agents.cli_swink_coding import (
+    TIER_ALIASES,
     build_argv,
     build_resume_argv,
+    classify_swink_model,
     parse_swink_coding_jsonl,
 )
 
@@ -201,6 +205,144 @@ def test_build_resume_argv_uses_explicit_id_not_latest_sentinel() -> None:
     )
     assert "latest" not in argv
     assert "sc_specific" in argv
+
+
+# ---------------------------------------------------------------------------
+# classify_swink_model — tier alias vs. provider:model[@endpoint] tier_map
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("alias", sorted(TIER_ALIASES))
+def test_classify_swink_model_accepts_tier_aliases(alias: str) -> None:
+    assert classify_swink_model(alias) == "alias"
+
+
+def test_classify_swink_model_accepts_colon_in_model_id() -> None:
+    assert classify_swink_model("ollama:qwen3.5:4b") == "tier_map"
+    assert classify_swink_model("ollama:qwen2.5-coder:7b") == "tier_map"
+
+
+def test_classify_swink_model_accepts_endpoint_form() -> None:
+    assert classify_swink_model("vllm:m@http://host:8000/v1") == "tier_map"
+
+
+def test_classify_swink_model_accepts_bare_provider_model_pair() -> None:
+    # Grammatically valid provider:model — acceptance at this layer is fine;
+    # whether "qwen3.5" is a real provider is a config/catalog-layer concern.
+    assert classify_swink_model("qwen3.5:4b") == "tier_map"
+
+
+def test_classify_swink_model_at_without_url_scheme_folds_into_model() -> None:
+    # No "://" after '@' — not treated as an endpoint, so it's still a valid
+    # (if unusual) model id and classifies as tier_map.
+    assert classify_swink_model("ollama:q@ver") == "tier_map"
+
+
+def test_classify_swink_model_rejects_bare_model_with_no_provider() -> None:
+    with pytest.raises(ValueError, match="tier alias.*provider:model"):
+        classify_swink_model("gpt-4")
+
+
+def test_classify_swink_model_rejects_empty_provider() -> None:
+    with pytest.raises(ValueError, match="tier alias.*provider:model"):
+        classify_swink_model(":model")
+
+
+def test_classify_swink_model_rejects_empty_model() -> None:
+    with pytest.raises(ValueError, match="tier alias.*provider:model"):
+        classify_swink_model("ollama:")
+
+
+# ---------------------------------------------------------------------------
+# build_argv / build_resume_argv — tier_map dispatch shape
+# ---------------------------------------------------------------------------
+
+
+def test_build_argv_alias_model_unaffected_by_model_tier_kwarg() -> None:
+    argv = build_argv(
+        prompt="hi",
+        binary="swink-coding",
+        model="small",
+        reasoning_effort=None,
+        extra_flags=(),
+        project_dir=None,
+        prompt_on_stdin=False,
+        model_tier="medium",  # irrelevant for a plain alias; ignored
+    )
+    assert argv[1:3] == ["--model", "small"]
+    assert "--tier-map" not in argv
+
+
+def test_build_argv_tier_map_model_emits_model_and_tier_map_flags() -> None:
+    argv = build_argv(
+        prompt="do the thing",
+        binary="swink-coding",
+        model="ollama:qwen2.5-coder:7b",
+        reasoning_effort=None,
+        extra_flags=("--yolo",),
+        project_dir="/worktree",
+        prompt_on_stdin=False,
+        model_tier="small",
+    )
+    assert argv == [
+        "swink-coding",
+        "--model",
+        "small",
+        "--tier-map",
+        "small=ollama:qwen2.5-coder:7b",
+        "--yolo",
+        "--output-format",
+        "stream-json",
+        "--cwd",
+        "/worktree",
+        "-p",
+        "do the thing",
+    ]
+
+
+def test_build_argv_tier_map_model_without_model_tier_raises() -> None:
+    with pytest.raises(ValueError, match="requires model_tier"):
+        build_argv(
+            prompt="hi",
+            binary="swink-coding",
+            model="ollama:qwen2.5-coder:7b",
+            reasoning_effort=None,
+            extra_flags=(),
+            project_dir=None,
+            prompt_on_stdin=False,
+        )
+
+
+def test_build_argv_tier_map_model_with_invalid_model_tier_raises() -> None:
+    with pytest.raises(ValueError, match="requires model_tier"):
+        build_argv(
+            prompt="hi",
+            binary="swink-coding",
+            model="ollama:qwen2.5-coder:7b",
+            reasoning_effort=None,
+            extra_flags=(),
+            project_dir=None,
+            prompt_on_stdin=False,
+            model_tier="not-a-tier",
+        )
+
+
+def test_build_resume_argv_tier_map_model_emits_model_and_tier_map_flags() -> None:
+    argv = build_resume_argv(
+        resume_session_id="sc_abc123",
+        prompt="emit the block",
+        binary="swink-coding",
+        model="ollama:qwen2.5-coder:7b",
+        reasoning_effort=None,
+        extra_flags=("--yolo",),
+        project_dir="/wt",
+        prompt_on_stdin=False,
+        model_tier="small",
+    )
+    assert argv[:3] == ["swink-coding", "--resume", "sc_abc123"]
+    assert "--model" in argv and argv[argv.index("--model") + 1] == "small"
+    assert "--tier-map" in argv
+    assert argv[argv.index("--tier-map") + 1] == "small=ollama:qwen2.5-coder:7b"
 
 
 # ---------------------------------------------------------------------------
@@ -399,3 +541,20 @@ def test_top_level_build_resume_argv_dispatches_to_swink_coding_adapter() -> Non
         project_dir="/wt",
     )
     assert argv[:3] == ["swink-coding", "--resume", "sc_resume_1"]
+
+
+def test_top_level_build_argv_threads_model_tier_to_swink_coding_adapter() -> None:
+    from agentshore.agents.cli.argv import build_argv as dispatch_build_argv
+    from agentshore.state import AgentType
+
+    argv = dispatch_build_argv(
+        AgentType.SWINK_CODING,
+        "do the thing",
+        binary="swink-coding",
+        model="ollama:qwen2.5-coder:7b",
+        project_dir="/wt",
+        model_tier="small",
+    )
+    assert "--tier-map" in argv
+    assert argv[argv.index("--tier-map") + 1] == "small=ollama:qwen2.5-coder:7b"
+    assert argv[argv.index("--model") + 1] == "small"

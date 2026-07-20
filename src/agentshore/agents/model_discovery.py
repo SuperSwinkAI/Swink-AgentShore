@@ -6,8 +6,10 @@ currently-selectable models without spending API tokens:
     codex debug models   -> JSON catalog (slug / display_name / visibility / ...)
     grok models            -> plain text, one model per line, default marked
     agy models              -> plain text, one display-name per line
-    swink-coding tiers --json -> JSON tier->backend map; selectable "models" are
-                                 the tier aliases themselves (see the function)
+    swink-coding models --json -> JSON array of per-provider/endpoint rows
+                                 (reachable + concrete models); the three tier
+                                 aliases are always selectable on top of that
+                                 (see the function)
 
 (Confirmed against codex-cli 0.141.0, the current grok CLI, and agy; see the
 model-catalog spike notes in docs/design/agents/DESIGN.md.)
@@ -217,52 +219,88 @@ def discover_antigravity_models(
     return DiscoveryResult("antigravity", models, "ok")
 
 
+# Always-selectable tier aliases: swink-coding's `--model` accepts these
+# regardless of what's reachable, and dispatch can now also target a concrete
+# `provider:model` string directly (SuperSwink-Coding#282/#283) — so they lead
+# the returned list, with reachable concrete models appended after.
+_SWINK_CODING_TIER_ALIASES: tuple[str, ...] = ("small", "medium", "large")
+
+
+def _parse_swink_coding_catalog(stdout: str) -> tuple[tuple[str, ...], str] | None:
+    """Parse `swink-coding models --json`: tier aliases + reachable concrete models.
+
+    Returns ``(models, detail)`` with the tier aliases first, followed by each
+    reachable provider's models as deduped ``provider:model`` strings (in
+    catalog order); *detail* summarizes any unreachable provider/endpoint
+    rows, empty if all providers are reachable. Returns None if *stdout* is
+    not a JSON list (unparseable / wrong shape).
+    """
+    try:
+        payload = json.loads(stdout)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, list):
+        return None
+
+    models: list[str] = list(_SWINK_CODING_TIER_ALIASES)
+    seen = set(models)
+    unreachable: list[str] = []
+    for row in payload:
+        if not isinstance(row, dict):
+            continue
+        provider = row.get("provider")
+        if not isinstance(provider, str):
+            continue
+        endpoint = row.get("endpoint")
+        where = f"{provider}@{endpoint}" if isinstance(endpoint, str) else provider
+        if row.get("reachable") is not True:
+            unreachable.append(f"{where}: unreachable")
+            continue
+        raw_models = row.get("models")
+        if not isinstance(raw_models, list) or not raw_models:
+            continue
+        for entry in raw_models:
+            if not isinstance(entry, dict):
+                continue
+            name = entry.get("name")
+            if not isinstance(name, str) or not name:
+                continue
+            model_str = f"{provider}:{name}"
+            if model_str not in seen:
+                seen.add(model_str)
+                models.append(model_str)
+    return tuple(models), ", ".join(unreachable)
+
+
 def discover_swink_coding_models(
     *, binary: str = "swink-coding", timeout: float = DEFAULT_DISCOVERY_TIMEOUT_S
 ) -> DiscoveryResult:
-    """Probe `swink-coding tiers --json` (local config read, no API key needed).
+    """Probe `swink-coding models --json` (live free/local/no-token catalog).
 
-    swink-coding's ``--model`` accepts ONLY the tier aliases small|medium|large;
-    the alias->backend-model mapping lives in its own config and raw model ids
-    are rejected at dispatch. So the *selectable* models are always the aliases —
-    this probe returns them (only tiers that actually resolve; the CLI exits
-    non-zero otherwise) and carries the resolved ``provider:model`` per alias in
-    ``detail`` for display. Never surface the backend ids as models: they are
-    invalid ``--model`` values (SuperSwink-Coding#279 orchestrator contract).
+    Returns the three tier aliases (always valid ``--model`` values, resolved
+    by swink-coding itself) first, then each reachable provider's concrete
+    models as ``provider:model`` strings — those are now dispatchable directly
+    via ``--tier-map`` (SuperSwink-Coding#282/#283). A row with
+    ``reachable: false`` or an empty/null ``models`` list contributes nothing
+    to the model list but is summarized in ``detail``. Status is "ok" as soon
+    as the verb parses, even if every endpoint is unreachable — dispatch via
+    alias still works, so that's not an error condition; only unparseable
+    output or a non-zero exit is "error".
     """
     resolved = shutil.which(binary)
     if resolved is None:
         return DiscoveryResult("swink_coding", (), "unavailable", f"{binary!r} not found on PATH")
-    result = _run_probe([resolved, "tiers", "--json"], timeout=timeout)
+    result = _run_probe([resolved, "models", "--json"], timeout=timeout)
     terminal = _result_from_proc("swink_coding", result, timeout=timeout)
     if terminal is not None:
         return terminal
-    try:
-        payload = json.loads(result.stdout)
-    except json.JSONDecodeError:
+    parsed = _parse_swink_coding_catalog(result.stdout)
+    if parsed is None:
         return DiscoveryResult(
-            "swink_coding", (), "error", "unparseable `swink-coding tiers --json` output"
+            "swink_coding", (), "error", "unparseable `swink-coding models --json` output"
         )
-    if not isinstance(payload, list):
-        return DiscoveryResult(
-            "swink_coding", (), "error", "unexpected `swink-coding tiers --json` shape"
-        )
-    aliases: list[str] = []
-    resolutions: list[str] = []
-    for row in payload:
-        if not isinstance(row, dict) or not isinstance(row.get("tier"), str):
-            continue
-        tier = row["tier"]
-        aliases.append(tier)
-        provider = row.get("provider")
-        model = row.get("model")
-        if isinstance(provider, str) and isinstance(model, str):
-            resolutions.append(f"{tier}->{provider}:{model}")
-    if not aliases:
-        return DiscoveryResult(
-            "swink_coding", (), "error", "no tiers in `swink-coding tiers --json` output"
-        )
-    return DiscoveryResult("swink_coding", tuple(aliases), "ok", ", ".join(resolutions))
+    models, detail = parsed
+    return DiscoveryResult("swink_coding", models, "ok", detail)
 
 
 # Ordered so discover_all's dict preserves a stable, deterministic iteration

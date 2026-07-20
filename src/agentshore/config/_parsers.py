@@ -700,6 +700,40 @@ def _validate_agent_reasoning_efforts(agents: dict[str, AgentConfig]) -> None:
                 )
 
 
+def _validate_swink_coding_models(agents: dict[str, AgentConfig]) -> None:
+    """Reject swink-coding ``model`` values that are neither a tier alias nor a
+    ``provider:model[@endpoint]`` tier-map override.
+
+    Checks both the legacy top-level ``model`` (still honoured as the default
+    tier's model when no ``model_tiers`` block is set) and each per-tier
+    ``model`` entry. Other agent types are untouched — their model strings are
+    opaque to AgentShore.
+    """
+    from agentshore.agents.cli_swink_coding import classify_swink_model  # local to avoid circular
+    from agentshore.state import AgentType
+
+    for agent_name, agent_cfg in agents.items():
+        resolved = _resolve_agent_type(agent_cfg, agent_name)
+        if resolved is not AgentType.SWINK_CODING:
+            continue
+
+        if agent_cfg.model:
+            try:
+                classify_swink_model(agent_cfg.model)
+            except ValueError as exc:
+                raise ConfigError(f"agents.{agent_name}.model={agent_cfg.model!r}: {exc}") from exc
+
+        for tier, tier_cfg in agent_cfg.model_tiers.items():
+            if not tier_cfg.model:
+                continue
+            try:
+                classify_swink_model(tier_cfg.model)
+            except ValueError as exc:
+                raise ConfigError(
+                    f"agents.{agent_name}.model_tiers.{tier}.model={tier_cfg.model!r}: {exc}"
+                ) from exc
+
+
 def _clamp_tier_max(value: object) -> int:
     """Clamp a raw tier max value to the valid 1–20 range.
 
@@ -1170,6 +1204,7 @@ def _build_config(data: _RawConfig) -> RuntimeConfig:
     trusted_ids_raw = data.get("trusted_ids", {})
     _validate_agent_identities(agents, identities)
     _validate_agent_reasoning_efforts(agents)
+    _validate_swink_coding_models(agents)
 
     mode_raw = data.get("mode", RunMode.SOLO.value)
     try:

@@ -125,6 +125,7 @@ def build_argv(
     project_dir: str | None = None,
     prompt_on_stdin: bool = False,
     prompt_file: str | None = None,
+    model_tier: str | None = None,
 ) -> list[str]:
     """Return the argv list for invoking *agent_type* with *prompt*.
 
@@ -144,6 +145,11 @@ def build_argv(
     Grok is the exception — it has no stdin prompt mode, so the caller writes
     the prompt to a temp file and passes its path as *prompt_file*, which Grok
     reads via ``--prompt-file`` (see ``cli_grok.build_argv`` and issue #160).
+
+    *model_tier* is swink-coding-specific (SuperSwink-Coding#282): only used
+    when *model* is a ``provider:model[@endpoint]`` tier_map override rather
+    than a plain tier alias, to say which tier's backend is being overridden
+    for this dispatch. Ignored by every other agent type.
 
     Exported so tests can assert command shape without spawning a subprocess.
     """
@@ -219,6 +225,7 @@ def build_argv(
             project_dir=project_dir,
             prompt_on_stdin=prompt_on_stdin,
             prompt_file=prompt_file,
+            model_tier=model_tier,
         )
 
     msg = f"build_argv: unsupported CLI agent type {agent_type!r}"
@@ -237,6 +244,7 @@ def build_resume_argv(
     project_dir: str | None = None,
     prompt_on_stdin: bool = False,
     prompt_file: str | None = None,
+    model_tier: str | None = None,
 ) -> list[str]:
     """Return argv for a single JSON-retry RESUME dispatch (desktop-dy2j).
 
@@ -246,6 +254,9 @@ def build_resume_argv(
     resume-by-id flag, and AgentShore holds a stable session id for each:
     claude (``--resume``), codex (``exec resume``), grok (``-r``), antigravity
     (``--conversation``, id from :func:`cli_antigravity.resolve_conversation_id`).
+
+    *model_tier* is swink-coding-specific (SuperSwink-Coding#282) — see
+    :func:`build_argv`. Ignored by every other agent type.
 
     Exported so tests can assert command shape without spawning a subprocess.
     """
@@ -340,6 +351,7 @@ def build_resume_argv(
             project_dir=project_dir,
             prompt_on_stdin=prompt_on_stdin,
             prompt_file=prompt_file,
+            model_tier=model_tier,
         )
 
     msg = f"build_resume_argv: unsupported CLI agent type {agent_type!r}"

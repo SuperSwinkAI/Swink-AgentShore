@@ -164,21 +164,75 @@ def test_discover_antigravity_missing_binary_is_unavailable(tmp_path: Path) -> N
 # ---------------------------------------------------------------------------
 
 
-def test_discover_swink_coding_ok_returns_aliases_not_backend_ids(tmp_path: Path) -> None:
+def test_discover_swink_coding_ok_returns_aliases_then_reachable_provider_models(
+    tmp_path: Path,
+) -> None:
     payload = json.dumps(
         [
-            {"tier": "small", "provider": "ollama", "model": "qwen3.5:4b"},
-            {"tier": "medium", "provider": "ollama", "model": "qwen2.5-coder:32b"},
-            {"tier": "large", "provider": "vllm", "model": "big-model"},
+            {
+                "provider": "ollama",
+                "endpoint": "http://localhost:11434",
+                "reachable": True,
+                "detail": None,
+                "models": [
+                    {"name": "qwen3.5:4b", "mapped_to": ["small", "medium", "large"]},
+                    # Colon-bearing model names must not confuse the
+                    # provider:model join — Ollama tags routinely look like this.
+                    {"name": "qwen2.5-coder:7b", "mapped_to": ["medium"]},
+                ],
+            },
+            {
+                "provider": "vllm",
+                "endpoint": "http://vllm.internal:8000",
+                "reachable": False,
+                "detail": "connection refused",
+                "models": None,
+            },
         ]
     )
     binary = _make_fake_cli(tmp_path, "fake-swink", body=f"print({payload!r}); sys.exit(0)")
     result = discover_swink_coding_models(binary=binary)
     assert result.status == "ok"
-    # Selectable models are the tier aliases — backend ids are invalid --model
-    # values and must never surface as models (SuperSwink-Coding#279).
+    # Tier aliases lead (always selectable), then reachable concrete models —
+    # now dispatchable directly via `provider:model` (SuperSwink-Coding#282/#283).
+    assert result.models == (
+        "small",
+        "medium",
+        "large",
+        "ollama:qwen3.5:4b",
+        "ollama:qwen2.5-coder:7b",
+    )
+    assert "vllm@http://vllm.internal:8000: unreachable" in result.detail
+
+
+def test_discover_swink_coding_all_unreachable_is_still_ok_with_aliases_only(
+    tmp_path: Path,
+) -> None:
+    payload = json.dumps(
+        [
+            {
+                "provider": "ollama",
+                "endpoint": "http://localhost:11434",
+                "reachable": False,
+                "detail": "connection refused",
+                "models": None,
+            },
+            {
+                "provider": "vllm",
+                "endpoint": "http://vllm.internal:8000",
+                "reachable": False,
+                "detail": "timeout",
+                "models": None,
+            },
+        ]
+    )
+    binary = _make_fake_cli(tmp_path, "fake-swink", body=f"print({payload!r}); sys.exit(0)")
+    result = discover_swink_coding_models(binary=binary)
+    # No endpoint reachable is not an error — dispatch via alias still works.
+    assert result.status == "ok"
     assert result.models == ("small", "medium", "large")
-    assert "medium->ollama:qwen2.5-coder:32b" in result.detail
+    assert "ollama@http://localhost:11434: unreachable" in result.detail
+    assert "vllm@http://vllm.internal:8000: unreachable" in result.detail
 
 
 def test_discover_swink_coding_unparseable_json_is_error(tmp_path: Path) -> None:

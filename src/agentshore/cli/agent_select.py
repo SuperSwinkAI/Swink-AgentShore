@@ -386,10 +386,12 @@ def _interactive_agent_select(
 
         efforts = reasoning_efforts_for(agent_type)
         is_grok = agent_type == AgentType.GROK
-        # swink-coding's `--model` flag only accepts the small/medium/large
-        # tier aliases (real model ids live in its own config, out of
-        # AgentShore's view), so the free-form custom-model entry must not be
-        # offered — anything else typed there would be an invalid CLI value.
+        # swink-coding's `--model` flag accepts the small/medium/large tier
+        # aliases directly, or a `provider:model[@endpoint]` value dispatched
+        # via `--tier-map` (both surface through the model catalog below), so
+        # the free-form custom-model entry must still not be offered here —
+        # a hand-typed value skips `classify_swink_model` validation and could
+        # be an invalid CLI value.
         is_swink_coding = agent_type == AgentType.SWINK_CODING
         # total prompt count: enable + model (skipped for grok) + effort (if any) + max.
         total = 2 + (0 if is_grok else 1) + (1 if efforts else 0)

@@ -195,6 +195,7 @@ def _build_dispatch_argv(
             project_dir=str(effective_cwd),
             prompt_on_stdin=prompt_on_stdin,
             prompt_file=prompt_file,
+            model_tier=handle.model_tier,
         )
     else:
         argv = build_argv(
@@ -207,6 +208,7 @@ def _build_dispatch_argv(
             project_dir=str(effective_cwd),
             prompt_on_stdin=prompt_on_stdin,
             prompt_file=prompt_file,
+            model_tier=handle.model_tier,
         )
 
     prompt_bytes = len(prompt.encode("utf-8"))
