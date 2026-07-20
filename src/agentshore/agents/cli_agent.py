@@ -723,7 +723,12 @@ async def _kill_process(proc: asyncio.subprocess.Process, agent_id: str) -> None
                 pgid=pgid,
                 survivors=survivors,
             )
-        except ProcessLookupError:
+        except (ProcessLookupError, PermissionError):
+            # ProcessLookupError (ESRCH): the group is gone, the expected case.
+            # PermissionError (EPERM): the OS recycled ``pgid`` to a group this
+            # user does not own — the original group is equally gone. Both mean
+            # "nothing survived"; neither may escape this diagnostic-only probe
+            # and fail the whole play as ``unexpected_play_error`` (#362).
             pass
         _close_process_transport(proc)
 

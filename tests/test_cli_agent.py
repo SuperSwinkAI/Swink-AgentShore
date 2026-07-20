@@ -2173,6 +2173,33 @@ def test_classify_error_codex_ttl_markers_on_stdout_only_are_not_auth(stdout: st
     assert _classify_error(1, "", stdout) is not ErrorClass.AUTH
 
 
+@pytest.mark.parametrize(
+    "stderr",
+    [
+        "failed to refresh available models: timeout waiting for child process to exit",
+        "failed to renew cache TTL: EOF while parsing a value at line 1",
+    ],
+)
+def test_classify_error_transient_cache_blip_is_not_auth(stderr: str) -> None:
+    """#363: the transient cache-renewal blip shapes must not classify as AUTH.
+
+    The watchdog's live auth-abort path already subtracts these
+    (``_is_transient_cache_blip``); the post-exit classifier did not, so the
+    operator was told "credential expired, invalid, or rejected by the
+    provider" for a model-cache hiccup.
+    """
+    assert _classify_error(-15, stderr, "") is not ErrorClass.AUTH
+
+
+def test_classify_error_real_auth_alongside_cache_blip_still_auth() -> None:
+    """A genuine rejection accompanying a renewal blip still trips AUTH."""
+    stderr = (
+        "failed to refresh available models: timeout waiting for child process to exit\n"
+        "401 unauthorized"
+    )
+    assert _classify_error(1, stderr, "") is ErrorClass.AUTH
+
+
 def test_classify_error_timeout() -> None:
     assert _classify_error(1, "context deadline exceeded", "") == "timeout"
 
@@ -3215,3 +3242,37 @@ async def test_kill_process_does_not_hang_when_sigkill_never_reaps(
     assert signal.SIGKILL in killpg_signals
     # Both the SIGTERM-grace wait and the bounded post-SIGKILL wait ran.
     assert proc.wait_calls >= 2
+
+
+async def test_kill_process_survivor_probe_swallows_permission_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """EPERM from the survivor probe must not escape as an unexpected_play_error.
+
+    Regression for #362: ``os.killpg(pgid, 0)`` in the finally-block survivor
+    probe can raise PermissionError when the OS has recycled the pgid to a group
+    this user does not own. That only caught ProcessLookupError, so the EPERM
+    propagated up through dispatch and failed the whole play.
+    """
+    import agentshore.agents.cli_agent as ca
+
+    class _ExitedProc:
+        def __init__(self) -> None:
+            self.pid = 4242
+            self.returncode: int | None = None
+
+        async def wait(self) -> int:
+            self.returncode = -15
+            return -15
+
+    proc = _ExitedProc()
+
+    def _fake_killpg(pgid: int, sig: int) -> None:
+        if sig == 0:
+            raise PermissionError(1, "Operation not permitted")
+
+    monkeypatch.setattr(ca.os, "getpgid", lambda pid: 12345)
+    monkeypatch.setattr(ca.os, "killpg", _fake_killpg)
+
+    # Must return normally rather than raising PermissionError.
+    await ca._kill_process(proc, "agent-eperm")  # type: ignore[arg-type]

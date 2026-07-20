@@ -136,6 +136,26 @@ def _is_transient_cache_blip(lowered: str) -> bool:
     )
 
 
+def _auth_hit_is_cache_blip(err: str, out: str) -> bool:
+    """True iff the only auth evidence is a transient Codex cache-renewal blip.
+
+    The watchdog's live auth-abort path already subtracts the cache-renewal
+    markers before calling a stderr tail "hard auth"
+    (``cli/watchdogs.py``), but ``_classify_error`` did not — so a post-exit
+    ``failed to refresh available models: timeout waiting for child process to
+    exit`` was still bucketed ``AUTH`` and surfaced to the operator as
+    "credential expired, invalid, or rejected by the provider" (#363). The two
+    halves of the codebase disagreed about the same string.
+
+    Returns False the moment any auth marker that is *not* a cache-renewal
+    marker is present, so a genuine 401/403/invalid-key rejection still trips
+    normally even when a renewal blip happens to accompany it.
+    """
+    combined = err + out
+    hard_auth = any(m in combined for m in AUTH_MARKERS if m not in _CACHE_RENEWAL_MARKERS)
+    return not hard_auth and _is_transient_cache_blip(combined)
+
+
 def _is_cache_renewal_stdin_hang(lowered: str) -> bool:
     """#231: True when the cache-renewal EOF blip has become a stdin hang."""
     return _is_transient_cache_blip(lowered) and all(
@@ -201,7 +221,7 @@ def _classify_error(rc: int, stderr: str, stdout: str) -> ErrorClass:
     # strings, on top of the bare 401/403/forbidden tokens already present). stdout
     # stays on the narrow high-precision subset so an agent's work product (code it
     # edits mentioning 401/403/forbidden) is never misclassified (#19).
-    if hit(tuple(AUTH_MARKERS), _AUTH_STDOUT):
+    if hit(tuple(AUTH_MARKERS), _AUTH_STDOUT) and not _auth_hit_is_cache_blip(err, out):
         return ErrorClass.AUTH
     if hit(_TIMEOUT_PATTERNS, _TIMEOUT_STDOUT):
         return ErrorClass.TIMEOUT
