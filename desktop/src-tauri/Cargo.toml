@@ -39,7 +39,7 @@ tauri-plugin-updater = "=2.10.1"
 # so a second `open AgentShore.app` focuses the existing window instead of
 # spawning a parallel sidecar.
 [target.'cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))'.dependencies]
-tauri-plugin-single-instance = "=2.4.2"
+tauri-plugin-single-instance = "=2.4.3"
 serde = { version = "=1.0.228", features = ["derive"] }
 serde_json = "=1.0.150"
 
