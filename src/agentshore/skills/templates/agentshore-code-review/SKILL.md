@@ -61,7 +61,7 @@ non_blocking_findings: <int>
 
 **Labels (best-effort, never block):** PASS → add `agentshore/approved`, remove `blocked`. BLOCK → add `blocked`, remove `agentshore/approved`. `gh pr edit ... 2>/dev/null || true`.
 
-**Follow-up issues (substantive only — no style nits):** Dedup against open issues first: `gh issue list --state open --search "<2-3 keywords>" --json number,title --limit 5`. If a match exists, reference it in the review comment, don't create. Otherwise `gh issue create --title "Follow-up: <desc>" --label "agentshore/review"`. File substantive follow-ups by impact (no fixed numeric cap); if the volume is large, file the highest-impact ones and mention the rest in the review.
+**Follow-up issues (substantive only — no style nits):** Dedup against open issues first: `gh issue list --state open --search "<2-3 keywords>" --json number,title --limit 5`. If a match exists, reference it in the review comment, don't create. Otherwise `gh issue create --title "Follow-up: <desc>" --label "agentshore/review"`. File substantive follow-ups by impact, **at most 5 new issues per review**; anything past the ceiling goes in the review comment as prose instead of a tracker, so the truncation is visible and the reviewer of the next PR can re-surface it.
 
 **Forbidden:**
 - `git worktree add/remove/prune`, `git checkout`/`gh pr checkout` to switch branches, `git pull`/`merge`/`rebase` to advance state (your cwd is already the PR branch; use `gh pr diff`, files on disk, or `git show HEAD:<file>`).

@@ -19,11 +19,13 @@ Audit the project's design/spec corpus for concrete requirements that lack imple
 
 `verified_done` / `represented_open` / `gap_filled` are **reasoning categories for your own bookkeeping — they are NOT JSON keys.** Never emit them in the result block. The only valid output keys are the ones in the fenced schema at the end of this file (`success`, `artifacts[].gaps_found`, `gap_issue_numbers`, `issues_created`, `issues_linked`, `error`, …).
 
-Closed issues, closed beads tasks, or PR titles are not proof of done. If any concrete requirement remains untracked without implementation evidence, return `success: false`.
+Closed issues, closed beads tasks, or PR titles are not proof of done. If a concrete requirement remains untracked without implementation evidence — and it is not one of the explicitly-deferred over-ceiling requirements below — return `success: false`.
 
-**There is no "found but unfiled" state.** Every concrete requirement you keep is exactly one of the three buckets above — never a bare gap with no tracker. `Later:` / deferred / phase-2 items are **not** an escape hatch: if shipped → `verified_done`; if already tracked → `represented_open`; if a genuine unmet requirement → you **must** file the tracker now (`gap_filled`). Deferral and sizing are `agentshore-refine-tasks` / `agentshore-groom-backlog`'s job — never a reason to skip filing. A requirement that fails the friction gates below is **dropped entirely** (not counted in any bucket and not in `gaps_found`).
+**Per-run ceiling: create at most 8 new GH issues.** Rank surviving gaps by impact (user-visible breakage and correctness first, then contract/interface gaps, then everything else) and fill trackers for the top 8. `represented_open` links are unbounded — linking an existing issue to a beads task is cheap and creates no new backlog, so the ceiling counts `issues_created` only. Requirements past the ceiling are **explicitly deferred**: do not file them, count them in `artifacts[0].deferred_requirements`, name their source sections in `error` (with `success: true`), and let the next run pick them up. This is the one sanctioned "found but unfiled" state and it must be visible in the result — silently dropping them is not allowed.
 
-**Count invariants (the play fails validation otherwise).** `gaps_found` counts only requirements this play resolved by creating **or** linking a tracker, so it **must equal** `len(gap_issue_numbers)` = `len(issues_created) + len(issues_linked)`. Every number you put in `gaps_found` must have a matching issue number in `gap_issue_numbers`. `unresolved_gaps` (gaps you tried to file but a GH/beads mutation failed) and `unknown_requirements` must both be `0` for success; if either is non-zero, set `success: false` and name the requirement in `error`.
+**Otherwise there is no "found but unfiled" state.** Every concrete requirement you keep, within the ceiling, is exactly one of the three buckets above — never a bare gap with no tracker. `Later:` / deferred / phase-2 items in the *docs* are **not** an escape hatch: if shipped → `verified_done`; if already tracked → `represented_open`; if a genuine unmet requirement → you **must** file the tracker now (`gap_filled`). Deferral and sizing are `agentshore-refine-tasks` / `agentshore-groom-backlog`'s job — never a reason to skip filing. A requirement that fails the friction gates below is **dropped entirely** (not counted in any bucket, not in `gaps_found`, and not in `deferred_requirements`).
+
+**Count invariants (the play fails validation otherwise).** `gaps_found` counts only requirements this play resolved by creating **or** linking a tracker, so it **must equal** `len(gap_issue_numbers)` = `len(issues_created) + len(issues_linked)`. Every number you put in `gaps_found` must have a matching issue number in `gap_issue_numbers`. `unresolved_gaps` (gaps you tried to file but a GH/beads mutation failed) and `unknown_requirements` must both be `0` for success; if either is non-zero, set `success: false` and name the requirement in `error`. `deferred_requirements` (gaps past the per-run ceiling, never attempted) is **not** an `unresolved_gap` and does not fail the play — it is reported separately and excluded from `gaps_found`.
 
 **Filter for friction (gate every candidate finding):**
 - **Deletion test:** if removing the requirement collapses caller/test/UX complexity, file it; if it only removes a paragraph from a doc, drop it.
@@ -63,7 +65,7 @@ Record in `issues_closed_stale` and `beads_closed_stale`. Skip when evidence is 
 - `git worktree add/remove/prune` (AgentShore owns worktree lifecycle).
 - If you need scratch/working files, write them under `tmp/` at the project root (gitignored, never treated as a dirty-trunk blocker) — never loose at the repo root.
 
-**Before reporting, self-check the counts.** Verify `gaps_found == len(gap_issue_numbers) == len(issues_created) + len(issues_linked)`, and `unresolved_gaps == 0` and `unknown_requirements == 0`. If any gap could not be filed, return `success: false` and name it in `error` — do not under-report `gaps_found` to make the numbers line up.
+**Before reporting, self-check the counts.** Verify `gaps_found == len(gap_issue_numbers) == len(issues_created) + len(issues_linked)`, `len(issues_created) <= 8`, and `unresolved_gaps == 0` and `unknown_requirements == 0`. If any gap could not be filed, return `success: false` and name it in `error` — do not under-report `gaps_found` to make the numbers line up.
 
 **Report — one fenced JSON block:**
 
@@ -79,6 +81,7 @@ Record in `issues_closed_stale` and `beads_closed_stale`. Skip when evidence is 
       "issues_linked": 1,
       "unresolved_gaps": 0,
       "unknown_requirements": 0,
+      "deferred_requirements": 0,
       "gap_issue_numbers": [212, 213, 214]
     }
   ],

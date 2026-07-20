@@ -663,7 +663,13 @@ class PlayExecutor:
 
         inflation_raised = False
         if play.skill_name is not None:
-            outcome, inflation_raised = await self._check_scope(outcome, play_id, play_type, state)
+            outcome, inflation_raised = await self._check_scope(
+                outcome,
+                play_id,
+                play_type,
+                state,
+                skill_result if isinstance(skill_result, SkillResult) else None,
+            )
 
         if outcome.success or outcome.partial:
             await self._wire_deferrals(
@@ -1006,9 +1012,20 @@ class PlayExecutor:
         play_id: int,
         play_type: PlayType,
         state: OrchestratorState,
+        skill_result: SkillResult | None = None,
     ) -> tuple[PlayOutcome, bool]:
-        """Run scope validation and report issue inflation separately."""
-        sr = SkillResult(success=outcome.success, artifacts=outcome.artifacts)
+        """Run scope validation and report issue inflation separately.
+
+        *skill_result* is the real parsed result from the play when one is
+        available — it carries ``issues_created``, which the inflation check
+        needs. Paths with no ``SkillResult`` (non-skill or unparsed runs) fall
+        back to a minimal reconstruction from the outcome.
+        """
+        sr = (
+            skill_result
+            if skill_result is not None
+            else SkillResult(success=outcome.success, artifacts=outcome.artifacts)
+        )
         inflation_raised = False
         try:
             await validate_scope(

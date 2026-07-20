@@ -1154,6 +1154,44 @@ async def test_inflation_raised_set_on_outcome() -> None:
 
 
 # ---------------------------------------------------------------------------
+# 3B. The real SkillResult (with issues_created) reaches scope validation
+# ---------------------------------------------------------------------------
+
+
+async def _run_qa_outcome_with_issues(issue_count: int) -> PlayOutcome:
+    """Execute a RUN_QA play whose SkillResult filed *issue_count* issues."""
+    play = _make_play(play_type=PlayType.RUN_QA, skill_name="agentshore-run-qa")
+    play.execute = AsyncMock(return_value=_make_outcome(PlayType.RUN_QA))
+    play._last_skill_result = SkillResult(
+        success=True,
+        artifacts=[],
+        issues_created=[{"number": n} for n in range(issue_count)],
+    )
+    store = _make_store()
+    manager = _make_manager()
+
+    with patch("agentshore.plays.executor.select_agent_for") as mock_select:
+        mock_select.return_value = manager.handles["agent-1"]
+        executor = _make_executor(play=play, store=store, manager=manager)
+        return await executor.execute(PlayType.RUN_QA, _make_state())
+
+
+@pytest.mark.asyncio
+async def test_issues_created_reaches_scope_check() -> None:
+    """Regression (#368): _check_scope used to rebuild a SkillResult without
+    issues_created, so the inflation guard could never fire."""
+    outcome = await _run_qa_outcome_with_issues(11)  # RUN_QA allowance 5 × 2.0 = 10
+    assert outcome.inflation_raised is True
+    assert outcome.success is True  # advisory only — never flips success
+
+
+@pytest.mark.asyncio
+async def test_issues_within_allowance_no_inflation() -> None:
+    outcome = await _run_qa_outcome_with_issues(10)
+    assert outcome.inflation_raised is False
+
+
+# ---------------------------------------------------------------------------
 # Alignment delta uses graph.global_closure_ratio (v0.10.0)
 # ---------------------------------------------------------------------------
 

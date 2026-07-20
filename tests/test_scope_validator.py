@@ -164,6 +164,58 @@ async def test_issue_inflation_raises_when_exceeds_threshold() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    ("play_type", "allowance"),
+    [
+        (PlayType.RUN_QA, 5),
+        (PlayType.DESIGN_AUDIT, 5),
+        (PlayType.CODE_REVIEW, 3),
+        (PlayType.CLEANUP, 3),
+    ],
+)
+@pytest.mark.asyncio
+async def test_audit_plays_raise_above_allowance(play_type: PlayType, allowance: int) -> None:
+    """Issue-filing plays trip the guard past ``allowance × threshold``."""
+    store = _make_store()
+    ceiling = int(allowance * 2.0)
+    result = _result(issues_created=list(range(ceiling + 1)))
+
+    with pytest.raises(IssueInflationDetected):
+        await validate_scope(
+            skill_result=result,
+            play_id=8,
+            play_type=play_type,
+            session_id="sess-8",
+            scope_cfg=_cfg(threshold=2.0),
+            store=store,
+        )
+
+
+@pytest.mark.parametrize(
+    ("play_type", "allowance"),
+    [
+        (PlayType.RUN_QA, 5),
+        (PlayType.DESIGN_AUDIT, 5),
+        (PlayType.CODE_REVIEW, 3),
+        (PlayType.CLEANUP, 3),
+    ],
+)
+@pytest.mark.asyncio
+async def test_audit_plays_at_allowance_no_inflation(play_type: PlayType, allowance: int) -> None:
+    """At the ceiling (inclusive) the guard stays quiet."""
+    store = _make_store()
+    result = _result(issues_created=list(range(int(allowance * 2.0))))
+
+    await validate_scope(
+        skill_result=result,
+        play_id=9,
+        play_type=play_type,
+        session_id="sess-9",
+        scope_cfg=_cfg(threshold=2.0),
+        store=store,
+    )
+
+
 @pytest.mark.asyncio
 async def test_refine_tasks_unbounded_issues_no_inflation() -> None:
     store = _make_store()
