@@ -108,7 +108,7 @@ export const AGENT_REGISTRY = {
   },
   swink_coding: {
     label: "Swink Coding",
-    colorFill: "#8B5CF6",
+    colorFill: "#3ED421",
     colorLabel: "S",
     beta: true,
     spriteUrls: {
