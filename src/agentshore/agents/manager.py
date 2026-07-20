@@ -146,6 +146,13 @@ class AgentManager:
         self._python_executable = python_executable
         self._handles: dict[str, AgentHandle] = {}
         self._circuit_breakers: dict[str, CircuitBreaker] = {}
+        # Cancellation signals for in-flight break-recovery waits (#367). A
+        # TAKE_BREAK play sleeps up to break_duration_minutes (default 30) before
+        # attempting to recover its target; when that target is cleared meanwhile
+        # the wait is pointless, so ``clear`` fires the agent's event and the play
+        # returns immediately instead of logging a stale ``break_recovery_failed``
+        # half an hour after ``agent_cleared``.
+        self._break_recovery_cancels: dict[str, asyncio.Event] = {}
         # Agent-type values whose backend hit a *transient* launch wedge (Grok
         # first-byte timeout) this session. The state-builder mixin drains this
         # into a DECAYING per-tick cooldown so the type auto-recovers rather than
@@ -673,7 +680,47 @@ class AgentManager:
 
         del self._handles[agent_id]
         del self._circuit_breakers[agent_id]
+        self.cancel_break_recovery(agent_id, reason="agent_cleared")
         _logger.info("agent_cleared", agent_id=agent_id)
+
+    # -------------------------------------------------------------------------
+    # Break-recovery cancellation (#367)
+    # -------------------------------------------------------------------------
+
+    def register_break_recovery(self, agent_id: str) -> asyncio.Event:
+        """Register (and return) the cancel signal for a pending break recovery.
+
+        Called by ``TakeBreakPlay`` before it sleeps. The event is set by
+        ``clear`` when the target agent is torn down, so the play can abandon
+        the wait instead of firing against a dead agent ~30 min later. Only one
+        break can be pending per agent; a re-registration replaces the previous
+        signal (the older play unregisters itself as a no-op).
+        """
+        event = asyncio.Event()
+        self._break_recovery_cancels[agent_id] = event
+        return event
+
+    def unregister_break_recovery(self, agent_id: str, event: asyncio.Event) -> None:
+        """Drop *event* as the pending break-recovery signal for *agent_id*.
+
+        No-op when a newer registration has replaced it, so a finishing play can
+        never unregister a successor's signal.
+        """
+        if self._break_recovery_cancels.get(agent_id) is event:
+            del self._break_recovery_cancels[agent_id]
+
+    def cancel_break_recovery(self, agent_id: str, *, reason: str) -> bool:
+        """Fire the pending break-recovery signal for *agent_id*, if any.
+
+        Returns True when a pending break was signalled. Idempotent: the entry
+        is popped, so a second call is a no-op.
+        """
+        event = self._break_recovery_cancels.pop(agent_id, None)
+        if event is None:
+            return False
+        event.set()
+        _logger.info("break_recovery_cancelled", agent_id=agent_id, reason=reason)
+        return True
 
     # -------------------------------------------------------------------------
     # Error recovery

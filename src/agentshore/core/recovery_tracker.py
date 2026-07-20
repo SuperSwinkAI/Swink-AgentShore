@@ -51,6 +51,7 @@ class RecoveryTracker:
 
     def __init__(self) -> None:
         self._break_recovery_failures: dict[str, int] = {}
+        self._break_recovery_retired_logged: set[str] = set()
         self._rate_limit_recovery_enqueued: set[str] = set()
         self._unknown_error_recovery_enqueued: set[str] = set()
         self._noop_recovery_enqueued: set[str] = set()
@@ -92,6 +93,7 @@ class RecoveryTracker:
 
     def clear_break_failures(self, agent_id: str) -> None:
         self._break_recovery_failures.pop(agent_id, None)
+        self._break_recovery_retired_logged.discard(agent_id)
 
     def record_break_failure(self, agent_id: str) -> int:
         """Increment the agent's consecutive-failure count and return the new total."""
@@ -101,6 +103,17 @@ class RecoveryTracker:
 
     def break_failure_count(self, agent_id: str) -> int:
         return self._break_recovery_failures.get(agent_id, 0)
+
+    def is_break_recovery_exhausted(self, agent_id: str) -> bool:
+        """True once take_break has failed ``BREAK_RECOVERY_FAILURE_LIMIT`` times in a row.
+
+        The exhaustion verdict is the terminal state of the break cycle: no
+        further take_break is enqueued for this agent (see
+        ``maybe_enqueue_error_recovery``), END_AGENT is unmasked for it
+        (``recovery_exhausted_agent_ids``), and the counter stays elevated until
+        the agent is actually retired or a break succeeds.
+        """
+        return self._break_recovery_failures.get(agent_id, 0) >= BREAK_RECOVERY_FAILURE_LIMIT
 
     # Error-recovery enqueueing (folded from completion.py)
 
@@ -136,6 +149,32 @@ class RecoveryTracker:
         if kind is None:
             # Not a recovery-eligible class (auth, invalid_model, crash_*,
             # timeout*) — leave it for the END_AGENT path, no take_break.
+            return
+        if self.is_break_recovery_exhausted(agent_id):
+            # #365: the break cycle is over for this agent. Re-enqueueing the
+            # identical break here is what made the cycle unbounded — each
+            # failed break re-armed the next one, and the exhaustion verdict was
+            # wiped when END_AGENT cleared the agent, so the counter restarted
+            # from zero. Stop enqueueing instead: the agent stays ERROR with the
+            # counter elevated, which keeps END_AGENT unmasked and targeted at
+            # it (``recovery_exhausted_agent_ids`` -> resolver), so the PPO can
+            # retire and replace it. Error-class agnostic by construction — a
+            # class a break cannot fix (auth) simply exhausts, while one it can
+            # (rate limit) recovers and clears the counter first.
+            if agent_id not in self._break_recovery_retired_logged:
+                self._break_recovery_retired_logged.add(agent_id)
+                _logger.warning(
+                    "break_recovery_retired",
+                    session_id=session_id,
+                    agent_id=agent_id,
+                    error_class=error_class,
+                    consecutive_failures=self.break_failure_count(agent_id),
+                    limit=BREAK_RECOVERY_FAILURE_LIMIT,
+                    detail=(
+                        "take_break recovery exhausted; no further break enqueued — "
+                        "END_AGENT is unmasked for this agent"
+                    ),
+                )
             return
         # Per-kind dedup latch (route the is/mark pair off the resolved kind).
         latches = {
@@ -180,8 +219,4 @@ class RecoveryTracker:
 
     def recovery_exhausted_agent_ids(self, agents: Iterable[AgentSnapshot]) -> frozenset[str]:
         """Agents whose take_break failures have reached the END_AGENT-unmask limit."""
-        return frozenset(
-            a.agent_id
-            for a in agents
-            if self._break_recovery_failures.get(a.agent_id, 0) >= BREAK_RECOVERY_FAILURE_LIMIT
-        )
+        return frozenset(a.agent_id for a in agents if self.is_break_recovery_exhausted(a.agent_id))

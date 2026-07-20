@@ -960,3 +960,52 @@ def test_placeholder_cost_is_running_mean_of_measured_plays(
     # Placeholder plays must NOT pollute the measured mean — another sees 2.00, not drift.
     grok2 = mgr._apply_placeholder_cost(_invocation(0.0), agent_type=AgentType.GROK)
     assert grok2.dollar_cost == pytest.approx(2.00)
+
+
+async def test_clear_cancels_pending_break_recovery(
+    store: DataStore, tmp_path: Path, mock_agent_path: Path
+) -> None:
+    """#367: clearing an agent fires its pending break-recovery cancel signal.
+
+    Without this the TAKE_BREAK play slept out the full break and logged a stale
+    ``break_recovery_failed`` ~31 min after ``agent_cleared``.
+    """
+    mgr = _make_manager(store, tmp_path, mock_binary=str(mock_agent_path))
+    handle = await mgr.instantiate(AgentType.CODEX)
+    agent_id = handle.agent_id
+
+    event = mgr.register_break_recovery(agent_id)
+    assert not event.is_set()
+
+    await mgr.clear(agent_id)
+
+    assert event.is_set()
+    # Idempotent: the registration is popped, so a second cancel is a no-op.
+    assert mgr.cancel_break_recovery(agent_id, reason="agent_cleared") is False
+
+
+async def test_unregister_break_recovery_ignores_superseded_signal(
+    store: DataStore, tmp_path: Path
+) -> None:
+    """A finishing break must never unregister a successor break's signal."""
+    mgr = _make_manager(store, tmp_path)
+
+    first = mgr.register_break_recovery("a1")
+    second = mgr.register_break_recovery("a1")
+
+    mgr.unregister_break_recovery("a1", first)
+
+    assert mgr.cancel_break_recovery("a1", reason="agent_cleared") is True
+    assert second.is_set()
+    assert not first.is_set()
+
+
+async def test_clear_without_pending_break_recovery_is_a_noop(
+    store: DataStore, tmp_path: Path, mock_agent_path: Path
+) -> None:
+    mgr = _make_manager(store, tmp_path, mock_binary=str(mock_agent_path))
+    handle = await mgr.instantiate(AgentType.CODEX)
+
+    await mgr.clear(handle.agent_id)
+
+    assert mgr.cancel_break_recovery(handle.agent_id, reason="agent_cleared") is False

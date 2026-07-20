@@ -18,6 +18,7 @@ loop must not re-schedule break → break → break indefinitely. The contract:
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -64,13 +65,20 @@ def _state(agents: list[AgentSnapshot]) -> OrchestratorState:
     )
 
 
+def _break_recovery_manager() -> MagicMock:
+    """Manager mock whose break-recovery registry hands out real events (#367)."""
+    manager = MagicMock()
+    manager.register_break_recovery.side_effect = lambda _agent_id: asyncio.Event()
+    return manager
+
+
 def _make_ctx(break_duration_minutes: int = 30) -> PlayExecutionContext:
     cfg = MagicMock()
     cfg.session.break_duration_minutes = break_duration_minutes
     return PlayExecutionContext(
         session_id="s1",
         play_id=1,
-        manager=MagicMock(),
+        manager=_break_recovery_manager(),
         store=MagicMock(),
         cfg=cfg,
         project_path=MagicMock(),
@@ -365,3 +373,192 @@ async def test_drain_does_not_clear_a_non_errored_agent() -> None:
 
     h._manager.clear.assert_not_awaited()
     assert h._overrides.empty()
+
+
+# ---------------------------------------------------------------------------
+# #365: exhaustion must retire the agent from the break cycle, not recycle it.
+#
+# Field trace (session 4f4596b2, agent a0d73848): every failed break re-armed
+# the next one from the completion path, so ``break_recovery_exhausted`` was
+# followed immediately by another identical 30-minute take_break; when END_AGENT
+# then cleared the agent the counter was dropped and the cycle restarted from
+# zero. Auth-classified failures — which no amount of waiting fixes — looped
+# that way for hours.
+# ---------------------------------------------------------------------------
+
+
+def _break_failed_then_completion(h: _Harness, agent_id: str) -> None:
+    """Replay one full failed-break completion in production order.
+
+    ``_handle_take_break_outcome`` books the verdict first, then the errored
+    agent goes through the recovery re-enqueue — the ordering the completion
+    mixin uses so the failure that reaches the limit cannot slip one more break
+    past the guard.
+    """
+    h._handle_take_break_outcome(_outcome(agent_id=agent_id, success=False))
+    h._maybe_enqueue_error_recovery(agent_id, AgentStatus.ERROR)
+
+
+def test_exhausted_break_cycle_enqueues_no_further_break() -> None:
+    """Repeated break failures reach exhaustion and stop re-entering the break."""
+    h = _enqueue_harness(ErrorClass.AUTH)
+
+    # Failure 1: below the limit — a retry break is still worth enqueueing.
+    _break_failed_then_completion(h, "err1")
+    assert not h._overrides.empty()
+    assert h._overrides.get_nowait().play_type == PlayType.TAKE_BREAK
+    assert h._recovery.break_failure_count("err1") == 1
+    assert h._recovery.is_break_recovery_exhausted("err1") is False
+
+    # Failure 2 reaches BREAK_RECOVERY_FAILURE_LIMIT: no further break.
+    _break_failed_then_completion(h, "err1")
+    assert h._overrides.empty()
+    assert h._recovery.is_break_recovery_exhausted("err1") is True
+
+    # ...and it stays that way for any later ERROR completion on this agent.
+    for _ in range(3):
+        h._maybe_enqueue_error_recovery("err1", AgentStatus.ERROR)
+    assert h._overrides.empty()
+
+
+def test_exhausted_agent_is_surfaced_for_end_agent() -> None:
+    """The exhaustion verdict survives as the END_AGENT unmask signal (#365).
+
+    Bounding the cycle must not strand the agent: the elevated counter keeps it
+    in ``recovery_exhausted_agent_ids``, which unmasks END_AGENT and points the
+    resolver straight at it, so the PPO can retire and replace it.
+    """
+    h = _enqueue_harness(ErrorClass.AUTH)
+    for _ in range(BREAK_RECOVERY_FAILURE_LIMIT):
+        _break_failed_then_completion(h, "err1")
+
+    assert h._recovery.recovery_exhausted_agent_ids([_error_agent("err1")]) == frozenset({"err1"})
+
+
+def test_exhaustion_is_per_agent_not_per_error_class() -> None:
+    """A second agent on the same error class is unaffected by another's exhaustion."""
+    h = _enqueue_harness(ErrorClass.AUTH)
+    handle = MagicMock()
+    handle.last_error_class = ErrorClass.AUTH
+    h._manager.handles["err2"] = handle
+
+    for _ in range(BREAK_RECOVERY_FAILURE_LIMIT):
+        _break_failed_then_completion(h, "err1")
+    while not h._overrides.empty():
+        h._overrides.get_nowait()
+
+    _break_failed_then_completion(h, "err2")
+
+    assert not h._overrides.empty()
+    assert h._recovery.is_break_recovery_exhausted("err2") is False
+
+
+def test_transient_failure_that_recovers_still_breaks_normally() -> None:
+    """A break that fails once then succeeds keeps working (#365 regression guard).
+
+    The four agents that legitimately recovered via take_break in the field
+    session must keep their path: one failure re-arms a break, a successful
+    break clears the verdict, and a later failure starts a fresh cycle instead
+    of inheriting the old count.
+    """
+    h = _enqueue_harness(ErrorClass.RATE_LIMIT)
+
+    _break_failed_then_completion(h, "err1")
+    assert not h._overrides.empty()
+    h._overrides.get_nowait()
+
+    # The retry break recovers the agent.
+    h._handle_take_break_outcome(_outcome(agent_id="err1", success=True))
+    assert h._recovery.break_failure_count("err1") == 0
+    assert h._recovery.is_break_recovery_exhausted("err1") is False
+
+    # A later, unrelated error gets a full fresh break cycle.
+    _break_failed_then_completion(h, "err1")
+    assert not h._overrides.empty()
+    assert h._overrides.get_nowait().kind is OverrideKind.RATE_LIMIT_RECOVERY
+    assert h._recovery.break_failure_count("err1") == 1
+
+
+def test_end_agent_clear_resets_the_cycle_for_a_reused_id() -> None:
+    """Retiring the agent drops the verdict so a reused id starts clean."""
+    h = _enqueue_harness(ErrorClass.AUTH)
+    for _ in range(BREAK_RECOVERY_FAILURE_LIMIT):
+        _break_failed_then_completion(h, "err1")
+    assert h._recovery.is_break_recovery_exhausted("err1") is True
+
+    h._recovery.clear_break_failures("err1")
+
+    assert h._recovery.is_break_recovery_exhausted("err1") is False
+    assert "err1" not in h._recovery._break_recovery_retired_logged
+
+
+class _CompletionOrderHarness(CompletionProcessor):
+    """CompletionProcessor stand-in that runs the real ``_publish_completion_results``.
+
+    Exercises the production ordering (take_break verdict booked before the
+    errored-agent recovery re-enqueue), which is what makes the exhaustion guard
+    catch the failure that *reaches* the limit rather than one break too late.
+    """
+
+    def __init__(self, error_class: ErrorClass) -> None:
+        self._session_id = "s1"
+        self._overrides = OverrideQueue()
+        self._recovery = RecoveryTracker()
+        handle = MagicMock()
+        handle.last_error_class = error_class
+        handle.status = AgentStatus.ERROR
+        self._manager = MagicMock()
+        self._manager.handles = {"err1": handle}
+        self._runtime = MagicMock()
+        self._runtime.draining = False
+        self._runtime.stop_requested = False
+        self._runtime.cfg.learnings.enabled = False
+        self._runtime.state_provider.on_play_completed = AsyncMock()
+        self._runtime.state_provider.on_agent_changed = AsyncMock()
+        self._runtime.state_provider.on_state_update = AsyncMock()
+        self._state_builder = MagicMock()
+        self._state_builder.build_state = AsyncMock(return_value=_state([]))
+        self._host = MagicMock()
+
+        async def _safe_call(coro: object, _name: str) -> None:
+            await coro  # type: ignore[misc]
+
+        self._host._safe_call = _safe_call
+
+    async def complete_failed_break(self) -> None:
+        outcome = _outcome(agent_id="err1", success=False)
+        await self._publish_completion_results(outcome, _state([]), PlayType.TAKE_BREAK)
+
+
+@pytest.mark.asyncio
+async def test_completion_path_stops_the_break_cycle_at_exhaustion() -> None:
+    """End-to-end (#365): the exhausting failure enqueues no further break.
+
+    Field regression: the completion path re-armed the next break *before*
+    recording the failure, so ``break_recovery_exhausted`` was always preceded by
+    one more ``rate_limit_recovery_enqueued`` — the 30-minute loop.
+    """
+    h = _CompletionOrderHarness(ErrorClass.AUTH)
+
+    await h.complete_failed_break()
+    assert not h._overrides.empty()
+    h._overrides.get_nowait()
+
+    await h.complete_failed_break()
+
+    assert h._overrides.empty()
+    assert h._recovery.is_break_recovery_exhausted("err1") is True
+
+
+@pytest.mark.asyncio
+async def test_completion_path_keeps_recovering_a_transient_error() -> None:
+    """A single failed break still re-arms the retry through the real path."""
+    h = _CompletionOrderHarness(ErrorClass.RATE_LIMIT)
+
+    await h.complete_failed_break()
+
+    assert not h._overrides.empty()
+    entry = h._overrides.get_nowait()
+    assert entry.play_type == PlayType.TAKE_BREAK
+    assert entry.kind is OverrideKind.RATE_LIMIT_RECOVERY
+    assert h._recovery.is_break_recovery_exhausted("err1") is False

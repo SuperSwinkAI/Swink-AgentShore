@@ -996,6 +996,14 @@ class CompletionProcessor:
         await self._host._safe_call(
             self._runtime.state_provider.on_play_completed(outcome), "on_play_completed"
         )
+        # Book the take_break verdict BEFORE the recovery re-enqueue below (#365).
+        # ``_retire_or_recover_errored_agent`` consults the consecutive-failure
+        # counter to decide whether another break is still worth enqueueing; if
+        # the counter were still one short (incremented after), the failure that
+        # *reaches* the limit would enqueue one more identical break before
+        # exhaustion was recorded — the unbounded 30-minute cycle in #365.
+        if completed_play_type == PlayType.TAKE_BREAK:
+            self._handle_take_break_outcome(outcome)
         # The orchestrator owns final lifecycle publication. The executor may
         # update handles, but consumers get the terminal status event here
         # after persistence/reward side effects complete.
@@ -1017,8 +1025,6 @@ class CompletionProcessor:
                 "on_agent_changed_final",
             )
             await self._retire_or_recover_errored_agent(outcome.agent_id, final_status)
-        if completed_play_type == PlayType.TAKE_BREAK:
-            self._handle_take_break_outcome(outcome)
         if completed_play_type == PlayType.MERGE_PR:
             await self._handle_merge_pr_outcome(outcome)
         if (

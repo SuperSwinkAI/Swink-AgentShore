@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -56,13 +57,20 @@ def _make_state() -> OrchestratorState:
     )
 
 
+def _make_manager() -> MagicMock:
+    """Manager mock whose break-recovery registry hands out real events (#367)."""
+    manager = MagicMock()
+    manager.register_break_recovery.side_effect = lambda _agent_id: asyncio.Event()
+    return manager
+
+
 def _make_ctx(break_duration_minutes: int = 30) -> PlayExecutionContext:
     cfg = MagicMock()
     cfg.session.break_duration_minutes = break_duration_minutes
     return PlayExecutionContext(
         session_id="s1",
         play_id=1,
-        manager=MagicMock(),
+        manager=_make_manager(),
         store=MagicMock(),
         cfg=cfg,
         project_path=MagicMock(),
@@ -424,3 +432,80 @@ async def test_execute_aborts_when_drain_flips_during_final_chunk():
 
     ctx.manager.attempt_recovery.assert_not_awaited()
     assert outcome.artifacts[0]["event"] == "break_skipped_draining"
+
+
+@pytest.mark.asyncio
+async def test_execute_returns_early_when_break_recovery_is_cancelled():
+    """#367: clearing the target agent cancels the pending break immediately.
+
+    Before the fix the play slept out the full break and then logged
+    ``break_recovery_failed`` ~31 min after ``agent_cleared``, polluting recovery
+    telemetry (and, via the recovery latches, masking a live override).
+    """
+    play = TakeBreakPlay()
+    state = OrchestratorState(
+        session_id="s1",
+        session_state=SessionState.RUNNING,
+        total_plays=0,
+        total_cost=0.0,
+        agents=[_make_error_agent("err1")],
+    )
+    # A 30-minute break with real sleeps: only the cancel signal can end it fast.
+    ctx = _make_ctx(break_duration_minutes=30)
+    ctx.manager.attempt_recovery = AsyncMock(return_value=False)
+    # Hand out a single, inspectable event so the "clear" can fire it.
+    event = asyncio.Event()
+    ctx.manager.register_break_recovery.side_effect = lambda _agent_id: event
+
+    async def _clear_agent() -> None:
+        # Wait until the play has registered its signal, then fire it as
+        # AgentManager.clear() does.
+        for _ in range(500):
+            if ctx.manager.register_break_recovery.call_args is not None:
+                break
+            await asyncio.sleep(0.001)
+        event.set()
+
+    clearer = asyncio.create_task(_clear_agent())
+    outcome = await asyncio.wait_for(
+        play.execute(
+            state,
+            PlayParams(agent_id="err1", extras={"trigger_agent_id": "err1"}),
+            ctx=ctx,
+        ),
+        timeout=5.0,
+    )
+    await clearer
+
+    ctx.manager.attempt_recovery.assert_not_awaited()
+    assert outcome.success is True
+    assert outcome.agent_id == "err1"
+    assert outcome.artifacts[0]["event"] == "break_skipped_agent_cleared"
+    # The signal is de-registered so a later break can register its own.
+    ctx.manager.unregister_break_recovery.assert_called_once_with("err1", event)
+
+
+@pytest.mark.asyncio
+async def test_execute_registers_and_unregisters_break_recovery_signal():
+    """The cancel signal is registered before the sleep and released after it."""
+    play = TakeBreakPlay()
+    state = OrchestratorState(
+        session_id="s1",
+        session_state=SessionState.RUNNING,
+        total_plays=0,
+        total_cost=0.0,
+        agents=[_make_error_agent("err1")],
+    )
+    ctx = _make_ctx(break_duration_minutes=1)
+    ctx.manager.attempt_recovery = AsyncMock(return_value=True)
+
+    with patch("asyncio.sleep", new_callable=AsyncMock):
+        outcome = await play.execute(
+            state,
+            PlayParams(agent_id="err1", extras={"trigger_agent_id": "err1"}),
+            ctx=ctx,
+        )
+
+    ctx.manager.register_break_recovery.assert_called_once_with("err1")
+    assert ctx.manager.unregister_break_recovery.call_count == 1
+    assert outcome.artifacts[0]["event"] == "break_completed"

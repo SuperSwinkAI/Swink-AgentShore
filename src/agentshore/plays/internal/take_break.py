@@ -9,6 +9,7 @@ fresh state without blocking unrelated agents.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
 from typing import TYPE_CHECKING
 
@@ -17,6 +18,8 @@ from agentshore.rl.mask_reason import MaskClassification, MaskReason, MaskSource
 from agentshore.state import RECOVERABLE_ERROR_CLASSES, AgentStatus, PlayOutcome, PlayType
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from agentshore.plays.base import PlayExecutionContext, PlayParams
     from agentshore.state import OrchestratorState
 
@@ -69,23 +72,29 @@ class TakeBreakPlay(InternalPlay):
         t0 = time.monotonic()
         is_draining = ctx.is_draining
         trigger_agent_id = params.extras.get("trigger_agent_id")
-        if is_draining is None:
-            await asyncio.sleep(duration_s)
-        else:
-            # Drain-aware break: poll the drain signal so a wind-down that begins
-            # mid-break aborts within ``_DRAIN_POLL_SECONDS`` instead of holding
-            # the agent for the full duration. On abort, skip recovery entirely —
-            # the agent stays ERROR and end_agent retires it during drain (#30).
-            remaining = float(duration_s)
-            while remaining > 0:
-                if is_draining():
-                    return self._drain_abort_outcome(
-                        params, trigger_agent_id, time.monotonic() - t0
-                    )
-                step = min(_DRAIN_POLL_SECONDS, remaining)
-                await asyncio.sleep(step)
-                remaining -= step
+        target_agent_id = params.agent_id or (
+            trigger_agent_id if isinstance(trigger_agent_id, str) else None
+        )
+
+        # Register a cancel signal for the pending recovery so an ``agent_cleared``
+        # teardown can abandon this wait immediately (#367). Without it the break
+        # ran to completion and logged ``break_recovery_failed`` ~31 min after the
+        # target was gone, polluting recovery telemetry.
+        cancel = (
+            ctx.manager.register_break_recovery(target_agent_id)
+            if target_agent_id is not None
+            else None
+        )
+        try:
+            cancelled = await self._sleep_break(duration_s, is_draining, cancel)
+        finally:
+            if target_agent_id is not None and cancel is not None:
+                ctx.manager.unregister_break_recovery(target_agent_id, cancel)
         elapsed = time.monotonic() - t0
+        if cancelled == "drain":
+            return self._drain_abort_outcome(params, trigger_agent_id, elapsed)
+        if cancelled == "cleared":
+            return self._agent_cleared_outcome(target_agent_id, trigger_agent_id, elapsed)
 
         # Final guard: drain may have flipped during the last sleep chunk (or the
         # single unbroken sleep). Abort before attempting recovery so we never
@@ -93,9 +102,6 @@ class TakeBreakPlay(InternalPlay):
         if is_draining is not None and is_draining():
             return self._drain_abort_outcome(params, trigger_agent_id, elapsed)
 
-        target_agent_id = params.agent_id or (
-            trigger_agent_id if isinstance(trigger_agent_id, str) else None
-        )
         if target_agent_id is None:
             target = next(
                 (
@@ -161,6 +167,89 @@ class TakeBreakPlay(InternalPlay):
             ],
             alignment_delta=0.0,
             error=None if success else "attempt_recovery_failed",
+        )
+
+    async def _sleep_break(
+        self,
+        duration_s: float,
+        is_draining: Callable[[], bool] | None,
+        cancel: asyncio.Event | None,
+    ) -> str:
+        """Sleep out the break, returning why it ended.
+
+        ``"drain"`` — the session began winding down mid-break (#30);
+        ``"cleared"`` — the target agent was cleared, firing its break-recovery
+        cancel signal (#367); ``""`` — the full duration elapsed.
+
+        With no drain signal and no cancel signal this degenerates to a single
+        ``asyncio.sleep(duration_s)``; otherwise it wakes on ``_DRAIN_POLL_SECONDS``
+        boundaries (drain is a poll, not an event) and on the cancel event itself.
+        """
+        remaining = float(duration_s)
+        poll = _DRAIN_POLL_SECONDS if is_draining is not None else remaining
+        while remaining > 0:
+            # Drain-aware break: poll the drain signal so a wind-down that begins
+            # mid-break aborts within ``_DRAIN_POLL_SECONDS`` instead of holding
+            # the agent for the full duration. On abort, skip recovery entirely —
+            # the agent stays ERROR and end_agent retires it during drain (#30).
+            if is_draining is not None and is_draining():
+                return "drain"
+            if cancel is not None and cancel.is_set():
+                return "cleared"
+            step = min(poll, remaining)
+            if cancel is None:
+                await asyncio.sleep(step)
+            elif await self._sleep_until_cancelled(step, cancel):
+                return "cleared"
+            remaining -= step
+        return "cleared" if cancel is not None and cancel.is_set() else ""
+
+    @staticmethod
+    async def _sleep_until_cancelled(step: float, cancel: asyncio.Event) -> bool:
+        """Sleep *step* seconds; return True if *cancel* fired first."""
+        sleeper = asyncio.ensure_future(asyncio.sleep(step))
+        waiter = asyncio.ensure_future(cancel.wait())
+        try:
+            await asyncio.wait({sleeper, waiter}, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            for task in (sleeper, waiter):
+                if not task.done():
+                    task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await task
+        return cancel.is_set()
+
+    def _agent_cleared_outcome(
+        self,
+        target_agent_id: str | None,
+        trigger_agent_id: object,
+        elapsed: float,
+    ) -> PlayOutcome:
+        """Outcome for a break abandoned because its target agent was cleared (#367).
+
+        No recovery is attempted — the agent no longer exists. ``success=True``
+        keeps this off the consecutive-break-failure path: the break did not fail,
+        it became moot, and scoring it as a failure is what produced stale
+        ``break_recovery_failed`` telemetry ~31 min after ``agent_cleared``.
+        """
+        return PlayOutcome(
+            play_type=self.play_type,
+            agent_id=target_agent_id,
+            success=True,
+            partial=True,
+            duration_seconds=elapsed,
+            token_cost=0,
+            dollar_cost=_PLAY_COST,
+            artifacts=[
+                {
+                    "type": "session_event",
+                    "event": "break_skipped_agent_cleared",
+                    "duration_s": elapsed,
+                    "trigger_agent_id": trigger_agent_id,
+                }
+            ],
+            alignment_delta=0.0,
+            error=None,
         )
 
     def _drain_abort_outcome(
