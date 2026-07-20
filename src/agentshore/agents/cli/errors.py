@@ -102,6 +102,21 @@ _PARSE_EOF_MARKERS = ("eof while parsing", "parsing a value")
 # models: timeout waiting for child process to exit" — same cache-renewal marker,
 # different suffix.  Treat it as transient alongside the EOF-parse variant.
 _CHILD_TIMEOUT_MARKERS = ("timeout waiting for child process",)
+# Third variant: the model-list HTTP request itself fails mid-flight, e.g.
+# "failed to refresh available models: stream disconnected before completion:
+# error sending request for url (https://chatgpt.com/backend-api/codex/models…)".
+# Same cache-renewal marker, a network suffix instead of a parse/hang one — and
+# equally not an auth rejection. A ~4-second blip of this shape parked a healthy
+# codex agent for the remaining 4 hours of a session while sibling agents on the
+# *same* identity kept dispatching normally, which is the proof it was never a
+# credential problem (#365).
+_MODEL_FETCH_NETWORK_MARKERS = (
+    "stream disconnected before completion",
+    "error sending request",
+    "connection reset",
+    "connection refused",
+    "dns error",
+)
 _STDIN_CLOSED_AFTER_CACHE_RENEWAL_MARKERS = ("write_stdin failed", "stdin closed")
 
 # Raw CLI prompt-wait artifacts an agent prints to stdout/stderr while stalled
@@ -119,11 +134,16 @@ _STDIN_PROMPT_ARTIFACT_MARKERS = ("reading additional input from stdin",)
 def _is_transient_cache_blip(lowered: str) -> bool:
     """#190: True iff the stderr tail is the transient cache-renewal blip.
 
-    Suppresses an auth abort for two cache-renewal shapes:
+    Suppresses an auth abort for three cache-renewal shapes:
     - EOF-parse variant: "failed to renew cache TTL: EOF while parsing a value…"
     - Child-timeout variant: "failed to refresh available models: timeout waiting
       for child process to exit" — model-discovery subprocess hung rather than
       returning bad JSON; equally transient.
+    - Network variant (#365): "failed to refresh available models: stream
+      disconnected before completion: error sending request for url (…)" — the
+      model-list HTTP call itself failed mid-flight. Also not a credential
+      rejection: a ~4s blip of this shape parked a healthy codex agent for the
+      rest of a 4h session while siblings on the same identity kept working.
 
     A real backend-auth rejection (401/403/unauthorized/invalid api key/etc.)
     is unaffected: those markers carry no cache-renewal marker, so this returns
@@ -133,6 +153,7 @@ def _is_transient_cache_blip(lowered: str) -> bool:
     return has_renewal and (
         any(m in lowered for m in _PARSE_EOF_MARKERS)
         or any(m in lowered for m in _CHILD_TIMEOUT_MARKERS)
+        or any(m in lowered for m in _MODEL_FETCH_NETWORK_MARKERS)
     )
 
 
