@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import json
 from abc import ABC, abstractmethod
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 import structlog
@@ -26,6 +25,7 @@ from agentshore.state import AgentType, PlayOutcome, PlayType, SkillResult
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
+    from pathlib import Path
 
     from agentshore.agents.handle import AgentInvocationResult
     from agentshore.plays.base import PlayExecutionContext, PlayParams
@@ -439,18 +439,26 @@ class SkillBackedPlay(Play, ABC):
         active/reaping-DB-row union the deterministic reaper already trusts) and
         check whether any of those directories are now missing from disk.
 
-        A worktree the manager still considers ``active``/``reaping`` can only
-        legitimately lose its on-disk directory via the reaper (which itself
-        checks protection before removing — never touches a protected path) or
-        ``WorktreeManager.finalize_after_dispatch``'s branch-creating cleanup
-        (which calls ``release_dispatch`` and removes the directory before
-        marking the row ``stale`` — a narrow, single-await race window). Both are
-        vanishingly unlikely to coincide with this check, so a hit here is
-        treated as the destructive-sweep play having clobbered a live worktree:
-        ``skill_result.success`` is forced to ``False`` (even if the skill
-        self-reported success) so the incident surfaces instead of being
-        silently accepted, per #189/#195/#203/#238/#243/#250's precedent that a
-        worktree-clobber must never read as a clean success.
+        A missing directory alone is NOT proof of a clobber, though: the DB half
+        of that union is bookkeeping, and it goes stale (an already-merged
+        worktree can keep an ``active`` row for the rest of the session), so
+        every vanished row is first reconciled by
+        ``WorktreeManager.reconcile_vanished_protected_rows`` against actual
+        liveness — the in-flight dispatch registry plus active work claims on
+        the row's issue/PR. Rows with no live work behind them are stale
+        bookkeeping: they get retired (``reaped``) and logged at WARNING, and the
+        play keeps its success, because a maintenance play must repair such
+        imperfections rather than fail on them (#360 — nine already-merged
+        worktrees failed a correct prune).
+
+        Rows that ARE backed by live work are the real incident: a worktree the
+        manager considers in-flight can only legitimately lose its directory via
+        the reaper (which checks protection first) or
+        ``finalize_after_dispatch``'s branch-creating cleanup (a narrow
+        single-await race). Both are vanishingly unlikely to coincide with this
+        check, so those force ``skill_result.success`` to ``False`` (even if the
+        skill self-reported success) per #189/#195/#203/#238/#243/#250's
+        precedent that a worktree-clobber must never read as a clean success.
 
         Returns the (possibly amended) ``SkillResult`` and whether a violation
         was detected, so the caller can set an informative ``failure_kind``.
@@ -461,7 +469,7 @@ class SkillBackedPlay(Play, ABC):
         if worktrees_manager is None:
             return skill_result, False
         try:
-            live_rows = await worktrees_manager.live_protected_rows()
+            reconciliation = await worktrees_manager.reconcile_vanished_protected_rows()
         except Exception as exc:  # noqa: BLE001 — safety net must never crash the play
             _logger.warning(
                 "prune_protected_worktree_guard_failed",
@@ -470,7 +478,18 @@ class SkillBackedPlay(Play, ABC):
                 play_type=str(self.play_type),
             )
             return skill_result, False
-        clobbered = sorted({path for path in live_rows.values() if not Path(path).exists()})
+        if reconciliation.retired:
+            _logger.warning(
+                "prune_retired_stale_worktree_rows",
+                play_id=ctx.play_id,
+                play_type=self.play_type.value,
+                retired_paths=sorted(reconciliation.retired.values()),
+                reasons={
+                    str(wid): reconciliation.reasons.get(wid, "")
+                    for wid in sorted(reconciliation.retired)
+                },
+            )
+        clobbered = sorted(reconciliation.in_flight.values())
         if not clobbered:
             return skill_result, False
         _logger.error(

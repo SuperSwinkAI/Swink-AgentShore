@@ -11,6 +11,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 from agentshore.agents.handle import AgentInvocationResult
+from agentshore.agents.worktree.manager import VanishedProtectedWorktrees
 from agentshore.play_rules import needs_review
 from agentshore.plays.base import PlayParams
 from agentshore.plays.skill_backed.calibrate_alignment import CalibrateAlignmentPlay
@@ -1517,7 +1518,13 @@ async def test_prune_execute_flags_when_protected_worktree_was_removed(tmp_path:
 
     worktrees_manager = MagicMock()
     worktrees_manager.live_protected_paths = AsyncMock(return_value=set())
-    worktrees_manager.live_protected_rows = AsyncMock(return_value={42: clobbered_path})
+    worktrees_manager.reconcile_vanished_protected_rows = AsyncMock(
+        return_value=VanishedProtectedWorktrees(
+            in_flight={42: clobbered_path},
+            retired={},
+            reasons={42: "inflight_dispatch"},
+        )
+    )
 
     ctx = _ctx_for_execute()
     ctx.manager.dispatch = AsyncMock(return_value=_canned_invocation(success=True))
@@ -1551,7 +1558,7 @@ async def test_prune_execute_flags_when_protected_worktree_was_removed(tmp_path:
     ):
         outcome = await PrunePlay().execute(_state(), PlayParams(agent_id="a1"), ctx=ctx)
 
-    worktrees_manager.live_protected_rows.assert_awaited()
+    worktrees_manager.reconcile_vanished_protected_rows.assert_awaited()
     assert outcome.success is False
     assert outcome.error is not None
     assert clobbered_path in outcome.error
@@ -1567,11 +1574,11 @@ async def test_prune_execute_untouched_when_protected_worktree_still_present(
 
     from agentshore.state import SkillResult
 
-    surviving_path = tmp_path  # a real directory that exists
-
     worktrees_manager = MagicMock()
     worktrees_manager.live_protected_paths = AsyncMock(return_value=set())
-    worktrees_manager.live_protected_rows = AsyncMock(return_value={7: str(surviving_path)})
+    worktrees_manager.reconcile_vanished_protected_rows = AsyncMock(
+        return_value=VanishedProtectedWorktrees(in_flight={}, retired={}, reasons={})
+    )
 
     ctx = _ctx_for_execute()
     ctx.manager.dispatch = AsyncMock(return_value=_canned_invocation(success=True))
@@ -1605,9 +1612,76 @@ async def test_prune_execute_untouched_when_protected_worktree_still_present(
     ):
         outcome = await PrunePlay().execute(_state(), PlayParams(agent_id="a1"), ctx=ctx)
 
-    worktrees_manager.live_protected_rows.assert_awaited()
+    worktrees_manager.reconcile_vanished_protected_rows.assert_awaited()
     assert outcome.success is True
     assert outcome.failure_kind is None
+
+
+@pytest.mark.asyncio
+async def test_prune_execute_succeeds_when_vanished_rows_are_stale_bookkeeping(
+    tmp_path: Path,
+) -> None:
+    """#360: retiring stale rows for already-merged work must not fail the play.
+
+    The DB half of ``live_protected_rows`` goes stale — an already-merged
+    worktree keeps an ``active`` row for the rest of the session — so a prune
+    that correctly removes those directories used to be forced to
+    ``success=False`` with an ERROR ``prune_removed_protected_worktree``. When
+    the manager's reconciliation finds no live work behind the vanished rows,
+    the play keeps its success and the rows are simply reported as retired.
+    """
+    from unittest.mock import patch
+
+    from agentshore.state import SkillResult
+
+    merged_path = str(tmp_path) + "/agentshore-101-already-merged"
+
+    worktrees_manager = MagicMock()
+    worktrees_manager.live_protected_paths = AsyncMock(return_value=set())
+    worktrees_manager.reconcile_vanished_protected_rows = AsyncMock(
+        return_value=VanishedProtectedWorktrees(
+            in_flight={},
+            retired={101: merged_path},
+            reasons={101: "no_active_dispatch"},
+        )
+    )
+
+    ctx = _ctx_for_execute()
+    ctx.manager.dispatch = AsyncMock(return_value=_canned_invocation(success=True))
+    ctx.manager.worktrees = worktrees_manager
+
+    with (
+        patch(
+            "agentshore.plays.skill_backed.base.asyncio.to_thread",
+            new=AsyncMock(return_value=None),
+        ),
+        patch(
+            "agentshore.plays.skill_backed.base.parse_skill_result",
+            return_value=SkillResult(success=True, artifacts=[]),
+        ),
+        patch(
+            "agentshore.plays.skill_backed.base.render_skill_prompt",
+            return_value="<prompt>",
+        ),
+        patch(
+            "agentshore.plays.skill_backed.base.serialize_state_for_skill",
+            return_value={},
+        ),
+        patch(
+            "agentshore.core.wedge_signals.collect_active_worktree_paths",
+            return_value=[],
+        ),
+        patch(
+            "agentshore.core.wedge_signals.collect_recent_worktree_paths",
+            return_value=[],
+        ),
+    ):
+        outcome = await PrunePlay().execute(_state(), PlayParams(agent_id="a1"), ctx=ctx)
+
+    worktrees_manager.reconcile_vanished_protected_rows.assert_awaited()
+    assert outcome.success is True
+    assert outcome.failure_kind is None
+    assert outcome.error is None or merged_path not in outcome.error
 
 
 # ---------------------------------------------------------------------------
