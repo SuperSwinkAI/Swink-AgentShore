@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, TypedDict
 
 import yaml
 
-from agentshore.agents.model_catalog import KNOWN_MODELS
+from agentshore.agents.model_catalog import load_model_catalog
 from agentshore.agents.model_tiers import DEFAULT_MODEL_TIERS, REASONING_EFFORTS
 from agentshore.environment import detect_agent_binaries
 from agentshore.identity_names import canonical_identity_name
@@ -44,16 +44,17 @@ _TIER_KEYS = ("small", "medium", "large")
 def agents_catalog() -> dict[str, object]:
     """Return the canonical catalog the desktop Agent Config screen needs.
 
-    Pure data: a per-agent-key list of known model IDs (matching the CLI
-    wizard's source — agentshore.agents.model_catalog.KNOWN_MODELS) plus the
+    A per-agent-key list of known model IDs (bundled catalog plus any global
+    override — agentshore.agents.model_catalog.load_model_catalog) plus the
     per-tier recommended defaults (agentshore.agents.model_tiers.DEFAULT_MODEL_TIERS)
     and the valid reasoning-effort vocabularies per agent type
     (agentshore.agents.model_tiers.REASONING_EFFORTS).
-    No I/O — the desktop calls this once on mount and renders dropdowns from
-    the result. Keeping the catalog in one place means the CLI wizard and
-    the desktop screen always offer the same models with the same defaults.
+    Local file I/O only (no network) — the desktop calls this once on mount
+    and renders dropdowns from the result. Keeping the catalog in one place
+    means the CLI wizard and the desktop screen always offer the same models
+    with the same defaults.
     """
-    models: dict[str, list[str]] = {key: list(items) for key, items in KNOWN_MODELS.items()}
+    models: dict[str, list[str]] = {key: list(items) for key, items in load_model_catalog().items()}
     defaults: dict[str, dict[str, dict[str, str | None]]] = {}
     for agent_type in AgentType:
         tier_map = DEFAULT_MODEL_TIERS.get(agent_type, {})

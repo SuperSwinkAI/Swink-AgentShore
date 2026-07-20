@@ -1036,3 +1036,90 @@ def require_two_distinct_gh_identities(cfg: RuntimeConfig) -> None:
         "Configure a different `identity:` for at least one agent in agentshore.yaml.\n"
         "Run `agentshore identity --reconfigure` or see docs/identity.md for setup."
     )
+
+
+def per_identity_model_tier_coverage(cfg: RuntimeConfig) -> dict[str, frozenset[str]]:
+    """Return the set of enabled model tiers each GitHub identity provides.
+
+    Keyed by resolved GitHub login (per :func:`_resolved_login`, the pure-config
+    resolver — no network/keychain validation). Agents sharing a login union
+    their enabled tiers, so two identity labels mapping to the same login fold
+    into one entry. Agents with no identity bound or an undefined identity are
+    skipped — those are reported by :func:`require_two_distinct_gh_identities`.
+    """
+    from agentshore.agents.model_tiers import _agent_type_for_config, enabled_model_tiers
+
+    coverage: dict[str, set[str]] = {}
+    for agent_key, agent_cfg in cfg.agents.items():
+        if not agent_cfg.enabled:
+            continue
+        ident_name = agent_cfg.identity
+        if not ident_name:
+            continue
+        ident = cfg.identities.get(ident_name)
+        if ident is None:
+            continue
+        agent_type = _agent_type_for_config(agent_key, agent_cfg)
+        if agent_type is None:
+            continue
+        login = _resolved_login(ident, ident_name) or ident_name
+        coverage.setdefault(login, set()).update(enabled_model_tiers(agent_type, agent_cfg))
+    return {login: frozenset(tiers) for login, tiers in coverage.items()}
+
+
+def identities_missing_required_tiers(cfg: RuntimeConfig) -> dict[str, tuple[str, ...]]:
+    """Return, per identity, the required model tiers it does not cover.
+
+    Only identities with at least one missing tier appear in the result.
+    """
+    from agentshore.agents.model_tiers import REQUIRED_MODEL_TIERS
+
+    gaps: dict[str, tuple[str, ...]] = {}
+    for login, covered in per_identity_model_tier_coverage(cfg).items():
+        missing = tuple(tier for tier in REQUIRED_MODEL_TIERS if tier not in covered)
+        if missing:
+            gaps[login] = missing
+    return gaps
+
+
+def require_per_identity_model_tier_coverage(cfg: RuntimeConfig) -> None:
+    """Raise ``ConfigError`` when any identity lacks an enabled agent per tier.
+
+    Each GitHub identity must provide an enabled agent for every model tier
+    (small, medium, large). This is stricter than fleet-wide tier coverage and
+    closes an anti-confirmation deadlock: ``code_review`` is large-tier-only and
+    forbids the PR author from reviewing, so if ``large`` lives on a single
+    identity, that identity authors every PR it could review and no eligible
+    reviewer ever exists — the orchestrator wedges, spinning ``all_masked`` with
+    open PRs it can neither review nor escalate. Full per-identity tier coverage
+    guarantees ``large`` spans every identity, so any PR has a distinct-identity
+    large reviewer.
+
+    Configurations with zero enabled CLI agents are skipped, mirroring
+    :func:`require_two_distinct_gh_identities`.
+    """
+    from agentshore.agents.model_tiers import REQUIRED_MODEL_TIERS
+    from agentshore.errors import ConfigError
+
+    if not any(agent_cfg.enabled for agent_cfg in cfg.agents.values()):
+        return
+
+    gaps = identities_missing_required_tiers(cfg)
+    if not gaps:
+        return
+
+    required = ", ".join(REQUIRED_MODEL_TIERS)
+    lines = "\n".join(
+        f"  {login!r} missing tier(s): {', '.join(missing)}"
+        for login, missing in sorted(gaps.items())
+    )
+    raise ConfigError(
+        "Each GitHub identity must provide an enabled agent for every model tier "
+        f"({required}). code_review is large-tier-only and forbids the PR author "
+        "from reviewing, so a tier missing on an identity (especially `large`) "
+        "deadlocks review and wedges the session.\n"
+        f"{lines}\n"
+        "Enable the missing tier(s) under agents.<type>.model_tiers in "
+        "agentshore.yaml (assign the agent to the identity above), or run "
+        "`agentshore identity --reconfigure`. See docs/identity.md for setup."
+    )

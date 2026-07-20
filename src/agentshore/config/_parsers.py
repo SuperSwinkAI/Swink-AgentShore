@@ -101,7 +101,6 @@ _RawModelTiers = dict[str, str | _RawModelTier]
 class _RawAgent(TypedDict, total=False):
     enabled: bool
     binary: str | None
-    api_base: str | None
     model: str | None
     reasoning_effort: str | None
     approved_models: list[object]
@@ -422,7 +421,6 @@ def _parse_agent(
     return AgentConfig(
         enabled=raw.get("enabled", True),
         binary=raw.get("binary"),
-        api_base=raw.get("api_base"),
         model=raw.get("model"),
         reasoning_effort=raw.get("reasoning_effort"),
         approved_models=approved_models,

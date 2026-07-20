@@ -5,13 +5,9 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 
 import { EndSessionReportScreen } from "../EndSessionReportScreen";
 import { SessionContext, type EsrPayload } from "../../services/sessionContext";
-import type { startSessionFromPersistedSetup } from "../../setup/startFromPersistedSetup";
-
-type RepeatImpl = typeof startSessionFromPersistedSetup;
 
 interface RenderOpts {
   lastProjectPath?: string | null;
-  repeatImpl?: RepeatImpl;
   openPathImpl?: (path: string) => Promise<void>;
 }
 
@@ -46,7 +42,6 @@ function renderScreen(esr: EsrPayload | null, opts: RenderOpts = {}) {
             element={
               <EndSessionReportScreen
                 adapter={adapter}
-                repeatImpl={opts.repeatImpl}
                 openPathImpl={opts.openPathImpl}
               />
             }
@@ -146,14 +141,14 @@ describe("EndSessionReportScreen", () => {
     expect(screen.getByTestId("choose-project-sentinel")).toBeInTheDocument();
   });
 
-  it("renders the issue #561 chrome bar with Back-to-Home and Repeat buttons", () => {
+  it("renders the chrome bar with a Back-to-Home button, no Repeat button", () => {
     renderScreen(ESR_PAYLOAD);
 
     expect(screen.getByTestId("esr-chrome-bar")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /back to home/i })).toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: /repeat with same settings/i }),
-    ).toBeInTheDocument();
+      screen.queryByRole("button", { name: /repeat with same settings/i }),
+    ).not.toBeInTheDocument();
   });
 
   it("Back-to-Home navigates the router to the chooser", async () => {
@@ -163,73 +158,6 @@ describe("EndSessionReportScreen", () => {
     await user.click(screen.getByRole("button", { name: /back to home/i }));
 
     expect(screen.getByTestId("choose-project-sentinel")).toBeInTheDocument();
-  });
-
-  it("Repeat invokes startSessionFromPersistedSetup with the SessionContext project path", async () => {
-    const repeatImpl: RepeatImpl = vi.fn(async () => undefined);
-    renderScreen(ESR_PAYLOAD, {
-      lastProjectPath: "/Users/example/projects/foo",
-      repeatImpl,
-    });
-    const user = userEvent.setup();
-
-    await user.click(screen.getByRole("button", { name: /repeat with same settings/i }));
-
-    expect(repeatImpl).toHaveBeenCalledTimes(1);
-    expect(repeatImpl).toHaveBeenCalledWith(
-      "/Users/example/projects/foo",
-      expect.objectContaining({
-        onError: expect.any(Function),
-        navigate: expect.any(Function),
-      }),
-    );
-  });
-
-  it("Repeat falls back to inferring project path from the archive_path", async () => {
-    const repeatImpl: RepeatImpl = vi.fn(async () => undefined);
-    renderScreen(ESR_PAYLOAD, {
-      // lastProjectPath null — must derive from "/tmp/proj/.agentshore/archives/..."
-      lastProjectPath: null,
-      repeatImpl,
-    });
-    const user = userEvent.setup();
-
-    await user.click(screen.getByRole("button", { name: /repeat with same settings/i }));
-
-    expect(repeatImpl).toHaveBeenCalledWith("/tmp/proj", expect.any(Object));
-  });
-
-  it("Repeat surfaces a fallback message when no project path is on record", async () => {
-    const repeatImpl: RepeatImpl = vi.fn(async () => undefined);
-    // Fallback ESR (no esr) renders the chrome bar too, but archive_path is
-    // unavailable so the helper must NOT be invoked.
-    renderScreen(null, { lastProjectPath: null, repeatImpl });
-    const user = userEvent.setup();
-
-    await user.click(screen.getByRole("button", { name: /repeat with same settings/i }));
-
-    expect(repeatImpl).not.toHaveBeenCalled();
-    expect(
-      screen.getByRole("alert", { name: undefined }),
-    ).toHaveTextContent(/no prior project path on record/i);
-  });
-
-  it("Repeat surfaces a step-scoped error from the helper", async () => {
-    const repeatImpl: RepeatImpl = vi.fn(async (_path, opts) => {
-      opts?.onError?.(new Error("rpc down"), "select");
-    });
-    renderScreen(ESR_PAYLOAD, {
-      lastProjectPath: "/Users/example/projects/foo",
-      repeatImpl,
-    });
-    const user = userEvent.setup();
-
-    await user.click(screen.getByRole("button", { name: /repeat with same settings/i }));
-
-    expect(repeatImpl).toHaveBeenCalledTimes(1);
-    expect(await screen.findByRole("alert")).toHaveTextContent(
-      /couldn't select — try again from home/i,
-    );
   });
 
   it("auto-opens the timelapse MP4 when the payload carries one", async () => {

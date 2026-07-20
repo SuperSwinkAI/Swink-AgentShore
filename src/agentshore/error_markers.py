@@ -250,11 +250,17 @@ OOM_MARKERS: frozenset[str] = frozenset(
 )
 
 # Host disk exhaustion. Was ``cli/errors._ENOSPC_PATTERNS``.
+# "os error 28" is Codex's (Rust) spelling of ENOSPC — Rust's std::io::Error
+# Display prints "os error 28" rather than "errno 28", so without this the
+# Codex disk-full stderr ("No space left on device (os error 28)") fell through
+# to AUTH classification (#332) because the cache-renewal TTL text that often
+# accompanies a full disk matched the auth markers instead.
 ENOSPC_MARKERS: frozenset[str] = frozenset(
     {
         "no space left on device",
         "enospc",
         "errno 28",
+        "os error 28",
         "disk quota exceeded",
     }
 )

@@ -323,3 +323,131 @@ def test_wedge_signals_active_agents_empty_when_all_idle(tmp_path: Path) -> None
     signals = build_recent_wedge_signals(state, tmp_path, session_id="sess-idle")
 
     assert signals["active_agents_in_flight"] == []
+
+
+# --- mid-session orphan sweep (#330) -----------------------------------------
+
+
+class _FakeCtx:
+    """Minimal PlayExecutionContext stand-in — mirrors test_trunk_artifacts.py's."""
+
+    def __init__(self, store: object, project_path: Path, *, session_id: str = "sess") -> None:
+        self.store = store
+        self.project_path = project_path
+        self.session_id = session_id
+
+
+async def _record_closed_cleanup_play(store: object, *, session_id: str) -> int:
+    from agentshore.data.store import PlayRecord
+
+    return await store.record_play(  # type: ignore[attr-defined]
+        PlayRecord(
+            session_id=session_id,
+            play_type=PlayType.CLEANUP.value,
+            started_at="2026-06-12T00:01:00+00:00",
+            success=False,  # killed mid-flight: never stamped ended_at
+        )
+    )
+
+
+async def test_sweep_reclaims_prior_killed_play_orphan(tmp_path: Path) -> None:
+    """A file orphaned by a previously-killed trunk-scoped play is reclaimed."""
+    import os
+
+    from agentshore.core.trunk_artifacts import snapshot_untracked_root_artifacts
+    from agentshore.data.store import DataStore, SessionRecord
+    from agentshore.plays.skill_backed.reconcile_state import _sweep_mid_session_orphans
+    from tests.test_trunk_artifacts import _init_repo
+
+    repo = _init_repo(tmp_path)
+    (repo / ".agentshore").mkdir(exist_ok=True)
+    store = DataStore(repo / ".agentshore" / "agentshore.db")
+    await store.initialize()
+    try:
+        await store.create_session(
+            SessionRecord(
+                session_id="sess", project_path=str(repo), started_at="2026-06-12T00:00:00+00:00"
+            )
+        )
+        owner = await _record_closed_cleanup_play(store, session_id="sess")
+        orphan = repo / "orphan.json"
+        orphan.write_text("{}")
+        os.utime(orphan, (1900000000.0, 1900000000.0))
+
+        ctx = _FakeCtx(store, repo, session_id="sess")
+        state = _state(agents=[_idle_agent()])  # nobody in flight
+
+        await _sweep_mid_session_orphans(state, ctx)
+
+        assert not orphan.exists()
+        quarantined = repo / ".agentshore" / "reclaimed" / str(owner) / "orphan.json"
+        assert quarantined.exists()
+        mutation = await store.get_external_mutation("sess", f"reclaim:{owner}:orphan.json")
+        assert mutation is not None
+        assert mutation.status == "reclaimed_reconcile"
+        assert snapshot_untracked_root_artifacts(repo) == set()
+    finally:
+        await store.close()
+
+
+async def test_sweep_protects_file_owned_by_active_trunk_play(tmp_path: Path) -> None:
+    """A file bracketed by a currently-running trunk-scoped agent is left alone."""
+    import os
+
+    from agentshore.data.store import DataStore, SessionRecord
+    from agentshore.plays.skill_backed.reconcile_state import _sweep_mid_session_orphans
+    from tests.test_trunk_artifacts import _init_repo
+
+    repo = _init_repo(tmp_path)
+    (repo / ".agentshore").mkdir(exist_ok=True)
+    store = DataStore(repo / ".agentshore" / "agentshore.db")
+    await store.initialize()
+    try:
+        await store.create_session(
+            SessionRecord(
+                session_id="sess", project_path=str(repo), started_at="2026-06-12T00:00:00+00:00"
+            )
+        )
+        owner = await _record_closed_cleanup_play(store, session_id="sess")
+        in_flight = repo / "in_flight.json"
+        in_flight.write_text("{}")
+        os.utime(in_flight, (1900000200.0, 1900000200.0))  # after the busy agent started
+
+        busy_agent = AgentSnapshot(
+            agent_id="agent-busy",
+            agent_type=AgentType.CODEX,
+            status=AgentStatus.BUSY,
+            context_size=0,
+            total_cost=0.0,
+            total_tokens=0,
+            tasks_completed=0,
+            tasks_failed=0,
+            current_play_type=PlayType.CLEANUP,
+            current_play_id=owner + 1,
+            current_play_started_at="2030-03-17T17:46:40+00:00",  # epoch 1900000000
+        )
+        state = _state(agents=[busy_agent])
+
+        await _sweep_mid_session_orphans(state, ctx=_FakeCtx(store, repo, session_id="sess"))
+
+        assert in_flight.exists()
+        mutation = await store.get_external_mutation("sess", f"reclaim:{owner}:in_flight.json")
+        assert mutation is None
+    finally:
+        await store.close()
+
+
+async def test_sweep_exception_is_swallowed_and_does_not_raise(tmp_path: Path) -> None:
+    """A sweep failure (e.g. a DB error) never raises out of the reconcile play."""
+
+    class _ExplodingStore:
+        async def list_trunk_play_windows(self, *, play_types: list[str]) -> list[object]:
+            raise RuntimeError("db exploded")
+
+    from agentshore.plays.skill_backed.reconcile_state import _sweep_mid_session_orphans
+
+    ctx = _FakeCtx(_ExplodingStore(), tmp_path, session_id="sess")
+    state = _state(agents=[_idle_agent()])
+
+    # Must not raise.
+    await _sweep_mid_session_orphans(state, ctx)

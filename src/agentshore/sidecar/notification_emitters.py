@@ -2,10 +2,10 @@
 notifications on the sidecar stdio transport.
 
 The Orchestrator's natural-exit hook fires the emitters built here so the
-sidecar can fan the result out over its stdio JSON-RPC transport. Both
-emitters in this module are live: :func:`build_session_completed_emitter`
-and :func:`build_esr_ready_emitter` are wired into
-``session_lifecycle._start_orchestrator``.
+sidecar can fan the result out over its stdio JSON-RPC transport. All three
+emitters in this module are live: :func:`build_session_completed_emitter`,
+:func:`build_esr_ready_emitter`, and :func:`build_session_draining_emitter`
+are wired into ``session_lifecycle._start_orchestrator``.
 """
 
 from __future__ import annotations
@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 from agentshore.sidecar.server import (
     build_esr_ready_notification,
     build_session_completed_notification,
+    build_session_draining_notification,
 )
 
 if TYPE_CHECKING:
@@ -67,5 +68,21 @@ def build_esr_ready_emitter(
                 log_path=log_path,
             )
         )
+
+    return emit
+
+
+def build_session_draining_emitter(
+    notify: Callable[[JsonRpcNotification], None],
+) -> Callable[[str, str], None]:
+    """Return a sync callback the orchestrator fires the moment drain begins.
+
+    Wired to ``begin_drain`` — the earliest point in graceful shutdown, well
+    before ``$/esr_ready``. Lets the Tauri shell's heartbeat watchdog stand
+    down before ESR HTML generation (unbounded, O(plays/agents)) even starts.
+    """
+
+    def emit(session_id: str, reason: str) -> None:
+        notify(build_session_draining_notification(session_id=session_id, reason=reason))
 
     return emit

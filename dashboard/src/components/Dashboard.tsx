@@ -185,6 +185,15 @@ export function Dashboard({
 
     client.onMessage = (msg: AgentShoreMessage) => {
       stateManager.handleMessage(msg);
+      // #361: live traffic proves bootstrap finished; the manager has already
+      // cleared its bootstrap progress, so push it so a modal left up by a lost
+      // ("ready", "completed") sentinel comes down. No-ops when unchanged.
+      if (msg.type === "state_update" || msg.type === "play_event") {
+        notifyBootstrapModal({
+          phase: stateManager.bootstrapPhase,
+          startedAt: stateManager.bootstrapStartedAt,
+        });
+      }
       switch (msg.type) {
         case "state_update":
           notifyTopBarHud(msg);

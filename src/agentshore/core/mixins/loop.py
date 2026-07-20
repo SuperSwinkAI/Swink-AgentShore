@@ -612,14 +612,38 @@ class LoopRunner:
                 self._fleet_idle_since = time.monotonic()
             idle_seconds = time.monotonic() - self._fleet_idle_since
             if idle_seconds >= _FLEET_IDLE_END_SESSION_SECONDS:
+                # Check whether the graph still reports workable work at the
+                # moment the backstop fires. A non-empty count here means the
+                # session didn't run out of real work — something upstream
+                # (mask, resolver, or a mis-cleared gate label) kept excluding
+                # it from candidacy for the whole idle window, which is a
+                # distinct anomaly from a genuinely empty backlog and worth a
+                # different alert so it doesn't have to be reverse-engineered
+                # from raw NDJSON after the fact.
+                availability = self.compute_skip_diagnosis(state).candidate_plan.work_availability
+                backlog_remaining = (
+                    availability.workable_issue_count > 0 or availability.ready_task_count > 0
+                )
+                event = (
+                    "fleet_idle_end_session_with_backlog_remaining"
+                    if backlog_remaining
+                    else "fleet_idle_end_session"
+                )
                 _logger.warning(
-                    "fleet_idle_end_session",
+                    event,
                     session_id=self._session_id,
                     idle_seconds=round(idle_seconds),
                     limit_seconds=_FLEET_IDLE_END_SESSION_SECONDS,
+                    workable_issues=availability.workable_issue_count,
+                    ready_tasks=availability.ready_task_count,
                     note=(
                         "whole fleet idle past limit with nothing in flight — "
                         "ending the session cleanly via drain"
+                        if not backlog_remaining
+                        else "whole fleet idle past limit despite workable backlog remaining — "
+                        "likely a stuck candidate (e.g. a mask/label exclusion that never "
+                        "cleared) rather than a genuine work shortage; ending the session "
+                        "cleanly via drain"
                     ),
                 )
                 await self.initiate_autonomous_stop("fleet_idle_timeout", fire_natural_exit=True)

@@ -294,6 +294,47 @@ Read `.agentshore/learnings.json` if it exists.
     assert "Read `.agentshore/learnings.json` if it exists." not in result
 
 
+async def test_render_prompt_turn_discipline_permits_long_foreground_builds(
+    tmp_path: Path,
+) -> None:
+    """#331: the turn-discipline preamble must not license killing a slow build.
+
+    The original wording listed "a build or test run" and "a package-manager lock"
+    among the things never to wait for, and offered "or kill it and proceed with what
+    you have". Agents read that as instruction to abandon a cold `cargo build` and
+    self-report incomplete validation — five plays in session 16515f9b did exactly
+    that, quitting after 329s-1672s while the orchestrator's budget (agent_timeout,
+    3h by default) was nowhere near exhausted and a sibling dispatch in the same
+    session ran 5888s untouched. Duration never cuts a dispatch off; only
+    stream_idle_timeout (silence) does.
+
+    The anti-async-handoff directive (#242, agy backgrounding commands and ending the
+    turn to await a callback) must survive intact — that is a real failure mode and
+    the inline wording is what fixes it.
+    """
+    result = await render_skill_prompt(
+        "agentshore-issue-pickup",
+        PlayParams(issue_number=1),
+        project_path=tmp_path,
+    )
+
+    # The kill-the-build license is gone.
+    assert "kill it and proceed with what you have" not in result
+    assert "finish it or kill it" not in result
+    # Builds/tests/lock waits are no longer in the never-wait list.
+    assert "a build\nor test run" not in result
+    # Long foreground waits are explicitly authorised, and the real constraint
+    # (silence, not duration) is stated.
+    assert "Waiting in the foreground is not the same as ending your turn" in result
+    assert "Duration alone will not cut you off" in result
+    assert "do not impose a time budget on yourself" in result.lower()
+    # The #242 anti-async-handoff directive survives, in both the preamble and the
+    # recency-privileged completion contract.
+    assert "there is no callback and no scheduler" in result
+    assert "never put a command in the background expecting to be re-invoked" in result
+    assert "do not end the turn expecting to be re-invoked" in result
+
+
 async def test_render_prompt_groom_backlog_allows_full_learnings_read(tmp_path: Path) -> None:
     """agentshore-groom-backlog gets the re-distillation carve-out: it MAY read the
     full learnings.json (allowance directive), and its learnings.json read lines are

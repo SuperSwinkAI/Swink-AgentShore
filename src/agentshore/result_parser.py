@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -16,6 +17,64 @@ from agentshore.state import JsonArtifact, JsonIssueRef, JsonObject, SkillResult
 # ``top_k(max_entries)`` is the real bound — while still capping a pathological
 # array. result_parser is config-agnostic, hence a constant rather than the cfg.
 _MAX_COMPACTED_ENTRIES = 500
+
+
+# Suffixes agents tack onto an artifact ``type`` when restating it in their own
+# words ("design_audit" → "design-audit-result"). Stripped once, from the tail only.
+_ARTIFACT_TYPE_NOISE_SUFFIXES: tuple[str, ...] = ("_result", "_results")
+
+
+def normalize_artifact_type(value: object) -> str | None:
+    """Fold an artifact ``type`` to a canonical form for matching, or ``None``.
+
+    #313: agents restate the ``type`` string from their skill instructions in their
+    own spelling — the live failure was a *complete, well-formed* design_audit
+    payload emitted under ``"design-audit-result"`` instead of ``"design_audit"``.
+    The exact-string match threw the whole payload away and the play failed 3× on
+    work it had actually finished.
+
+    Folding is deliberately narrow — case, ``-``/whitespace vs ``_``, and one
+    trailing ``_result``/``_results`` — because it only decides *which* artifact the
+    validator inspects. The payload's required fields are still validated in full
+    afterwards, so a genuinely missing or empty artifact still fails; this only
+    stops a complete payload being discarded over a hyphen.
+
+    Agent-type-agnostic on purpose: every agent's artifacts are folded the same
+    way. Agents converge on the same spelling drift regardless of vendor, and a
+    per-agent-type carve-out would be a hack against the wrong layer.
+    """
+    if not isinstance(value, str):
+        return None
+    folded = re.sub(r"[\s\-]+", "_", value.strip().lower())
+    folded = re.sub(r"_+", "_", folded).strip("_")
+    if not folded:
+        return None
+    for suffix in _ARTIFACT_TYPE_NOISE_SUFFIXES:
+        if folded.endswith(suffix) and len(folded) > len(suffix):
+            return folded[: -len(suffix)]
+    return folded
+
+
+def find_artifact(artifacts: list[JsonArtifact], expected_type: str) -> JsonObject | None:
+    """Return the first artifact whose ``type`` matches *expected_type*, or ``None``.
+
+    An exact ``type`` match always wins; only when none exists does this fall back
+    to :func:`normalize_artifact_type` folding on both sides. That ordering keeps a
+    correctly-spelled artifact authoritative when a stray near-miss is also present,
+    so the fallback can only ever *add* a match, never redirect one (#313).
+    """
+    for artifact in artifacts:
+        if isinstance(artifact, dict) and artifact.get("type") == expected_type:
+            return artifact
+    expected_normalized = normalize_artifact_type(expected_type)
+    if expected_normalized is None:
+        return None
+    for artifact in artifacts:
+        if not isinstance(artifact, dict):
+            continue
+        if normalize_artifact_type(artifact.get("type")) == expected_normalized:
+            return artifact
+    return None
 
 
 def _extract_json_object(text: str, start: int) -> str | None:

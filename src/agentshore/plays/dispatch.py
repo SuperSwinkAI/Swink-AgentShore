@@ -125,9 +125,19 @@ compact output flags instead (`-q --tb=line` for pytest, `--short` for mypy).
 
 This is a single, non-interactive turn. Nothing will "wake you up", "re-invoke you on
 completion", or send a "task notification" — there is no callback and no scheduler
-watching for you. Never end your turn to wait for user input, a background job, a build
-or test run, a package-manager lock, CI, or any notification: run every command in the
-foreground to completion within this turn, or kill it and proceed with what you have.
+watching for you. Never end your turn to wait for user input, a background job, CI, or
+any notification, and never put a command in the background expecting to be re-invoked
+when it finishes: run every command in the foreground to completion within this turn.
+
+Waiting in the foreground is not the same as ending your turn, and long commands are
+expected. A cold build, a full test suite, or a blocked package-manager lock can
+legitimately take tens of minutes — let it run. Duration alone will not cut you off;
+only prolonged *silence* will (which is why you must never pipe output through a
+buffering filter, above). Do not impose a time budget on yourself, do not kill a
+command that is still making progress, and do not skip, abandon, or self-report
+incomplete validation because you predict it will not fit in the turn — it fits. Kill
+a command only if it is genuinely hung (no output at all for many minutes) or blocking
+on interactive input.
 The closing reminder below restates the result block you must emit before you stop.
 """
 
@@ -139,9 +149,10 @@ The closing reminder below restates the result block you must emit before you st
 _COMPLETION_CONTRACT_TEMPLATE = """## Before you stop — required
 
 Emit the fenced JSON result block defined above as the final thing you do. This was a
-single turn with no callback: do not pause to wait for anything still running — finish
-it or kill it, then emit the block. Omitting the block records the play as failed
-(`no valid result block`) and discards everything you did, including any PR you opened.
+single turn with no callback: do not end the turn expecting to be re-invoked when
+something still running finishes — let it finish in the foreground, then emit the
+block. Omitting the block records the play as failed (`no valid result block`) and
+discards everything you did, including any PR you opened.
 """
 
 # Interpolated into ``_CONTEXT_DISCIPLINE_TEMPLATE`` as ``{cwd_block}`` when the

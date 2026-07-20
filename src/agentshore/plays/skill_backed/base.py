@@ -44,15 +44,57 @@ _JSON_RETRY_PROMPT = (
     "you already did, matching the schema in your instructions."
 )
 
-# Near-miss variant (#229): JSON emitted but missing top-level boolean ``success``
+# Near-miss variant (#229/#313): JSON emitted but missing the top-level boolean ``success``
 # (``SkillResult.missing_success_envelope``). Naming the exact defect recovers far more than
 # the generic nudge, which the agent answers by re-emitting the same shape.
+#
+# #313: the original wording ("re-emit the exact same JSON, adding success; do not invent
+# other keys") was calibrated for a true near-miss — an otherwise-correct envelope one field
+# short. agy's dominant mode is not that: it finishes the work and then reports it in an
+# ad-hoc shape of its own ({"result": "completed", "pr": "<url>"}), or as a bare payload
+# array with no envelope at all. Against that shape the old prompt was actively harmful —
+# "do not invent other keys" forbids the very keys the envelope requires, so the retry
+# faithfully re-emitted the same unusable object and a real, merged-able PR was discarded.
+# It must therefore restate the FULL envelope, not just the one missing field.
 _JSON_RETRY_MISSING_SUCCESS_PROMPT = (
-    "Your previous turn emitted a JSON result block, but it is missing the required "
-    "top-level boolean `success` field. Do not redo or repeat any work. Re-emit the exact "
-    'same JSON for what you already did, adding a top-level "success": true (or false). '
-    "Do not invent other keys. Output only that one fenced JSON block."
+    "Your previous turn emitted JSON, but not the result envelope required by your skill "
+    "instructions. Do not redo or repeat any work — everything you already did still "
+    "counts, and this turn only reports it.\n"
+    "Re-emit ONE fenced JSON block describing that same completed work, using the FULL "
+    "result envelope:\n"
+    '  {"success": <true|false>, "artifacts": [{"type": "<exact type>", ...}], ...}\n'
+    "Requirements:\n"
+    "- `success` MUST be present at the TOP level and be a JSON boolean (true/false) — "
+    "not a string, not nested inside another object.\n"
+    "- `artifacts` MUST be a top-level array of objects, each carrying the exact `type` "
+    "string your skill instructions specify.\n"
+    "- Every other field your skill instructions require (for example `issue_picked_up`, "
+    "`branch`) MUST appear at the TOP level of the same envelope.\n"
+    "- A bare payload, a bare array, or an ad-hoc object of your own design (for example "
+    '{"result": "completed"}) will be REJECTED and the work you already finished will be '
+    "discarded.\n"
+    "Output only that one fenced JSON block."
 )
+
+
+def _missing_envelope_retry_prompt(required_artifact_types: Sequence[str]) -> str:
+    """Return the missing-envelope nudge, naming the exact artifact ``type`` strings.
+
+    The base prompt can only point at "your skill instructions"; when the play declares
+    ``required_artifact_types`` we can restate the literal strings its validator
+    exact-matches on, which is the defect in #313's occurrence #3 (a complete audit
+    payload emitted under ``design-audit-result``).
+    """
+    if not required_artifact_types:
+        return _JSON_RETRY_MISSING_SUCCESS_PROMPT
+    types = ", ".join(f'"{t}"' for t in required_artifact_types)
+    return (
+        f"{_JSON_RETRY_MISSING_SUCCESS_PROMPT}\n"
+        f"For this play, `artifacts` MUST contain an object whose `type` is exactly "
+        f"{types} — spelled exactly that way, underscores included. Any other spelling "
+        "is rejected."
+    )
+
 
 # #236: agy async/background-handoff variant — agent deferred work to an async task instead
 # of finishing it. Unlike the generic nudge, the work is unfinished, so it must re-run
@@ -94,6 +136,42 @@ def _with_antigravity_sync_directive(prompt: str, agent_type: AgentType | None) 
 # turning a silent resume hang into 30 min of dead slot. Short budget fast-fails (recoverable
 # TIMEOUT_STREAM_IDLE). Not applied to async handoffs (#236) — those do real work.
 _JSON_RETRY_FIRST_BYTE_S = 120.0
+
+# Why an agent produced output but no usable result envelope. Drives both the retry prompt
+# and — when no retry is possible — the classification recorded on the failure (#313).
+_ENVELOPE_DEFECT_ASYNC_HANDOFF = "async_handoff"
+_ENVELOPE_DEFECT_MISSING_ENVELOPE = "missing_success_envelope"
+_ENVELOPE_DEFECT_NO_JSON = "no_json_block"
+
+# Operator-facing diagnosis per defect, appended to the play error when the retry could not
+# run. Without this a 19-min dispatch that ended in a textbook async handoff reported only
+# the generic "no valid result block", so the session's costliest failure carried neither
+# mitigation nor classification (#313, session 16515f9b).
+_ENVELOPE_DEFECT_DIAGNOSIS: dict[str, str] = {
+    _ENVELOPE_DEFECT_ASYNC_HANDOFF: (
+        "diagnosis: agent deferred work to an async/background task and ended the turn "
+        "waiting on it instead of completing it and emitting the result envelope (#236)"
+    ),
+    _ENVELOPE_DEFECT_MISSING_ENVELOPE: (
+        "diagnosis: agent emitted JSON without the required result envelope (no top-level "
+        "boolean 'success'); completed work may have been reported in an ad-hoc shape (#313)"
+    ),
+    _ENVELOPE_DEFECT_NO_JSON: ("diagnosis: agent produced output but no JSON result block at all"),
+}
+
+
+def _classify_envelope_defect(raw_output: str, skill_result: SkillResult) -> str:
+    """Return the ``_ENVELOPE_DEFECT_*`` label for a missing-result-envelope failure.
+
+    Single source of truth for the defect taxonomy so the retry path and the
+    no-retry-possible path (no resumable session id) always agree on the label.
+    """
+    if cli_antigravity.is_async_handoff(raw_output):
+        return _ENVELOPE_DEFECT_ASYNC_HANDOFF
+    if skill_result.missing_success_envelope:
+        return _ENVELOPE_DEFECT_MISSING_ENVELOPE
+    return _ENVELOPE_DEFECT_NO_JSON
+
 
 # Max consecutive clean-exit empty no-op dispatches before failing the play and routing the
 # agent into take_break. First dispatch is attempt 1, so this bounds it at 1 initial + 2
@@ -173,6 +251,12 @@ class SkillBackedPlay(Play, ABC):
     is_handoff: bool = False
     is_observation: bool = False
     requeue_on_anti_confirmation: bool = False
+
+    # Artifact ``type`` strings this play's result validator requires, if any. Purely
+    # advisory: restated verbatim in the missing-envelope retry nudge so a re-emission
+    # uses the exact spelling the validator matches on (#313). Plays with no artifact
+    # contract leave this empty and get the generic envelope nudge.
+    required_artifact_types: Sequence[str] = ()
 
     @property
     @abstractmethod
@@ -267,7 +351,7 @@ class SkillBackedPlay(Play, ABC):
         except OSError:
             return False
 
-    def _inject_worktree_guards(
+    async def _inject_worktree_guards(
         self, extra_context: dict[str, object], ctx: PlayExecutionContext
     ) -> None:
         """Inject the protected-worktree lists a destructive worktree sweep must honour.
@@ -278,6 +362,19 @@ class SkillBackedPlay(Play, ABC):
         (#189, #218) — a worktree created inside the min-age window is kept regardless
         of claim-query freshness. Best-effort: a missing list is the conservative
         outcome (skip nothing extra) and never blocks the dispatch.
+
+        ``active_worktree_paths`` starts from the narrow DB-only
+        ``collect_active_worktree_paths`` query (kept for back-compat / cheap
+        best-effort) and is WIDENED with ``ctx.manager.worktrees``' hardened
+        live-dispatch truth (in-flight registry + active/reaping DB rows) — the
+        same protection set the deterministic reaper (Regime 1) already trusts
+        via ``_protected_paths``/``_live_alias_paths``. The DB-only query alone
+        misses ``status='reaping'`` rows and in-flight dispatches whose
+        ``worktrees`` row write hasn't landed yet — the exact gap #311 exploited
+        to let the LLM-driven PRUNE/RECONCILE_STATE skill (Regime 2) delete a
+        worktree the reaper would have protected. This widening is still purely
+        advisory (the skill can ignore it); see ``execute()``'s post-hoc guard
+        for the hard backstop.
         """
         from agentshore.core.wedge_signals import (
             collect_active_worktree_paths,
@@ -285,10 +382,13 @@ class SkillBackedPlay(Play, ABC):
         )
 
         extra_context["worktree_min_age_hours"] = _WORKTREE_MIN_AGE_HOURS
+        active_paths: set[str] = set()
         try:
-            extra_context["active_worktree_paths"] = collect_active_worktree_paths(
-                ctx.project_path,
-                session_id=ctx.session_id,
+            active_paths.update(
+                collect_active_worktree_paths(
+                    ctx.project_path,
+                    session_id=ctx.session_id,
+                )
             )
         except Exception as exc:  # noqa: BLE001 — best-effort; empty list is safe
             _logger.warning(
@@ -297,6 +397,19 @@ class SkillBackedPlay(Play, ABC):
                 play_id=ctx.play_id,
                 play_type=str(self.play_type),
             )
+        manager = getattr(ctx, "manager", None)
+        worktrees_manager = getattr(manager, "worktrees", None) if manager is not None else None
+        if worktrees_manager is not None:
+            try:
+                active_paths.update(await worktrees_manager.live_protected_paths())
+            except Exception as exc:  # noqa: BLE001 — widening is best-effort too
+                _logger.warning(
+                    "worktree_manager_protected_paths_inject_failed",
+                    error=str(exc),
+                    play_id=ctx.play_id,
+                    play_type=str(self.play_type),
+                )
+        extra_context["active_worktree_paths"] = sorted(active_paths)
         try:
             extra_context["young_worktree_paths"] = collect_recent_worktree_paths(
                 ctx.project_path,
@@ -310,6 +423,88 @@ class SkillBackedPlay(Play, ABC):
                 play_id=ctx.play_id,
                 play_type=str(self.play_type),
             )
+
+    async def _guard_against_protected_worktree_removal(
+        self, ctx: PlayExecutionContext, skill_result: SkillResult
+    ) -> tuple[SkillResult, bool]:
+        """Hard, code-level backstop against a destructive sweep clobbering a live worktree.
+
+        ``_inject_worktree_guards`` only *advises* the LLM-driven PRUNE skill which
+        paths to keep — the skill can still misclassify a worktree and run
+        ``git worktree remove --force`` on it (#311). Because the skill is an
+        opaque CLI subprocess, we cannot intercept the removal mid-flight; the
+        realistic enforcement point is post-hoc detection: after the skill
+        returns, re-derive the manager's live-protected truth
+        (``WorktreeManager.live_protected_rows`` — the same in-flight-registry +
+        active/reaping-DB-row union the deterministic reaper already trusts) and
+        check whether any of those directories are now missing from disk.
+
+        A missing directory alone is NOT proof of a clobber, though: the DB half
+        of that union is bookkeeping, and it goes stale (an already-merged
+        worktree can keep an ``active`` row for the rest of the session), so
+        every vanished row is first reconciled by
+        ``WorktreeManager.reconcile_vanished_protected_rows`` against actual
+        liveness — the in-flight dispatch registry plus active work claims on
+        the row's issue/PR. Rows with no live work behind them are stale
+        bookkeeping: they get retired (``reaped``) and logged at WARNING, and the
+        play keeps its success, because a maintenance play must repair such
+        imperfections rather than fail on them (#360 — nine already-merged
+        worktrees failed a correct prune).
+
+        Rows that ARE backed by live work are the real incident: a worktree the
+        manager considers in-flight can only legitimately lose its directory via
+        the reaper (which checks protection first) or
+        ``finalize_after_dispatch``'s branch-creating cleanup (a narrow
+        single-await race). Both are vanishingly unlikely to coincide with this
+        check, so those force ``skill_result.success`` to ``False`` (even if the
+        skill self-reported success) per #189/#195/#203/#238/#243/#250's
+        precedent that a worktree-clobber must never read as a clean success.
+
+        Returns the (possibly amended) ``SkillResult`` and whether a violation
+        was detected, so the caller can set an informative ``failure_kind``.
+        Best-effort: any error probing manager/disk state leaves the result
+        untouched — this is a safety net, not a new failure mode of its own.
+        """
+        worktrees_manager = getattr(ctx.manager, "worktrees", None)
+        if worktrees_manager is None:
+            return skill_result, False
+        try:
+            reconciliation = await worktrees_manager.reconcile_vanished_protected_rows()
+        except Exception as exc:  # noqa: BLE001 — safety net must never crash the play
+            _logger.warning(
+                "prune_protected_worktree_guard_failed",
+                error=str(exc),
+                play_id=ctx.play_id,
+                play_type=str(self.play_type),
+            )
+            return skill_result, False
+        if reconciliation.retired:
+            _logger.warning(
+                "prune_retired_stale_worktree_rows",
+                play_id=ctx.play_id,
+                play_type=self.play_type.value,
+                retired_paths=sorted(reconciliation.retired.values()),
+                reasons={
+                    str(wid): reconciliation.reasons.get(wid, "")
+                    for wid in sorted(reconciliation.retired)
+                },
+            )
+        clobbered = sorted(reconciliation.in_flight.values())
+        if not clobbered:
+            return skill_result, False
+        _logger.error(
+            "prune_removed_protected_worktree",
+            play_id=ctx.play_id,
+            play_type=self.play_type.value,
+            clobbered_paths=clobbered,
+        )
+        from dataclasses import replace  # noqa: PLC0415
+
+        message = "destructive worktree sweep removed a protected/in-flight worktree: " + ", ".join(
+            clobbered
+        )
+        combined_error = f"{skill_result.error}; {message}" if skill_result.error else message
+        return replace(skill_result, success=False, error=combined_error), True
 
     def estimated_cost(self, state: OrchestratorState) -> float:
         return 0.10
@@ -399,13 +594,13 @@ class SkillBackedPlay(Play, ABC):
             # stale paths), so it needs the same active-claim + age guards prune
             # uses — without them its diagnose-then-remediate-later flow can delete
             # a worktree allocated mid-run to a freshly dispatched agent (#218).
-            self._inject_worktree_guards(extra_context, ctx)
+            await self._inject_worktree_guards(extra_context, ctx)
         elif self.play_type == PlayType.PRUNE:
             # Inject the set of currently-claimed / too-young worktrees so the
             # skill skips them, even when they have no pushed branch yet. Without
             # this, active pickup worktrees look like orphans (no open PR, no
             # commits beyond target) and get deleted mid-play.
-            self._inject_worktree_guards(extra_context, ctx)
+            await self._inject_worktree_guards(extra_context, ctx)
 
         # Write isolated context so concurrent plays cannot read each other's state.
         payload = serialize_state_for_skill(
@@ -642,13 +837,42 @@ class SkillBackedPlay(Play, ABC):
         # salvaged a non-envelope line — both leave a resumable session, which is
         # the only real prerequisite. This is the narrow exception to the
         # --resume ban — see feedback_persistent_sessions for the general rule.
-        if (
+        #
+        # #313: the session-id prerequisite is now checked *inside* the branch, not as
+        # part of its trigger. Guarding the whole branch on it meant an unresolvable
+        # conversation id (agy's ``resolve_conversation_id`` returning None) skipped the
+        # retry *and* the classification, so a 19-min dispatch that ended in a textbook
+        # async handoff fell through to a bare "no valid result block" with no retry
+        # event logged at all. The retry still cannot run without a resumable session —
+        # we do not fabricate one — but the failure is now named.
+        missing_envelope = (
             not skill_result.success
-            and skill_result.error
+            and skill_result.error is not None
             and "no valid result block" in skill_result.error
-            and invocation.session_id is not None
             and len(invocation.raw_output) > 0
-        ):
+        )
+        if missing_envelope and invocation.session_id is None:
+            defect = _classify_envelope_defect(invocation.raw_output, skill_result)
+            _logger.warning(
+                "agent_json_retry_skipped",
+                agent_id=agent_id,
+                play_type=self.play_type.value,
+                reason="no_resumable_session_id",
+                defect=defect,
+                original_output_length=len(invocation.raw_output),
+                missing_success_envelope=skill_result.missing_success_envelope,
+                async_handoff=defect == _ENVELOPE_DEFECT_ASYNC_HANDOFF,
+            )
+            from dataclasses import replace  # noqa: PLC0415
+
+            skill_result = replace(
+                skill_result,
+                error=(
+                    f"{skill_result.error}; {_ENVELOPE_DEFECT_DIAGNOSIS[defect]}; "
+                    "json retry skipped: agent reported no resumable session id"
+                ),
+            )
+        elif missing_envelope and invocation.session_id is not None:
             # Worktree may be reclaimed between initial dispatch return and here
             # (same TOCTOU window the pre-dispatch guard at line 437 covers).
             if dispatch_cwd is not None and not dispatch_cwd.exists():
@@ -670,13 +894,15 @@ class SkillBackedPlay(Play, ABC):
             # #236: agy async/background handoff — agent deferred work to an async
             # task and ended the turn waiting on it instead of completing it; the
             # work is unfinished so we cannot ask for re-emission.
-            # #229: near-miss — JSON present but no top-level boolean ``success``.
+            # #229/#313: near-miss — JSON present but no top-level boolean ``success``;
+            # ask for the FULL envelope, naming this play's artifact types.
             # Otherwise: generic "emit the JSON block" nudge.
-            is_async_handoff = cli_antigravity.is_async_handoff(invocation.raw_output)
+            defect = _classify_envelope_defect(invocation.raw_output, skill_result)
+            is_async_handoff = defect == _ENVELOPE_DEFECT_ASYNC_HANDOFF
             if is_async_handoff:
                 retry_prompt = _JSON_RETRY_ASYNC_HANDOFF_PROMPT
-            elif skill_result.missing_success_envelope:
-                retry_prompt = _JSON_RETRY_MISSING_SUCCESS_PROMPT
+            elif defect == _ENVELOPE_DEFECT_MISSING_ENVELOPE:
+                retry_prompt = _missing_envelope_retry_prompt(self.required_artifact_types)
             else:
                 retry_prompt = _JSON_RETRY_PROMPT
             _logger.info(
@@ -687,6 +913,7 @@ class SkillBackedPlay(Play, ABC):
                 original_output_length=len(invocation.raw_output),
                 missing_success_envelope=skill_result.missing_success_envelope,
                 async_handoff=is_async_handoff,
+                defect=defect,
             )
             retry_invocation = await ctx.manager.dispatch(
                 agent_id,
@@ -718,6 +945,19 @@ class SkillBackedPlay(Play, ABC):
 
         self._last_skill_result = skill_result
 
+        # Hard backstop for the destructive-sweep skills (PRUNE): even though
+        # ``_inject_worktree_guards`` advised the skill which worktrees to keep,
+        # the LLM can still ignore it and remove one out from under a live
+        # dispatch (#311). Detect that post-hoc and refuse to let it read as a
+        # clean success.
+        worktree_guard_violated = False
+        if self.play_type == PlayType.PRUNE:
+            (
+                skill_result,
+                worktree_guard_violated,
+            ) = await self._guard_against_protected_worktree_removal(ctx, skill_result)
+            self._last_skill_result = skill_result
+
         # Reclaim untracked root files this trunk-scoped play introduced and left
         # behind, so they don't wedge merge_pr / reconcile_state (#162/#164).
         if trunk_artifact_pre is not None:
@@ -731,6 +971,8 @@ class SkillBackedPlay(Play, ABC):
                 "auth",
                 skill_result.error or "skill reported GitHub authentication failure",
             )
+        elif worktree_guard_violated:
+            failure_kind = FailureKind.AGENT_ERROR
 
         return PlayOutcome(
             play_type=self.play_type,

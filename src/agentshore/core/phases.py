@@ -473,25 +473,13 @@ async def _phase_session_start_trunk_artifacts(
     (e.g. pre-session user WIP) are left untouched. Also TTL-reaps the
     quarantine dir. Errors are logged and swallowed — never blocks session start.
     """
-    from datetime import datetime
-
     from agentshore.core.trunk_artifacts import (
         TRUNK_SCOPED_PLAY_TYPES,
         PlayWindow,
-        attribute_orphan_artifacts,
         reap_quarantine,
-        reclaim_artifacts,
+        sweep_and_reclaim_orphans,
     )
-    from agentshore.data.models import ExternalMutationRecord
-    from agentshore.utils import now_iso
-
-    def _epoch(ts: str | None) -> float | None:
-        if ts is None:
-            return None
-        try:
-            return datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp()
-        except (ValueError, TypeError):
-            return None
+    from agentshore.utils import iso_to_epoch
 
     async with _step("session_start_trunk_artifacts"):
         try:
@@ -500,36 +488,22 @@ async def _phase_session_start_trunk_artifacts(
             )
             owner_windows: list[PlayWindow] = []
             for play_id, started_at, ended_at in rows:
-                started = _epoch(started_at)
+                started = iso_to_epoch(started_at)
                 if started is None:
                     continue
                 owner_windows.append(
-                    PlayWindow(play_id=play_id, started_at=started, ended_at=_epoch(ended_at))
+                    PlayWindow(play_id=play_id, started_at=started, ended_at=iso_to_epoch(ended_at))
                 )
             # No active plays exist at bootstrap (dispatch not open), so a prior
             # killed play (ended_at NULL) is an owner, not active.
-            attributed = attribute_orphan_artifacts(
-                repo_root, owner_windows=owner_windows, active_windows=[]
+            reclaimed_total = await sweep_and_reclaim_orphans(
+                repo_root,
+                store=store,
+                session_id=sid,
+                owner_windows=owner_windows,
+                active_windows=[],
+                status="reclaimed_sweep",
             )
-            by_owner: dict[int, list[str]] = {}
-            for rel, owner in attributed.items():
-                by_owner.setdefault(owner, []).append(rel)
-            reclaimed_total = 0
-            for owner, rels in by_owner.items():
-                moved = reclaim_artifacts(repo_root, rels, play_id=owner)
-                reclaimed_total += len(moved)
-                for rel in moved:
-                    await store.record_external_mutation(
-                        ExternalMutationRecord(
-                            session_id=sid,
-                            play_id=owner,
-                            idempotency_key=f"reclaim:{owner}:{rel}",
-                            mutation_type="trunk_artifact_reclaim",
-                            target=rel,
-                            status="reclaimed_sweep",
-                            created_at=now_iso(),
-                        )
-                    )
             reaped = reap_quarantine(repo_root, ttl_seconds=cfg.worktrees.reap_ttl_seconds)
             _logger.info(
                 "session_start_trunk_artifacts",
@@ -719,6 +693,17 @@ async def _clear_session_scoped_bead_progress(
         project_path=str(repo_root),
         count=reset_count,
     )
+
+    if phase == "session_shutdown":
+        # Push the just-cleaned local beads store to its remote (if any) so
+        # session-end state survives a lost machine/disk. Single-writer by
+        # construction (session shutdown is the sole beads writer at this
+        # point), so upstream's concurrent-push corruption warning doesn't
+        # apply. Best-effort: never raises, never blocks shutdown.
+        from agentshore.beads.durability import push_beads_remote
+
+        await push_beads_remote(repo_root)
+
     return reset_count
 
 
@@ -864,6 +849,7 @@ async def _phase_fetch_github(
                         session_id=sid,
                     )
                     from agentshore.beads import (
+                        BeadsSchemaDriftError,
                         GraphReadError,
                     )
                     from agentshore.beads import (
@@ -872,6 +858,19 @@ async def _phase_fetch_github(
 
                     try:
                         _startup_graph = await _load_graph(repo_root)
+                    except BeadsSchemaDriftError as exc:
+                        # Lower-stakes than the bootstrap path (this only skips
+                        # mirroring newly-fetched GitHub issues into beads for
+                        # this tick, it doesn't decide whether to reseed), but
+                        # still worth a distinct event so schema drift shows up
+                        # as its own signal rather than folded into the
+                        # generic read-failure count.
+                        _logger.warning(
+                            "beads_schema_drift_skipping_mirror",
+                            error=str(exc),
+                            session_id=sid,
+                        )
+                        _startup_graph = None
                     except GraphReadError as exc:
                         _logger.warning(
                             "beads_graph_read_failed_skipping_mirror",
@@ -1023,6 +1022,7 @@ def _phase_queue_agent_instantiation(
     seed_path: Path | None,
     open_issues_count: int = 0,
     graph_has_epics: bool = True,
+    graph_read_failed: bool = False,
 ) -> None:
     """Queue the bootstrap recipe.
 
@@ -1033,6 +1033,23 @@ def _phase_queue_agent_instantiation(
     graph is empty). Routing the no-epic case here is what prevents the
     open-path deadlock: GROOM_BACKLOG against an epic-less graph has nothing to
     reconcile and fails, so we must create epics first.
+
+    ``graph_read_failed`` distinguishes "the graph load itself failed" (e.g.
+    beads schema drift — ``BeadsSchemaDriftError``) from "the graph loaded
+    fine and is genuinely empty" (``graph_has_epics=False`` with a successful
+    read). The two used to be indistinguishable at this call site — a caught
+    ``GraphReadError`` and a truly epic-less graph both surfaced as
+    ``graph_has_epics=False`` — which let a live session's seedless
+    SEED_PROJECT re-run over a project whose real epics/tasks simply
+    couldn't be read that tick. When the read failed, this function *never*
+    routes to the seed recipe (below): it treats the graph like the open
+    recipe would (spawn the fleet; skip nothing on the strength of a guess),
+    because seeding on top of an unknown, possibly-populated graph is the
+    one truly harmful thing this bootstrap step could do, while spawning the
+    configured fleet cannot touch the beads store at all. Each agent's own
+    first play then discovers and reports the same drift on its own via the
+    normal ``BeadsSchemaDriftError``/precondition path — this function's job
+    is only to not compound the failure by guessing "empty" and reseeding.
 
     Seed recipe:
       1. INSTANTIATE_AGENT — first configured enabled large-tier agent.
@@ -1165,17 +1182,23 @@ def _phase_queue_agent_instantiation(
                 count += 1
         return count
 
-    if seed_path is None and graph_has_epics:
+    if seed_path is None and (graph_has_epics or graph_read_failed):
         # Open-start "full open" (#11): mask.py zeroes INSTANTIATE_AGENT in the
         # "no agents + no work + not terminal" state, so a quiet zero-agent repo
         # idle-deadlocks. Forced bootstrap overrides break that catch-22, and we
         # spawn the whole enabled fleet (not a single large backstop) so cheaper
         # tiers are present immediately. No deterministic step here touches trunk
         # (groom is a beads↔GitHub reconcile), so #569 gating doesn't apply.
+        #
+        # graph_read_failed also lands here (see the docstring) rather than the
+        # seed recipe below — spawning agents never touches the beads store, so
+        # it's the only safe move when we don't actually know whether the graph
+        # has epics. GROOM_BACKLOG may still fail cleanly against the same
+        # unreadable store; that's the expected, self-diagnosing outcome.
         spawned = _enqueue_full_fleet()
         _logger.info(
             "bootstrap_open_start",
-            reason="no_seed_full_open",
+            reason="graph_read_failed" if graph_read_failed else "no_seed_full_open",
             open_issues_count=open_issues_count,
             agents_spawned=spawned,
         )

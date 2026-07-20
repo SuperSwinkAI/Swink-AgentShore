@@ -239,6 +239,43 @@ def test_end_session_unmasked_when_pr_queue_human_blocked_despite_ready_tasks():
     assert mask[PLAY_TO_INDEX[PlayType.END_SESSION]]
 
 
+def test_end_session_unmasked_when_trunk_wedged_despite_ready_tasks():
+    """#330 escape hatch: repeated same-cause merge_pr dirty_trunk failures wedge
+    the trunk (``state.trunk_wedged``), so END_SESSION becomes valid even though
+    ready beads tasks would otherwise mask it via point 6 — mirrors the #166
+    pr_queue_human_blocked hatch."""
+    mask = compute_action_mask(
+        _state(graph=_graph_with_ready_tasks(), trunk_wedged=True),
+        _registry_all_true(),
+    )
+
+    assert mask[PLAY_TO_INDEX[PlayType.END_SESSION]]
+
+
+def test_end_session_masked_with_ready_tasks_when_trunk_not_wedged():
+    """Baseline: with trunk_wedged False and outstanding ready tasks, END_SESSION
+    stays masked — the #330 hatch only opens once the trunk is actually wedged."""
+    mask = compute_action_mask(
+        _state(graph=_graph_with_ready_tasks(), trunk_wedged=False),
+        _registry_all_true(),
+    )
+
+    assert not mask[PLAY_TO_INDEX[PlayType.END_SESSION]]
+
+
+def test_trunk_wedged_does_not_mask_other_plays():
+    """Non-forcing: trunk_wedged only unmasks END_SESSION, other plays remain
+    eligible for the PPO to keep choosing (no candidate-required play type is
+    touched by this state, so the audit plays stay unmasked)."""
+    mask = compute_action_mask(
+        _state(graph=_graph_with_ready_tasks(), trunk_wedged=True),
+        _registry_all_true(),
+    )
+
+    assert mask[PLAY_TO_INDEX[PlayType.CALIBRATE_ALIGNMENT]]
+    assert mask[PLAY_TO_INDEX[PlayType.DESIGN_AUDIT]]
+
+
 def test_end_session_requires_design_audit_after_successful_seed_audit():
     graph = MagicMock()
     graph.has_epics = True
@@ -444,6 +481,49 @@ def test_circuit_breaker_excludes_reconcile_state():
 def test_circuit_breaker_emits_reason():
     reasons = compute_mask_reasons(_breaker_state(strikes=3, plays_since=0), _registry_all_true())
     assert reasons[PlayType.ISSUE_PICKUP].source == MaskSource.CIRCUIT_BREAKER
+
+
+def _seed_project_breaker_state(strikes: int, plays_since: int) -> OrchestratorState:
+    """SEED_PROJECT with a given strike count / cooldown age (#357)."""
+    return _state(
+        plays_since_last_play_type={PlayType.SEED_PROJECT: plays_since},
+        consecutive_nonproductive_by_type={PlayType.SEED_PROJECT: strikes},
+    )
+
+
+def test_circuit_breaker_benches_seed_project_after_three_strikes():
+    """#357: 3 consecutive fail/skip within the cooldown window benches SEED_PROJECT.
+
+    Previously SEED_PROJECT had no failure-side cooldown at all —
+    seed_audit_is_fresh() only engages after a *successful* run — so a
+    persistently-failing seed_project re-dispatched every few minutes.
+    """
+    mask = compute_action_mask(
+        _seed_project_breaker_state(strikes=3, plays_since=0), _registry_all_true()
+    )
+    assert not mask[PLAY_TO_INDEX[PlayType.SEED_PROJECT]]
+
+
+def test_circuit_breaker_below_threshold_not_benched_seed_project():
+    mask = compute_action_mask(
+        _seed_project_breaker_state(strikes=2, plays_since=0), _registry_all_true()
+    )
+    assert mask[PLAY_TO_INDEX[PlayType.SEED_PROJECT]]
+
+
+def test_circuit_breaker_lifts_after_cooldown_seed_project():
+    """Once 20 plays elapse since the last attempt the mask lifts for a retry."""
+    mask = compute_action_mask(
+        _seed_project_breaker_state(strikes=3, plays_since=20), _registry_all_true()
+    )
+    assert mask[PLAY_TO_INDEX[PlayType.SEED_PROJECT]]
+
+
+def test_circuit_breaker_emits_reason_seed_project():
+    reasons = compute_mask_reasons(
+        _seed_project_breaker_state(strikes=3, plays_since=0), _registry_all_true()
+    )
+    assert reasons[PlayType.SEED_PROJECT].source == MaskSource.CIRCUIT_BREAKER
 
 
 def test_mask_blocks_seed_project_when_precondition_fails():

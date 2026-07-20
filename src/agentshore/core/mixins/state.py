@@ -503,6 +503,24 @@ class StateBuilder:
         dict/set ops, no I/O. ``last_play_id`` is the monotonic per-play tick
         counter (0 before the first play). ``getattr`` tolerates a stub manager
         without the attribute.
+
+        The manager's ``wedge_cooldown_types`` is a one-shot INBOX, not durable
+        state: it means "a wedge was recorded since the last snapshot", so this
+        drain CONSUMES every entry it observes (clearing the manager's set and the
+        matching reason tags). ``cooldown_until`` then solely owns the TTL. Without
+        the consume the manager's set was grow-only, so an expired entry was
+        immediately re-seeded on the next drain and the type was eligible for only
+        ~1 tick in every ``_GROK_WEDGE_COOLDOWN_TICKS + 1`` instead of recovering.
+
+        RE-TRIP DURING COOLDOWN is ignored (the existing expiry stands; the window
+        is NOT extended) and consumed like any other entry. A benched type isn't
+        dispatched, so a trip landing mid-cooldown is an echo of the in-flight
+        dispatch that caused the bench — not new evidence — and letting echoes slide
+        the window would restore the indefinite benching #202 exists to prevent. A
+        trip after the cooldown expires is genuinely new evidence and seeds a fresh
+        full window. Seeding runs before expiry, so a trip landing exactly ON the
+        expiry tick is treated as such an echo and dropped, consistent with the
+        above.
         """
         from agentshore.agents.manager import _GROK_WEDGE_COOLDOWN_TICKS
 
@@ -510,14 +528,16 @@ class StateBuilder:
         cooldown_until = self._runtime.wedge_cooldown_until
 
         manager_wedged: set[str] = getattr(self._manager, "wedge_cooldown_types", set())
-        newly_wedged = sorted(set(manager_wedged) - set(cooldown_until))
+        reasons_map: dict[str, str] = getattr(self._manager, "wedge_cooldown_reasons", {})
+        # Snapshot before mutating: everything observed here is consumed below.
+        observed = set(manager_wedged)
+        newly_wedged = sorted(observed - set(cooldown_until))
         for agent_type in newly_wedged:
             cooldown_until[agent_type] = current_tick + _GROK_WEDGE_COOLDOWN_TICKS
         if newly_wedged:
             # Reason tag per type (#233): "launch_wedge" (Grok first-byte) vs
             # "stream_hang_cluster" (agy zero-stdout). Collapse to one label when
             # uniform, else "mixed".
-            reasons_map: dict[str, str] = getattr(self._manager, "wedge_cooldown_reasons", {})
             reasons = {reasons_map.get(t, "launch_wedge") for t in newly_wedged}
             reason = reasons.pop() if len(reasons) == 1 else "mixed"
             _logger.warning(
@@ -528,6 +548,14 @@ class StateBuilder:
                 cooldown_ticks=_GROK_WEDGE_COOLDOWN_TICKS,
                 expires_at_tick=current_tick + _GROK_WEDGE_COOLDOWN_TICKS,
             )
+        # Consume the inbox (seeded AND already-cooling entries alike) so no entry
+        # can re-seed itself once its expiry passes. Safe to mutate in place: this
+        # method has no awaits, so the manager cannot record a new wedge between the
+        # snapshot above and here. A stub manager without the attributes yields
+        # throwaway defaults, making this a no-op.
+        manager_wedged.difference_update(observed)
+        for agent_type in observed:
+            reasons_map.pop(agent_type, None)
 
         # Drop expired entries (current tick reached expiry) so the type recovers.
         expired = [
@@ -691,6 +719,7 @@ class StateBuilder:
         # selection and dispatch). end_session_in_flight mirrors gate 2 (started
         # latch OR any in-flight END_SESSION dispatch).
         main_repo_dispatch_paused = self._main_repo.dispatch_paused
+        trunk_wedged = self._main_repo.is_trunk_wedged()
         end_session_in_flight = self._runtime.end_session_dispatch_started or (
             PlayType.END_SESSION in in_flight_plays
         )
@@ -731,6 +760,7 @@ class StateBuilder:
             consecutive_nonproductive_by_type=consecutive_nonproductive_by_type,
             loop_level=loop_level_for_streak(same_type_failure_streak),
             main_repo_dispatch_paused=main_repo_dispatch_paused,
+            trunk_wedged=trunk_wedged,
             end_session_in_flight=end_session_in_flight,
             recovery_exhausted_agent_ids=self._recovery.recovery_exhausted_agent_ids(agents),
             drain_reason=self._runtime.drain_reason if self._runtime.draining else None,

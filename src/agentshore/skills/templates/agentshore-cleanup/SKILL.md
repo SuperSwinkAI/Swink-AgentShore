@@ -29,6 +29,7 @@ Trunk-scoped cleanup from `$AGENTSHORE_PROJECT_PATH`. You are on the target bran
 - Never `git stash`, `git add -A`, or `git push --force`.
 - Never set a bash timeout < 600000 ms on test/typecheck commands.
 - Never `gh repo fork`, never `git remote add` a non-origin remote, and never open a cross-fork PR (a `gh pr create` whose `--head` points at a fork). If pushing to `origin` is denied, stop and emit `success: false`, `error: "no push access to origin"` — do not work around it by forking.
+- If you need scratch/working files, write them under `tmp/` at the project root (gitignored, never treated as a dirty-trunk blocker) — never loose at the repo root.
 
 **Report — one fenced JSON block, nothing else:**
 

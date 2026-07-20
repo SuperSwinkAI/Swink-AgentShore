@@ -97,6 +97,26 @@ __all__ = [
 # EOF/stdin-hang blip's *shape*, not an error class, so they don't belong in the
 # shared registry.
 _PARSE_EOF_MARKERS = ("eof while parsing", "parsing a value")
+# Codex model-discovery subprocess can also hang (child never exits) rather than
+# returning bad JSON.  The resulting stderr shape is "failed to refresh available
+# models: timeout waiting for child process to exit" — same cache-renewal marker,
+# different suffix.  Treat it as transient alongside the EOF-parse variant.
+_CHILD_TIMEOUT_MARKERS = ("timeout waiting for child process",)
+# Third variant: the model-list HTTP request itself fails mid-flight, e.g.
+# "failed to refresh available models: stream disconnected before completion:
+# error sending request for url (https://chatgpt.com/backend-api/codex/models…)".
+# Same cache-renewal marker, a network suffix instead of a parse/hang one — and
+# equally not an auth rejection. A ~4-second blip of this shape parked a healthy
+# codex agent for the remaining 4 hours of a session while sibling agents on the
+# *same* identity kept dispatching normally, which is the proof it was never a
+# credential problem (#365).
+_MODEL_FETCH_NETWORK_MARKERS = (
+    "stream disconnected before completion",
+    "error sending request",
+    "connection reset",
+    "connection refused",
+    "dns error",
+)
 _STDIN_CLOSED_AFTER_CACHE_RENEWAL_MARKERS = ("write_stdin failed", "stdin closed")
 
 # Raw CLI prompt-wait artifacts an agent prints to stdout/stderr while stalled
@@ -112,19 +132,49 @@ _STDIN_PROMPT_ARTIFACT_MARKERS = ("reading additional input from stdin",)
 
 
 def _is_transient_cache_blip(lowered: str) -> bool:
-    """#190: True iff the stderr tail is the transient cache-renewal EOF-parse blip.
+    """#190: True iff the stderr tail is the transient cache-renewal blip.
 
-    Suppresses an auth abort only for the cache-renewal-EOF shape (e.g.
-    ``failed to renew cache TTL: EOF while parsing a value at line 1 column 0``).
+    Suppresses an auth abort for three cache-renewal shapes:
+    - EOF-parse variant: "failed to renew cache TTL: EOF while parsing a value…"
+    - Child-timeout variant: "failed to refresh available models: timeout waiting
+      for child process to exit" — model-discovery subprocess hung rather than
+      returning bad JSON; equally transient.
+    - Network variant (#365): "failed to refresh available models: stream
+      disconnected before completion: error sending request for url (…)" — the
+      model-list HTTP call itself failed mid-flight. Also not a credential
+      rejection: a ~4s blip of this shape parked a healthy codex agent for the
+      rest of a 4h session while siblings on the same identity kept working.
+
     A real backend-auth rejection (401/403/unauthorized/invalid api key/etc.)
     is unaffected: those markers carry no cache-renewal marker, so this returns
-    False and the auth hit trips normally — even if a 401 happens to coexist
-    with a cache-renewal line, the presence of the genuine auth marker is what
-    keeps ``feed`` matching while this guard only inspects the renewal+EOF pair.
+    False and the auth hit trips normally.
     """
-    return any(m in lowered for m in _CACHE_RENEWAL_MARKERS) and any(
-        m in lowered for m in _PARSE_EOF_MARKERS
+    has_renewal = any(m in lowered for m in _CACHE_RENEWAL_MARKERS)
+    return has_renewal and (
+        any(m in lowered for m in _PARSE_EOF_MARKERS)
+        or any(m in lowered for m in _CHILD_TIMEOUT_MARKERS)
+        or any(m in lowered for m in _MODEL_FETCH_NETWORK_MARKERS)
     )
+
+
+def _auth_hit_is_cache_blip(err: str, out: str) -> bool:
+    """True iff the only auth evidence is a transient Codex cache-renewal blip.
+
+    The watchdog's live auth-abort path already subtracts the cache-renewal
+    markers before calling a stderr tail "hard auth"
+    (``cli/watchdogs.py``), but ``_classify_error`` did not — so a post-exit
+    ``failed to refresh available models: timeout waiting for child process to
+    exit`` was still bucketed ``AUTH`` and surfaced to the operator as
+    "credential expired, invalid, or rejected by the provider" (#363). The two
+    halves of the codebase disagreed about the same string.
+
+    Returns False the moment any auth marker that is *not* a cache-renewal
+    marker is present, so a genuine 401/403/invalid-key rejection still trips
+    normally even when a renewal blip happens to accompany it.
+    """
+    combined = err + out
+    hard_auth = any(m in combined for m in AUTH_MARKERS if m not in _CACHE_RENEWAL_MARKERS)
+    return not hard_auth and _is_transient_cache_blip(combined)
 
 
 def _is_cache_renewal_stdin_hang(lowered: str) -> bool:
@@ -147,8 +197,8 @@ def _is_stdin_prompt_artifact(lowered: str) -> bool:
 def _classify_error(rc: int, stderr: str, stdout: str) -> ErrorClass:
     """Classify a non-zero CLI exit into a semantic error bucket.
 
-    Returns one of ``ErrorClass.RATE_LIMIT``, ``ErrorClass.AUTH``,
-    ``ErrorClass.TIMEOUT``, ``ErrorClass.INVALID_MODEL``,
+    Returns one of ``ErrorClass.RATE_LIMIT``, ``ErrorClass.CRASH_ENOSPC``,
+    ``ErrorClass.AUTH``, ``ErrorClass.TIMEOUT``, ``ErrorClass.INVALID_MODEL``,
     ``ErrorClass.CODEX_ROLLOUT``, ``ErrorClass.TRANSIENT_NETWORK``,
     ``ErrorClass.CRASH_OOM``, ``ErrorClass.CRASH_SIGNAL``, or
     ``ErrorClass.UNKNOWN`` (each a ``str`` subclass, so callers comparing
@@ -163,21 +213,36 @@ def _classify_error(rc: int, stderr: str, stdout: str) -> ErrorClass:
     tokens there misclassified ordinary task failures (e.g. a failed file edit)
     as rate_limit/auth. ``rc`` is inspected for signal deaths last, so an
     explicit content message still wins over the raw return code.
+
+    Check order: rate_limit first (quota markers can coexist with a 403/Forbidden
+    that would otherwise read as auth), then ENOSPC (host disk exhaustion), then
+    auth. ENOSPC must be checked *before* auth: Codex's disk-full stderr pairs
+    "No space left on device (os error 28)" with "failed to renew cache TTL" —
+    a cache-renewal marker that is also one of the auth spellings — so checking
+    auth first misclassified a full disk as a credential failure and routed it
+    into the take_break/auth-abort recovery path, which can never fix a full
+    disk (#332). ``CRASH_ENOSPC`` is deliberately not in the take_break recovery
+    map (see ``core/recovery_tracker.py``), so classifying it correctly routes
+    it out of take_break entirely.
     """
     err = stderr.lower()
     out = stdout[-1000:].lower()
+    combined = err + out
 
     def hit(stderr_patterns: tuple[str, ...], stdout_patterns: tuple[str, ...]) -> bool:
         return any(p in err for p in stderr_patterns) or any(p in out for p in stdout_patterns)
 
     if hit(_RATE_LIMIT_PATTERNS, _RATE_LIMIT_STDOUT):
         return ErrorClass.RATE_LIMIT
+    # ENOSPC is checked ahead of AUTH (#332) — see docstring above.
+    if any(p in combined for p in _ENOSPC_PATTERNS):
+        return ErrorClass.CRASH_ENOSPC
     # stderr matches the broad canonical AUTH_MARKERS superset (Phase 4: all auth
     # spellings share one table — adds the phrased "http 401/403" / GitHub-table
     # strings, on top of the bare 401/403/forbidden tokens already present). stdout
     # stays on the narrow high-precision subset so an agent's work product (code it
     # edits mentioning 401/403/forbidden) is never misclassified (#19).
-    if hit(tuple(AUTH_MARKERS), _AUTH_STDOUT):
+    if hit(tuple(AUTH_MARKERS), _AUTH_STDOUT) and not _auth_hit_is_cache_blip(err, out):
         return ErrorClass.AUTH
     if hit(_TIMEOUT_PATTERNS, _TIMEOUT_STDOUT):
         return ErrorClass.TIMEOUT
@@ -185,13 +250,10 @@ def _classify_error(rc: int, stderr: str, stdout: str) -> ErrorClass:
         return ErrorClass.INVALID_MODEL
     # codex_rollout + OOM signatures are distinctive enough to match in either
     # stream (an OOM "Out of memory" notice legitimately lands on stdout).
-    combined = err + out
     if any(p in combined for p in _CODEX_ROLLOUT_PATTERNS):
         return ErrorClass.CODEX_ROLLOUT
     if any(p in combined for p in _TRANSIENT_NETWORK_PATTERNS):
         return ErrorClass.TRANSIENT_NETWORK
-    if any(p in combined for p in _ENOSPC_PATTERNS):
-        return ErrorClass.CRASH_ENOSPC
     if any(p in combined for p in _OOM_PATTERNS):
         return ErrorClass.CRASH_OOM
     # Negative return codes are POSIX signal deaths. SIGKILL (-9) from the OS

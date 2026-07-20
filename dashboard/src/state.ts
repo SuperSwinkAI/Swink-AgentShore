@@ -134,6 +134,19 @@ export class AgentShoreStateManager {
   }
 
   /**
+   * Reconcile bootstrap progress against live traffic (#361). The backend's
+   * ("ready", "completed") sentinel is published fire-and-forget under
+   * suppress(Exception), so it can be lost — leaving the modal pinned forever.
+   * A state_update or play_event is conclusive proof bootstrap finished (the
+   * same signal the desktop's SessionStartingOverlay already uses), so treat
+   * either as a second way to clear it.
+   */
+  clearBootstrapProgress(): void {
+    this.bootstrapPhase = null;
+    this.bootstrapStartedAt = null;
+  }
+
+  /**
    * Wipe per-session state: agent characters, previous-agents map, the
    * latest state snapshot, seq counter, and bootstrap progress. Called
    * when the transport sees a new session_id and the previous session
@@ -197,9 +210,11 @@ export class AgentShoreStateManager {
 
     switch (msg.type) {
       case "state_update":
+        this.clearBootstrapProgress();
         this.handleStateUpdate(msg);
         return true;
       case "play_event":
+        this.clearBootstrapProgress();
         this.handlePlayEvent(msg);
         return true;
       case "feedback_requested":

@@ -46,7 +46,7 @@ Only `scope_gap` produces a new issue. Lean toward `verified_done` when a closed
 
 Then classify graph gaps: **A** missing/unlinked epics/stories; **B** beads tasks with no `external_ref`; **C** open GH issues with no matching bead; **D** scope gaps (no bead, no issue).
 
-**Repair epics and stories (A).** Create missing or relink unlinked: `bd create epic "<title>" --description "<one-sentence summary>"`, `bd create story "<title>" --description "<summary>"`, `bd link <story-id> <epic-id> --type parent-child`. Cap 5 epics, 10 stories per epic. Reuse existing where they already cover the intended scope.
+**Repair epics and stories (A).** Create missing or relink unlinked: `bd create "<title>" --type epic --description "<one-sentence summary>"`, `bd create "<title>" --type story --description "<summary>"`, `bd link <story-id> <epic-id> --type parent-child`. Cap 5 epics, 10 stories per epic. Reuse existing where they already cover the intended scope.
 
 > **`bd link` must use `--type parent-child` for every containment link, child first, parent second** (`bd link <child-id> <parent-id> --type parent-child`). bd's default link type is `blocks`, which would make the parent *block* the child — every story/task would then be blocked behind its epic, leaving only epics ready and hiding all leaf tasks from `issue_pickup` (no implementation, no PRs). Containment is a rollup, not a blocker; reserve `blocks` for genuine ordering dependencies expressed elsewhere as `depends on #N`.
 
@@ -57,7 +57,7 @@ Then classify graph gaps: **A** missing/unlinked epics/stories; **B** beads task
 For **gap D (true scope gap)**, create the bead first; GitHub mirrors it. If GH creation fails halfway you get an unlinked bead (gap B for next run) — preferable to an orphan GH issue with no bead.
 
 ```
-bd create task "<concise title>" --description "<what + why>"
+bd create "<concise title>" --type task --description "<what + why>"
 gh issue create --title "<concise title>" --body "<what + why>\n\nTracked in beads as <bead-id>." --label "enhancement"
 bd set-external-ref <bead-id> "gh-<issue_number>"
 bd link <bead-id> <story-id> --type parent-child
@@ -67,7 +67,7 @@ For **gap B (unlinked bead)**: `gh issue create --title "<bead title>" --body "<
 
 **Size routing at creation.** You don't size or decompose (that's `refine_tasks`); you route. After creating each issue, apply `agentshore/needs-refinement` if the source design section spans **≥ 3** deliverables — measured by ≥ 3 `### ` sub-headings OR ≥ 3 top-level `- ` bullets each starting with an action verb (Add/Build/Create/Implement/Render/Support/Wire/etc.). `gh issue edit <N> --add-label "agentshore/needs-refinement"`. Catches story-shaped requirements before `issue_pickup` grabs them.
 
-**Beads tasks for orphan GH issues (C).** For each open GH issue with no matching bead: `bd create task "<issue title>" --description "Closes gh-<issue_number>" --external-ref "gh-<issue_number>"`, then `bd link <task-id> <story-id> --type parent-child` (create a story via Step 3 if none fits). Don't duplicate tasks already in the graph.
+**Beads tasks for orphan GH issues (C).** For each open GH issue with no matching bead: `bd create "<issue title>" --type task --description "Closes gh-<issue_number>" --external-ref "gh-<issue_number>"`, then `bd link <task-id> <story-id> --type parent-child` (create a story via Step 3 if none fits). Don't duplicate tasks already in the graph.
 
 **Ordering edges for body-declared dependencies (C2).** Once every issue has a task, mirror `depends on #N` / `blocked by #N` declared in issue bodies into real beads `blocks` edges so `issue_pickup`'s candidate mask excludes a dependent issue *before* an agent is dispatched (#14). For each open GH issue whose body declares `depends on #N` / `blocked by #N` where **#N is still open**: `bd link <this-task-id> <dep-task-id> --type blocks` (second arg blocks first, so `<this>` becomes `blocked_by <dep>`; idempotent — skip if the snapshot already shows the edge; never self-link; skip closed deps). This is the *only* sanctioned use of `blocks` — containment is always `parent-child`. beads clears the edge automatically when the dependency task closes.
 
@@ -84,6 +84,7 @@ For **gap B (unlinked bead)**: `gh issue create --title "<bead title>" --body "<
 - Never delete existing beads — only create or update.
 - Never call `git worktree add/remove/prune` — AgentShore owns lifecycle.
 - Never fan out per-bead `bd show` calls in place of the single `bd list` snapshot.
+- If you need scratch/working files, write them under `tmp/` at the project root (gitignored, never treated as a dirty-trunk blocker) — never loose at the repo root.
 
 **Report — one fenced JSON block, nothing else:**
 

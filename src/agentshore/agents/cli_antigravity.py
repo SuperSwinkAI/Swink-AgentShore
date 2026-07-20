@@ -179,6 +179,23 @@ _ASYNC_HANDOFF_MARKERS: tuple[str, ...] = (
     "notify me when",
     "we will be notified",
     "notified upon its completion",
+    # #313: every marker above needs the literal token "background", a "notify"
+    # variant, or a pronoun form ("wait for it/them/the task to ..."). The miss is
+    # the *named-noun-phrase* form — "I will pause to wait for the git switch
+    # command to finish." is one word away from "pause calling tools" yet went
+    # undetected, so the 19-min issue_pickup that produced it was never classified.
+    "pause to wait",
+    "pausing to wait",
+    "paused to wait",
+)
+
+# #313: the named-noun-phrase generalization the literal markers cannot express —
+# "wait for the <X> command to finish", "wait for the cargo test run to complete".
+# Deliberately bounded: the noun phrase may not cross a sentence or line boundary
+# and is capped at 60 chars, so this matches a turn-ending wait, not ordinary prose
+# that happens to contain "wait" and "finish" paragraphs apart.
+_ASYNC_HANDOFF_NAMED_WAIT_RE = re.compile(
+    r"wait for (?:the|this|that|my|our)\s[^.\n]{0,60}?\bto (?:finish|complete|return|be done)\b"
 )
 
 
@@ -187,7 +204,9 @@ def is_async_handoff(raw: str) -> bool:
     task and waiting on it, instead of completing the work and emitting a JSON
     result block (#236)."""
     lowered = raw.lower()
-    return any(marker in lowered for marker in _ASYNC_HANDOFF_MARKERS)
+    if any(marker in lowered for marker in _ASYNC_HANDOFF_MARKERS):
+        return True
+    return _ASYNC_HANDOFF_NAMED_WAIT_RE.search(lowered) is not None
 
 
 def build_resume_argv(

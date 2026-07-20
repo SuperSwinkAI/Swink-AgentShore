@@ -14,7 +14,7 @@ import pytest
 from agentshore.agents import identity as identity_mod
 from agentshore.agents.identity import reset_token_cache, resolve_identity_env
 from agentshore.command import CommandResult, CommandStatus
-from agentshore.config import AgentConfig, GitHubIdentity, RuntimeConfig
+from agentshore.config import AgentConfig, GitHubIdentity, ModelTierConfig, RuntimeConfig
 from agentshore.errors import AgentAuthError
 
 
@@ -1133,3 +1133,143 @@ def test_verify_repo_access_requires_push_permission_missing_permissions_key(
     assert "push" in detail or "write" in detail
     assert "Owner/Repo" in detail
     assert "token-secret" not in detail
+
+
+# require_per_identity_model_tier_coverage
+
+
+def _tiers(*enabled: str) -> dict[str, ModelTierConfig]:
+    """Build a model_tiers map enabling exactly *enabled* tiers."""
+    return {tier: ModelTierConfig(enabled=True) for tier in enabled}
+
+
+def test_per_identity_tier_coverage_passes_when_each_identity_covers_all_tiers() -> None:
+    from agentshore.agents.identity import require_per_identity_model_tier_coverage
+
+    # Default AgentConfig (no model_tiers) yields all built-in tiers per type,
+    # so two default-bound identities each cover small/medium/large.
+    fc = RuntimeConfig(
+        identities={
+            "alice": GitHubIdentity(
+                git_user_name="Alice", git_user_email="a@example.com", gh_token_login="alice"
+            ),
+            "bob": GitHubIdentity(
+                git_user_name="Bob", git_user_email="b@example.com", gh_token_login="bob"
+            ),
+        },
+        agents={
+            "claude_code": AgentConfig(identity="alice"),
+            "codex": AgentConfig(identity="bob"),
+        },
+    )
+    require_per_identity_model_tier_coverage(fc)  # no raise
+
+
+def test_per_identity_tier_coverage_raises_when_one_identity_misses_large() -> None:
+    """The theta_rl wedge: large lives only on the codex/unseriousAI identity."""
+    from agentshore.agents.identity import require_per_identity_model_tier_coverage
+    from agentshore.errors import ConfigError
+
+    fc = RuntimeConfig(
+        identities={
+            "jwesleye": GitHubIdentity(
+                git_user_name="jwesleye",
+                git_user_email="j@example.com",
+                gh_token_login="jwesleye",
+            ),
+            "unseriousai": GitHubIdentity(
+                git_user_name="Unseriousai",
+                git_user_email="u@example.com",
+                gh_token_login="unseriousai",
+            ),
+        },
+        agents={
+            # jwesleye: small + medium only — missing large (review-eligible tier)
+            "claude_code": AgentConfig(identity="jwesleye", model_tiers=_tiers("small", "medium")),
+            # unseriousai: full coverage
+            "codex": AgentConfig(
+                identity="unseriousai", model_tiers=_tiers("small", "medium", "large")
+            ),
+        },
+    )
+    with pytest.raises(ConfigError, match=r"every model tier"):
+        require_per_identity_model_tier_coverage(fc)
+
+    gaps = identity_mod.identities_missing_required_tiers(fc)
+    assert gaps == {"jwesleye": ("large",)}
+
+
+def test_per_identity_tier_coverage_unions_agents_sharing_one_identity() -> None:
+    """Two agents on the same identity union their tiers to satisfy coverage."""
+    from agentshore.agents.identity import require_per_identity_model_tier_coverage
+
+    fc = RuntimeConfig(
+        identities={
+            "alice": GitHubIdentity(
+                git_user_name="Alice", git_user_email="a@example.com", gh_token_login="alice"
+            ),
+            "bob": GitHubIdentity(
+                git_user_name="Bob", git_user_email="b@example.com", gh_token_login="bob"
+            ),
+        },
+        agents={
+            # alice covers small+medium via claude_code, large via codex
+            "claude_code": AgentConfig(identity="alice", model_tiers=_tiers("small", "medium")),
+            "codex": AgentConfig(identity="alice", model_tiers=_tiers("large")),
+            # bob needs full coverage on its own
+            "grok": AgentConfig(identity="bob", model_tiers=_tiers("small", "medium", "large")),
+        },
+    )
+    require_per_identity_model_tier_coverage(fc)  # no raise
+    assert identity_mod.identities_missing_required_tiers(fc) == {}
+
+
+def test_per_identity_tier_coverage_folds_labels_sharing_a_login() -> None:
+    """Two identity labels resolving to the same login fold into one entry."""
+    fc = RuntimeConfig(
+        identities={
+            "alice": GitHubIdentity(
+                git_user_name="Alice", git_user_email="a@example.com", gh_token_login="shared"
+            ),
+            "alice2": GitHubIdentity(
+                git_user_name="Alice2", git_user_email="a2@example.com", gh_token_login="shared"
+            ),
+        },
+        agents={
+            "claude_code": AgentConfig(identity="alice", model_tiers=_tiers("small", "medium")),
+            "codex": AgentConfig(identity="alice2", model_tiers=_tiers("large")),
+        },
+    )
+    coverage = identity_mod.per_identity_model_tier_coverage(fc)
+    assert coverage == {"shared": frozenset({"small", "medium", "large"})}
+
+
+def test_per_identity_tier_coverage_skips_disabled_agents() -> None:
+    """A disabled agent's tiers don't count toward its identity's coverage."""
+    from agentshore.agents.identity import require_per_identity_model_tier_coverage
+    from agentshore.errors import ConfigError
+
+    fc = RuntimeConfig(
+        identities={
+            "alice": GitHubIdentity(
+                git_user_name="Alice", git_user_email="a@example.com", gh_token_login="alice"
+            ),
+            "bob": GitHubIdentity(
+                git_user_name="Bob", git_user_email="b@example.com", gh_token_login="bob"
+            ),
+        },
+        agents={
+            "claude_code": AgentConfig(identity="alice", model_tiers=_tiers("small", "medium")),
+            # the large coverage for alice is disabled → still missing large
+            "codex": AgentConfig(identity="alice", model_tiers=_tiers("large"), enabled=False),
+            "grok": AgentConfig(identity="bob", model_tiers=_tiers("small", "medium", "large")),
+        },
+    )
+    with pytest.raises(ConfigError, match=r"large"):
+        require_per_identity_model_tier_coverage(fc)
+
+
+def test_per_identity_tier_coverage_no_op_when_no_cli_agents() -> None:
+    from agentshore.agents.identity import require_per_identity_model_tier_coverage
+
+    require_per_identity_model_tier_coverage(RuntimeConfig())  # no raise

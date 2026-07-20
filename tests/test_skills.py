@@ -319,12 +319,36 @@ def test_design_audit_template_creates_tracking_work_for_gaps() -> None:
     assert "Do not implement code" in text
     assert "gh issue list --state open" in text
     assert "gh issue list --state closed" in text
-    assert "bd create task" in text
+    # Title must be positional and the type must be the --type flag: `bd create <type> "<title>"`
+    # silently creates a task titled "<type>" and drops the real title (verified on bd 1.0.4/1.1.0).
+    assert "--type task" in text
+    assert "bd create task" not in text
     assert '"type": "design_audit"' in text
     assert "unresolved_gaps" in text
-    # Every counted gap needs a tracker — no bare "found but unfiled" gaps.
-    assert 'There is no "found but unfiled" state.' in text
+    # Every counted gap needs a tracker — no bare "found but unfiled" gaps,
+    # apart from the explicitly-reported over-ceiling deferrals (#368).
+    assert 'there is no "found but unfiled" state' in text
+    assert "Per-run ceiling: create at most 8 new GH issues" in text
+    assert "deferred_requirements" in text
     assert "gaps_found == len(gap_issue_numbers)" in text
+
+
+def test_issue_filing_templates_state_a_per_run_ceiling() -> None:
+    """run-qa and code-review must bound how many issues one run can file (#368).
+
+    Unbounded filing produced 58 issues from three run_qa runs in one session;
+    the skill ceiling — not the advisory scope guard — is what actually caps it.
+    """
+    qa = (_TEMPLATE_ROOT / "agentshore-run-qa" / "SKILL.md").read_text(encoding="utf-8")
+    assert "no fixed numeric cap" not in qa
+    assert "at most 8 new issues per run" in qa
+    assert "quality_audit.suppressed_findings" in qa
+    # Dedup must reason over the whole open set, not per-finding keyword search.
+    assert "gh issue list --state open --limit 200" in qa
+
+    review = (_TEMPLATE_ROOT / "agentshore-code-review" / "SKILL.md").read_text(encoding="utf-8")
+    assert "no fixed numeric cap" not in review
+    assert "at most 5 new issues per review" in review
 
 
 def test_groom_backlog_template_clears_resolved_dependency_blocks() -> None:

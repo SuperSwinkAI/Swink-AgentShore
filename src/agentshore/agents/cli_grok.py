@@ -23,9 +23,10 @@ Usage keys emitted by the Grok CLI use both the standard Anthropic aliases
 usage accounting is correct without widening the shared ``_usage_totals_from_dict``
 helper used by Claude/Codex.
 
-Model selection is hard-pinned: the only accepted model is ``grok-build``.
-Any configured model that is not already ``grok-build`` is collapsed to it with
-a warning so the override is visible in logs (issue #204, task 4).
+Model selection is hard-pinned: the only accepted model is ``grok-4.5``
+(``grok-build`` was the prior model name, now itself an alias that collapses
+here). Any configured model that is not already ``grok-4.5`` is collapsed to
+it with a warning so the override is visible in logs (issue #204, task 4).
 The effort flag for the Grok CLI is ``--effort`` (NOT ``--reasoning-effort``).
 """
 
@@ -58,18 +59,19 @@ def default_binary() -> str:
 def cli_model(model: str) -> str:
     """Return the model id accepted by the installed Grok CLI.
 
-    The Grok CLI is hard-pinned to ``grok-build``. Any input that is not
-    already ``grok-build`` is collapsed to it with a warning so the override
-    is visible in logs (issue #204, task 4).
+    The Grok CLI is hard-pinned to ``grok-4.5``. Any input that is not
+    already ``grok-4.5`` — including the retired ``grok-build`` name — is
+    collapsed to it with a warning so the override is visible in logs
+    (issue #204, task 4).
     """
-    if model != "grok-build":
+    if model != "grok-4.5":
         _logger.warning(
             "grok_model_alias_override",
             configured_model=model,
-            resolved_model="grok-build",
+            resolved_model="grok-4.5",
             reason="configured model is not accepted by the installed Grok CLI",
         )
-    return "grok-build"
+    return "grok-4.5"
 
 
 def build_argv(
@@ -95,8 +97,8 @@ def build_argv(
     the prompt is passed directly via ``-p`` — never as an empty string.
     """
     resolved_binary = binary or default_binary()
-    # Hard-pinned to grok-build; cli_model warns + collapses any other value.
-    resolved_model = cli_model(model) if model else "grok-build"
+    # Hard-pinned to grok-4.5; cli_model warns + collapses any other value.
+    resolved_model = cli_model(model) if model else "grok-4.5"
     args = [
         resolved_binary,
         "--no-auto-update",

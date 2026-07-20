@@ -18,6 +18,7 @@ if TYPE_CHECKING:
 from agentshore.sidecar.rpc.handlers.agents import _dispatch_agents_rpc
 from agentshore.sidecar.rpc.handlers.app import _dispatch_app_handshake
 from agentshore.sidecar.rpc.handlers.archive import _dispatch_archive
+from agentshore.sidecar.rpc.handlers.beads import _dispatch_beads_rpc
 from agentshore.sidecar.rpc.handlers.config import _dispatch_config_rpc
 from agentshore.sidecar.rpc.handlers.custom import _dispatch_custom_method
 from agentshore.sidecar.rpc.handlers.identities import _dispatch_identities_rpc
@@ -168,6 +169,7 @@ HANDLERS: dict[str, Route] = {
     "archive.fetch_logs": Route(_dispatch_archive),
     "config.read": Route(_wrap_config),
     "config.write": Route(_wrap_config),
+    "beads.designate_migrator": Route(_dispatch_beads_rpc),
 }
 
 # Prefix-matched dispatch groups, tried after the exact table. Each family

@@ -71,7 +71,7 @@ gh issue edit <parent> --body "$ORIGINAL
 - AgentShore runs you in the project's **main working tree on the target branch**, not an isolated worktree. You decompose issues and edit GitHub labels only — you must **never** touch the working tree or move git refs.
 - **Never** `git checkout`/`git switch`/`git checkout -b`/`git switch -c`/`git branch`/`git worktree add`/`git reset`/`git clean`/`git stash`/`git commit`/`git merge`/`git rebase`/`git push`. Creating or switching a branch here moves the **main checkout's HEAD** onto a feature branch and wedges the orchestrator — the trunk-dispatch guard cannot restore a branch-switched HEAD left with untracked work. Git is **read-only** in this play: `git fetch`, `git remote`, `git grep`, `git log`, `git status`, `git diff`, `git show` only.
 - Never create/edit/restore/delete `.github/workflows/**`, `.github/actions/**`, `.gitlab-ci.yml`, `.circleci/**`, `azure-pipelines.yml`, `Jenkinsfile`, `bitbucket-pipelines.yml`, or tests asserting their existence.
-- Leave the working tree clean — at most untracked scratch files at the repo root, which the orchestrator reclaims.
+- Leave the working tree clean. If you need scratch/working files, write them under `tmp/` at the project root (gitignored, never treated as a dirty-trunk blocker) — never loose at the repo root.
 
 **Report — one fenced JSON block:**
 

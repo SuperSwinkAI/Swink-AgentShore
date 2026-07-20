@@ -214,3 +214,48 @@ def test_build_esr_ready_emitter_dispatches_through_notify() -> None:
         "report_path": "/path/to/report.html",
         "log_path": "/path/to/session.log",
     }
+
+
+def test_register_session_draining_callback_stores_handler(tmp_path: Path) -> None:
+    """The register_* helper exists on the orchestrator and survives None reset."""
+    orch = _minimal_orch(tmp_path)
+    orch._session_draining_callback = None
+
+    received: list[tuple[str, str]] = []
+    orch.register_session_draining_callback(lambda sid, reason: received.append((sid, reason)))
+    assert orch._session_draining_callback is not None
+    orch._session_draining_callback("sid-1", "budget_exhausted")
+    assert received == [("sid-1", "budget_exhausted")]
+
+    orch.register_session_draining_callback(None)
+    assert orch._session_draining_callback is None
+
+
+def test_build_session_draining_notification_shape() -> None:
+    """``session.draining`` JSON-RPC envelope carries session_id + reason."""
+    from agentshore.sidecar.server import build_session_draining_notification
+
+    note = build_session_draining_notification(session_id="sess-abc", reason="budget_exhausted")
+    assert note["jsonrpc"] == "2.0"
+    assert note["method"] == "session.draining"
+    assert note["params"] == {
+        "session_id": "sess-abc",
+        "reason": "budget_exhausted",
+    }
+
+
+def test_build_session_draining_emitter_dispatches_through_notify() -> None:
+    """The emitter forwards (session_id, reason) into the JSON-RPC envelope."""
+    from agentshore.sidecar.notification_emitters import build_session_draining_emitter
+
+    seen: list[dict[str, object]] = []
+    emit = build_session_draining_emitter(lambda envelope: seen.append(dict(envelope)))
+    emit("sess-xyz", "user_request")
+
+    assert len(seen) == 1
+    note = seen[0]
+    assert note["method"] == "session.draining"
+    assert note["params"] == {
+        "session_id": "sess-xyz",
+        "reason": "user_request",
+    }

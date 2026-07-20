@@ -158,6 +158,41 @@ def _load_tier_config_maxes(project_path: Path) -> dict[str, int]:
     return maxes
 
 
+def _load_harness_capacity_maxes(project_path: Path) -> dict[str, int]:
+    """Return each enabled harness's total configured spawn capacity.
+
+    Sums ``max`` across the harness's enabled model tiers (honoring legacy
+    top-level ``model``/``reasoning_effort`` and built-in tier defaults via
+    :func:`enabled_model_tiers`), unlike ``_load_tier_config_maxes`` above
+    which only reflects tiers explicitly listed in the YAML.
+    """
+    try:
+        from agentshore.agents.model_tiers import (
+            effective_model_tier_config,
+            enabled_model_tiers,
+        )
+        from agentshore.config import load_config
+        from agentshore.state import AgentType
+
+        cfg = load_config(project_path / "agentshore.yaml")
+    except Exception:
+        return {}
+
+    maxes: dict[str, int] = {}
+    for agent_name, agent_cfg in cfg.agents.items():
+        if not agent_cfg.enabled:
+            continue
+        try:
+            agent_type = AgentType(agent_name)
+        except ValueError:
+            continue
+        tiers = enabled_model_tiers(agent_type, agent_cfg)
+        total = sum(effective_model_tier_config(agent_type, agent_cfg, tier).max for tier in tiers)
+        if total:
+            maxes[agent_type.value] = total
+    return maxes
+
+
 def _load_learnings_for_session(project_path: Path) -> list[object]:
     """Load learnings from the JSON store for a given project path, best-effort.
 
@@ -294,6 +329,7 @@ class ReportDataCollector:
                 concurrency_path,
                 session_id,
                 tier_config_maxes=_load_tier_config_maxes(project_path),
+                harness_capacity_maxes=_load_harness_capacity_maxes(project_path),
             ),
             play_stats=compute_play_stats(plays),
             control_rejections=compute_control_rejections(control_rejections),

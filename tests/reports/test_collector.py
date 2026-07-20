@@ -415,6 +415,12 @@ agents:
         {"label": "codex/medium", "peak_busy": 1, "config_max": 5},
     ]
     assert report["fleet_concurrency"]["rate_limit_samples"][0]["busy_total"] == 3
+    assert report["fleet_concurrency"]["timeline"]["capacity_total"] == 7
+    harness_caps = {
+        row["label"]: row["capacity_max"]
+        for row in report["fleet_concurrency"]["timeline"]["harnesses"]
+    }
+    assert harness_caps == {"claude_code": 2, "codex": 5}
 
 
 async def test_collect_end_session_report_without_fleet_concurrency_log_degrades(

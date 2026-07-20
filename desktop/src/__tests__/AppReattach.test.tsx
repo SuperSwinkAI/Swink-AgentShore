@@ -52,6 +52,7 @@ vi.mock("../services/sessionClient", () => ({
 vi.mock("../services/sidecarEvents", () => ({
   subscribeSidecarCrashed: vi.fn(async () => () => undefined),
   subscribeSidecarNotification: vi.fn(async () => () => undefined),
+  subscribeBeadsSchemaDrift: vi.fn(async () => () => undefined),
 }));
 
 vi.mock("../rpc/identitiesClient", () => ({

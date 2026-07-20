@@ -177,7 +177,10 @@ async def test_all_masked_scripted_selector_breaks(info_calls: MagicMock, tmp_pa
 async def test_fleet_idle_past_limit_ends_session_via_drain(tmp_path: Path) -> None:
     """Whole fleet idle (no in-flight, no busy agents) past the limit → the loop
     initiates a clean autonomous drain (fire_natural_exit) rather than polling
-    forever. This is the liveness backstop for the end-session wedge."""
+    forever. This is the liveness backstop for the end-session wedge.
+
+    No workable backlog remains here, so the plain ``fleet_idle_end_session``
+    event fires (not the backlog-remaining variant below)."""
     import time as _time
 
     from agentshore.core.mixins import loop as loop_mod
@@ -188,7 +191,13 @@ async def test_fleet_idle_past_limit_ends_session_via_drain(tmp_path: Path) -> N
         loop_mod._FLEET_IDLE_END_SESSION_SECONDS + 5.0
     )
 
+    mock_logger = MagicMock()
     with (
+        patch("agentshore.core.mixins.loop._logger", mock_logger),
+        patch(
+            "agentshore.plays.candidates.build_candidate_plan",
+            return_value=_candidate_plan_stub(has_remaining_work=False),
+        ),
         patch.object(orch._loop, "initiate_autonomous_stop", new=AsyncMock()) as stop_mock,
         patch.object(orch._loop, "check_fleet_idle_persistent", new=AsyncMock()),
     ):
@@ -201,6 +210,59 @@ async def test_fleet_idle_past_limit_ends_session_via_drain(tmp_path: Path) -> N
     args, kwargs = stop_mock.call_args
     assert args[0] == "fleet_idle_timeout"
     assert kwargs.get("fire_natural_exit") is True
+    warning_events = [call.args[0] for call in mock_logger.warning.call_args_list]
+    assert "fleet_idle_end_session" in warning_events
+    assert "fleet_idle_end_session_with_backlog_remaining" not in warning_events
+
+
+@pytest.mark.asyncio
+async def test_fleet_idle_past_limit_with_backlog_remaining_emits_distinct_event(
+    tmp_path: Path,
+) -> None:
+    """Regression for the theta_rl f0026bb2 session (2026-07-08): the fleet went
+    fully idle for 20+ minutes and auto-stopped via this exact backstop even
+    though beads still reported workable issues and ready tasks — the real
+    cause was a candidate stuck behind a mask/label exclusion that never
+    cleared (a beads dependency-cycle conflict, see the beads/executor fix),
+    not a genuine work shortage. When that happens, a distinct
+    ``fleet_idle_end_session_with_backlog_remaining`` warning must fire so the
+    anomaly is visible without reverse-engineering it from raw NDJSON."""
+    import time as _time
+
+    from agentshore.core.mixins import loop as loop_mod
+
+    orch = _orch(tmp_path)
+    state = _StateStub(action_mask=(False, False, False, False), agents=())
+    orch._loop._fleet_idle_since = _time.monotonic() - (
+        loop_mod._FLEET_IDLE_END_SESSION_SECONDS + 5.0
+    )
+    plan = _candidate_plan_stub(has_remaining_work=True)
+    plan.work_availability.workable_issue_count = 2
+    plan.work_availability.ready_task_count = 9
+
+    mock_logger = MagicMock()
+    with (
+        patch("agentshore.core.mixins.loop._logger", mock_logger),
+        patch("agentshore.plays.candidates.build_candidate_plan", return_value=plan),
+        patch.object(orch._loop, "initiate_autonomous_stop", new=AsyncMock()) as stop_mock,
+        patch.object(orch._loop, "check_fleet_idle_persistent", new=AsyncMock()),
+    ):
+        result = await orch._loop.continue_if_selector_idle_work_remains(  # type: ignore[arg-type]
+            state, reason="unchanged_digest"
+        )
+
+    assert result is False
+    stop_mock.assert_awaited_once()
+    warning_events = [call.args[0] for call in mock_logger.warning.call_args_list]
+    assert "fleet_idle_end_session_with_backlog_remaining" in warning_events
+    assert "fleet_idle_end_session" not in warning_events
+    call = next(
+        c
+        for c in mock_logger.warning.call_args_list
+        if c.args[0] == "fleet_idle_end_session_with_backlog_remaining"
+    )
+    assert call.kwargs["workable_issues"] == 2
+    assert call.kwargs["ready_tasks"] == 9
 
 
 @pytest.mark.asyncio

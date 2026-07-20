@@ -394,6 +394,50 @@ def test_untracked_root_not_owned_when_predates_active_play(tmp_path: Path) -> N
     assert _dirty_entry(signals, "older.json")["owned_by_active_play"] is False
 
 
+def _add_untracked_under_tracked_subdir(repo: Path, rel: str) -> Path:
+    """Create an untracked file at *rel* under a subdir that already has a tracked
+    sibling, so ``git status --porcelain`` reports the individual file path (mirroring
+    the real incident: a lockfile untracked beneath an already-tracked package dir)
+    rather than collapsing a wholly-new dir to ``?? <dir>/``.
+    """
+    artifact = repo / rel
+    artifact.parent.mkdir(parents=True, exist_ok=True)
+    (artifact.parent / ".keep").write_text("")
+    env = {"GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_SYSTEM": "/dev/null", "HOME": str(repo)}
+    subprocess.run(
+        ["git", "add", str(artifact.parent / ".keep")], cwd=str(repo), check=True, env=env
+    )
+    subprocess.run(["git", "commit", "-q", "-m", "nested"], cwd=str(repo), check=True, env=env)
+    artifact.write_text("{}")  # now untracked beneath a tracked dir
+    return artifact
+
+
+def test_untracked_subtree_owned_by_active_trunk_play(tmp_path: Path) -> None:
+    """A subtree (nested) untracked file newer than an active trunk play's start is its
+    in-flight work — a build that writes a lockfile into a package subdir, not root
+    scratch. Ownership must be computed at any depth so reconcile_state doesn't
+    quarantine a running play's live output.
+    """
+    repo = _init_repo_with_dirty_state(tmp_path)
+    artifact = _add_untracked_under_tracked_subdir(repo, "pkgs/Sub/Package.resolved")
+    os.utime(artifact, (2_000_000_000, 2_000_000_000))  # 2033 — newer than play start
+    agent = _agent_running(PlayType.MERGE_PR, "2030-01-01T00:00:00Z")
+    signals = build_recent_wedge_signals(_state_with_agent(agent), repo, session_id="sess")
+    assert _dirty_entry(signals, "pkgs/Sub/Package.resolved")["owned_by_active_play"] is True
+
+
+def test_untracked_subtree_not_owned_when_predates_active_play(tmp_path: Path) -> None:
+    """The orphaned-debris case: a nested untracked file older than every active trunk
+    play's start is not in-flight work — reconcile_state may then quarantine it.
+    """
+    repo = _init_repo_with_dirty_state(tmp_path)
+    artifact = _add_untracked_under_tracked_subdir(repo, "pkgs/Sub/Package.resolved")
+    os.utime(artifact, (1_000_000_000, 1_000_000_000))  # 2001 — older than play start
+    agent = _agent_running(PlayType.MERGE_PR, "2030-01-01T00:00:00Z")
+    signals = build_recent_wedge_signals(_state_with_agent(agent), repo, session_id="sess")
+    assert _dirty_entry(signals, "pkgs/Sub/Package.resolved")["owned_by_active_play"] is False
+
+
 def test_tracked_modification_owned_by_active_trunk_play(tmp_path: Path) -> None:
     """#224: a tracked (M) file newer than an active trunk play's start is in-flight
     work too — not just untracked root artifacts."""

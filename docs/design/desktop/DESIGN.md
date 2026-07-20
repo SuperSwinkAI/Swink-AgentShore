@@ -116,6 +116,25 @@ remain live the watchdog sees no missed beats and the terminate hook does not
 fire. The "Reload UI" menu item (`CmdOrCtrl+R`) is the guaranteed recovery
 floor. Both signals are needed for complete coverage.
 
+**Watchdog stands down from drain-start (`session.draining`) onward.** The
+watchdog disarms as soon as the engine emits `session.draining` — fired from
+`begin_drain`, before ESR generation even starts — not just at the later
+`$/esr_ready` / `session.completed`, because the full window from drain-start
+through ESR generation (unbounded, O(plays/agents)) and, if enabled, timelapse
+finalization (up to 60s) can be tens of seconds to over a minute of pure
+backend bookkeeping with no live dashboard left to protect. The watchdog also
+debounces its trip condition, requiring 3 consecutive 1-second stale polls
+(not a single sample) before declaring a wedge. Without these, a normal
+session end could still trip a false "Dashboard not responding" dialog. See
+`webview-crash-recovery.md` §4a / §4a-2.
+
+**Dialog actions.** When the watchdog does trip, the native "Dashboard not
+responding" dialog offers three actions: **Reload UI** (remounts the WebView,
+same path as the menu item), **Ignore** (dismisses the dialog only — no
+reload, no session impact), and **Stop session** (session teardown). Native
+OS message dialogs cap at 3 custom buttons, so "Ignore" replaced the earlier
+"Open dashboard in browser" fallback rather than being added as a 4th option.
+
 For non-obvious design decisions and rejected alternatives, see
 `docs/design/webview-crash-recovery.md`. See also: Dashboard DESIGN
 §Reconnection and §Session discovery (`docs/design/dashboard/DESIGN.md`);

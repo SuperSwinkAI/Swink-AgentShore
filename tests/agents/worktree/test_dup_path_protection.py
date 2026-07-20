@@ -474,6 +474,253 @@ async def test_prebranch_key_reuse_preserved(
     assert alloc1.path == alloc2.path  # type: ignore[union-attr]
 
 
+# --- live_protected_rows / live_protected_paths (#311) ----------------------
+
+
+async def test_live_protected_rows_unions_inflight_and_active_db_rows(
+    store: DataStore, main_repo: Path, worktree_root: Path
+) -> None:
+    """Public accessor unions the in-memory registry with active/reaping DB rows.
+
+    ``live_protected_rows``/``live_protected_paths`` are the public counterparts
+    to the private ``_protected_paths``/``_live_alias_paths`` the reaper already
+    trusts (#189/#203/#243/#250) — added so callers OUTSIDE the manager (the
+    PRUNE/RECONCILE_STATE skill context injection and its post-hoc guard) can
+    get the same hardened truth without reaching into private internals (#311).
+    """
+    from agentshore.agents.worktree import WorktreeManager
+    from agentshore.agents.worktree.manager import WorktreeAllocation
+    from agentshore.config import RuntimeConfig
+    from agentshore.state import PlayType
+
+    inflight_only = worktree_root / "pickup-inflight-only"
+    db_active_only = worktree_root / "pickup-db-active-only"
+    _git("worktree", "add", "-b", "inflight-only-wt", str(inflight_only), "HEAD", cwd=main_repo)
+    _git("worktree", "add", "-b", "db-active-only-wt", str(db_active_only), "HEAD", cwd=main_repo)
+
+    # A row backing the DB-active worktree, but never registered in the
+    # in-memory registry (the #243-style gap).
+    db_row_id = await _insert_row_at(
+        store,
+        session_id="sess-1",
+        pre_branch_key="db-active-only",
+        worktree_path=str(db_active_only),
+        status="active",
+    )
+
+    wm = WorktreeManager(
+        session_id="sess-1",
+        store=store,
+        main_repo=main_repo,
+        worktree_root=worktree_root,
+        cfg=RuntimeConfig(),
+    )
+    # An in-flight dispatch with no DB row (or a DB row not yet reflecting it).
+    wm.register_dispatch(
+        WorktreeAllocation(
+            worktree_id=4242,
+            path=inflight_only,
+            branch_name=None,
+            pre_branch_key="pickup-inflight-only",
+            play_type=PlayType.ISSUE_PICKUP,
+            scope="branch_creating",
+        )
+    )
+
+    rows = await wm.live_protected_rows()
+    assert rows[4242] == _canon_path(inflight_only)
+    assert rows[db_row_id] == _canon_path(db_active_only)
+
+    paths = await wm.live_protected_paths()
+    assert paths == {_canon_path(inflight_only), _canon_path(db_active_only)}
+
+
+async def test_live_protected_rows_includes_reaping_status(
+    store: DataStore, main_repo: Path, worktree_root: Path
+) -> None:
+    """A ``status='reaping'`` row counts as live — the exact #311 gap.
+
+    ``collect_active_worktree_paths`` (the narrower helper that fed the
+    prune/reconcile skills' ``active_worktree_paths`` context before this fix)
+    only queries ``status = 'active'``, so a worktree mid-transition to
+    ``'reaping'`` was invisible to it even though the manager's own
+    ``list_active``-backed truth (and the reaper) treats ``'reaping'`` as live.
+    """
+    from agentshore.agents.worktree import WorktreeManager
+    from agentshore.config import RuntimeConfig
+
+    reaping_target = worktree_root / "pickup-reaping"
+    _git("worktree", "add", "-b", "reaping-wt", str(reaping_target), "HEAD", cwd=main_repo)
+
+    await _insert_row_at(
+        store,
+        session_id="sess-1",
+        pre_branch_key="pickup-reaping",
+        worktree_path=str(reaping_target),
+        status="reaping",
+    )
+
+    wm = WorktreeManager(
+        session_id="sess-1",
+        store=store,
+        main_repo=main_repo,
+        worktree_root=worktree_root,
+        cfg=RuntimeConfig(),
+    )
+
+    paths = await wm.live_protected_paths()
+    assert _canon_path(reaping_target) in paths
+
+
+# --- reconcile_vanished_protected_rows (#360) --------------------------------
+
+
+def _manager(store: DataStore, main_repo: Path, worktree_root: Path):  # type: ignore[no-untyped-def]
+    from agentshore.agents.worktree import WorktreeManager
+    from agentshore.config import RuntimeConfig
+
+    return WorktreeManager(
+        session_id="sess-1",
+        store=store,
+        main_repo=main_repo,
+        worktree_root=worktree_root,
+        cfg=RuntimeConfig(),
+    )
+
+
+async def test_vanished_row_for_finished_work_is_retired_not_flagged(
+    store: DataStore, main_repo: Path, worktree_root: Path
+) -> None:
+    """#360: a stale row whose work is already done is bookkeeping, not a clobber.
+
+    The issue-syncer only marks a worktree row ``stale`` when it re-fetches that
+    exact PR in this session, so an already-merged worktree keeps an ``active``
+    row indefinitely. A prune that removes its directory used to be reported as
+    a destructive sweep (ERROR + forced play failure). With no in-flight
+    dispatch and no active work claim behind it, the row must instead be retired
+    to ``reaped`` and reported as bookkeeping.
+    """
+    gone = worktree_root / "agentshore-101-already-merged"  # never created on disk
+    row_id = await _insert_row_at(
+        store,
+        session_id="sess-1",
+        pre_branch_key="pickup-101",
+        worktree_path=str(gone),
+        status="active",
+    )
+
+    wm = _manager(store, main_repo, worktree_root)
+    report = await wm.reconcile_vanished_protected_rows()
+
+    assert report.in_flight == {}
+    assert report.retired == {row_id: _canon_path(gone)}
+    assert report.reasons[row_id] == "no_active_dispatch"
+
+    retired_row = await lookup_by_id(store, worktree_id=row_id)
+    assert retired_row is not None
+    assert retired_row.status == "reaped"
+    # And the row no longer counts as protected, so the next prune is quiet too.
+    assert _canon_path(gone) not in await wm.live_protected_paths()
+    assert (await wm.reconcile_vanished_protected_rows()).retired == {}
+
+
+async def test_vanished_inflight_dispatch_is_still_flagged(
+    store: DataStore, main_repo: Path, worktree_root: Path
+) -> None:
+    """#360 must not weaken #189/#195/#203/#238/#243/#250: live work still trips."""
+    from agentshore.agents.worktree.manager import WorktreeAllocation
+    from agentshore.state import PlayType
+
+    gone = worktree_root / "pickup-42"  # registered in-flight, directory removed
+    row_id = await _insert_row_at(
+        store,
+        session_id="sess-1",
+        pre_branch_key="pickup-42",
+        worktree_path=str(gone),
+        status="active",
+    )
+
+    wm = _manager(store, main_repo, worktree_root)
+    wm.register_dispatch(
+        WorktreeAllocation(
+            worktree_id=row_id,
+            path=gone,
+            branch_name=None,
+            pre_branch_key="pickup-42",
+            play_type=PlayType.ISSUE_PICKUP,
+            scope="branch_creating",
+        )
+    )
+
+    report = await wm.reconcile_vanished_protected_rows()
+
+    assert report.in_flight == {row_id: _canon_path(gone)}
+    assert report.retired == {}
+    assert report.reasons[row_id] == "inflight_dispatch"
+    # The live row is left exactly as it was — nothing retired out from under it.
+    live_row = await lookup_by_id(store, worktree_id=row_id)
+    assert live_row is not None
+    assert live_row.status == "active"
+
+
+async def test_vanished_row_with_active_work_claim_is_flagged(
+    store: DataStore, main_repo: Path, worktree_root: Path
+) -> None:
+    """The #243 registry gap: a live dispatch missing from ``_inflight`` still trips.
+
+    ``register_dispatch`` can fail to land (or be cleared early), which is what
+    defeated the earlier in-flight-only guards. An active work claim on the
+    row's issue is DB-truth evidence that a play is still working this worktree,
+    so the vanished directory is a genuine clobber even with an empty registry.
+    """
+    gone = worktree_root / "pickup-77"
+    row_id = await _insert_row_at(
+        store,
+        session_id="sess-1",
+        pre_branch_key="pickup-77",
+        worktree_path=str(gone),
+        status="active",
+    )
+    claim_group = await store.acquire_work_claims(
+        "sess-1", "issue_pickup", ["issue:77"], status="running"
+    )
+    assert claim_group is not None
+
+    wm = _manager(store, main_repo, worktree_root)
+    report = await wm.reconcile_vanished_protected_rows()
+
+    assert report.in_flight == {row_id: _canon_path(gone)}
+    assert report.retired == {}
+    assert report.reasons[row_id] == "active_work_claim:issue:77"
+    still_live = await lookup_by_id(store, worktree_id=row_id)
+    assert still_live is not None
+    assert still_live.status == "active"
+
+
+async def test_vanished_reconcile_is_noop_when_every_directory_survives(
+    store: DataStore, main_repo: Path, worktree_root: Path
+) -> None:
+    """Nothing missing on disk → nothing classified, nothing retired."""
+    present = worktree_root / "pickup-present"
+    _git("worktree", "add", "-b", "present-wt", str(present), "HEAD", cwd=main_repo)
+    row_id = await _insert_row_at(
+        store,
+        session_id="sess-1",
+        pre_branch_key="pickup-present",
+        worktree_path=str(present),
+        status="active",
+    )
+
+    wm = _manager(store, main_repo, worktree_root)
+    report = await wm.reconcile_vanished_protected_rows()
+
+    assert report.in_flight == {}
+    assert report.retired == {}
+    row = await lookup_by_id(store, worktree_id=row_id)
+    assert row is not None
+    assert row.status == "active"
+
+
 # --- _canon_path correctness -------------------------------------------------
 
 

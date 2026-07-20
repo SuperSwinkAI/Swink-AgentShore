@@ -187,6 +187,36 @@ class WorktreeAllocation:
     scope: Literal["pr", "branch_creating"]
 
 
+@dataclass(frozen=True, slots=True)
+class VanishedProtectedWorktrees:
+    """Classification of protected rows whose on-disk directory has vanished.
+
+    ``in_flight`` maps ``worktree_id`` → canonical path for rows backed by
+    positive evidence of a live dispatch (in-flight registry entry or an active
+    work claim on the row's issue/PR) — losing one of those directories is a
+    genuine clobber of running work. ``retired`` holds the rows that were only
+    stale bookkeeping: the work is finished (merged/closed/finalized), nothing
+    is dispatched against them, so their rows were transitioned to ``reaped``
+    instead of lingering "protected" (#360). ``reasons`` records why each id
+    landed where it did, for the caller's log line.
+    """
+
+    in_flight: dict[int, str]
+    retired: dict[int, str]
+    reasons: dict[int, str]
+
+
+def _issue_number_from_prebranch_key(pre_branch_key: str | None) -> int | None:
+    """Extract the issue number from a ``pickup-<N>`` pre-branch key, if numeric."""
+    if not pre_branch_key:
+        return None
+    prefix = _RECLAIMABLE_COLLISION_PREFIX
+    if not pre_branch_key.startswith(prefix):
+        return None
+    tail = pre_branch_key[len(prefix) :]
+    return int(tail) if tail.isdigit() else None
+
+
 def _systematic_debugging_is_pr_scoped(params: PlayParams) -> bool:
     """``SYSTEMATIC_DEBUGGING`` runs PR-scoped when a PR number is in scope."""
     return params.pr_number is not None
@@ -284,6 +314,187 @@ class WorktreeManager:
 
         rows = await list_active(self._store, session_id=self._session_id)
         return {_canon_path(r.worktree_path) for r in rows}
+
+    async def live_protected_rows(self) -> dict[int, str]:
+        """Map every currently-protected ``worktree_id`` to its canonical path.
+
+        Public counterpart to ``_protected_ids``/``_protected_paths``/
+        ``_live_alias_paths`` for callers OUTSIDE the manager that need the same
+        "is this worktree currently live" truth the reaper already trusts,
+        without reaching into private internals. Union of the in-memory
+        in-flight dispatch registry and every ``active``/``reaping`` DB row in
+        this session — the reaper regime's exact protection set (#311).
+
+        Used by the PRUNE/RECONCILE_STATE skill context injection (to widen the
+        advisory ``active_worktree_paths`` list beyond the narrower DB-only
+        ``collect_active_worktree_paths`` query, which misses ``reaping`` rows)
+        and by the post-hoc destructive-sweep guard in
+        ``plays/skill_backed/base.py`` (to detect a skill that removed a live
+        worktree despite the advisory list).
+        """
+        from agentshore.agents.worktree.registry import list_active  # noqa: PLC0415
+
+        protected: dict[int, str] = dict(self._inflight)
+        rows = await list_active(self._store, session_id=self._session_id)
+        for row in rows:
+            protected[row.worktree_id] = _canon_path(row.worktree_path)
+        return protected
+
+    async def live_protected_paths(self) -> set[str]:
+        """Canonical paths of every currently-protected worktree.
+
+        Convenience wrapper around :meth:`live_protected_rows` for callers that
+        only need the path set, not the id→path mapping.
+        """
+        return set((await self.live_protected_rows()).values())
+
+    async def reconcile_vanished_protected_rows(self) -> VanishedProtectedWorktrees:
+        """Split protected rows whose directory is gone into live work vs stale rows.
+
+        ``live_protected_rows`` is a *union* of the in-flight dispatch registry
+        and every ``active``/``reaping`` DB row. The DB half is bookkeeping, and
+        that bookkeeping goes stale: the issue-syncer only marks a row ``stale``
+        when it re-fetches that exact PR in this session, so a worktree whose PR
+        merged in an earlier session (or whose branch never matched a mirrored
+        PR) keeps an ``active`` row long after its work is dead. Treating such a
+        row's missing directory as a destructive clobber turns a *correct* prune
+        into a failed play with an ERROR-level "protected worktree removed"
+        alarm (#360) — the noodle incident flagged nine already-merged worktrees.
+
+        This method reconciles each vanished row against actual liveness before
+        anyone calls it a clobber:
+
+        - **Live** (violation): the row is in the in-memory in-flight registry
+          (by id or by canonical path), or an active/claimed/running work claim
+          still exists for the row's issue (``pickup-<N>``) or its PR. That is
+          real running work whose checkout disappeared — exactly the
+          #189/#195/#203/#238/#243/#250 family the guard exists for.
+        - **Stale** (bookkeeping): nothing is dispatched against it. The
+          directory is already gone, so retiring the row destroys nothing — it
+          just stops the row from lingering "protected" and re-tripping the
+          guard on every later prune. Rows are transitioned to ``reaped`` and
+          their allocation locks evicted.
+
+        Never removes anything from disk. Callers treat only ``in_flight`` as an
+        incident; ``retired`` is a warning-level bookkeeping repair.
+        """
+        from agentshore.agents.worktree.registry import list_active  # noqa: PLC0415
+
+        protected = await self.live_protected_rows()
+        missing = {wid: path for wid, path in protected.items() if not Path(path).exists()}
+        if not missing:
+            return VanishedProtectedWorktrees(in_flight={}, retired={}, reasons={})
+
+        inflight_ids = set(self._inflight)
+        inflight_paths = set(self._inflight.values())
+        rows = {
+            row.worktree_id: row
+            for row in await list_active(self._store, session_id=self._session_id)
+        }
+        # branch → (pr_number, linked issue numbers) for every PR still live in
+        # the mirror. A row whose branch is absent here has no open/approved PR
+        # to be working on — merged, closed, or never mirrored.
+        active_prs: dict[str, tuple[int, tuple[int, ...]]] = {}
+        if any(rows.get(wid) is not None and rows[wid].branch_name is not None for wid in missing):
+            for pr in await self._store.list_active_pull_requests(self._session_id):
+                if pr.branch:
+                    active_prs[pr.branch] = (pr.pr_number, pr.linked_issue_numbers)
+
+        in_flight: dict[int, str] = {}
+        retired: dict[int, str] = {}
+        reasons: dict[int, str] = {}
+        for wid, path in sorted(missing.items()):
+            if wid in inflight_ids or path in inflight_paths:
+                in_flight[wid] = path
+                reasons[wid] = "inflight_dispatch"
+                continue
+            row = rows.get(wid)
+            claim_key = (
+                None if row is None else await self._active_claim_key_for_row(row, active_prs)
+            )
+            if claim_key is not None:
+                in_flight[wid] = path
+                reasons[wid] = f"active_work_claim:{claim_key}"
+                continue
+            if row is None:
+                reason = "row_not_live"
+            elif row.status == "reaping":
+                reason = "reaping_row"
+            elif row.branch_name is not None and row.branch_name in active_prs:
+                reason = "no_active_dispatch_pr_open"
+            else:
+                reason = "no_active_dispatch"
+            reasons[wid] = reason
+            retired[wid] = path
+            if row is not None:
+                await self._retire_vanished_row(row, reason)
+
+        if in_flight or retired:
+            log.info(
+                "worktree_vanished_rows_reconciled",
+                in_flight=sorted(in_flight.values()),
+                retired=sorted(retired.values()),
+                reasons={str(wid): reason for wid, reason in sorted(reasons.items())},
+            )
+        return VanishedProtectedWorktrees(in_flight=in_flight, retired=retired, reasons=reasons)
+
+    async def _active_claim_key_for_row(
+        self,
+        row: WorktreeRow,
+        active_prs: Mapping[str, tuple[int, tuple[int, ...]]],
+    ) -> str | None:
+        """Return the resource key of an active work claim covering *row*, if any.
+
+        DB-truth liveness signal that does not depend on ``register_dispatch``
+        having landed (the #243 registry gap). A branch-creating row carries the
+        issue in its ``pickup-<N>`` pre-branch key; a PR-scoped row resolves via
+        the PR mirror to ``pr:<N>`` plus its linked issues. Any claim in an
+        active status (queued/claimed/running/retrying) on one of those keys
+        means a play is still working this worktree's subject.
+        """
+        keys: set[str] = set()
+        issue_number = _issue_number_from_prebranch_key(row.pre_branch_key)
+        if issue_number is not None:
+            keys.add(f"issue:{issue_number}")
+        if row.branch_name is not None:
+            entry = active_prs.get(row.branch_name)
+            if entry is not None:
+                pr_number, linked_issues = entry
+                keys.add(f"pr:{pr_number}")
+                keys.update(f"issue:{n}" for n in linked_issues)
+        if not keys:
+            return None
+        claims = await self._store.find_active_work_claims(self._session_id, sorted(keys))
+        return claims[0].resource_key if claims else None
+
+    async def _retire_vanished_row(self, row: WorktreeRow, reason: str) -> None:
+        """Transition a stale, directory-less row to ``reaped``. Never raises."""
+        try:
+            await mark_status(
+                self._store,
+                worktree_id=row.worktree_id,
+                status="reaped",
+                failure_reason=f"vanished_dir:{reason}",
+            )
+        except Exception as exc:  # noqa: BLE001 — bookkeeping repair is best-effort
+            log.warning(
+                "worktree_vanished_row_retire_failed",
+                worktree_id=row.worktree_id,
+                path=row.worktree_path,
+                error=str(exc),
+            )
+            return
+        self._pr_failure_counts.pop(row.worktree_id, None)
+        if row.branch_name is not None:
+            await self._evict_lock("branch", row.branch_name)
+        if row.pre_branch_key is not None:
+            await self._evict_lock("prebranch", row.pre_branch_key)
+        log.info(
+            "worktree_vanished_row_retired",
+            worktree_id=row.worktree_id,
+            path=row.worktree_path,
+            reason=reason,
+        )
 
     def _build_reclaimable_collision_predicate(
         self, live_alias_paths: set[str]
@@ -967,6 +1178,7 @@ __all__ = [
     "TRUNK_MUTATING_PLAYS",
     "TRUNK_SCOPED_PLAYS",
     "TrunkAllocation",
+    "VanishedProtectedWorktrees",
     "WorktreeAllocation",
     "WorktreeManager",
 ]

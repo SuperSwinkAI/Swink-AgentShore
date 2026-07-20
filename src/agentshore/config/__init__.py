@@ -153,20 +153,20 @@ agents:
   codex:
     enabled: true
     binary: codex
-    model: gpt-5.4
+    model: gpt-5.6-terra
     reasoning_effort: medium
     model_tiers:
       small:
         enabled: true
-        model: gpt-5.4-mini
+        model: gpt-5.6-luna
         reasoning_effort: low
       medium:
         enabled: true
-        model: gpt-5.4
+        model: gpt-5.6-terra
         reasoning_effort: medium
       large:
         enabled: true
-        model: gpt-5.5
+        model: gpt-5.6-sol
         reasoning_effort: high
   antigravity:
     enabled: true
@@ -185,20 +185,20 @@ agents:
   grok:
     enabled: true
     binary: grok
-    model: grok-build
+    model: grok-4.5
     reasoning_effort: medium
     model_tiers:
       small:
         enabled: true
-        model: grok-build
+        model: grok-4.5
         reasoning_effort: low
       medium:
         enabled: true
-        model: grok-build
+        model: grok-4.5
         reasoning_effort: medium
       large:
         enabled: true
-        model: grok-build
+        model: grok-4.5
         reasoning_effort: high
   fresh_start:
     max_plays_before_reset: 20

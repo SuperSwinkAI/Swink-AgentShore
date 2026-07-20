@@ -441,6 +441,40 @@ describe("AgentShoreStateManager — bootstrap_phase events (desktop-afp)", () =
     expect(mgr.bootstrapPhase).toBeNull();
     expect(mgr.bootstrapStartedAt).toBeNull();
   });
+
+  it("clears bootstrap state on a state_update when the ready sentinel is lost (#361)", () => {
+    const mgr = new AgentShoreStateManager();
+    mgr.handleMessage({
+      type: "bootstrap_phase",
+      seq: 1,
+      phase: "load_learnings",
+      status: "started",
+      elapsed_ms: 0,
+    } as unknown as AgentShoreMessage);
+    expect(mgr.bootstrapPhase).toBe("load_learnings");
+
+    // No ("ready", "completed") sentinel — the session just starts streaming.
+    mgr.handleMessage(stateUpdate(2));
+
+    expect(mgr.bootstrapPhase).toBeNull();
+    expect(mgr.bootstrapStartedAt).toBeNull();
+  });
+
+  it("clears bootstrap state on a play_event when the ready sentinel is lost (#361)", () => {
+    const mgr = new AgentShoreStateManager();
+    mgr.handleMessage({
+      type: "bootstrap_phase",
+      seq: 1,
+      phase: "load_learnings",
+      status: "started",
+      elapsed_ms: 0,
+    } as unknown as AgentShoreMessage);
+
+    mgr.handleMessage(playStarted(2));
+
+    expect(mgr.bootstrapPhase).toBeNull();
+    expect(mgr.bootstrapStartedAt).toBeNull();
+  });
 });
 
 describe("AgentShoreStateManager — session reset (Tier 0)", () => {

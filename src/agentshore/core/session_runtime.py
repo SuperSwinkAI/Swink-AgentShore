@@ -102,6 +102,7 @@ class SessionRuntime:
     log_path: Path | None = None
     embedded_mode: bool = False
     esr_ready_callback: Callable[[str, str, str | None], None] | None = None
+    session_draining_callback: Callable[[str, str], None] | None = None
     natural_exit_callback: NaturalExitCallback | None = None
 
     # --- stop / drain / pause latches ----------------------------------------

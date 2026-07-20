@@ -150,6 +150,39 @@ async def test_begin_drain_skipped_when_stop_requested() -> None:
     assert orch._end_session_report_requested is False
 
 
+@pytest.mark.asyncio
+async def test_begin_drain_fires_session_draining_callback() -> None:
+    """begin_drain() fires the registered session_draining callback with
+    (session_id, reason) — the earliest point in shutdown, before ESR
+    generation, so the desktop watchdog can stand down promptly."""
+    orch = _make_orch()
+    received: list[tuple[str, str]] = []
+    orch.register_session_draining_callback(lambda sid, reason: received.append((sid, reason)))
+    await orch.begin_drain("budget_exhausted")
+    assert received == [("sess-test", "budget_exhausted")]
+
+
+@pytest.mark.asyncio
+async def test_begin_drain_without_session_draining_callback_is_no_op() -> None:
+    """No callback registered → begin_drain() still completes cleanly."""
+    orch = _make_orch()
+    await orch.begin_drain("user_request")
+    assert orch._draining is True
+
+
+@pytest.mark.asyncio
+async def test_begin_drain_session_draining_callback_exception_does_not_fail_drain() -> None:
+    """A throwing callback must not propagate — drain has to complete cleanly."""
+    orch = _make_orch()
+
+    def _boom(_sid: str, _reason: str) -> None:
+        raise RuntimeError("notify pipe closed")
+
+    orch.register_session_draining_callback(_boom)
+    await orch.begin_drain("user_request")
+    assert orch._draining is True
+
+
 # ---------------------------------------------------------------------------
 # request_drain (sync)
 # ---------------------------------------------------------------------------

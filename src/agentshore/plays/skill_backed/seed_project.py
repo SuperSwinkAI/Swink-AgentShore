@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 
 from agentshore.plays.skill_backed.base import SkillBackedPlay
 from agentshore.plays.skill_backed.gates import InFlightGate
+from agentshore.result_parser import find_artifact
 from agentshore.rl.mask_reason import MaskClassification, MaskReason, MaskSource
 from agentshore.state import PlayType
 
@@ -29,6 +30,10 @@ class SeedProjectPlay(SkillBackedPlay):
     """
 
     gates = (InFlightGate(PlayType.SEED_PROJECT),)
+
+    # Named in the missing-envelope retry nudge so a re-emission restates the exact
+    # ``type`` string this play validates against (#313).
+    required_artifact_types = ("seed_audit",)
 
     def __init__(
         self,
@@ -169,10 +174,9 @@ def _validate_seed_audit_artifact(artifacts: list[JsonArtifact]) -> str | None:
 
 
 def _find_seed_audit_artifact(artifacts: list[JsonArtifact]) -> JsonObject | None:
-    for artifact in artifacts:
-        if isinstance(artifact, dict) and artifact.get("type") == "seed_audit":
-            return artifact
-    return None
+    # #313: same exact-match trap design_audit hit — tolerate the agent's spelling
+    # of the ``type`` string. The required fields above are still validated in full.
+    return find_artifact(artifacts, "seed_audit")
 
 
 def _coerce_nonnegative_int(value: object) -> int | None:

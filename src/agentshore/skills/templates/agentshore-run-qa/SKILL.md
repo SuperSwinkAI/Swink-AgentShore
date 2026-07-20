@@ -39,9 +39,15 @@ health, tests, CI/CD correctness, and documentation accuracy.
 
 Drop categories where every hit lives in `legacy/`/`deprecated/`/`old_*` paths.
 
-File substantive issues by impact — dedup first (below) so one root cause is one issue, no fixed numeric cap. Prioritize security, correctness, CI breakage, and missing critical-path coverage over style. If the volume is large, file the highest-impact findings and report the count you held back.
+File substantive issues by impact — dedup first (below) so one root cause is one issue. **Hard ceiling: at most 8 new issues per run**, highest-impact first (security, correctness, CI breakage, missing critical-path coverage — then everything else). Findings beyond the ceiling are not filed: count them in `quality_audit.suppressed_findings` and name their categories in the report so the truncation is visible rather than silent. A held-back finding is a normal outcome, not a failure — the next run re-discovers it.
 
-**File issues.** Dedup first: `gh issue list --search "<summary>" --label "<label>" --state all --json number,title,state`. Skip if an open issue covers the same root problem. Re-create against a closed issue only on regression or pattern reappearance. Use literal newlines (not `\n` escapes) in bodies.
+**File issues.** Dedup first, over the whole existing set rather than per-finding keyword lookups (keyword search cannot match a semantically overlapping title filed under a different area suffix). List once, up front:
+
+```
+gh issue list --state open --limit 200 --json number,title,labels,body
+```
+
+Read that whole list and, for each candidate finding, decide whether an existing open issue already covers the same **root problem** — same subsystem and same failure mode counts as covered even when the titles differ (e.g. four separate "server data-access perf" issues are one problem). If covered, skip it and record the number in `issues_existing`. Only fall back to `gh issue list --search "<summary>" --state closed` to check whether a closed issue covered it; re-create against a closed issue only on regression or pattern reappearance. Use literal newlines (not `\n` escapes) in bodies.
 
 - Tool failures: title `QA: <description>`, label `agentshore/qa`. Body: `## Failure`, `## Evidence` (file:line), `## Reproduction`, `## Branch`.
 - Audit findings (3e/3f/3g): title `Slop: <category> in <area>`, label `agentshore/slop`. Body: `## Category`, `## Severity`, `## Evidence`, `## Impact`, `## Human fix`, `## Branch`.
@@ -50,6 +56,7 @@ File substantive issues by impact — dedup first (below) so one root cause is o
 - Creating, editing, restoring, or deleting `.github/workflows/**`, `.github/actions/**`, `.gitlab-ci.yml`, `.circleci/**`, `azure-pipelines.yml`, `Jenkinsfile`, `bitbucket-pipelines.yml`, or tests asserting their existence. File issues for CI failures; never auto-fix CI configs.
 - `git worktree add/remove/prune` (AgentShore owns worktree lifecycle).
 - `git stash`, `git checkout` to switch branches, `git fetch`/`merge` to advance the branch under audit.
+- If you need scratch/working files, write them under `tmp/` at the project root (gitignored, never treated as a dirty-trunk blocker) — never loose at the repo root.
 
 **Report — one fenced JSON block, nothing after:**
 

@@ -1,11 +1,16 @@
 /**
  * Shared "start a session from the previously-persisted setup" helper.
  *
- * Two endpoints converge on this code path (issue #561 Repeat button on the
- * End-Session Report; issue #565 Quick Start tile on the Chooser): both
- * skip the setup rail and want a session running against whatever was
+ * Used by the Quick Start tile on the Chooser (issue #565), which skips
+ * the setup rail and wants a session running against whatever was
  * already configured for the project — same target branch, same agents,
  * same identities, same budget.
+ *
+ * (The End-Session-Report "Repeat with same settings" button (#561) used
+ * to be a second caller of this helper. It was removed in #309 — the ESR
+ * never reliably re-attached its live view to the freshly spawned
+ * session, so it now just routes back to the Chooser via Back to Home /
+ * Start a new session instead of restarting in place.)
  *
  * The flow:
  *
@@ -31,9 +36,9 @@
  * intentionally avoided so a click handler that doesn't await still gets
  * a useful error path.
  *
- * Co-owned by issues #561 (Repeat) and #565 (Quick Start). The signature is
- * intentionally minimal so both endpoints stay in lockstep — if you need
- * more knobs add them to ``opts`` rather than forking the signature.
+ * Owned by issue #565 (Quick Start). The signature stays intentionally
+ * minimal — if you need more knobs add them to ``opts`` rather than
+ * growing this into a general-purpose start function.
  */
 
 import type { NavigateFunction } from "react-router-dom";

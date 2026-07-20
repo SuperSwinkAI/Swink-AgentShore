@@ -391,6 +391,14 @@ class _OrchestratorBase:
         self._runtime.esr_ready_callback = value
 
     @property
+    def _session_draining_callback(self) -> Callable[[str, str], None] | None:
+        return self._runtime.session_draining_callback
+
+    @_session_draining_callback.setter
+    def _session_draining_callback(self, value: Callable[[str, str], None] | None) -> None:
+        self._runtime.session_draining_callback = value
+
+    @property
     def _natural_exit_callback(self) -> NaturalExitCallback | None:
         return self._runtime.natural_exit_callback
 

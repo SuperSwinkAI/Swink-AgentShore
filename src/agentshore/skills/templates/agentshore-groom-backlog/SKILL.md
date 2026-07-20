@@ -51,16 +51,18 @@ Any other conflicting state label combination → record in `conflicting_labels_
 
 **Remove resolved blocked labels.** A GH issue's `blocked` / `agentshore/blocked` label is sticky — it does **not** auto-clear when the blocker resolves, so the issue silently stays out of the `issue_pickup` pool forever even though nothing blocks it. For each open GH issue carrying `blocked` or `agentshore/blocked`:
 
+0. **Needs-human override (check first, before tracing).** If the issue also carries `agentshore/needs-human` or `needs-human-review`, **do not trace or clear anything for it in this step** — leave every label untouched and move to the next issue. Either label means a prior pass already determined this needs a human decision (for `agentshore/needs-human`, frequently a beads dependency-cycle conflict where the recorded blocker direction contradicts a real one — clearing `agentshore/blocked` here would just let `issue_pickup` re-discover the identical contradiction and re-block it). Only a human removing `agentshore/needs-human` / `needs-human-review` re-arms this issue for automatic clearing.
+
 1. **Trace its blocker(s)** from every source you already hold or can cheaply read:
    - **Body** (`gh` list already fetched): `blocked by #N` / `depends on #N` declarations.
    - **beads edges** (Pre-flight snapshot, no per-bead calls): the issue's own bead (`external_ref="gh-<this>"`) `.dependencies[].depends_on_id`; map each `depends_on_id` bead back to its `external_ref` `gh-<M>` — that `#M` is a blocker. beads edges self-heal on close, so an *open* edge here means a live blocker.
    - **Marker comment** (only when steps above found nothing, and only for issues carrying `agentshore/blocked`): `gh issue view <N> --json comments` and scan for `<!-- agentshore:blocked-by #M -->`. AgentShore posts this when it stamps `agentshore/blocked` without a bead mirror; the `#M` is the blocker. (Targeted per-issue `gh` read — fine to interleave; never a `bd` call.)
 
-2. **Decide** (each `#M` is decidable `OPEN`/`CLOSED` from the open/closed GH lists in hand):
+2. **Decide** (each `#M` is decidable `OPEN`/`CLOSED` from the open/closed GH lists in hand — re-check the specific `#M` against those lists before writing anything; never assert "resolved" from memory or inference):
    - **Any traced blocker still `OPEN`** → leave the label (genuinely blocked).
-   - **≥ 1 traced blocker AND every one `CLOSED`** → remove it: `gh issue edit <N> --remove-label "<the blocking label actually present>"` (remove whichever of `blocked` / `agentshore/blocked` the issue carries — removing an absent label errors), then `gh issue comment <N> --body "Unblocked by groom-backlog: all blocking dependencies resolved (<#M…>)."`. Record in `blocks_cleared` as `{"issue": N, "resolved_deps": [...]}`. **Cap 15 per run** (oldest number first); extras → `blocks_clear_deferred` as `{"issue": N}`.
+   - **≥ 1 traced blocker AND every one verified `CLOSED`** → remove it: `gh issue edit <N> --remove-label "<the blocking label actually present>"` (remove whichever of `blocked` / `agentshore/blocked` the issue carries — removing an absent label errors), then `gh issue comment <N> --body "Unblocked by groom-backlog: all blocking dependencies resolved (#M, #M, ...)."` **citing every specific `#M` you verified closed — never write this comment with an empty or omitted citation.** Record in `blocks_cleared` as `{"issue": N, "resolved_deps": [...]}`. **Cap 15 per run** (oldest number first); extras → `blocks_clear_deferred` as `{"issue": N}`.
    - **No blocker traceable from any source** → this depends on the label:
-     - **`agentshore/blocked`** (AgentShore-namespaced — it only ever comes from a `block_issue_on` gate whose blocker is now untraceable, i.e. lost/stale) **and the issue does not carry `needs-human-review`** → **sweep it**: `gh issue edit <N> --remove-label "agentshore/blocked"`, then `gh issue comment <N> --body "Unblocked by groom-backlog: agentshore/blocked carried no traceable dependency (no body declaration, beads edge, or marker) — clearing the stale gate. Re-block via issue_pickup if a real dependency remains."`. Record in `blocks_swept` as `{"issue": N}`. **Cap 15 per run** (oldest number first); extras → `blocks_swept_deferred` as `{"issue": N}`.
+     - **`agentshore/blocked`** (AgentShore-namespaced — it only ever comes from a `block_issue_on` gate whose blocker is now untraceable, i.e. lost/stale) **and the issue does not carry `needs-human-review`** (already excluded by step 0 if it also carries `agentshore/needs-human`) → **sweep it**: `gh issue edit <N> --remove-label "agentshore/blocked"`, then `gh issue comment <N> --body "Unblocked by groom-backlog: agentshore/blocked carried no traceable dependency (no body declaration, beads edge, or marker) — clearing the stale gate. Re-block via issue_pickup if a real dependency remains."`. Record in `blocks_swept` as `{"issue": N}`. **Cap 15 per run** (oldest number first); extras → `blocks_swept_deferred` as `{"issue": N}`.
      - **plain `blocked`** (may be a human-set gate, not AgentShore's) **or `needs-human-review` present** → leave the label untouched (do not guess at a human's intent).
 
 **Flag oversized issues for refinement** (do not decompose — `refine_tasks` does that). Flag if ≥ 2 of these fire:
@@ -88,7 +90,7 @@ Partial evidence → **keep**, not Shipped. Record per-item verdicts in `groomin
 
 **Apply changes.** Stale/duplicate: `bd close <id>`. Orphaned: `bd link <id> <epic> --type parent-child` (child first, parent second; `--parent` is not a valid flag, and the default `blocks` type would wrongly block the child) if a parent exists, else close. Mislabeled: `bd update <id> --type <correct>`.
 
-**Reconcile both directions.** Open bead with no `external_ref`: `gh issue list --search "<title>" --state open --limit 5`; on exact case-insensitive single match (no other bead holds that ref) `bd update <id> --external-ref "gh-<N>"`, else `gh issue create … --label enhancement` and link the new number. Open GH issue with no bead: `bd create task "<title>" --description "Closes gh-<N>" --external-ref "gh-<N>"` and `bd link <task-id> <story-id> --type parent-child` to the most appropriate story (create one if none fits).
+**Reconcile both directions.** Open bead with no `external_ref`: `gh issue list --search "<title>" --state open --limit 5`; on exact case-insensitive single match (no other bead holds that ref) `bd update <id> --external-ref "gh-<N>"`, else `gh issue create … --label enhancement` and link the new number. Open GH issue with no bead: `bd create "<title>" --type task --description "Closes gh-<N>" --external-ref "gh-<N>"` and `bd link <task-id> <story-id> --type parent-child` to the most appropriate story (create one if none fits).
 
 **Close shipped work.** For every verdict `stale_close`, close child tasks → stories → epics in that order. `bd close <ids…> --reason="shipped: <sha or PR #>"` and `gh issue close <N> --comment "Closed by groom-backlog: shipped in <sha or PR #>."`. Record in `beads_closed_stale` / `issues_closed_stale`. Shipped takes precedence over Stale/Duplicate/Orphaned so the evidence is the reason persisted.
 
@@ -112,6 +114,7 @@ Mirror ordering edges into beads so the cheap `issue_pickup` candidate mask can 
 - Never touch `.github/workflows/**` or any CI config.
 - Never call `git worktree add/remove/prune` — AgentShore owns lifecycle.
 - Never edit product code, tests, or docs.
+- If you need scratch/working files, write them under `tmp/` at the project root (gitignored, never treated as a dirty-trunk blocker) — never loose at the repo root.
 
 **Report — one fenced JSON block, nothing else:**
 

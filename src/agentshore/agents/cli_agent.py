@@ -89,6 +89,7 @@ from agentshore.agents.cli.watchdogs import (
 from agentshore.agents.costs import estimate_cost
 from agentshore.agents.handle import AgentInvocationResult
 from agentshore.agents.pricing import PricingQuote, default_quote
+from agentshore.beads import ensure_bd_on_agent_path
 from agentshore.errors import (
     AgentOutputInvalid,
     AgentProcessCrashed,
@@ -638,7 +639,23 @@ async def _finalize_nonzero_exit(
 
 
 async def _kill_process(proc: asyncio.subprocess.Process, agent_id: str) -> None:
-    """Send SIGTERM, wait up to _SIGKILL_GRACE seconds, then SIGKILL."""
+    """Send SIGTERM, wait up to _SIGKILL_GRACE seconds, then SIGKILL.
+
+    Every AgentShore-initiated agent termination funnels through here, and until
+    #363 none of them logged anything before signalling — only the SIGKILL
+    escalation did. That made a self-inflicted kill and an externally-delivered
+    one produce byte-identical logs (a bare ``cli_agent_nonzero_exit`` with
+    rc ``-15``), which is why two investigations of the same fleet-wide SIGTERM
+    cluster could not settle who sent the signal. ``agent_process_terminating``
+    is that missing discriminator: if it is absent for an agent that died on
+    SIGTERM, AgentShore did not kill it.
+    """
+    _logger.info(
+        "agent_process_terminating",
+        agent_id=agent_id,
+        pid=proc.pid,
+        signal="SIGTERM",
+    )
     if not hasattr(os, "killpg"):
         # Windows: no process groups. ``start_new_session=True`` is a no-op
         # there, so there is nothing to ``os.killpg`` and ``os.getpgid`` is
@@ -722,7 +739,12 @@ async def _kill_process(proc: asyncio.subprocess.Process, agent_id: str) -> None
                 pgid=pgid,
                 survivors=survivors,
             )
-        except ProcessLookupError:
+        except (ProcessLookupError, PermissionError):
+            # ProcessLookupError (ESRCH): the group is gone, the expected case.
+            # PermissionError (EPERM): the OS recycled ``pgid`` to a group this
+            # user does not own — the original group is equally gone. Both mean
+            # "nothing survived"; neither may escape this diagnostic-only probe
+            # and fail the whole play as ``unexpected_play_error`` (#362).
             pass
         _close_process_transport(proc)
 
@@ -873,6 +895,12 @@ async def dispatch_cli(
         for_grok=(handle.agent_type == AgentType.GROK),
         for_antigravity=(handle.agent_type == AgentType.ANTIGRAVITY),
     )
+    # Skills instruct agents to run literal ``bd ...`` commands, which resolve
+    # via this subprocess's own PATH — independent of resolve_bd_binary(),
+    # which every orchestrator-side bd call goes through. Pin the two together
+    # so an agent never writes with a different bd version than AgentShore
+    # itself uses against the same embedded Dolt store (#315).
+    env = ensure_bd_on_agent_path(env)
 
     # Resolve npm-shim agent binaries (codex.cmd etc.) to a full path so they
     # spawn on Windows; CreateProcess only finds bare names ending in .exe.
@@ -987,6 +1015,18 @@ async def dispatch_cli(
         ) from None
     except asyncio.CancelledError:
         # Task cancellation — clean up the child process before propagating.
+        # Nothing downstream logs a cancelled dispatch: no play_completed, no
+        # agent_dispatch_failed, no cancel event anywhere in the executor or
+        # dispatch mixin. A cancelled play simply vanished from the log while
+        # its agent died on SIGTERM, indistinguishable from an external kill
+        # (#363). Mass cancellation — e.g. asyncio.run() tearing down every
+        # remaining task after a stdin-EOF shutdown — is the one path that can
+        # produce a silent fleet-wide SIGTERM, so it must announce itself.
+        _logger.warning(
+            "dispatch_cancelled",
+            agent_id=handle.agent_id,
+            play_id=handle.current_play_id,
+        )
         with contextlib.suppress(Exception):
             await _kill_process(proc, handle.agent_id)
         _close_streams(proc)

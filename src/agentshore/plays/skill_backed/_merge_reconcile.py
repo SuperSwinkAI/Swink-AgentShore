@@ -121,10 +121,10 @@ async def reconcile_merged_pr(
             if task.issue_number == issue_number and task.status != BeadStatus.CLOSED:
                 try:
                     await _bd(
-                        "update",
+                        "close",
                         task.bead_id,
-                        "--status",
-                        "closed",
+                        "--reason",
+                        f"merged PR #{pr_number}",
                         "--dolt-auto-commit=on",
                         cwd=ctx.project_path,
                     )

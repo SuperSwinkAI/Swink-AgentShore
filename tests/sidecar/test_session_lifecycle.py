@@ -65,11 +65,17 @@ agents:
         enabled: true
       medium:
         enabled: true
+      large:
+        enabled: true
   codex:
     enabled: true
     binary: agentshore-missing-codex
     identity: beta
     model_tiers:
+      small:
+        enabled: true
+      medium:
+        enabled: true
       large:
         enabled: true
 """
@@ -154,6 +160,90 @@ async def test_install_skills_drops_templates_into_project(tmp_path: Path) -> No
     # uses ``agentshore-issue-pickup``); presence checks the install ran.
     installed = sorted(d.name for d in skills_dir.iterdir() if d.is_dir())
     assert installed, f"no skill templates installed under {skills_dir}"
+
+
+@pytest.mark.asyncio
+async def test_config_merge_attaches_session_log_file_handler(tmp_path: Path) -> None:
+    """After config_merge, the per-session NDJSON log file exists (gh-356) —
+    early phases like init_beads must have a durable sink to log into, well
+    before Orchestrator.bootstrap attaches one in first_snapshot."""
+    import logging
+
+    project = _write_valid_project(tmp_path / "valid-log-handler")
+    state = ServerState(active_project_path=str(project))
+    root = logging.getLogger()
+    original_handlers = list(root.handlers)
+
+    try:
+        outcome = await run_session_start(state, start_bridge=False, start_orchestrator=False)
+        assert outcome.session_id is not None
+
+        log_file = project / ".agentshore" / "logs" / f"agentshore-{outcome.session_id}.log"
+        assert log_file.exists(), "config_merge did not attach the per-session log file handler"
+    finally:
+        root.handlers = original_handlers
+
+
+# ---------------------------------------------------------------------------
+# Phase: init_beads (unresolved schema drift surfaces via notify, gh-356)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_init_beads_notifies_on_unresolved_schema_drift(tmp_path: Path) -> None:
+    """An unresolved BeadsSchemaDriftError from reconcile_beads_schema fires a
+    live $/beads_schema_drift notification — not just a log line that vanished
+    before issue #356's fix — carrying the session id, project path, and the
+    exact remediation command, and never blocks session start."""
+    from agentshore.beads import BeadsSchemaDriftError
+    from agentshore.beads.setup import _REMOTE_MIGRATE_COMMAND
+
+    project = _write_valid_project(tmp_path / "drifted")
+    state = ServerState(active_project_path=str(project))
+    notifications: list[dict[str, object]] = []
+
+    def _notify(notif: dict[str, object]) -> None:
+        notifications.append(notif)
+
+    with patch(
+        "agentshore.beads.setup.reconcile_beads_schema",
+        AsyncMock(side_effect=BeadsSchemaDriftError("beads store is behind its remote's schema")),
+    ):
+        outcome = await run_session_start(
+            state, notify=_notify, start_bridge=False, start_orchestrator=False
+        )
+
+    assert outcome.session_id is not None  # never blocked session start
+
+    drift_notifs = [n for n in notifications if n.get("method") == "$/beads_schema_drift"]
+    assert len(drift_notifs) == 1
+    params = drift_notifs[0]["params"]
+    assert isinstance(params, dict)
+    assert params["session_id"] == outcome.session_id
+    assert params["project_path"] == str(project)
+    assert params["remediation"] == _REMOTE_MIGRATE_COMMAND
+    assert "behind its remote's schema" in str(params["error"])
+
+
+@pytest.mark.asyncio
+async def test_init_beads_no_notify_on_healthy_reconcile(tmp_path: Path) -> None:
+    """A reconcile that resolves cleanly (or fails for an unrelated, non-drift
+    reason) never emits $/beads_schema_drift — only the specific unresolved
+    BeadsSchemaDriftError case does."""
+    project = _write_valid_project(tmp_path / "healthy")
+    state = ServerState(active_project_path=str(project))
+    notifications: list[dict[str, object]] = []
+
+    def _notify(notif: dict[str, object]) -> None:
+        notifications.append(notif)
+
+    with patch(
+        "agentshore.beads.setup.reconcile_beads_schema",
+        AsyncMock(return_value=None),
+    ):
+        await run_session_start(state, notify=_notify, start_bridge=False, start_orchestrator=False)
+
+    assert not any(n.get("method") == "$/beads_schema_drift" for n in notifications)
 
 
 # ---------------------------------------------------------------------------
@@ -244,7 +334,15 @@ async def test_check_agent_auth_passes_on_clean_probe(tmp_path: Path) -> None:
         )
 
     assert outcome.session_id == state.session_id
-    steps = [n["params"]["step"] for n in notifications]  # type: ignore[index]
+    # Filter to $/progress notifications: init_beads may also emit an
+    # unrelated $/beads_schema_drift notification (gh-356) if this machine's
+    # bd install can't reconcile the test project's bare .beads/ dir, and
+    # that notification has no "step" param.
+    steps = [
+        n["params"]["step"]  # type: ignore[index]
+        for n in notifications
+        if n.get("method") == "$/progress"
+    ]
     # check_agent_auth ran (running+ok) and later phases proceeded.
     assert STEP_CHECK_AGENT_AUTH in steps
     assert "install_skills" in steps
@@ -562,6 +660,7 @@ async def test_natural_exit_emits_session_completed_notification(tmp_path: Path)
         _natural_exit_reason: str | None = None
         _natural_exit_callback: object = None
         _esr_ready_callback: object = None
+        _session_draining_callback: object = None
         _store = store
         _log_path = Path(generated_log_path)
 
@@ -574,11 +673,16 @@ async def test_natural_exit_emits_session_completed_notification(tmp_path: Path)
             # this fake passive while honoring the contract.
             self._esr_ready_callback = cb
 
+        def register_session_draining_callback(self, cb: object) -> None:
+            self._session_draining_callback = cb
+
         async def publish_initial_state(self) -> None:
             pass
 
         async def run_until_idle(self) -> None:
             self._natural_exit_reason = "max_plays"
+            if callable(self._session_draining_callback):
+                self._session_draining_callback(session_id, "max_plays")  # type: ignore[misc]
             if callable(self._natural_exit_callback):
                 await self._natural_exit_callback(self._natural_exit_reason)  # type: ignore[misc]
 
@@ -647,6 +751,16 @@ async def test_natural_exit_emits_session_completed_notification(tmp_path: Path)
     assert ready_params["archive_path"] == str(project / ".agentshore" / "archives" / session_id)
     assert ready_params["report_path"] == generated_report_path
     assert ready_params["log_path"] == generated_log_path
+
+    draining = [n for n in emitted if n.get("method") == "session.draining"]
+    assert len(draining) == 1, f"expected 1 session.draining, got {emitted}"
+    draining_params = draining[0]["params"]
+    assert isinstance(draining_params, dict)
+    assert draining_params == {"session_id": session_id, "reason": "max_plays"}
+
+    # The whole point of the earlier signal: it must reach the shell before
+    # $/esr_ready, which only arrives after the unbounded ESR-generation step.
+    assert emitted.index(draining[0]) < emitted.index(ready[0])
 
 
 class _NoopOrch:
@@ -779,6 +893,7 @@ async def test_natural_exit_emits_session_completed_when_context_nulled_during_b
         _natural_exit_reason: str | None = None
         _natural_exit_callback: object = None
         _esr_ready_callback: object = None
+        _session_draining_callback: object = None
         _store = store
         _log_path = Path(generated_log_path)
 
@@ -787,6 +902,9 @@ async def test_natural_exit_emits_session_completed_when_context_nulled_during_b
 
         def register_esr_ready_callback(self, cb: object) -> None:
             self._esr_ready_callback = cb
+
+        def register_session_draining_callback(self, cb: object) -> None:
+            self._session_draining_callback = cb
 
         async def publish_initial_state(self) -> None:
             pass

@@ -25,6 +25,9 @@ from agentshore.core.terminal_park import (
     _WRITE_PLAN_UNPLANNABLE_MARKERS,
     TerminalParkPolicy,
 )
+from agentshore.core.trunk_artifacts import force_quarantine_wedge_paths
+from agentshore.core.wedge_signals import collect_dirty_trunk_paths
+from agentshore.data.models import ExternalMutationRecord
 from agentshore.data.store import PlayRecord
 from agentshore.github.labels import (
     NEEDS_HUMAN_LABEL,
@@ -83,6 +86,17 @@ _FULL_ISSUE_SYNC_PLAYS: frozenset[PlayType] = frozenset(
         PlayType.PRUNE,
     }
 )
+
+# Substring in an unblock_pr failure's ``error`` text meaning the target has
+# irreconcilable merge conflicts (the skill emits
+# ``error: "Merge conflicts require manual resolution"`` alongside
+# ``blocked_by: "merge_conflicts"`` — the latter has no structured home on
+# ``PlayOutcome``, so the error text is the signal, same convention as
+# ``_UNBLOCK_MANUAL_REQUIRED_MARKERS``). Distinct from that list: a merge
+# conflict is often resolvable once the base branch moves (a later rebase
+# succeeds), so it only earns a short, clock-windowed repick cooldown (#312)
+# — never the PERMANENT manual-required park that list triggers.
+_UNBLOCK_PR_REPICK_COOLDOWN_MARKERS: tuple[str, ...] = ("merge conflict",)
 
 
 def skip_category_to_reason(skip_category: str | None) -> PlaySkipReason:
@@ -416,6 +430,7 @@ class CompletionProcessor:
                 pass
 
         await self._record_unblock_attempt_if_needed(ctx, outcome, completed_play_type)
+        self._record_merge_pr_repick_cooldown_if_needed(ctx, outcome, completed_play_type)
         await self._park_unplannable_issue_if_needed(ctx, outcome, completed_play_type)
         next_state = await self._run_completion_control_checks(outcome)
         await self._record_completion_experience(
@@ -697,8 +712,13 @@ class CompletionProcessor:
             # A dispatch that merged the target or cleared its sole stale
             # CHANGES_REQUESTED review is a win — never count or park it. Reset
             # prior failures so a later genuine block counts fresh (blocky PR #517).
+            # Also clear the #312 repick cooldown: this dispatch just proved the
+            # PR fine again, which the cooldown's own lazy rearm check (a live
+            # ``mergeable`` re-check on the next resolve) would not necessarily
+            # catch — e.g. a stale-review resolution never touched ``mergeable``.
             if _outcome_resolved_target_pr(outcome, ctx.params.pr_number):
                 self._executor._resolver.reset_unblock_pr_failures(ctx.params.pr_number)
+                self._executor._resolver.clear_pr_repick_cooldown(ctx.params.pr_number)
                 _logger.info(
                     "unblock_pr_resolved_target",
                     session_id=self._session_id,
@@ -716,6 +736,62 @@ class CompletionProcessor:
                     self.mark_pr_manual_required(ctx.params.pr_number),
                     "mark_pr_manual_required",
                 )
+            # #312: a merge-conflict failure is not permanently unfixable (the
+            # base branch may move and a later rebase succeed), but it is
+            # provably not worth re-attempting THIS tick — arm a short repick
+            # cooldown so the PPO doesn't immediately re-pick the same PR.
+            # threshold=1 in PR_REPICK_COOLDOWN_SPEC means this fires on the
+            # very first such failure, well before the 3-attempt exhaustion
+            # counter above would exclude it. rearmable=True: the PR's live
+            # ``mergeable`` field is free to re-check every resolve, so the
+            # cooldown clears the instant a rebase lands (see
+            # PlayCandidateService._rearm_pr_repick_cooldown).
+            elif any(m in error_text for m in _UNBLOCK_PR_REPICK_COOLDOWN_MARKERS):
+                self._executor._resolver.record_pr_repick_cooldown(
+                    ctx.params.pr_number,
+                    ctx.state_at_dispatch.total_plays,
+                    rearmable=True,
+                )
+
+    def _record_merge_pr_repick_cooldown_if_needed(
+        self,
+        ctx: _DispatchContext,
+        outcome: PlayOutcome,
+        completed_play_type: PlayType,
+    ) -> None:
+        """Arm the fast per-PR repick cooldown on a merge_pr ``dirty_trunk`` failure (#312).
+
+        Sibling to ``_record_unblock_attempt_if_needed``'s merge_conflicts
+        arm, and separate from ``_handle_merge_pr_outcome``'s SESSION-GLOBAL
+        same-cause wedge counter (#330, untouched here — that mechanism only
+        counts a specific root-untracked-path pathology toward unmasking
+        END_SESSION, it carries no per-PR memory at all). This is per-PR: a
+        ``dirty_trunk`` failure on PR #42 means re-picking #42 immediately is
+        wasted dispatch cost regardless of which untracked-path pathology
+        caused it, so this matches on the same ``"dirty_trunk"`` substring
+        ``_handle_merge_pr_outcome`` checks but does not require the
+        root-untracked refinement that guards the wedge counter's escalation.
+
+        rearmable=False: unlike unblock_pr's merge_conflicts (whose live
+        ``mergeable`` field is free to re-check every resolve), there is no
+        equivalently cheap live "trunk is clean now" signal available to
+        ``PlayCandidateService`` — it rides out the full cooldown window,
+        mirroring issue_pickup's non-rearmable timeout/crash case (#222).
+        """
+        if (
+            completed_play_type != PlayType.MERGE_PR
+            or outcome.success
+            or not isinstance(ctx.params.pr_number, int)
+        ):
+            return
+        error_text = (outcome.error or "").lower()
+        if "dirty_trunk" not in error_text:
+            return
+        self._executor._resolver.record_pr_repick_cooldown(
+            ctx.params.pr_number,
+            ctx.state_at_dispatch.total_plays,
+            rearmable=False,
+        )
 
     async def _park_unplannable_issue_if_needed(
         self,
@@ -920,6 +996,14 @@ class CompletionProcessor:
         await self._host._safe_call(
             self._runtime.state_provider.on_play_completed(outcome), "on_play_completed"
         )
+        # Book the take_break verdict BEFORE the recovery re-enqueue below (#365).
+        # ``_retire_or_recover_errored_agent`` consults the consecutive-failure
+        # counter to decide whether another break is still worth enqueueing; if
+        # the counter were still one short (incremented after), the failure that
+        # *reaches* the limit would enqueue one more identical break before
+        # exhaustion was recorded — the unbounded 30-minute cycle in #365.
+        if completed_play_type == PlayType.TAKE_BREAK:
+            self._handle_take_break_outcome(outcome)
         # The orchestrator owns final lifecycle publication. The executor may
         # update handles, but consumers get the terminal status event here
         # after persistence/reward side effects complete.
@@ -941,8 +1025,8 @@ class CompletionProcessor:
                 "on_agent_changed_final",
             )
             await self._retire_or_recover_errored_agent(outcome.agent_id, final_status)
-        if completed_play_type == PlayType.TAKE_BREAK:
-            self._handle_take_break_outcome(outcome)
+        if completed_play_type == PlayType.MERGE_PR:
+            await self._handle_merge_pr_outcome(outcome)
         if (
             completed_play_type == PlayType.END_AGENT
             and outcome.success
@@ -1068,6 +1152,100 @@ class CompletionProcessor:
             agent_id=agent_id,
             consecutive_failures=failures,
             limit=BREAK_RECOVERY_FAILURE_LIMIT,
+        )
+
+    async def _handle_merge_pr_outcome(self, outcome: PlayOutcome) -> None:
+        """Track consecutive same-cause merge_pr ``dirty_trunk`` failures (#330).
+
+        A successful merge_pr clears the counter. A ``dirty_trunk`` failure
+        blocked by root-level untracked path(s) a deterministic reclaim sweep
+        correctly leaves alone (real user WIP, or predates every known play
+        window) records those paths as the failure's cause; once the same
+        cause repeats past the guard's threshold, ``state.trunk_wedged``
+        unmasks END_SESSION for the PPO (see ``rl/eligibility.py``) — this
+        method never *forces* a session action, only feeds the counter. Once
+        wedged, it additionally escalates (``_escalate_trunk_wedge``):
+        force-quarantining the offending path(s) and emitting a needs-human
+        signal, so the wedge has a resolution path instead of only a give-up
+        option.
+        """
+        if outcome.success:
+            self._main_repo.clear_dirty_trunk_failures()
+            return
+        error_text = (outcome.error or "").lower()
+        if "dirty_trunk" not in error_text:
+            return
+        entries = await asyncio.to_thread(collect_dirty_trunk_paths, self._repo_root)
+        root_untracked = sorted(e.path for e in entries if e.status == "??" and "/" not in e.path)
+        if not root_untracked:
+            # Not this pathology (tracked collision or subdirectory debris) —
+            # leave to other handling.
+            return
+        self._main_repo.record_dirty_trunk_failure("|".join(root_untracked))
+        if self._main_repo.is_trunk_wedged():
+            await self._escalate_trunk_wedge(root_untracked, play_id=outcome.play_id)
+
+    async def _escalate_trunk_wedge(
+        self, root_untracked: list[str], *, play_id: int | None
+    ) -> None:
+        """Resolve + surface a wedged trunk once the same-cause streak hits threshold (#330).
+
+        ``MainRepoGuard`` documents that it "never forces a session action" —
+        ``is_trunk_wedged()`` only unmasks END_SESSION for the PPO to weigh.
+        That principle is preserved here too: this method does not stop the
+        session, block dispatch, or force any play. What it *does* do is act
+        on strong evidence the guard itself can't see — three consecutive
+        ``dirty_trunk`` failures blocked by the exact same root path(s) means
+        a deterministic reclaim sweep's conservative "might be real user WIP"
+        assumption has been falsified for this file. Reclaim normally requires
+        mtime-window attribution to a closed trunk-scoped play
+        (``attribute_orphan_artifacts``); an unattributable file never clears
+        that bar and would otherwise wedge forever with no resolution path
+        beyond an operator noticing the session ended.
+
+        Two independent actions, both best-effort and non-blocking:
+
+        1. Force-quarantine the recorded path(s) into
+           ``.agentshore/reclaimed/wedge/`` (move, never delete) so ``git
+           status`` goes clean and the next ``merge_pr`` attempt can succeed
+           on its own — no operator action required for the common case.
+        2. Emit a ``trunk_wedge_needs_human`` warning (the same log-event
+           surface pattern as ``pr_manual_required`` / ``issue_needs_human``
+           in ``terminal_park.py``) regardless of whether quarantine fully
+           succeeded, so the operator always gets a clear, visible signal
+           naming the exact path(s) that wedged the trunk.
+        """
+        quarantined = await asyncio.to_thread(
+            force_quarantine_wedge_paths, self._repo_root, root_untracked
+        )
+        store = getattr(self, "_store", None)
+        if store is not None:
+            for rel in quarantined:
+                try:
+                    await store.record_external_mutation(
+                        ExternalMutationRecord(
+                            session_id=self._session_id,
+                            play_id=play_id,
+                            idempotency_key=f"wedge_quarantine:{self._session_id}:{rel}:{now_iso()}",
+                            mutation_type="trunk_artifact_wedge_quarantine",
+                            target=rel,
+                            status="wedge_quarantined",
+                            created_at=now_iso(),
+                        )
+                    )
+                except Exception as exc:  # noqa: BLE001 — audit trail is best-effort
+                    _logger.warning(
+                        "trunk_wedge_quarantine_mutation_record_failed",
+                        session_id=self._session_id,
+                        path=rel,
+                        error=str(exc),
+                    )
+        _logger.warning(
+            "trunk_wedge_needs_human",
+            session_id=self._session_id,
+            blocking_paths=root_untracked,
+            quarantined_paths=quarantined,
+            unresolved_paths=sorted(set(root_untracked) - set(quarantined)),
         )
 
     async def on_crash(self, agent_id: str, return_code: int) -> None:

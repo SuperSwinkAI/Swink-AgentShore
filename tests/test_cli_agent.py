@@ -384,7 +384,7 @@ def test_build_argv_grok_shape() -> None:
         AgentType.GROK,
         "do the thing",
         binary="grok",
-        model="grok-build",
+        model="grok-4.5",
         reasoning_effort="medium",
         project_dir="/worktree",
     )
@@ -403,7 +403,7 @@ def test_build_argv_grok_shape() -> None:
         "--output-format",
         "streaming-json",
         "-m",
-        "grok-build",
+        "grok-4.5",
         "--effort",
         "medium",
         "--permission-mode",
@@ -623,6 +623,7 @@ def test_extract_output_antigravity_empty_output_normalised() -> None:
 @pytest.mark.parametrize(
     "alias",
     [
+        "grok-build",
         "grok-build-0.1",
         "grok-code-fast-1",
         "grok-code-fast",
@@ -632,7 +633,7 @@ def test_extract_output_antigravity_empty_output_normalised() -> None:
 def test_build_argv_grok_normalizes_cli_model_aliases(alias: str) -> None:
     argv = build_argv(AgentType.GROK, "do the thing", binary="grok", model=alias)
 
-    assert argv[argv.index("-m") + 1] == "grok-build"
+    assert argv[argv.index("-m") + 1] == "grok-4.5"
 
 
 def test_build_argv_grok_prefers_grok_default_binary(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -772,13 +773,21 @@ def test_build_resume_argv_claude_shape() -> None:
 
 
 def test_build_resume_argv_codex_shape() -> None:
-    """codex resumes via the ``exec resume <id>`` subcommand, keeping --json + -C."""
+    """codex resumes via the ``exec resume <id>`` subcommand, keeping --json.
+
+    Regression for #329: ``codex exec resume`` (unlike ``codex exec``) rejects
+    the ``-C <dir>`` working-directory flag and exits 2 with "unexpected
+    argument '-C' found" if it's present, so it must be stripped from the
+    resume argv. The subprocess still gets the right cwd via cwd_override at
+    spawn time (see cli_agent), so dropping ``-C`` here is not a behavior loss.
+    """
     argv = build_resume_argv(
         AgentType.CODEX, "emit the block", "thread_x", binary="codex", project_dir="/wt"
     )
     assert argv[:4] == ["codex", "exec", "resume", "thread_x"]
     assert "--json" in argv
-    assert "-C" in argv and argv[argv.index("-C") + 1] == "/wt"
+    assert "-C" not in argv
+    assert "/wt" not in argv
     assert argv[-1] == "emit the block"
 
 
@@ -2164,6 +2173,33 @@ def test_classify_error_codex_ttl_markers_on_stdout_only_are_not_auth(stdout: st
     assert _classify_error(1, "", stdout) is not ErrorClass.AUTH
 
 
+@pytest.mark.parametrize(
+    "stderr",
+    [
+        "failed to refresh available models: timeout waiting for child process to exit",
+        "failed to renew cache TTL: EOF while parsing a value at line 1",
+    ],
+)
+def test_classify_error_transient_cache_blip_is_not_auth(stderr: str) -> None:
+    """#363: the transient cache-renewal blip shapes must not classify as AUTH.
+
+    The watchdog's live auth-abort path already subtracts these
+    (``_is_transient_cache_blip``); the post-exit classifier did not, so the
+    operator was told "credential expired, invalid, or rejected by the
+    provider" for a model-cache hiccup.
+    """
+    assert _classify_error(-15, stderr, "") is not ErrorClass.AUTH
+
+
+def test_classify_error_real_auth_alongside_cache_blip_still_auth() -> None:
+    """A genuine rejection accompanying a renewal blip still trips AUTH."""
+    stderr = (
+        "failed to refresh available models: timeout waiting for child process to exit\n"
+        "401 unauthorized"
+    )
+    assert _classify_error(1, stderr, "") is ErrorClass.AUTH
+
+
 def test_classify_error_timeout() -> None:
     assert _classify_error(1, "context deadline exceeded", "") == "timeout"
 
@@ -2319,6 +2355,20 @@ def test_stderr_sniffer_does_not_auth_abort_on_grok_spending_limit() -> None:
     assert "spending-limit" in sniffer.captured
 
 
+def test_stderr_sniffer_does_not_auth_abort_on_enospc() -> None:
+    # #332: Codex's disk-full stderr pairs "No space left on device (os error
+    # 28)" with "failed to renew cache TTL" (a cache-renewal AUTH marker). The
+    # sniffer must NOT fire a live auth abort here — a full disk is never fixed
+    # by the auth-abort/take_break recovery path. The dispatch should exit
+    # normally and let _classify_error bucket it as CRASH_ENOSPC.
+    sniffer = _StderrSniffer()
+    line = "ERROR failed to renew cache TTL: No space left on device (os error 28)\n"
+    assert sniffer.feed(line) is False
+    assert sniffer.auth_hit is False
+    # The text is still captured so _finalize_nonzero_exit can classify it.
+    assert "os error 28" in sniffer.captured
+
+
 def test_stderr_sniffer_tail_is_bounded() -> None:
     # The tail never grows unbounded regardless of how much stderr is fed, and
     # a marker landing within the live window is still caught.
@@ -2339,6 +2389,23 @@ def test_stderr_sniffer_suppresses_transient_cache_renewal_eof() -> None:
     line = (
         "ERROR codex_models_manager::manager: failed to renew cache TTL: "
         "EOF while parsing a value at line 1 column 0\n"
+    )
+    assert sniffer.feed(line) is False
+    assert sniffer.auth_hit is False
+
+
+def test_stderr_sniffer_suppresses_transient_cache_renewal_child_timeout() -> None:
+    """Child-process-timeout variant of the cache-renewal blip must NOT trip auth.
+
+    When the codex model-discovery subprocess hangs instead of returning bad
+    JSON, the stderr shape is "failed to refresh available models: timeout
+    waiting for child process to exit" — same renewal marker, different suffix.
+    Observed benching a large codex/gpt-5.5 agent (session a1c7f1f7)."""
+    sniffer = _StderrSniffer()
+    line = (
+        "ERROR codex_models_manager::manager: "
+        "failed to refresh available models: "
+        "timeout waiting for child process to exit\n"
     )
     assert sniffer.feed(line) is False
     assert sniffer.auth_hit is False
@@ -2495,6 +2562,34 @@ async def test_watch_stderr_auth_sleeps_on_clean_eof() -> None:
     assert "done" in sniffer.captured
 
 
+@pytest.mark.asyncio
+async def test_watch_stderr_auth_does_not_abort_on_enospc() -> None:
+    """#332: a live disk-full stderr (paired with the cache-renewal TTL text)
+    must NOT raise PlayTimeoutError(AUTH) from the watchdog — it should drain
+    to EOF and yield (letting the process's natural exit be classified by
+    _classify_error as CRASH_ENOSPC instead)."""
+    proc = _FakeProc(
+        [
+            b"booting\n",
+            b"failed to renew cache TTL: No space left on device (os error 28)\n",
+            b"more\n",
+        ]
+    )
+    sniffer = _StderrSniffer()
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(
+            _watch_stderr_auth(  # type: ignore[arg-type]
+                proc,
+                sniffer,
+                agent_id="codex-1",
+                agent_type="codex",
+            ),
+            timeout=0.2,
+        )
+    assert sniffer.auth_hit is False
+    assert "os error 28" in sniffer.captured
+
+
 def test_classify_error_sigkill_is_crash_not_unknown() -> None:
     """SIGKILL (-9, e.g. OS OOM kill) must be a crash, not the rate-limit-eligible
     'unknown' bucket (#7 â€” the mass -9 burst was misclassified as rate_limit)."""
@@ -2512,6 +2607,24 @@ def test_classify_error_enospc_signature() -> None:
     assert _classify_error(1, "fatal: write error: No space left on device", "") == "crash_enospc"
     assert _classify_error(1, "", "error: ENOSPC: no space left") == "crash_enospc"
     assert _classify_error(1, "OSError: [Errno 28] No space left on device", "") == "crash_enospc"
+
+
+def test_classify_error_codex_os_error_28_is_enospc_not_auth() -> None:
+    """#332: Codex (Rust) spells ENOSPC "os error 28", not "errno 28", and its
+    disk-full stderr commonly pairs with "failed to renew cache TTL" — one of
+    the cache-renewal AUTH markers. ENOSPC must win: a full disk can never be
+    fixed by the auth-abort/take_break recovery path."""
+    stderr = (
+        "ERROR failed to renew cache TTL: No space left on device (os error 28)\n"
+        "ERROR write_stdin failed: No space left on device (os error 28)\n"
+    )
+    assert _classify_error(1, stderr, "") is ErrorClass.CRASH_ENOSPC
+    assert _classify_error(1, stderr, "") is not ErrorClass.AUTH
+    # Bare "No space left on device (os error 28)" alone (no cache-renewal text)
+    # must classify the same way.
+    assert (
+        _classify_error(1, "No space left on device (os error 28)", "") is ErrorClass.CRASH_ENOSPC
+    )
 
 
 def test_classify_error_graceful_signals_stay_unknown() -> None:
@@ -3129,3 +3242,82 @@ async def test_kill_process_does_not_hang_when_sigkill_never_reaps(
     assert signal.SIGKILL in killpg_signals
     # Both the SIGTERM-grace wait and the bounded post-SIGKILL wait ran.
     assert proc.wait_calls >= 2
+
+
+async def test_kill_process_survivor_probe_swallows_permission_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """EPERM from the survivor probe must not escape as an unexpected_play_error.
+
+    Regression for #362: ``os.killpg(pgid, 0)`` in the finally-block survivor
+    probe can raise PermissionError when the OS has recycled the pgid to a group
+    this user does not own. That only caught ProcessLookupError, so the EPERM
+    propagated up through dispatch and failed the whole play.
+    """
+    import agentshore.agents.cli_agent as ca
+
+    class _ExitedProc:
+        def __init__(self) -> None:
+            self.pid = 4242
+            self.returncode: int | None = None
+
+        async def wait(self) -> int:
+            self.returncode = -15
+            return -15
+
+    proc = _ExitedProc()
+
+    def _fake_killpg(pgid: int, sig: int) -> None:
+        if sig == 0:
+            raise PermissionError(1, "Operation not permitted")
+
+    monkeypatch.setattr(ca.os, "getpgid", lambda pid: 12345)
+    monkeypatch.setattr(ca.os, "killpg", _fake_killpg)
+
+    # Must return normally rather than raising PermissionError.
+    await ca._kill_process(proc, "agent-eperm")  # type: ignore[arg-type]
+
+
+async def test_kill_process_announces_every_agentshore_initiated_sigterm(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#363: an AgentShore-sent SIGTERM must be attributable from the log.
+
+    Every self-inflicted agent kill funnels through ``_kill_process``, which
+    previously logged nothing before signalling — so a fleet AgentShore killed
+    and a fleet something else killed produced identical logs (a bare
+    ``cli_agent_nonzero_exit`` with rc -15). The absence of this event for an
+    agent that died on SIGTERM is what proves AgentShore did not send it.
+    """
+    import signal
+
+    import agentshore.agents.cli_agent as ca
+
+    class _ExitedProc:
+        def __init__(self) -> None:
+            self.pid = 5150
+            self.returncode: int | None = None
+
+        async def wait(self) -> int:
+            self.returncode = -15
+            return -15
+
+    signals: list[int] = []
+
+    def _fake_killpg(pgid: int, sig: int) -> None:
+        if sig == 0:
+            raise ProcessLookupError
+        signals.append(sig)
+
+    monkeypatch.setattr(ca.os, "getpgid", lambda pid: 777)
+    monkeypatch.setattr(ca.os, "killpg", _fake_killpg)
+
+    with structlog.testing.capture_logs() as captured:
+        await ca._kill_process(_ExitedProc(), "agent-term")  # type: ignore[arg-type]
+
+    announced = [e for e in captured if e.get("event") == "agent_process_terminating"]
+    assert len(announced) == 1
+    assert announced[0]["agent_id"] == "agent-term"
+    assert announced[0]["pid"] == 5150
+    # Announced *before* the signal actually went out.
+    assert signal.SIGTERM in signals

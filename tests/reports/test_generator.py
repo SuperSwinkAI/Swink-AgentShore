@@ -239,6 +239,9 @@ def _fleet_concurrency_data() -> dict[str, object]:
                     "color": "#14B8A6",
                     "fill": "rgba(20,184,166,0.22)",
                     "area_points": "72.0,296.0 506.0,174.0 940.0,174.0 940.0,296.0 506.0,296.0 72.0,296.0",
+                    "capacity_max": 3,
+                    "capacity_bar_y": 235.0,
+                    "capacity_bar_height": 61.0,
                 },
                 {
                     "label": "codex",
@@ -246,11 +249,17 @@ def _fleet_concurrency_data() -> dict[str, object]:
                     "color": "#F4D44D",
                     "fill": "rgba(244,212,77,0.28)",
                     "area_points": "72.0,235.0 506.0,52.0 940.0,52.0 940.0,174.0 506.0,174.0 72.0,296.0",
+                    "capacity_max": 5,
+                    "capacity_bar_y": 174.0,
+                    "capacity_bar_height": 61.0,
                 },
             ],
             "total_points": "72.0,235.0 506.0,52.0 940.0,52.0",
             "duration_label": "3 completion samples across 1.0h",
             "note": "Stacked by harness at completion samples; total busy is overlaid as a line.",
+            "capacity_total": 8,
+            "capacity_bar_left": 20.0,
+            "capacity_bar_right": 50.0,
         },
         "rate_limit_samples": [
             {

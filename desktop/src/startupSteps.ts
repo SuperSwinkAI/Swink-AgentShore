@@ -51,8 +51,9 @@ export const STEP_METADATA: Record<string, StepMeta> = {
     repairScreen: "/setup/agents",
   },
   [STEP_CHECK_AGENT_AUTH]: {
-    label: "Agent auth checked",
-    description: "Each CLI agent's backend session (e.g. Codex login) is valid.",
+    label: "Agent auth & identities checked",
+    description:
+      "Each CLI agent's backend session is valid, and every GitHub identity covers all model tiers (small/medium/large) so code review can satisfy anti-confirmation.",
     repairScreen: "/setup/agents",
   },
   [STEP_INSTALL_SKILLS]: {

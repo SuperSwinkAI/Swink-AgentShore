@@ -98,8 +98,10 @@ from agentshore.sidecar.rpc.router import handle_request as _handle_request_impl
 from agentshore.sidecar.rpc.router_helpers import (
     SESSION_START_PHASES,  # noqa: F401 — re-exported public surface
     SESSION_STOP_DRAIN_PHASES,  # noqa: F401 — re-exported public surface
+    build_beads_schema_drift_notification,  # noqa: F401 — re-exported public surface
     build_esr_ready_notification,  # noqa: F401 — re-exported public surface
     build_session_completed_notification,  # noqa: F401 — re-exported public surface
+    build_session_draining_notification,  # noqa: F401 — re-exported public surface
     build_sidecar_health_notification,
 )
 
@@ -143,8 +145,10 @@ __all__ = [
     # Notification builders
     "SESSION_START_PHASES",
     "SESSION_STOP_DRAIN_PHASES",
+    "build_beads_schema_drift_notification",
     "build_esr_ready_notification",
     "build_session_completed_notification",
+    "build_session_draining_notification",
     "build_sidecar_health_notification",
     # Serve-loop (defined in this module)
     "DEFAULT_HEALTH_INTERVAL_SECONDS",

@@ -6,15 +6,17 @@ import logging
 import sys
 from contextlib import contextmanager
 from contextvars import ContextVar
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
-    from pathlib import Path
 
     from structlog.types import EventDict, WrappedLogger
 
 import structlog
+
+from agentshore.log_redaction import redact_secrets
 
 _session_id_var: ContextVar[str | None] = ContextVar("session_id", default=None)
 _correlation_id_var: ContextVar[str | None] = ContextVar("correlation_id", default=None)
@@ -47,6 +49,26 @@ def _add_correlation_id(
     if cid is not None:
         event_dict.setdefault("correlation_id", cid)
     return event_dict
+
+
+def _build_formatter() -> structlog.stdlib.ProcessorFormatter:
+    return structlog.stdlib.ProcessorFormatter(
+        processors=[
+            structlog.stdlib.ProcessorFormatter.remove_processors_meta,
+            # Render exc_info into a structured ``exception`` field so exc_info=True
+            # sites emit a real traceback in the NDJSON; without this only
+            # ``"exc_info": true`` survived. Must precede JSONRenderer.
+            structlog.processors.dict_tracebacks,
+            # dict_tracebacks serialises exception *frame locals*, several of
+            # which (identity_env, git_overlay, token, AgentHandle reprs) carry
+            # live GH_TOKEN / GITHUB_TOKEN values on the agent-launch path.
+            # Scrub credentials out of the whole event dict — including nested
+            # traceback frames — before anything is rendered to NDJSON.
+            # Must sit between dict_tracebacks and JSONRenderer.
+            redact_secrets,
+            structlog.processors.JSONRenderer(),
+        ],
+    )
 
 
 def setup_logging(
@@ -92,16 +114,7 @@ def setup_logging(
         cache_logger_on_first_use=True,
     )
 
-    formatter = structlog.stdlib.ProcessorFormatter(
-        processors=[
-            structlog.stdlib.ProcessorFormatter.remove_processors_meta,
-            # Render exc_info into a structured ``exception`` field so exc_info=True
-            # sites emit a real traceback in the NDJSON; without this only
-            # ``"exc_info": true`` survived. Must precede JSONRenderer.
-            structlog.processors.dict_tracebacks,
-            structlog.processors.JSONRenderer(),
-        ],
-    )
+    formatter = _build_formatter()
 
     root = logging.getLogger()
     root.handlers.clear()
@@ -117,6 +130,45 @@ def setup_logging(
         file_handler = logging.FileHandler(log_path, encoding="utf-8")
         file_handler.setFormatter(formatter)
         root.addHandler(file_handler)
+
+
+def attach_session_file_handler(log_dir: Path, session_id: str) -> None:
+    """Attach the per-session NDJSON file handler early, before orchestrator boot.
+
+    Unlike ``setup_logging``, this does NOT clear existing handlers — it only
+    sets the session-id contextvar (so every subsequent log line carries
+    ``session_id``) and adds the ``agentshore-<session_id>.log`` file handler
+    if one for that exact path isn't already attached to the root logger.
+
+    Exists to close a gap (issue #356): the sidecar's pre-bridge session-start
+    phases (config_merge -> init_beads -> ...) run well before
+    ``Orchestrator.bootstrap`` calls ``setup_logging`` with a file sink (that
+    only happens in the later ``first_snapshot`` phase) — so log calls made
+    during those early phases (e.g. ``reconcile_beads_schema``'s schema-drift
+    warnings in ``init_beads``) previously had no durable sink and vanished.
+    Calling this once ``session_id`` and the config-derived ``log_dir`` are
+    known (end of phase 1, config_merge) gives them one. The later
+    ``setup_logging`` call in ``orchestrator.py`` is idempotent against this:
+    it recreates a handler for the identical path in the same process
+    (embedded mode shares one root logger), so no duplication or loss occurs.
+    """
+    _session_id_var.set(session_id)
+
+    log_path = log_dir / f"agentshore-{session_id}.log"
+    resolved = log_path.resolve()
+
+    root = logging.getLogger()
+    for handler in root.handlers:
+        if (
+            isinstance(handler, logging.FileHandler)
+            and Path(handler.baseFilename).resolve() == resolved
+        ):
+            return
+
+    log_dir.mkdir(parents=True, exist_ok=True)
+    file_handler = logging.FileHandler(log_path, encoding="utf-8")
+    file_handler.setFormatter(_build_formatter())
+    root.addHandler(file_handler)
 
 
 def get_logger(name: str) -> structlog.stdlib.BoundLogger:

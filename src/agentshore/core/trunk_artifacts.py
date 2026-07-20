@@ -40,11 +40,15 @@ import structlog
 
 from agentshore import command
 from agentshore.core.wedge_signals import _path_is_agentshore_owned, parse_porcelain_lines
+from agentshore.data.models import ExternalMutationRecord
 from agentshore.state import PlayType
+from agentshore.utils import now_iso
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
     from pathlib import Path
+
+    from agentshore.data.store import DataStore
 
 _logger = structlog.get_logger(__name__)
 
@@ -52,6 +56,11 @@ _logger = structlog.get_logger(__name__)
 #: ``.agentshore/`` is already an AgentShore-owned untracked prefix, so the
 #: quarantine never re-flags as dirty trunk.
 QUARANTINE_DIRNAME = "reclaimed"
+
+#: Fixed quarantine subdir (under ``QUARANTINE_DIRNAME``) for paths that were
+#: force-quarantined after a ``dirty_trunk`` wedge (#330) rather than attributed
+#: to an owning play_id. See :func:`force_quarantine_wedge_paths`.
+WEDGE_QUARANTINE_SUBDIR = "wedge"
 
 #: Plays that dispatch their agent into the main checkout (``TrunkAllocation``)
 #: rather than an isolated worktree — the only plays that can leave untracked
@@ -177,11 +186,47 @@ def reclaim_artifacts(project_path: Path, paths: Iterable[str], *, play_id: int)
     plain file is skipped. Returns the root-relative paths actually moved; never
     raises.
     """
+    quarantine = project_path / ".agentshore" / QUARANTINE_DIRNAME / str(play_id)
+    return _move_to_quarantine(project_path, paths, quarantine, log_extra={"play_id": play_id})
+
+
+def force_quarantine_wedge_paths(project_path: Path, paths: Iterable[str]) -> list[str]:
+    """Force-quarantine root-level untracked paths that wedged ``merge_pr`` (#330).
+
+    A deliberate escalation, distinct from :func:`reclaim_artifacts` /
+    :func:`attribute_orphan_artifacts`: normal reclaim only moves a file it can
+    attribute to a bracketing trunk-scoped play window, which conservatively
+    leaves an unattributable file alone in case it is real user WIP predating
+    every known window. This function bypasses that attribution requirement
+    entirely, so callers must only invoke it once
+    ``MainRepoGuard.is_trunk_wedged()`` is True — i.e. the *same* untracked
+    path(s) have blocked ``merge_pr`` on ``_DIRTY_TRUNK_WEDGE_THRESHOLD``
+    consecutive attempts. Three same-cause failures on the exact same file is
+    strong evidence of abandoned debris blocking the pipeline, not active WIP,
+    which is why the conservative default is overridden here.
+
+    Moves (never deletes) into ``.agentshore/reclaimed/wedge/`` — the same
+    move-not-delete quarantine convention as ``reclaim_artifacts``, so content
+    stays recoverable. Best-effort; never raises.
+    """
+    quarantine = project_path / ".agentshore" / QUARANTINE_DIRNAME / WEDGE_QUARANTINE_SUBDIR
+    return _move_to_quarantine(project_path, paths, quarantine, log_extra={})
+
+
+def _move_to_quarantine(
+    project_path: Path,
+    paths: Iterable[str],
+    quarantine: Path,
+    *,
+    log_extra: dict[str, object],
+) -> list[str]:
+    """Shared move-into-quarantine core for :func:`reclaim_artifacts` and
+    :func:`force_quarantine_wedge_paths`. Best-effort; never raises.
+    """
     moved: list[str] = []
     rels = sorted(paths)
     if not rels:
         return moved
-    quarantine = project_path / ".agentshore" / QUARANTINE_DIRNAME / str(play_id)
     for rel in rels:
         src = project_path / rel
         try:
@@ -192,9 +237,59 @@ def reclaim_artifacts(project_path: Path, paths: Iterable[str], *, play_id: int)
             moved.append(rel)
         except OSError as exc:
             _logger.warning(
-                "trunk_artifact_reclaim_failed", path=rel, play_id=play_id, error=str(exc)
+                "trunk_artifact_reclaim_failed",
+                path=rel,
+                quarantine=str(quarantine),
+                error=str(exc),
+                **log_extra,
             )
     return moved
+
+
+async def sweep_and_reclaim_orphans(
+    project_path: Path,
+    *,
+    store: DataStore,
+    session_id: str,
+    owner_windows: Sequence[PlayWindow],
+    active_windows: Sequence[PlayWindow],
+    status: str,
+) -> int:
+    """Attribute, reclaim, and record orphaned untracked root artifacts.
+
+    Shared core used by both the session-start sweep (``active_windows=[]``,
+    since dispatch hasn't opened yet) and the mid-session ``reconcile_state``
+    sweep (``active_windows`` built from live in-flight trunk-scoped plays, so
+    their in-progress work is never clobbered). ``status`` distinguishes the
+    caller in the recorded ``ExternalMutationRecord`` rows (e.g.
+    ``"reclaimed_sweep"`` vs ``"reclaimed_reconcile"``).
+
+    Returns the number of files reclaimed. Best-effort like every other
+    function in this module — never raises.
+    """
+    attributed = attribute_orphan_artifacts(
+        project_path, owner_windows=owner_windows, active_windows=active_windows
+    )
+    by_owner: dict[int, list[str]] = {}
+    for rel, owner in attributed.items():
+        by_owner.setdefault(owner, []).append(rel)
+    reclaimed_total = 0
+    for owner, rels in by_owner.items():
+        moved = reclaim_artifacts(project_path, rels, play_id=owner)
+        reclaimed_total += len(moved)
+        for rel in moved:
+            await store.record_external_mutation(
+                ExternalMutationRecord(
+                    session_id=session_id,
+                    play_id=owner,
+                    idempotency_key=f"reclaim:{owner}:{rel}",
+                    mutation_type="trunk_artifact_reclaim",
+                    target=rel,
+                    status=status,
+                    created_at=now_iso(),
+                )
+            )
+    return reclaimed_total
 
 
 def reap_quarantine(project_path: Path, *, ttl_seconds: int) -> int:

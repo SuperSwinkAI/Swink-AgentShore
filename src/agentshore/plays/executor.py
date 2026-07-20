@@ -12,7 +12,7 @@ import time
 from typing import TYPE_CHECKING
 
 from agentshore.agents._selection import select_agent_for
-from agentshore.beads import add_blocking_dependency, load_graph
+from agentshore.beads import BlockingDependencyOutcome, add_blocking_dependency, load_graph
 from agentshore.data.store import (
     ExternalMutationRecord,
     HandoffRecord,
@@ -27,7 +27,12 @@ from agentshore.errors import (
     IssueInflationDetected,
     PreconditionFailed,
 )
-from agentshore.github.labels import BLOCKED_LABEL, DISALLOWED_LABEL, blocked_by_marker
+from agentshore.github.labels import (
+    BLOCKED_LABEL,
+    DISALLOWED_LABEL,
+    NEEDS_HUMAN_LABEL,
+    blocked_by_marker,
+)
 from agentshore.logging import get_logger
 from agentshore.plays._publish_reconciler import (
     IssuePickupPublishReconciler,
@@ -658,7 +663,13 @@ class PlayExecutor:
 
         inflation_raised = False
         if play.skill_name is not None:
-            outcome, inflation_raised = await self._check_scope(outcome, play_id, play_type, state)
+            outcome, inflation_raised = await self._check_scope(
+                outcome,
+                play_id,
+                play_type,
+                state,
+                skill_result if isinstance(skill_result, SkillResult) else None,
+            )
 
         if outcome.success or outcome.partial:
             await self._wire_deferrals(
@@ -717,9 +728,11 @@ class PlayExecutor:
         # Reload beads after the play and any reconciliation side effects have
         # run. Calibration and merge plays can close beads, so the persisted
         # play row must use the post-play graph rather than the dispatch
-        # snapshot.
+        # snapshot. max_age_seconds=0.0 forces a live read — the agent's
+        # mutations just happened, so a TTL-cached graph could still show the
+        # pre-play state.
         try:
-            post_graph = await load_graph(self._project_path)
+            post_graph = await load_graph(self._project_path, max_age_seconds=0.0)
         except Exception as exc:  # pragma: no cover - defensive logging path
             _logger.warning(
                 "post_play_graph_reload_failed",
@@ -999,9 +1012,20 @@ class PlayExecutor:
         play_id: int,
         play_type: PlayType,
         state: OrchestratorState,
+        skill_result: SkillResult | None = None,
     ) -> tuple[PlayOutcome, bool]:
-        """Run scope validation and report issue inflation separately."""
-        sr = SkillResult(success=outcome.success, artifacts=outcome.artifacts)
+        """Run scope validation and report issue inflation separately.
+
+        *skill_result* is the real parsed result from the play when one is
+        available — it carries ``issues_created``, which the inflation check
+        needs. Paths with no ``SkillResult`` (non-skill or unparsed runs) fall
+        back to a minimal reconstruction from the outcome.
+        """
+        sr = (
+            skill_result
+            if skill_result is not None
+            else SkillResult(success=outcome.success, artifacts=outcome.artifacts)
+        )
         inflation_raised = False
         try:
             await validate_scope(
@@ -1102,6 +1126,9 @@ class PlayExecutor:
                 )
                 if resolution == "label_fallback":
                     applied_labels.add((blocked_issue, BLOCKED_LABEL))
+                elif resolution == "cycle_conflict":
+                    applied_labels.add((blocked_issue, BLOCKED_LABEL))
+                    applied_labels.add((blocked_issue, NEEDS_HUMAN_LABEL))
                 await self._store.record_external_mutation(
                     ExternalMutationRecord(
                         session_id=self._session_id,
@@ -1180,8 +1207,17 @@ class PlayExecutor:
         execute time but waits for the next groom_backlog pass to mirror it,
         letting the PPO re-dispatch the same dep-blocked issue meanwhile.
 
+        A bd cycle conflict (the graph already has the opposite ``blocks`` edge
+        between these two beads) is not retry-worthy — the edge can never land
+        without first removing the conflicting one — so it escalates straight
+        to ``agentshore/needs-human`` alongside the label gate instead of the
+        ordinary ``groom_backlog``-clearable fallback. ``needs-human`` is not
+        in ``groom_backlog``'s auto-clear scope (see SKILL.md), so this stays
+        pinned for a human rather than bouncing back into the candidate pool.
+
         Returns a short status for the mutation ledger: ``already_linked``,
-        ``beads_edge``, ``label_fallback``, or ``unpersisted``.
+        ``beads_edge``, ``cycle_conflict``, ``label_fallback``, or
+        ``unpersisted``.
         """
         blocked_bead: str | None = None
         blocker_bead: str | None = None
@@ -1195,15 +1231,36 @@ class PlayExecutor:
                 blocker_bead = blocker_task.bead_id or None
                 if blocker_bead is not None and blocker_bead in blocked_task.blocked_by_ids:
                     return "already_linked"
-        if (
-            blocked_bead is not None
-            and blocker_bead is not None
-            and await add_blocking_dependency(self._project_path, blocked_bead, blocker_bead)
-        ):
-            return "beads_edge"
-        # No bead mirror (or the beads write failed) → durable label gate. Pair
-        # the (blocker-number-less) label with a marker comment so groom_backlog
-        # can trace the gate to #blocker and evidence-clear it once that closes.
+        if blocked_bead is not None and blocker_bead is not None:
+            outcome = await add_blocking_dependency(self._project_path, blocked_bead, blocker_bead)
+            if outcome is BlockingDependencyOutcome.LINKED:
+                return "beads_edge"
+            if outcome is BlockingDependencyOutcome.CYCLE_CONFLICT:
+                if await self._apply_issue_labels(
+                    blocked_issue, [BLOCKED_LABEL, NEEDS_HUMAN_LABEL], idempotency_key
+                ):
+                    if self._github is not None:
+                        await self._github.comment_issue(
+                            blocked_issue,
+                            f"{blocked_by_marker(blocker_issue)}\n\n"
+                            f"beads already records #{blocker_issue} as depending on "
+                            f"#{blocked_issue}; adding the reverse edge (this issue "
+                            f"depends on #{blocker_issue}) would create a cycle, so bd "
+                            "rejected it. This is a genuine dependency-direction "
+                            "contradiction between the two issues' task graph, not a "
+                            "transient failure — a human needs to fix the beads edge "
+                            "direction (or reorder the underlying tasks) before "
+                            "issue_pickup can safely proceed here. Flagged "
+                            f"{NEEDS_HUMAN_LABEL} so this doesn't get auto-cleared and "
+                            "re-picked.",
+                            f"{idempotency_key}:cycle-conflict-marker",
+                        )
+                    return "cycle_conflict"
+                return "unpersisted"
+        # No bead mirror (or the beads write failed for a non-cycle reason) →
+        # durable label gate. Pair the (blocker-number-less) label with a
+        # marker comment so groom_backlog can trace the gate to #blocker and
+        # evidence-clear it once that closes.
         if await self._apply_issue_labels(blocked_issue, [BLOCKED_LABEL], idempotency_key):
             if self._github is not None:
                 await self._github.comment_issue(

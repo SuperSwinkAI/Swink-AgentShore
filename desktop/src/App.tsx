@@ -53,8 +53,10 @@ import {
 import { subscribeCompleted } from "./services/sessionClient";
 import { currentSession } from "./rpc/sessionClient";
 import {
+  subscribeBeadsSchemaDrift,
   subscribeSidecarCrashed,
   subscribeSidecarNotification,
+  type SchemaDriftWarning,
   type SidecarCrashedPayload,
 } from "./services/sidecarEvents";
 import { DemoDashboardScreen } from "./screens/DemoDashboardScreen";
@@ -79,6 +81,7 @@ import { TargetBranchScreen } from "./screens/TargetBranchScreen";
 import { StartingProgressRoute } from "./StartingProgressRoute";
 import { AppMenu } from "./components/AppMenu";
 import { WelcomeCarousel } from "./components/WelcomeCarousel";
+import { SchemaDriftBanner } from "./components/SchemaDriftBanner";
 import { listen } from "@tauri-apps/api/event";
 
 type UiState = {
@@ -415,14 +418,14 @@ function AgentConfigScreen() {
         string,
         { enabled: boolean; model: string; max: number; reasoning_effort?: string }
       > = {};
-      // Grok is hard-pinned to grok-build; never round-trip a stale model id.
+      // Grok is hard-pinned to grok-4.5; never round-trip a stale model id.
       const isGrok = agentType === "grok";
       // Only agents whose CLI exposes an effort flag may persist one — otherwise
       // the backend config validator rejects the whole config.
       const supportsEffort = effortOptions.length > 0;
       for (const tier of TIERS) {
         const { model, enabled, max, reasoning_effort } = tierPlan[tier];
-        const persistedModel = isGrok ? "grok-build" : model;
+        const persistedModel = isGrok ? "grok-4.5" : model;
         // Persist the entry whenever the model is set, even when disabled —
         // that way a tier toggled off keeps its model selection for next
         // time the user re-enables it (matches the CLI wizard's behavior
@@ -535,7 +538,7 @@ function AgentConfigScreen() {
                         className="desktop-select desktop-select--readonly"
                         aria-label={`Model for ${tier} tier`}
                       >
-                        grok-build
+                        grok-4.5
                       </span>
                     ) : (
                       <select
@@ -972,6 +975,7 @@ export function App() {
   // Declare these early so the reattach effect can gate on them.
   const [crashPayload, setCrashPayload] = useState<SidecarCrashedPayload | null>(null);
   const [fatalInfo, setFatalInfo] = useState<FatalShellInfo | null>(null);
+  const [schemaDrift, setSchemaDrift] = useState<SchemaDriftWarning | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -1157,6 +1161,29 @@ export function App() {
     };
   }, [navigate, setEsr]);
 
+  // $/beads_schema_drift: a remote-backed beads store fell behind its shared
+  // schema and couldn't be auto-healed headlessly. Unlike esr_ready this is
+  // not a route change — it's a persistent, dismissable banner shown across
+  // every route until the user dismisses it or designates this machine as
+  // the migrator.
+  useEffect(() => {
+    let cancelled = false;
+    let unlisten: (() => void) | null = null;
+    void subscribeBeadsSchemaDrift((warning) => {
+      if (cancelled) return;
+      setSchemaDrift(warning);
+    })
+      .then((fn) => {
+        if (cancelled) fn();
+        else unlisten = fn;
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, [setSchemaDrift]);
+
   useEffect(() => {
     let cancelled = false;
     let unlisten: (() => void) | null = null;
@@ -1234,10 +1261,9 @@ export function App() {
 
   const onProjectSelected = async (_path: string) => {
     // Track the most-recent project path on the session context so the
-    // End-Session Report's "Repeat with same settings" chrome button
-    // (issue #561) can hand it to ``startSessionFromPersistedSetup``
-    // without re-querying project.inspect. Set unconditionally — even if
-    // the hydration step below fails, the path is still useful.
+    // app menu's re-open-project affordance has it without re-querying
+    // project.inspect. Set unconditionally — even if the hydration step
+    // below fails, the path is still useful.
     setLastProjectPath(_path);
     // DESIGN §10.1 re-entry policy: previous-session choices pre-populate
     // from agentshore.yaml. project.inspect returns typed parsed fields from
@@ -1376,6 +1402,11 @@ export function App() {
         onSeen={markWelcomeSeen}
         onSeenChange={setWelcomeSeen}
         onClose={() => setWelcomeOpen(false)}
+      />
+      <SchemaDriftBanner
+        warning={schemaDrift}
+        onDismiss={() => setSchemaDrift(null)}
+        onDesignated={() => setSchemaDrift(null)}
       />
       {!chromeHidden && (
         <nav className="desktop-nav">

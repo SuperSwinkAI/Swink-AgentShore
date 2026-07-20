@@ -1,0 +1,77 @@
+/* Persistent warning banner for $/beads_schema_drift — tracks the shared
+   --warning/--warning-bg/--warning-border theme variables in styles.css
+   (light / dark / system) the same way the setup screens' warning banners
+   do. */
+.banner {
+  position: relative;
+  z-index: 1050;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  border-bottom: 1px solid var(--warning-border);
+  background: var(--warning-bg);
+  color: var(--color-fm-text, #1f2940);
+  padding: 12px 20px;
+}
+
+.body {
+  flex: 1 1 420px;
+  min-width: 0;
+}
+
+.headline {
+  margin: 0 0 4px;
+  font-weight: 700;
+}
+
+.detail {
+  margin: 0 0 6px;
+  color: var(--muted, #6b7280);
+}
+
+.remediation {
+  display: block;
+  width: fit-content;
+  max-width: 100%;
+  overflow-x: auto;
+  white-space: pre;
+  background: var(--fm-panel, #ffffff);
+  border: 1px solid var(--border, #d1d5db);
+  border-radius: 4px;
+  padding: 6px 10px;
+  font-size: 12px;
+}
+
+.submitError {
+  margin: 8px 0 0;
+  color: var(--error, #b91c1c);
+}
+
+.actions {
+  display: flex;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.button {
+  border: 1px solid var(--border, #d1d5db);
+  background: var(--fm-panel, #ffffff);
+  color: var(--color-fm-text, #1f2940);
+  border-radius: 6px;
+  padding: 8px 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.buttonPrimary {
+  background: var(--accent, #2563eb);
+  border-color: var(--accent, #2563eb);
+  color: var(--color-fm-bg, #ffffff);
+}

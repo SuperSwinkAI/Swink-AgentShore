@@ -309,7 +309,7 @@ select:focus-visible {
   padding: 5px 30px 5px 10px;
 }
 
-/* Read-only model cell (grok is hard-pinned to grok-build — no picker). Keeps
+/* Read-only model cell (grok is hard-pinned to grok-4.5 — no picker). Keeps
    the field box so it lines up with the real selects, but reads as static. */
 .desktop-select--readonly {
   display: inline-flex;
@@ -852,6 +852,17 @@ select:focus-visible {
   gap: 16px;
 }
 
+.fm-starting__error {
+  display: grid;
+  gap: 6px;
+}
+
+.fm-starting__error span {
+  /* Preserve newlines in multi-line session.start failure messages so
+     multi-line preflight guards stay readable in the hard-error banner. */
+  white-space: pre-line;
+}
+
 .fm-panel {
   border: 1px solid var(--fm-border);
   background: var(--fm-panel);
@@ -956,6 +967,10 @@ select:focus-visible {
 
 .fm-step__error {
   color: var(--error);
+  /* Preserve newlines in multi-line preflight messages (e.g. the per-identity
+     model-tier coverage guard lists each identity's missing tiers on its own
+     line). Without this the browser collapses them into one run-on line. */
+  white-space: pre-line;
 }
 
 .fm-step__wait {

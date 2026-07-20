@@ -18,13 +18,16 @@ import contextlib
 import json
 import os
 import shutil
+import sys
+import time
+from collections import deque
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, TypedDict, cast
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import AsyncIterator, Iterable, Mapping
 
 from agentshore.command import CommandTimeoutError, run_command
 from agentshore.logging import get_logger
@@ -99,12 +102,72 @@ class RawEpicStatus(TypedDict, total=False):
 _logger = get_logger(__name__)
 
 # ---------------------------------------------------------------------------
-# Module-level lock — serialises all bd subprocess calls so that concurrent
-# plays (e.g. groom_backlog + calibrate_alignment, or two issue_pickups) do
-# not race at the bd filesystem layer (C5).
+# bd subcommands that only read the store. Everything else is treated as a
+# mutation for both locking (write-exclusive) and graph-cache invalidation.
+# ``dep`` covers read-only subcommands like ``bd dep cycles``; this codebase
+# never calls a mutating ``bd dep add``/``bd dep remove`` today, so keying
+# off the first arg alone is safe — revisit if that changes.
 # ---------------------------------------------------------------------------
 
-_BD_LOCK: asyncio.Lock = asyncio.Lock()
+READ_COMMANDS: frozenset[str] = frozenset(
+    {"list", "query", "ready", "show", "dep", "stats", "export", "--version"}
+)
+
+
+class _ReadersWriterLock:
+    """Writer-preferring reader/writer lock guarding bd subprocess calls (C5).
+
+    Reads (``bd list`` / ``bd query`` / ...) run concurrently with each
+    other — verified empirically against a live bd 1.1.0 embedded store:
+    four concurrent ``bd list --all --json --limit 0`` processes all exited
+    0 with identical output. External agent processes already read the same
+    store concurrently today; this only stops AgentShore's own reads from
+    queuing behind each other. A write acquires exclusive access against
+    both reads and other writes, preserving the old single-lock
+    serialisation guarantee for mutations. Writer-preferring: once a writer
+    is waiting, newly arriving readers queue behind it so a steady stream of
+    reads cannot starve a pending write indefinitely.
+    """
+
+    def __init__(self) -> None:
+        self._cond = asyncio.Condition()
+        self._active_readers = 0
+        self._active_writer = False
+        self._waiting_writers = 0
+
+    @contextlib.asynccontextmanager
+    async def read(self) -> AsyncIterator[None]:
+        async with self._cond:
+            while self._active_writer or self._waiting_writers > 0:
+                await self._cond.wait()
+            self._active_readers += 1
+        try:
+            yield
+        finally:
+            async with self._cond:
+                self._active_readers -= 1
+                if self._active_readers == 0:
+                    self._cond.notify_all()
+
+    @contextlib.asynccontextmanager
+    async def write(self) -> AsyncIterator[None]:
+        async with self._cond:
+            self._waiting_writers += 1
+            try:
+                while self._active_writer or self._active_readers > 0:
+                    await self._cond.wait()
+                self._active_writer = True
+            finally:
+                self._waiting_writers -= 1
+        try:
+            yield
+        finally:
+            async with self._cond:
+                self._active_writer = False
+                self._cond.notify_all()
+
+
+_BD_LOCK = _ReadersWriterLock()
 _BD_TIMEOUT_SECONDS = 120.0
 # The full-graph dump (``bd list --all --json --limit 0``) is O(graph size) and
 # legitimately needs more headroom than a point mutation like ``bd close`` on a
@@ -273,6 +336,49 @@ class GraphReadError(BdError):
     """
 
 
+# Stable coordination-decision markers from bd's own "refusing to auto-apply
+# ... to a remote-backed database" guard (bd issue #4259). A clone stuck
+# behind its remote's schema surfaces this on every read/write until either
+# the designated migrator runs `bd migrate` and pushes, or a non-designated
+# clone runs `bd bootstrap` to catch up without forking the schema. Matched
+# against the stable coordination-decision text rather than the downstream
+# "column ... could not be found"-style error, which varies by command and
+# column and isn't guaranteed stable across bd releases. Lives here (rather
+# than in beads/setup.py, the only prior user) so the low-level subprocess
+# and retry layer can classify a schema-drift failure without a circular
+# import — setup.py imports this instead of keeping its own copy.
+SCHEMA_DRIFT_MARKERS = ("refusing to auto-apply", "remote-backed", "#4259")
+
+
+def is_schema_drift_error(error_text: str) -> bool:
+    """True when *error_text* carries bd's schema-drift/remote-migration-gate signature."""
+    return any(marker in error_text for marker in SCHEMA_DRIFT_MARKERS)
+
+
+class BeadsSchemaDriftError(GraphReadError):
+    """Raised when bd refuses to read/write because this clone's schema has
+    drifted from a shared remote-backed store (bd's #4259 coordination guard).
+
+    A ``GraphReadError`` subclass — not a plain sibling — on purpose: every
+    existing ``except GraphReadError`` call site in the codebase (per-tick
+    alignment reload, issue sync, the RL selector's live-drift confirm, the
+    reports collector) already treats a failed read as "beads temporarily
+    unavailable, degrade gracefully" — the correct behavior for schema drift
+    too, everywhere except the one place that used the failure to decide
+    "the graph is empty, so seed it". Subclassing means those call sites need
+    no changes at all: they keep working exactly as before. Only the
+    bootstrap path (``agentshore.core.orchestrator`` /
+    ``agentshore.core.phases``) adds a specific ``except
+    BeadsSchemaDriftError`` *before* its ``except GraphReadError``, so it can
+    tell "unreadable" apart from "genuinely empty" instead of collapsing both
+    into ``graph_has_epics=False`` and silently re-running the seed-project
+    bootstrap play over a project that already had real epics/tasks — the
+    live bug this type exists to prevent. See
+    ``agentshore.beads.setup.reconcile_beads_schema`` for the preflight that
+    heals what it safely can before any of this is ever reached.
+    """
+
+
 def resolve_bd_binary() -> str | None:
     """Resolve the bd binary path from env override first, then PATH."""
     env_value = os.environ.get("AGENTSHORE_BD_BIN")
@@ -284,25 +390,117 @@ def resolve_bd_binary() -> str | None:
     return shutil.which("bd")
 
 
+def _bd_shim_dir() -> Path:
+    """Per-user cache dir for the agent-dispatch bd shim (see ``ensure_bd_on_agent_path``)."""
+    import platformdirs
+
+    return Path(platformdirs.user_cache_dir("agentshore", "agentshore")) / "bd-agent-shim"
+
+
+def _write_bd_shim(shim_path: Path, bd_binary: str) -> None:
+    """Create/refresh the shim at *shim_path* so bare ``bd`` resolves to *bd_binary*.
+
+    POSIX: a symlink (falls back to a copy if the filesystem rejects symlinks,
+    e.g. some network/FAT mounts). Windows: a batch wrapper, since ``bd``
+    resolution there goes through PATHEXT and symlinks need Developer Mode or
+    admin privileges that can't be assumed.
+    """
+    if sys.platform == "win32":
+        wrapper = f'@echo off\r\n"{bd_binary}" %*\r\n'
+        if shim_path.is_file() and shim_path.read_text(encoding="utf-8") == wrapper:
+            return
+        shim_path.write_text(wrapper, encoding="utf-8")
+        return
+
+    if shim_path.is_symlink() and os.readlink(shim_path) == bd_binary:
+        return
+    with contextlib.suppress(FileNotFoundError):
+        shim_path.unlink()
+    try:
+        os.symlink(bd_binary, shim_path)
+    except OSError:
+        shutil.copy2(bd_binary, shim_path)
+        shim_path.chmod(0o755)
+
+
+def ensure_bd_on_agent_path(env: dict[str, str]) -> dict[str, str]:
+    """Pin ``bd`` on *env*'s ``PATH`` to the same binary the orchestrator uses.
+
+    Agent-dispatched subprocesses (skill templates instruct Claude Code, Codex,
+    Grok, and Antigravity to run literal ``bd ...`` commands) resolve ``bd``
+    from their own inherited ``PATH`` — independently of
+    ``resolve_bd_binary()``, which every one of AgentShore's *own* writes goes
+    through. When the two disagree (e.g. the desktop app pins a bundled
+    sidecar bd via ``AGENTSHORE_BD_BIN`` while the user's ambient ``PATH``
+    resolves a different, older standalone install), an agent's literal ``bd``
+    calls silently run a version-skewed binary against the same embedded Dolt
+    store the orchestrator just wrote with a different version — schema
+    migrations between bd releases can then make agent-side writes fail (or
+    worse, corrupt the store).
+
+    If bare ``bd`` already resolves to the same file as ``resolve_bd_binary()``
+    under *env*'s ``PATH``, *env* is returned unchanged. Otherwise a small,
+    reusable shim directory containing a ``bd``/``bd.cmd`` pointing at the
+    resolved binary is created/refreshed and prepended to ``PATH`` so it wins
+    resolution ahead of any homebrew/user install. Best-effort: any failure to
+    create the shim leaves *env* unchanged rather than breaking dispatch.
+    """
+    bd_binary = resolve_bd_binary()
+    if bd_binary is None:
+        return env
+
+    path_value = env.get("PATH", "")
+    on_path = shutil.which("bd", path=path_value)
+    if on_path is not None:
+        with contextlib.suppress(OSError):
+            if os.path.samefile(on_path, bd_binary):
+                return env
+
+    try:
+        shim_dir = _bd_shim_dir()
+        shim_dir.mkdir(parents=True, exist_ok=True)
+        shim_path = shim_dir / ("bd.cmd" if sys.platform == "win32" else "bd")
+        _write_bd_shim(shim_path, bd_binary)
+    except OSError:
+        _logger.warning("bd_shim_create_failed", bd_binary=bd_binary)
+        return env
+
+    new_env = dict(env)
+    new_env["PATH"] = str(shim_dir) + os.pathsep + path_value
+    return new_env
+
+
 async def bd(
     *args: str,
     cwd: Path,
     stdin_data: bytes | None = None,
     timeout_seconds: float = _BD_TIMEOUT_SECONDS,
+    env_overlay: Mapping[str, str] | None = None,
 ) -> str:
     """Run a bd subcommand in *cwd* and return stdout as a string.
 
     Raises ``BdTimeoutError`` when the command exceeds *timeout_seconds* and
     ``BdError`` on any other failure (non-zero exit, OSError, missing binary).
 
-    All calls are serialised through ``_BD_LOCK`` (C5) to avoid concurrent
-    plays racing at the bd filesystem layer.
+    Reads (first arg in ``READ_COMMANDS``) take ``_BD_LOCK``'s reader side
+    and run concurrently with each other; anything else is a write and takes
+    the exclusive writer side (C5). A successful mutation also drops any
+    cached graph snapshot for *cwd* so the next ``load_graph`` call re-reads
+    instead of serving data that predates this write.
+
+    *env_overlay* merges on top of the current process environment for this
+    call only (e.g. ``{"BD_ALLOW_REMOTE_MIGRATE": "1"}`` for the one-shot,
+    consent-gated schema-migration command in ``beads.setup`` — never set as
+    ambient process/session env, since that would leave the dangerous flag
+    live for every subsequent bd call).
     """
     bd_binary = resolve_bd_binary()
     if bd_binary is None:
         raise BdError("bd binary not found; set AGENTSHORE_BD_BIN or install bd on PATH")
 
-    async with _BD_LOCK:
+    is_read = bool(args) and args[0] in READ_COMMANDS
+    lock_cm = _BD_LOCK.read() if is_read else _BD_LOCK.write()
+    async with lock_cm:
         try:
             result = await run_command(
                 bd_binary,
@@ -311,6 +509,7 @@ async def bd(
                 stdin_data=stdin_data,
                 timeout_seconds=timeout_seconds,
                 resolve_executable=False,
+                env={**os.environ, **env_overlay} if env_overlay else None,
             )
         except CommandTimeoutError as exc:
             raise BdTimeoutError(f"bd {' '.join(args)} timed out: {exc}") from exc
@@ -320,6 +519,8 @@ async def bd(
         raise BdError(
             f"bd {' '.join(args)} failed (rc={result.returncode}): {result.stderr.strip()}"
         )
+    if not is_read:
+        await _invalidate_graph_cache(cwd)
     return result.stdout
 
 
@@ -619,6 +820,23 @@ async def _read_graph_raw(project_path: Path) -> list[RawBead]:
                 f"bd list timed out after {_BD_GRAPH_TIMEOUT_SECONDS}s for {project_path}"
             ) from exc
         except BdError as exc:
+            if is_schema_drift_error(str(exc)):
+                # Fail fast — same rationale as the BdTimeoutError branch above:
+                # this is a structural refusal (bd's #4259 remote-migration
+                # gate), not a transient blip, so retrying 3x just re-pays the
+                # same deterministic failure. Raising a distinct exception type
+                # (rather than falling through to the generic GraphReadError
+                # below) lets callers tell "graph unreadable due to schema
+                # drift" apart from "graph load failed" / "graph is empty" —
+                # conflating those previously caused a bogus seed_project.
+                _logger.warning(
+                    "beads_graph_load_schema_drift",
+                    project_path=str(project_path),
+                    error=str(exc),
+                )
+                raise BeadsSchemaDriftError(
+                    f"bd list refused due to schema drift for {project_path}: {exc}"
+                ) from exc
             last_exc = exc
             _logger.warning(
                 "beads_graph_load_failed",
@@ -644,22 +862,47 @@ async def _read_graph_raw(project_path: Path) -> list[RawBead]:
     ) from last_exc
 
 
-async def load_graph(project_path: Path) -> ProjectGraph | None:
-    """Load the beads project graph for *project_path*.
+# ---------------------------------------------------------------------------
+# Graph snapshot cache + request coalescing
+# ---------------------------------------------------------------------------
+#
+# ``load_graph`` runs at least once per orchestrator tick (build_state),
+# again after every play completes (post-play alignment reload), again on
+# the selector's live-drift confirm, and again on every issue_syncer full
+# sync — each historically a fresh ``bd list --all --json --limit 0``
+# subprocess behind the bd lock. A short TTL cache plus in-flight
+# coalescing collapses concurrent/back-to-back callers onto one subprocess
+# without hiding a genuinely stale graph for long: the callers that need a
+# guaranteed-live read (selector confirm, post-play alignment — both drift
+# checks right after a mutation) pass ``max_age_seconds=0.0`` to force one.
 
-    Returns ``None`` when beads is not initialised for the project
-    (no ``.beads/`` directory). Returns an empty ``ProjectGraph`` when
-    beads is present but has no epics yet.
+_GRAPH_CACHE_TTL_SECONDS = 2.0
 
-    Raises ``GraphReadError`` if the bd binary fails after all retries.
-    Callers must handle this explicitly — silent stale-graph fallback is
-    not acceptable because it hides permanent failures from the RL loop.
+
+@dataclass(slots=True)
+class _GraphCacheEntry:
+    graph: ProjectGraph | None
+    loaded_at: float
+
+
+_graph_cache: dict[Path, _GraphCacheEntry] = {}
+_graph_cache_guard: asyncio.Lock = asyncio.Lock()
+_graph_load_tasks: dict[Path, asyncio.Task[ProjectGraph | None]] = {}
+
+
+async def _invalidate_graph_cache(project_path: Path) -> None:
+    """Drop the cached graph for *project_path* after our own mutation.
+
+    External agent processes also mutate the store and this cannot see
+    those — that is exactly why the TTL is short and why the live-read
+    callers force freshness instead of relying on invalidation alone.
     """
-    if not (project_path / ".beads").exists():
-        return None
+    async with _graph_cache_guard:
+        _graph_cache.pop(project_path, None)
 
-    bead_items = await _read_graph_raw(project_path)
 
+def _build_project_graph(bead_items: list[RawBead]) -> ProjectGraph:
+    """Pure transformation: raw ``bd list`` JSON dicts -> aggregated ``ProjectGraph``."""
     beads = [_parse_bead(item) for item in bead_items]
     beads_by_id = {bead.bead_id: bead for bead in beads if bead.bead_id}
     epic_beads = [bead for bead in beads if bead.bead_type == BeadType.EPIC]
@@ -719,6 +962,59 @@ async def load_graph(project_path: Path) -> ProjectGraph | None:
     )
 
 
+async def _load_and_cache_graph(project_path: Path) -> ProjectGraph | None:
+    """Uncached full-dump read. Called at most once per coalesced group."""
+    bead_items = await _read_graph_raw(project_path)
+    graph = _build_project_graph(bead_items)
+    async with _graph_cache_guard:
+        _graph_cache[project_path] = _GraphCacheEntry(graph=graph, loaded_at=time.monotonic())
+    return graph
+
+
+async def load_graph(
+    project_path: Path, *, max_age_seconds: float | None = None
+) -> ProjectGraph | None:
+    """Load the beads project graph for *project_path*.
+
+    Returns ``None`` when beads is not initialised for the project
+    (no ``.beads/`` directory). Returns an empty ``ProjectGraph`` when
+    beads is present but has no epics yet.
+
+    Raises ``GraphReadError`` if the bd binary fails after all retries.
+    Callers must handle this explicitly — silent stale-graph fallback is
+    not acceptable because it hides permanent failures from the RL loop.
+
+    *max_age_seconds* controls freshness: ``None`` (the default) accepts a
+    cached snapshot up to ``_GRAPH_CACHE_TTL_SECONDS`` old; ``0.0`` forces a
+    live read, bypassing the cache (but still coalescing with a read
+    already in flight for this path — a fresh reload here has to spawn a
+    real ``bd list``, but two callers racing to force one only need to pay
+    for it once). A failed read is never cached, so a persistent failure
+    surfaces to every caller rather than being papered over by stale data.
+    """
+    if not (project_path / ".beads").exists():
+        return None
+
+    ttl = _GRAPH_CACHE_TTL_SECONDS if max_age_seconds is None else max_age_seconds
+
+    async with _graph_cache_guard:
+        if ttl > 0.0:
+            entry = _graph_cache.get(project_path)
+            if entry is not None and (time.monotonic() - entry.loaded_at) < ttl:
+                return entry.graph
+        shared_task = _graph_load_tasks.get(project_path)
+        if shared_task is None:
+            shared_task = asyncio.ensure_future(_load_and_cache_graph(project_path))
+            _graph_load_tasks[project_path] = shared_task
+
+    try:
+        return await shared_task
+    finally:
+        async with _graph_cache_guard:
+            if _graph_load_tasks.get(project_path) is shared_task:
+                del _graph_load_tasks[project_path]
+
+
 # ---------------------------------------------------------------------------
 # Ready-task enumeration
 # ---------------------------------------------------------------------------
@@ -732,6 +1028,22 @@ async def ready_tasks(project_path: Path) -> list[Bead]:
     GH-mirrored tasks).
 
     Returns an empty list when beads is not initialised or the query fails.
+
+    Evaluated switching to bd 1.1.0's own ``bd ready --json --limit 0`` and
+    rejected it: verified empirically against a live bd 1.1.0 store that
+    ``bd ready --json`` does NOT include ``external_ref`` in its output
+    (fields are id/title/status/priority/issue_type/owner/created_at/
+    created_by/updated_at/dependency_count/dependent_count/comment_count
+    only). The sole consumer of this function
+    (``PlayCandidateService._issue_pickup_candidates``) matches beads to
+    GitHub issues by ``external_ref``, so switching would silently zero out
+    that GH-issue correlation on every call. Separately, this codebase's
+    ``bd query "status=open type=task"`` plus the graph's client-side
+    blocked-dependency filtering (``_depends_on_ids_from_raw`` /
+    ``GraphTask.blocked_by_ids``, applied upstream of this function's
+    result) already deliberately mirrors ``bd ready``'s blocking semantics
+    (see the comment above ``_BLOCKING_DEPENDENCY_TYPES``), so there's no
+    readiness-accuracy gain here to trade the external_ref away for.
     """
     if not (project_path / ".beads").exists():
         return []
@@ -801,11 +1113,78 @@ async def clear_in_progress_beads(project_path: Path) -> int:
 # ---------------------------------------------------------------------------
 
 
+class BlockingDependencyOutcome(StrEnum):
+    """Result of :func:`add_blocking_dependency`."""
+
+    LINKED = "linked"
+    #: bd rejected the edge because the opposite edge already exists between
+    #: the same two beads. This is not retry-worthy: the edge can never land
+    #: without first removing the conflicting one, so the caller should
+    #: escalate to a human rather than fall back to an ordinary label gate.
+    CYCLE_CONFLICT = "cycle_conflict"
+    #: Beads not initialised, empty/equal ids, or a bd error unrelated to a
+    #: cycle. The caller falls back to a label gate.
+    UNAVAILABLE = "unavailable"
+
+
+def _would_create_cycle(graph: ProjectGraph, blocked_bead_id: str, blocker_bead_id: str) -> bool:
+    """Client-side reachability check: would ``blocked -> blocker`` create a cycle?
+
+    A ``blocks`` edge records "blocked depends_on blocker" (see
+    ``_depends_on_ids_from_raw``): ``blocked`` cannot proceed until
+    ``blocker`` closes. Adding that edge creates a cycle iff ``blocker`` can
+    already (transitively) reach ``blocked`` by following existing
+    depends_on edges forward — i.e. the blocker already, directly or
+    transitively, depends on the very bead we're about to block. Plain BFS
+    over ``graph.tasks`` (the already-parsed snapshot); no extra bd calls.
+
+    Scoped to task-type beads: every caller of ``add_blocking_dependency``
+    resolves both ids from ``state.graph.tasks`` (see
+    ``executor.py``'s ``_apply_block_issue_on``), so task-only reachability
+    covers every case this fallback needs; a cycle routed through a
+    non-task bead (story/epic) would not be found here, but bd's own
+    stderr-substring fast path still catches those.
+    """
+    depends_on_by_id = {task.bead_id: task.depends_on_ids for task in graph.tasks}
+    seen: set[str] = set()
+    queue: deque[str] = deque([blocker_bead_id])
+    while queue:
+        current = queue.popleft()
+        if current == blocked_bead_id:
+            return True
+        if current in seen:
+            continue
+        seen.add(current)
+        queue.extend(depends_on_by_id.get(current, frozenset()) - seen)
+    return False
+
+
+async def _confirm_cycle_via_reachability(
+    project_path: Path, blocked_bead_id: str, blocker_bead_id: str
+) -> bool:
+    """Force-fresh graph reload + reachability check for the version-proof fallback.
+
+    Used only when bd's ``link`` failure did NOT match the known
+    "would create a cycle" stderr substring — protects the needs-human
+    escalation (commit 78555b3) from an upstream error-string rewording.
+    Swallows ``GraphReadError``: if we can't even confirm, the caller falls
+    back to ``UNAVAILABLE`` (an ordinary label gate) rather than escalating
+    on a guess.
+    """
+    try:
+        graph = await load_graph(project_path, max_age_seconds=0.0)
+    except GraphReadError:
+        return False
+    if graph is None:
+        return False
+    return _would_create_cycle(graph, blocked_bead_id, blocker_bead_id)
+
+
 async def add_blocking_dependency(
     project_path: Path,
     blocked_bead_id: str,
     blocker_bead_id: str,
-) -> bool:
+) -> BlockingDependencyOutcome:
     """Add a ``blocks`` edge so *blocked_bead_id* is blocked by *blocker_bead_id*.
 
     Mirrors a body-declared ``depends on #N`` dependency into the beads graph
@@ -815,15 +1194,18 @@ async def add_blocking_dependency(
 
     Runs ``bd link <blocked> <blocker> --type blocks`` (id2 blocks id1, so the
     second arg is the blocker — matching the groom/seed skills and bd's own
-    ``bd link`` semantics). No-ops and returns ``False`` when beads is not
-    initialised, either id is empty, or the two ids are equal. Returns ``False``
-    on a bd error so the caller can fall back to a label gate; the call is
-    swallowed rather than raised so a beads hiccup never fails the play.
+    ``bd link`` semantics). Returns ``UNAVAILABLE`` when beads is not
+    initialised, either id is empty, or the two ids are equal. A bd error is
+    swallowed rather than raised so a beads hiccup never fails the play: it
+    comes back as ``CYCLE_CONFLICT`` when bd reports the edge would create a
+    cycle (the caller should escalate, not just fall back to a plain label —
+    see ``needs-human`` handling in ``_apply_block_issue_on``), or
+    ``UNAVAILABLE`` for any other bd error.
     """
     if not (project_path / ".beads").exists():
-        return False
+        return BlockingDependencyOutcome.UNAVAILABLE
     if not blocked_bead_id or not blocker_bead_id or blocked_bead_id == blocker_bead_id:
-        return False
+        return BlockingDependencyOutcome.UNAVAILABLE
     try:
         await bd(
             "link",
@@ -835,6 +1217,27 @@ async def add_blocking_dependency(
             cwd=project_path,
         )
     except BdError as exc:
+        if "would create a cycle" in str(exc):
+            _logger.warning(
+                "beads_add_blocking_dependency_cycle_conflict",
+                project_path=str(project_path),
+                blocked=blocked_bead_id,
+                blocker=blocker_bead_id,
+                error=str(exc),
+            )
+            return BlockingDependencyOutcome.CYCLE_CONFLICT
+        # Version-proof fallback (#4): the stderr substring didn't match —
+        # bd may have reworded its error text — so confirm client-side via a
+        # fresh graph reachability check before conceding UNAVAILABLE.
+        if await _confirm_cycle_via_reachability(project_path, blocked_bead_id, blocker_bead_id):
+            _logger.warning(
+                "beads_add_blocking_dependency_cycle_conflict_reachability",
+                project_path=str(project_path),
+                blocked=blocked_bead_id,
+                blocker=blocker_bead_id,
+                error=str(exc),
+            )
+            return BlockingDependencyOutcome.CYCLE_CONFLICT
         _logger.warning(
             "beads_add_blocking_dependency_failed",
             project_path=str(project_path),
@@ -842,8 +1245,8 @@ async def add_blocking_dependency(
             blocker=blocker_bead_id,
             error=str(exc),
         )
-        return False
-    return True
+        return BlockingDependencyOutcome.UNAVAILABLE
+    return BlockingDependencyOutcome.LINKED
 
 
 # ---------------------------------------------------------------------------

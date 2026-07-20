@@ -146,17 +146,32 @@ class AgentManager:
         self._python_executable = python_executable
         self._handles: dict[str, AgentHandle] = {}
         self._circuit_breakers: dict[str, CircuitBreaker] = {}
+        # Cancellation signals for in-flight break-recovery waits (#367). A
+        # TAKE_BREAK play sleeps up to break_duration_minutes (default 30) before
+        # attempting to recover its target; when that target is cleared meanwhile
+        # the wait is pointless, so ``clear`` fires the agent's event and the play
+        # returns immediately instead of logging a stale ``break_recovery_failed``
+        # half an hour after ``agent_cleared``.
+        self._break_recovery_cancels: dict[str, asyncio.Event] = {}
         # Agent-type values whose backend hit a *transient* launch wedge (Grok
         # first-byte timeout) this session. The state-builder mixin drains this
         # into a DECAYING per-tick cooldown so the type auto-recovers rather than
         # being disabled for the whole session (#202). Membership here only marks
         # "a wedge was recorded since the last snapshot" — the actual expiry is
         # tracked tick-relative in the runtime, not here.
+        #
+        # WRITE-ONLY INBOX: this is a one-shot signal, not durable state. The drain
+        # (core/mixins/state.py:_drain_wedge_cooldowns) CONSUMES every entry it
+        # observes, so it is normally empty; do not read it to ask "is this type
+        # benched?" (the answer lives in SessionState.wedge_cooldown_agent_types)
+        # and do not add a reader that expects entries to persist across a drain.
+        # Letting entries linger here re-seeds the cooldown forever and defeats the
+        # decay.
         self.wedge_cooldown_types: set[str] = set()
         # Reason tag per type currently in ``wedge_cooldown_types`` ("launch_wedge"
         # for a Grok first-byte wedge, "stream_hang_cluster" for an agy hang cluster,
         # #233). Read by the state-builder drain only to label the cooldown event;
-        # has no effect on the decay itself.
+        # has no effect on the decay itself. Consumed alongside the set above.
         self.wedge_cooldown_reasons: dict[str, str] = {}
         # Consecutive zero-stdout stream-idle timeouts per agent TYPE (reset on any
         # successful dispatch of that type). Trips ``wedge_cooldown_types`` at
@@ -182,10 +197,18 @@ class AgentManager:
         # reason (signal, crash, lost stdio pipe) without the Tauri
         # shell's RunEvent::ExitRequested handler getting to
         # kill_all_agents first, atexit fires and we walk the tracked
-        # subprocess PIDs and SIGTERM them. SIGKILL doesn't run atexit
-        # so this isn't a complete guarantee, but it covers
-        # graceful-shutdown paths the Rust side might miss (SIGTERM
-        # from OS sleep, manual `kill -TERM <sidecar_pid>`, etc.).
+        # subprocess PIDs and SIGTERM them.
+        #
+        # Narrower than it looks, on two counts (#363). Neither SIGKILL nor
+        # SIGTERM runs atexit: the sidecar installs no signal handlers
+        # (``sidecar/server.py`` is a bare ``asyncio.run``), so default
+        # disposition terminates it outright and this never fires. It covers
+        # only a *clean interpreter exit* — not `kill -TERM <sidecar_pid>` and
+        # not a SIGTERM at OS sleep, which an earlier version of this comment
+        # wrongly claimed. And ``_kill_tracked_subprocesses_atexit`` skips every
+        # agent with a ``current_play_id``, which busy agents always have, so it
+        # can never reap the working fleet. The real fleet-wide teardown is
+        # ``asyncio.run`` cancelling in-flight dispatch tasks on stdin EOF.
         import atexit
 
         atexit.register(self._kill_tracked_subprocesses_atexit)
@@ -657,7 +680,47 @@ class AgentManager:
 
         del self._handles[agent_id]
         del self._circuit_breakers[agent_id]
+        self.cancel_break_recovery(agent_id, reason="agent_cleared")
         _logger.info("agent_cleared", agent_id=agent_id)
+
+    # -------------------------------------------------------------------------
+    # Break-recovery cancellation (#367)
+    # -------------------------------------------------------------------------
+
+    def register_break_recovery(self, agent_id: str) -> asyncio.Event:
+        """Register (and return) the cancel signal for a pending break recovery.
+
+        Called by ``TakeBreakPlay`` before it sleeps. The event is set by
+        ``clear`` when the target agent is torn down, so the play can abandon
+        the wait instead of firing against a dead agent ~30 min later. Only one
+        break can be pending per agent; a re-registration replaces the previous
+        signal (the older play unregisters itself as a no-op).
+        """
+        event = asyncio.Event()
+        self._break_recovery_cancels[agent_id] = event
+        return event
+
+    def unregister_break_recovery(self, agent_id: str, event: asyncio.Event) -> None:
+        """Drop *event* as the pending break-recovery signal for *agent_id*.
+
+        No-op when a newer registration has replaced it, so a finishing play can
+        never unregister a successor's signal.
+        """
+        if self._break_recovery_cancels.get(agent_id) is event:
+            del self._break_recovery_cancels[agent_id]
+
+    def cancel_break_recovery(self, agent_id: str, *, reason: str) -> bool:
+        """Fire the pending break-recovery signal for *agent_id*, if any.
+
+        Returns True when a pending break was signalled. Idempotent: the entry
+        is popped, so a second call is a no-op.
+        """
+        event = self._break_recovery_cancels.pop(agent_id, None)
+        if event is None:
+            return False
+        event.set()
+        _logger.info("break_recovery_cancelled", agent_id=agent_id, reason=reason)
+        return True
 
     # -------------------------------------------------------------------------
     # Error recovery
@@ -666,9 +729,20 @@ class AgentManager:
     async def attempt_recovery(self, agent_id: str) -> bool:
         """Try to transition an ERROR agent back to IDLE if the breaker allows it.
 
-        Returns True when the agent was recovered, False otherwise.
+        Returns True when the agent was recovered, False otherwise — including
+        when *agent_id* is no longer registered (e.g. cleared by a concurrent
+        ``end_agent``/reap while a caller such as ``TakeBreakPlay`` held a stale
+        reference across a long sleep, #332). Defense-in-depth: the primary
+        guard lives at the ``take_break.py`` call site, which checks the target
+        against current state before calling this at all; this fallback just
+        ensures an unknown id degrades to "not recovered" here too, rather than
+        propagating ``PreconditionFailed`` as an unhandled crash.
         """
-        handle = self._get_handle(agent_id)
+        try:
+            handle = self._get_handle(agent_id)
+        except PreconditionFailed:
+            _logger.debug("agent_recovery_skipped_unknown_agent", agent_id=agent_id)
+            return False
         cb = self._circuit_breakers[agent_id]
 
         if handle.status != AgentStatus.ERROR:

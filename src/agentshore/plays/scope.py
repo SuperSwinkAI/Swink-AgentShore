@@ -34,7 +34,29 @@ _PR_BODY_ISSUE_RE = re.compile(r"(?:Closes|Fixes|Resolves)\s+#(\d+)", re.IGNOREC
 _EXPECTED_ISSUES: dict[PlayType, int | None] = {
     PlayType.SEED_PROJECT: None,  # beads seed creates as many as needed
     PlayType.GROOM_BACKLOG: None,  # backlog grooming may create/close issues
-    PlayType.REFINE_TASK_BREAKDOWN: None,  # decomposition creates sub-issues
+    # REFINE_TASK_BREAKDOWN is deliberately uncapped: decomposing one parent
+    # into 3-5 children is its whole job. It also means every issue an audit
+    # play files can fan out ~4x downstream, so the audit allowances below are
+    # set with that multiplier in mind (a 5-issue QA run can become ~20-25
+    # nodes once refinement runs).
+    PlayType.REFINE_TASK_BREAKDOWN: None,
+    # Issue-filing audit plays. These legitimately create issues, so a missing
+    # entry (allowance 0) would trip on the very first finding. The effective
+    # ceiling is ``expected * scope_cfg.issue_inflation_threshold`` (2.0 by
+    # default), i.e. the numbers below double.
+    #
+    # RUN_QA / DESIGN_AUDIT (5 -> 10): whole-branch audits, so they surface the
+    #   widest set of findings; the skills cluster by root cause and cap the
+    #   per-run filing count, and 10 is well above a healthy run while still
+    #   catching the 18-22 issue bursts seen in session 4f4596b2 (#368).
+    # CODE_REVIEW (3 -> 6): scoped to a single PR's diff; follow-ups beyond a
+    #   handful mean the review is filing style nits or re-filing known work.
+    # CLEANUP (3 -> 6): files only for failures its auto-fixers could not fix,
+    #   grouped by root cause, so a healthy run is 0-3.
+    PlayType.RUN_QA: 5,
+    PlayType.DESIGN_AUDIT: 5,
+    PlayType.CODE_REVIEW: 3,
+    PlayType.CLEANUP: 3,
 }
 
 # ---------------------------------------------------------------------------
