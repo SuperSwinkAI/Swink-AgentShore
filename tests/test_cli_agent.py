@@ -3276,3 +3276,48 @@ async def test_kill_process_survivor_probe_swallows_permission_error(
 
     # Must return normally rather than raising PermissionError.
     await ca._kill_process(proc, "agent-eperm")  # type: ignore[arg-type]
+
+
+async def test_kill_process_announces_every_agentshore_initiated_sigterm(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#363: an AgentShore-sent SIGTERM must be attributable from the log.
+
+    Every self-inflicted agent kill funnels through ``_kill_process``, which
+    previously logged nothing before signalling — so a fleet AgentShore killed
+    and a fleet something else killed produced identical logs (a bare
+    ``cli_agent_nonzero_exit`` with rc -15). The absence of this event for an
+    agent that died on SIGTERM is what proves AgentShore did not send it.
+    """
+    import signal
+
+    import agentshore.agents.cli_agent as ca
+
+    class _ExitedProc:
+        def __init__(self) -> None:
+            self.pid = 5150
+            self.returncode: int | None = None
+
+        async def wait(self) -> int:
+            self.returncode = -15
+            return -15
+
+    signals: list[int] = []
+
+    def _fake_killpg(pgid: int, sig: int) -> None:
+        if sig == 0:
+            raise ProcessLookupError
+        signals.append(sig)
+
+    monkeypatch.setattr(ca.os, "getpgid", lambda pid: 777)
+    monkeypatch.setattr(ca.os, "killpg", _fake_killpg)
+
+    with structlog.testing.capture_logs() as captured:
+        await ca._kill_process(_ExitedProc(), "agent-term")  # type: ignore[arg-type]
+
+    announced = [e for e in captured if e.get("event") == "agent_process_terminating"]
+    assert len(announced) == 1
+    assert announced[0]["agent_id"] == "agent-term"
+    assert announced[0]["pid"] == 5150
+    # Announced *before* the signal actually went out.
+    assert signal.SIGTERM in signals

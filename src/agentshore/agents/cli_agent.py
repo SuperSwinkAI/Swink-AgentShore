@@ -639,7 +639,23 @@ async def _finalize_nonzero_exit(
 
 
 async def _kill_process(proc: asyncio.subprocess.Process, agent_id: str) -> None:
-    """Send SIGTERM, wait up to _SIGKILL_GRACE seconds, then SIGKILL."""
+    """Send SIGTERM, wait up to _SIGKILL_GRACE seconds, then SIGKILL.
+
+    Every AgentShore-initiated agent termination funnels through here, and until
+    #363 none of them logged anything before signalling — only the SIGKILL
+    escalation did. That made a self-inflicted kill and an externally-delivered
+    one produce byte-identical logs (a bare ``cli_agent_nonzero_exit`` with
+    rc ``-15``), which is why two investigations of the same fleet-wide SIGTERM
+    cluster could not settle who sent the signal. ``agent_process_terminating``
+    is that missing discriminator: if it is absent for an agent that died on
+    SIGTERM, AgentShore did not kill it.
+    """
+    _logger.info(
+        "agent_process_terminating",
+        agent_id=agent_id,
+        pid=proc.pid,
+        signal="SIGTERM",
+    )
     if not hasattr(os, "killpg"):
         # Windows: no process groups. ``start_new_session=True`` is a no-op
         # there, so there is nothing to ``os.killpg`` and ``os.getpgid`` is
@@ -999,6 +1015,18 @@ async def dispatch_cli(
         ) from None
     except asyncio.CancelledError:
         # Task cancellation — clean up the child process before propagating.
+        # Nothing downstream logs a cancelled dispatch: no play_completed, no
+        # agent_dispatch_failed, no cancel event anywhere in the executor or
+        # dispatch mixin. A cancelled play simply vanished from the log while
+        # its agent died on SIGTERM, indistinguishable from an external kill
+        # (#363). Mass cancellation — e.g. asyncio.run() tearing down every
+        # remaining task after a stdin-EOF shutdown — is the one path that can
+        # produce a silent fleet-wide SIGTERM, so it must announce itself.
+        _logger.warning(
+            "dispatch_cancelled",
+            agent_id=handle.agent_id,
+            play_id=handle.current_play_id,
+        )
         with contextlib.suppress(Exception):
             await _kill_process(proc, handle.agent_id)
         _close_streams(proc)

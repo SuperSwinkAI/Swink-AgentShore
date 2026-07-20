@@ -190,10 +190,18 @@ class AgentManager:
         # reason (signal, crash, lost stdio pipe) without the Tauri
         # shell's RunEvent::ExitRequested handler getting to
         # kill_all_agents first, atexit fires and we walk the tracked
-        # subprocess PIDs and SIGTERM them. SIGKILL doesn't run atexit
-        # so this isn't a complete guarantee, but it covers
-        # graceful-shutdown paths the Rust side might miss (SIGTERM
-        # from OS sleep, manual `kill -TERM <sidecar_pid>`, etc.).
+        # subprocess PIDs and SIGTERM them.
+        #
+        # Narrower than it looks, on two counts (#363). Neither SIGKILL nor
+        # SIGTERM runs atexit: the sidecar installs no signal handlers
+        # (``sidecar/server.py`` is a bare ``asyncio.run``), so default
+        # disposition terminates it outright and this never fires. It covers
+        # only a *clean interpreter exit* — not `kill -TERM <sidecar_pid>` and
+        # not a SIGTERM at OS sleep, which an earlier version of this comment
+        # wrongly claimed. And ``_kill_tracked_subprocesses_atexit`` skips every
+        # agent with a ``current_play_id``, which busy agents always have, so it
+        # can never reap the working fleet. The real fleet-wide teardown is
+        # ``asyncio.run`` cancelling in-flight dispatch tasks on stdin EOF.
         import atexit
 
         atexit.register(self._kill_tracked_subprocesses_atexit)
