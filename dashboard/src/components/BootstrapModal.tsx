@@ -29,6 +29,9 @@ const listeners = new Set<(s: BootstrapModalState) => void>();
 let latestState: BootstrapModalState = { phase: null, startedAt: null };
 
 export function notifyBootstrapModal(state: BootstrapModalState): void {
+  // No-op on an unchanged state so the reconciliation calls on every
+  // state_update / play_event (#361) don't re-render the modal each frame.
+  if (latestState.phase === state.phase && latestState.startedAt === state.startedAt) return;
   latestState = { phase: state.phase, startedAt: state.startedAt };
   listeners.forEach((fn) => fn(latestState));
 }
