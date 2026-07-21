@@ -36,6 +36,16 @@ class TestAgentCapabilities:
         assert caps["can_create_pr"] is True
         assert caps["can_merge"] is True
 
+    def test_swink_coding_capabilities(self) -> None:
+        caps = AGENT_CAPABILITIES[AgentType.SWINK_CODING]
+        assert caps["can_implement"] is True
+        assert caps["can_review"] is True
+        assert caps["can_test"] is True
+        assert caps["can_create_pr"] is True
+        assert caps["can_merge"] is True
+        assert caps["can_run_skill"] is True
+        assert caps["max_context"] == 32_768
+
     def test_all_agent_types_can_merge(self) -> None:
         """Merge eligibility is independent of provider type."""
         for agent_type, caps in AGENT_CAPABILITIES.items():

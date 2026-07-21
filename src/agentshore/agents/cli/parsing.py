@@ -48,6 +48,7 @@ _TERMINAL_EVENT_TYPES: Final[dict[AgentType, frozenset[str]]] = {
     AgentType.CLAUDE_CODE: frozenset({"result"}),
     AgentType.CODEX: frozenset({"turn.completed"}),
     AgentType.GROK: frozenset({"end"}),
+    AgentType.SWINK_CODING: frozenset({"result"}),
 }
 
 
@@ -172,6 +173,13 @@ def _extract_text_from_grok_jsonl(raw: str) -> tuple[str, _UsageTotals, str | No
     return cli_grok.parse_grok_jsonl(raw)
 
 
+def _extract_text_from_swink_coding_jsonl(raw: str) -> tuple[str, _UsageTotals, str | None]:
+    """Parse swink-coding CLI NDJSON output.  Delegates to the narrow parser."""
+    from agentshore.agents import cli_swink_coding
+
+    return cli_swink_coding.parse_swink_coding_jsonl(raw)
+
+
 def _extract_text_from_stream_json(raw: str) -> str:
     last_result: str | None = None
     for event in _iter_json_events(raw):
@@ -252,4 +260,5 @@ _PARSERS: dict[AgentType, CliOutputFormat] = {
     AgentType.CLAUDE_CODE: _FunctionFormat(_parse_claude_output),
     AgentType.CODEX: _FunctionFormat(_extract_text_from_codex_jsonl),
     AgentType.GROK: _FunctionFormat(_extract_text_from_grok_jsonl),
+    AgentType.SWINK_CODING: _FunctionFormat(_extract_text_from_swink_coding_jsonl),
 }

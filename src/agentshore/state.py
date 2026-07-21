@@ -89,6 +89,7 @@ class AgentType(enum.Enum):
     CODEX = "codex"
     GROK = "grok"
     ANTIGRAVITY = "antigravity"
+    SWINK_CODING = "swink_coding"
 
 
 # Single canonical definition of which AgentType values are CLI (subprocess)
@@ -101,6 +102,7 @@ CLI_AGENT_TYPES: frozenset[AgentType] = frozenset(
         AgentType.CODEX,
         AgentType.GROK,
         AgentType.ANTIGRAVITY,
+        AgentType.SWINK_CODING,
     }
 )
 

@@ -52,6 +52,13 @@ agent_defaults:
     max_context: 1000000
     cost_per_1k_input: 0.0005
     cost_per_1k_output: 0.003
+  swink_coding:
+    # Aliases route to whatever backend the user's own swink-coding config
+    # points at, commonly a local Ollama model — no token billing to observe,
+    # so cost is $0 pending a real per-alias rate.
+    max_context: 32768
+    cost_per_1k_input: 0.0
+    cost_per_1k_output: 0.0
 
 # Per-model rates (highest precedence). Keys match the `model:` strings used in
 # agentshore.yaml model tiers. Seeded from the agent-type defaults so the shipped
@@ -170,3 +177,12 @@ models:
     cost_per_1k_input: 0.015
     cost_per_1k_output: 0.075
   GPT-OSS 120B (Medium): *agy_gemini_rates
+  # ── swink_coding (Rust CLI, local backends via its own config) ─────────────
+  # The three tier aliases are the entire selectable surface; real backend
+  # cost is opaque to AgentShore (see agent_defaults.swink_coding above).
+  small: &swink_coding_rates
+    max_context: 32768
+    cost_per_1k_input: 0.0
+    cost_per_1k_output: 0.0
+  medium: *swink_coding_rates
+  large: *swink_coding_rates

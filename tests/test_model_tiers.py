@@ -75,6 +75,20 @@ def test_default_model_tiers_for_antigravity() -> None:
     assert tiers["large"].reasoning_effort is None
 
 
+def test_default_model_tiers_for_swink_coding() -> None:
+    tiers = default_model_tiers_for(AgentType.SWINK_CODING)
+
+    assert set(tiers) == {"small", "medium", "large"}
+    # --model only accepts the tier aliases themselves; swink-coding's own
+    # config resolves the alias to a concrete model id.
+    assert tiers["small"].model == "small"
+    assert tiers["medium"].model == "medium"
+    assert tiers["large"].model == "large"
+    assert tiers["small"].reasoning_effort is None
+    assert tiers["medium"].reasoning_effort is None
+    assert tiers["large"].reasoning_effort is None
+
+
 def test_enabled_model_tiers_respects_agent_config() -> None:
     cfg = AgentConfig(
         model_tiers={
@@ -199,6 +213,10 @@ def test_reasoning_efforts_codex_includes_minimal() -> None:
 
 def test_reasoning_efforts_antigravity_is_empty() -> None:
     assert reasoning_efforts_for(AgentType.ANTIGRAVITY) == ()
+
+
+def test_reasoning_efforts_swink_coding_is_empty() -> None:
+    assert reasoning_efforts_for(AgentType.SWINK_CODING) == ()
 
 
 def test_reasoning_efforts_constant_matches_helper() -> None:

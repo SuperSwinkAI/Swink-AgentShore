@@ -93,6 +93,7 @@ _BD_ACTOR_NAMES: dict[AgentType, str] = {
     AgentType.CLAUDE_CODE: "claude",
     AgentType.CODEX: "codex",
     AgentType.GROK: "grok",
+    AgentType.SWINK_CODING: "swink-coding",
 }
 
 

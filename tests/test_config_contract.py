@@ -279,6 +279,72 @@ agents:
     assert grok_price.cost_per_1k_output == 0.002
 
 
+def test_swink_coding_tier_alias_model_parses(tmp_path: Path) -> None:
+    """A swink-coding tier model that is a plain tier alias parses fine."""
+    yaml_text = """
+agents:
+  swink_coding:
+    enabled: true
+    binary: swink-coding
+    model_tiers:
+      small: small
+      medium: medium
+"""
+    (tmp_path / "agentshore.yaml").write_text(yaml_text, encoding="utf-8")
+    config = load_config(tmp_path / "agentshore.yaml")
+
+    assert config.agents["swink_coding"].model_tiers["small"].model == "small"
+    assert config.agents["swink_coding"].model_tiers["medium"].model == "medium"
+
+
+def test_swink_coding_tier_map_model_parses(tmp_path: Path) -> None:
+    """A ``provider:model[@endpoint]`` tier-map override is a valid tier model."""
+    yaml_text = """
+agents:
+  swink_coding:
+    enabled: true
+    binary: swink-coding
+    model_tiers:
+      small: ollama:qwen2.5-coder:7b
+"""
+    (tmp_path / "agentshore.yaml").write_text(yaml_text, encoding="utf-8")
+    config = load_config(tmp_path / "agentshore.yaml")
+
+    assert config.agents["swink_coding"].model_tiers["small"].model == "ollama:qwen2.5-coder:7b"
+
+
+def test_swink_coding_invalid_model_raises_config_error(tmp_path: Path) -> None:
+    """A model that is neither a tier alias nor ``provider:model`` is rejected."""
+    yaml_text = """
+agents:
+  swink_coding:
+    enabled: true
+    binary: swink-coding
+    model_tiers:
+      small: "ollama:"
+"""
+    (tmp_path / "agentshore.yaml").write_text(yaml_text, encoding="utf-8")
+
+    with pytest.raises(ConfigError, match="model_tiers.small.model"):
+        load_config(tmp_path / "agentshore.yaml")
+
+
+def test_swink_coding_bare_model_id_raises_config_error(tmp_path: Path) -> None:
+    """A bare model id with no ``provider:`` prefix is rejected, not silently passed."""
+    yaml_text = """
+agents:
+  swink_coding:
+    enabled: true
+    binary: swink-coding
+    model_tiers:
+      small: gpt-4
+"""
+    (tmp_path / "agentshore.yaml").write_text(yaml_text, encoding="utf-8")
+
+    with pytest.raises(ConfigError, match="valid forms are a tier alias"):
+        load_config(tmp_path / "agentshore.yaml")
+
+
 def test_default_config_has_agent_model_tiers() -> None:
     config = load_config(None)
 

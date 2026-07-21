@@ -150,6 +150,21 @@ def test_antigravity_known_models_include_non_google_backends() -> None:
     assert "Gemini 3.1 Pro (High)" in antigravity
 
 
+def test_swink_coding_known_models_are_tier_aliases() -> None:
+    # swink-coding's `--model` only accepts these three literal tier aliases;
+    # real model ids live in its own local config, out of AgentShore's view.
+    assert KNOWN_MODELS["swink_coding"] == ["small", "medium", "large"]
+
+
+def test_swink_coding_no_live_fetch(monkeypatch: pytest.MonkeyPatch) -> None:
+    # models_for_agent for swink_coding must never call a live API — there is
+    # no known agent-key branch in models_for_agent_async that would fetch one.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    result = models_for_agent("swink_coding")
+    assert result == ["small", "medium", "large"]
+
+
 def test_every_catalog_model_has_a_pricing_row() -> None:
     # Catalog↔pricing invariant: a selectable model with no `models:` row in
     # pricing.yaml bills at its agent_defaults rate — the wrong tier for
