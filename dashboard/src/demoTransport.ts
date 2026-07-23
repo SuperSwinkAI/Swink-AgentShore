@@ -3,13 +3,48 @@ import type {
   AgentShoreMessage,
   AgentType,
   GraphTask,
+  PlayType,
   PullRequestSnapshot,
   StateUpdate,
 } from "./types";
 import { makeActivePlay } from "./types";
+import { PLAY_KEYS } from "./office/zones";
 import type { ConnectionState, DashboardTransport } from "./ws";
 
 const BASE_TIME = "2026-01-01T00:00:00.000Z";
+
+// Both masks below are keyed by play name (not position) and derived into the
+// ordered action_mask array via PLAY_KEYS, so the mask can never silently
+// desync from PlayType if the play list is ever reordered — unlike a
+// hand-typed positional boolean array, which only stayed aligned by comment.
+const BASE_MASK_BY_NAME: Partial<Record<PlayType, boolean>> = {
+  instantiate_agent: true,
+  unblock_pr: true,
+  write_implementation_plan: true,
+  end_agent: true,
+  issue_pickup: true,
+  code_review: true,
+  merge_pr: false, // no open PR
+  run_qa: true,
+  systematic_debugging: true,
+  design_audit: true,
+  end_session: false, // goals not aligned
+  reconcile_state: true,
+  refine_task_breakdown: true,
+  cleanup: true,
+  future_4: false, // reserved
+  take_break: false, // rate-limit cooldown
+  groom_backlog: true,
+  seed_project: false, // already seeded
+  calibrate_alignment: true,
+  prune: false, // no prune-worthy debt yet
+  future_7: false, // reserved
+  future_8: false, // reserved
+};
+
+// Stress scenario exercises every play as eligible; no per-play overrides
+// needed, so unmapped keys default to true.
+const STRESS_MASK_BY_NAME: Partial<Record<PlayType, boolean>> = {};
 
 export type DemoScenario =
   | "empty"
@@ -502,7 +537,9 @@ export class DemoTransport implements DashboardTransport {
       same_type_failure_streak: 0,
       last_play_type: "run_qa",
       forced_mask_zeros: [],
-      action_mask: Array.from({ length: 22 }, () => true),
+      action_mask: PLAY_KEYS.map(
+        (key) => STRESS_MASK_BY_NAME[key as PlayType] ?? true,
+      ),
       mask_reasons: {},
       graph: {
         epics,
@@ -655,36 +692,9 @@ export class DemoTransport implements DashboardTransport {
       same_type_failure_streak: 0,
       last_play_type: "run_qa",
       forced_mask_zeros: [],
-      // V1_ACTION_ORDER: instantiate_agent, unblock_pr, write_implementation_plan,
-      // end_agent, issue_pickup, code_review, merge_pr, run_qa,
-      // systematic_debugging, design_audit, end_session, reconcile_state,
-      // refine_task_breakdown, cleanup, future_4, take_break,
-      // groom_backlog, seed_project, calibrate_alignment, prune,
-      // future_7, future_8
-      action_mask: [
-        true, // instantiate_agent
-        true, // unblock_pr
-        true, // write_implementation_plan
-        true, // end_agent
-        true, // issue_pickup
-        true, // code_review
-        false, // merge_pr — no open PR
-        true, // run_qa
-        true, // systematic_debugging
-        true, // design_audit
-        false, // end_session — goals not aligned
-        true, // reconcile_state
-        true, // refine_task_breakdown
-        true, // cleanup
-        false, // future_4 — reserved
-        false, // take_break — rate-limit cooldown
-        true, // groom_backlog
-        false, // seed_project — already seeded
-        true, // calibrate_alignment
-        false, // prune — no prune-worthy debt yet
-        false, // future_7 — reserved
-        false, // future_8 — reserved
-      ],
+      action_mask: PLAY_KEYS.map(
+        (key) => BASE_MASK_BY_NAME[key as PlayType] ?? false,
+      ),
       mask_reasons: {
         merge_pr: "No open PR ready to merge",
         end_session: "Goals not yet aligned",

@@ -1,6 +1,8 @@
 import { TILE_SIZE, type Rect } from "../../../office/layout";
+import type { ResolvedTheme } from "../../../theme";
 import type { RenderContext } from "../context";
 import { drawFurnitureBase } from "./index";
+import { CYAN_ACCENT, GREEN_ACCENT } from "./palettes";
 import {
   drawGridWarTacticalMapTable,
   drawGridWarTodoWallPlane,
@@ -55,6 +57,21 @@ import {
   strokeWorldRect,
   strokeWorldSegment,
 } from "../primitives";
+
+// Shared across the three science-lab draw functions below; "orange" here is
+// a muted variant distinct from the ORANGE_ACCENT_WARM used elsewhere, so it
+// stays local rather than joining the shared palette module.
+const SCIENCE_LAB_ACCENT_PALETTES: Record<
+  ResolvedTheme,
+  { cyan: string; orange: string; green: string }
+> = {
+  dark: { cyan: CYAN_ACCENT.dark, orange: "#FF9146", green: GREEN_ACCENT.dark },
+  light: {
+    cyan: CYAN_ACCENT.light,
+    orange: "#DD6518",
+    green: GREEN_ACCENT.light,
+  },
+};
 
 export function drawFurniturePiece(
   rctx: RenderContext,
@@ -192,9 +209,9 @@ function drawGridScienceLabServiceDeck(
         right: "rgba(5, 22, 31, 0.98)",
         panel: "rgba(5, 28, 38, 0.88)",
         glass: "rgba(57, 217, 255, 0.14)",
-        cyan: "#39D9FF",
-        orange: "#FF9146",
-        green: "#2BE0B1",
+        cyan: SCIENCE_LAB_ACCENT_PALETTES.dark.cyan,
+        orange: SCIENCE_LAB_ACCENT_PALETTES.dark.orange,
+        green: SCIENCE_LAB_ACCENT_PALETTES.dark.green,
         shadow: "rgba(0, 0, 0, 0.18)",
       }
     : {
@@ -204,9 +221,9 @@ function drawGridScienceLabServiceDeck(
         right: "rgba(70, 150, 176, 0.96)",
         panel: "rgba(225, 255, 255, 0.92)",
         glass: "rgba(0, 174, 214, 0.14)",
-        cyan: "#008BBC",
-        orange: "#DD6518",
-        green: "#129970",
+        cyan: SCIENCE_LAB_ACCENT_PALETTES.light.cyan,
+        orange: SCIENCE_LAB_ACCENT_PALETTES.light.orange,
+        green: SCIENCE_LAB_ACCENT_PALETTES.light.green,
         shadow: "rgba(0, 90, 116, 0.10)",
       };
 
@@ -332,8 +349,8 @@ function drawGridScienceLabReactorCore(
         left: "rgba(13, 59, 74, 0.96)",
         right: "rgba(4, 20, 30, 0.98)",
         panel: "rgba(5, 27, 38, 0.92)",
-        cyan: "#39D9FF",
-        orange: "#FF9146",
+        cyan: SCIENCE_LAB_ACCENT_PALETTES.dark.cyan,
+        orange: SCIENCE_LAB_ACCENT_PALETTES.dark.orange,
         core: "#FFF0A4",
         glass: "rgba(57, 217, 255, 0.16)",
       }
@@ -343,8 +360,8 @@ function drawGridScienceLabReactorCore(
         left: "rgba(160, 239, 250, 0.96)",
         right: "rgba(68, 149, 176, 0.96)",
         panel: "rgba(225, 255, 255, 0.94)",
-        cyan: "#008BBC",
-        orange: "#DD6518",
+        cyan: SCIENCE_LAB_ACCENT_PALETTES.light.cyan,
+        orange: SCIENCE_LAB_ACCENT_PALETTES.light.orange,
         core: "#F6C65A",
         glass: "rgba(0, 174, 214, 0.15)",
       };
@@ -478,9 +495,9 @@ function drawGridScienceLabDiagnosticTower(
         left: "rgba(10, 42, 56, 0.96)",
         right: "rgba(4, 17, 26, 0.98)",
         screen: "rgba(57, 217, 255, 0.18)",
-        cyan: "#39D9FF",
-        orange: "#FF9146",
-        green: "#2BE0B1",
+        cyan: SCIENCE_LAB_ACCENT_PALETTES.dark.cyan,
+        orange: SCIENCE_LAB_ACCENT_PALETTES.dark.orange,
+        green: SCIENCE_LAB_ACCENT_PALETTES.dark.green,
       }
     : {
         top: "rgba(210, 249, 255, 0.98)",
@@ -488,9 +505,9 @@ function drawGridScienceLabDiagnosticTower(
         left: "rgba(171, 242, 250, 0.96)",
         right: "rgba(77, 158, 181, 0.96)",
         screen: "rgba(0, 174, 214, 0.13)",
-        cyan: "#008BBC",
-        orange: "#DD6518",
-        green: "#129970",
+        cyan: SCIENCE_LAB_ACCENT_PALETTES.light.cyan,
+        orange: SCIENCE_LAB_ACCENT_PALETTES.light.orange,
+        green: SCIENCE_LAB_ACCENT_PALETTES.light.green,
       };
 
   drawRaisedBox(

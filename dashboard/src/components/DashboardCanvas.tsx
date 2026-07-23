@@ -1,60 +1,17 @@
 import { useEffect, useRef, useState, type JSX } from "react";
 
 import { Camera } from "../engine/camera";
-import { OfficeRenderer, type WallSticky } from "../engine/renderer";
+import { OfficeRenderer } from "../engine/renderer";
 import { AgentShoreStateManager } from "../state";
 import { updateCharacter } from "../characters/stateMachine";
 import { characterScreenBounds } from "../characters/sprites";
 import type { ResolvedTheme } from "../theme";
-import type { StateUpdate } from "../types";
-import { deriveColumns } from "../views/kanban/phase";
-import { PHASES } from "../views/kanban/phase";
-import {
-  notifySidePanelClickHandler,
-  notifySidePanelSelectAgent,
-} from "./SidePanel";
+import { useCanvasClickSelect } from "./canvas/useCanvasClickSelect";
+import { useCanvasKeyboardPan } from "./canvas/useCanvasKeyboardPan";
+import { useCanvasResize } from "./canvas/useCanvasResize";
+import { useCanvasWallStickies } from "./canvas/useCanvasWallStickies";
 
-/**
- * In-office mural stickies — module-level notify so the React-port
- * Dashboard can pipe state_update payloads to the canvas's renderer
- * without exposing the OfficeRenderer through React state. Mirrors the
- * imperative bootstrapDashboard.ts:342 path that the React port replaced
- * but never re-wired.
- */
-const stickyListeners = new Set<(stickies: WallSticky[]) => void>();
-let cachedStickies: WallSticky[] = [];
-
-function hashBeadId(beadId: string): number {
-  let hash = 0;
-  for (let i = 0; i < beadId.length; i++) {
-    hash = (hash * 31 + beadId.charCodeAt(i)) >>> 0;
-  }
-  return (hash % 1_000_000) + 1;
-}
-
-export function notifyDashboardCanvasStickies(state: StateUpdate): void {
-  const cols = deriveColumns(
-    state.open_issues ?? [],
-    state.agents ?? [],
-    state.pull_requests ?? [],
-    state.graph ?? null,
-  );
-  const stickies: WallSticky[] = [];
-  for (const [sectionIndex, phase] of PHASES.entries()) {
-    for (const card of cols[phase]) {
-      const issueNumber = card.issue
-        ? card.issue.issue_number
-        : card.pr
-          ? -card.pr.pr_number
-          : card.task
-            ? -hashBeadId(card.task.bead_id)
-            : 0;
-      stickies.push({ issueNumber, sectionIndex });
-    }
-  }
-  cachedStickies = stickies;
-  stickyListeners.forEach((fn) => fn(stickies));
-}
+export { notifyDashboardCanvasStickies } from "./canvas/useCanvasWallStickies";
 
 /**
  * Minimum-viable React port of the dashboard canvas (DESIGN §3.2,
@@ -139,22 +96,27 @@ export function DashboardCanvas({
   hidden = false,
 }: DashboardCanvasProps = {}): JSX.Element {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const cameraRef = useRef<Camera | null>(null);
+  const rendererRef = useRef<OfficeRenderer | null>(null);
+  const stateRef = useRef<AgentShoreStateManager | null>(null);
   const [mounted, setMounted] = useState(false);
 
+  // Core engine setup: canvas 2D context, Camera/OfficeRenderer/state-manager
+  // creation, dev-mode test hooks, and theme sync. Populates the refs above
+  // so the sibling hooks below (declared next, so they run after this
+  // effect within the same mount commit) can wire their own listeners
+  // against the same Camera/renderer/state instances.
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx2d = canvas.getContext("2d");
     if (!ctx2d) return;
 
-    // Size backing-store to displayed size for crisp pixel art on HiDPI (else
-    // canvas defaults to 300x150). dpr is re-read in resize() (not frozen at
-    // mount) since it changes on cross-monitor moves; a stale value mis-sizes
-    // the backing store and blurs the upscale.
-    let dpr = window.devicePixelRatio || 1;
-
     const camera = new Camera();
     const renderer = new OfficeRenderer(canvas, ctx2d, camera);
+    cameraRef.current = camera;
+    rendererRef.current = renderer;
+
     if (import.meta.env.DEV) {
       const testWindow = window as typeof window & {
         __agentshoreDashboardTest?: Record<string, unknown>;
@@ -192,189 +154,13 @@ export function DashboardCanvas({
     });
 
     const state = stateManager ?? new AgentShoreStateManager();
-
-    const DEFAULT_VIEW_PADDING = 14;
-
-    const measureViewport = (): { top: number; left: number; right: number; bottom: number } => {
-      // Physical-pixel bounds the office should fit within, measured from the
-      // surrounding HUD panels; falls back to full window for panels not yet
-      // mounted (e.g. first paint before the HUD subtree settles).
-      const topBar = document.getElementById("top-bar");
-      const bottomBar = document.getElementById("bottom-bar");
-      const leftPanel = document.getElementById("left-panel");
-      const sidePanel = document.getElementById("side-panel");
-      const winW = window.innerWidth;
-      const winH = window.innerHeight;
-      const leftRect = leftPanel?.getBoundingClientRect();
-      const sideRect = sidePanel?.getBoundingClientRect();
-      const topRect = topBar?.getBoundingClientRect();
-      const bottomRect = bottomBar?.getBoundingClientRect();
-      const leftCss =
-        leftRect && !leftPanel?.classList.contains("collapsed") && leftRect.width > 0
-          ? leftRect.right
-          : 0;
-      const rightCss = sideRect && sideRect.width > 0 ? sideRect.left : winW;
-      const topCss = topRect ? topRect.bottom : 0;
-      const bottomCss = bottomRect ? bottomRect.top : winH;
-      return {
-        left: leftCss * dpr,
-        top: topCss * dpr,
-        right: rightCss * dpr,
-        bottom: bottomCss * dpr,
-      };
-    };
-
-    const fitToView = () => {
-      camera.fitToViewport(measureViewport(), DEFAULT_VIEW_PADDING * dpr);
-    };
-
-    const focusAgent = (agentId: string | null) => {
-      if (agentId === null) {
-        fitToView();
-        return;
-      }
-      const character = state
-        .getCharacters()
-        .find((char) => !char.npcKind && char.agentId === agentId);
-      if (!character) return;
-      camera.focusOn(character);
-    };
-
-    const resize = () => {
-      // Backing-store and all camera math operate in PHYSICAL pixels; no
-      // setTransform. Scaling the context by DPR would double every camera
-      // offset on HiDPI and paint the office off-center bottom-right.
-      dpr = window.devicePixelRatio || 1;
-      const rect = canvas.getBoundingClientRect();
-      canvas.width = Math.round(rect.width * dpr);
-      canvas.height = Math.round(rect.height * dpr);
-      fitToView();
-    };
-    resize();
-    // Defer a second fit a frame so HUD panels mount before we measure them;
-    // else the first resize misses #top-bar/#side-panel, falls back to
-    // full-window bounds, and paints too wide on initial load.
-    const initialFitRaf = requestAnimationFrame(fitToView);
-
-    const ro = new ResizeObserver(resize);
-    ro.observe(canvas);
-    const onWindowResize = () => fitToView();
-    window.addEventListener("resize", onWindowResize);
-
-    // Cross-monitor moves don't reliably fire `resize`, so watch dpr directly.
-    // The query targets the current dppx, so rebuild and re-arm it after each
-    // change; resize() then re-reads dpr and re-sizes the backing store.
-    let dprQuery: MediaQueryList | null = null;
-    const onDprChange = () => {
-      resize();
-      armDprListener();
-    };
-    const armDprListener = () => {
-      dprQuery?.removeEventListener("change", onDprChange);
-      dprQuery = window.matchMedia(`(resolution: ${window.devicePixelRatio || 1}dppx)`);
-      dprQuery.addEventListener("change", onDprChange);
-    };
-    armDprListener();
+    stateRef.current = state;
 
     // Mouse drag / wheel zoom (DESIGN §3.2).
     camera.attachInputHandlers(canvas);
 
-    const characterAt = (screenX: number, screenY: number) => {
-      const chars = [...state.getCharacters()].reverse();
-      for (const char of chars) {
-        const bounds = characterScreenBounds(char, camera.zoom, camera);
-        if (
-          screenX >= bounds.left &&
-          screenX <= bounds.right &&
-          screenY >= bounds.top &&
-          screenY <= bounds.bottom
-        ) {
-          return char;
-        }
-      }
-      return null;
-    };
-
-    const onClick = (event: MouseEvent) => {
-      if (camera.wasDragging()) return;
-      const dpr = window.devicePixelRatio || 1;
-      const character = characterAt(event.clientX * dpr, event.clientY * dpr);
-      if (!character) return;
-      if (!character.npcKind) {
-        notifySidePanelSelectAgent(character.agentId);
-        focusAgent(character.agentId);
-      }
-    };
-    const onDblClick = () => {
-      notifySidePanelSelectAgent(null);
-      focusAgent(null);
-    };
-    canvas.addEventListener("click", onClick);
-    canvas.addEventListener("dblclick", onDblClick);
-
-    const isInputFocused = (): boolean => {
-      const tag = document.activeElement?.tagName;
-      return tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA";
-    };
-    const PAN_STEP = 32;
-    const onKey = (event: KeyboardEvent) => {
-      if (isInputFocused()) return;
-      switch (event.key) {
-        case "0":
-          notifySidePanelSelectAgent(null);
-          focusAgent(null);
-          break;
-        case "+":
-        case "=":
-          camera.setZoom(camera.zoom + 1, canvas.width, canvas.height);
-          break;
-        case "-":
-        case "_":
-          camera.setZoom(camera.zoom - 1, canvas.width, canvas.height);
-          break;
-        case "ArrowLeft":
-          camera.panBy(PAN_STEP, 0);
-          break;
-        case "ArrowRight":
-          camera.panBy(-PAN_STEP, 0);
-          break;
-        case "ArrowUp":
-          camera.panBy(0, PAN_STEP);
-          break;
-        case "ArrowDown":
-          camera.panBy(0, -PAN_STEP);
-          break;
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    notifySidePanelClickHandler(focusAgent);
-
-    setMounted(true);
-    const stopLoop = startGameLoop({ canvas, camera, renderer, state }, initialClock);
-
-    // Wire the mural to state_update payloads; notifyDashboardCanvasStickies
-    // is module-level for Dashboard.tsx's switch, we register the push here.
-    const onStickies = (stickies: WallSticky[]): void => {
-      renderer.setWallStickies(stickies);
-    };
-    stickyListeners.add(onStickies);
-    // Apply any sticker payload that arrived before this canvas mounted.
-    if (cachedStickies.length > 0) {
-      renderer.setWallStickies(cachedStickies);
-    }
-
     return () => {
-      stopLoop();
-      ro.disconnect();
       themeObserver.disconnect();
-      cancelAnimationFrame(initialFitRaf);
-      window.removeEventListener("resize", onWindowResize);
-      dprQuery?.removeEventListener("change", onDprChange);
-      canvas.removeEventListener("click", onClick);
-      canvas.removeEventListener("dblclick", onDblClick);
-      window.removeEventListener("keydown", onKey);
-      notifySidePanelClickHandler(null);
-      stickyListeners.delete(onStickies);
       if (import.meta.env.DEV) {
         const testWindow = window as typeof window & {
           __agentshoreDashboardTest?: Record<string, unknown>;
@@ -384,9 +170,41 @@ export function DashboardCanvas({
           delete testWindow.__agentshoreDashboardTest.characters;
         }
       }
-      setMounted(false);
+      cameraRef.current = null;
+      rendererRef.current = null;
+      stateRef.current = null;
     };
     // initialClock/theme/stateManager intentionally captured at mount.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const fitToViewRef = useCanvasResize(canvasRef, cameraRef);
+  const focusAgentRef = useCanvasClickSelect(canvasRef, cameraRef, stateRef, fitToViewRef);
+  useCanvasKeyboardPan(canvasRef, cameraRef, focusAgentRef);
+  useCanvasWallStickies(rendererRef);
+
+  // Game loop start/stop and the `mounted` flag run last so the initial
+  // resize/fit (useCanvasResize, above) always lands before the first
+  // rendered frame — its requestAnimationFrame(fitToView) is registered
+  // before this effect's requestAnimationFrame(tick), so the browser runs
+  // the fit first on the next animation frame, same as the original
+  // single-effect ordering.
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    const camera = cameraRef.current;
+    const renderer = rendererRef.current;
+    const state = stateRef.current;
+    if (!canvas || !camera || !renderer || !state) return;
+
+    setMounted(true);
+    const stopLoop = startGameLoop({ canvas, camera, renderer, state }, initialClock);
+
+    return () => {
+      stopLoop();
+      setMounted(false);
+    };
+    // initialClock intentionally captured at mount; refs are stable objects
+    // populated by the core effect above within the same mount commit.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

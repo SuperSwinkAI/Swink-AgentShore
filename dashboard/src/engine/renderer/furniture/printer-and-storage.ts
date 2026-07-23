@@ -1,6 +1,7 @@
 import type { Rect } from "../../../office/layout";
 import type { RenderContext } from "../context";
 import { drawFurnitureBase } from "./index";
+import { CYAN_ACCENT, WORKBENCH_CASE_PALETTES } from "./palettes";
 import {
   drawRaisedBox,
   drawVerticalFaceX,
@@ -33,7 +34,7 @@ export function drawGridPrinterPodV2(rctx: RenderContext, rect: Rect): void {
         glass: "rgba(125, 230, 255, 0.32)",
         glassEdge: "rgba(57, 217, 255, 0.88)",
         glassHighlight: "rgba(233, 255, 255, 0.48)",
-        cyan: "#39D9FF",
+        cyan: CYAN_ACCENT.dark,
         orange: "#FF9146",
         green: "#2BE0B1",
         yellow: "#F4D44D",
@@ -59,7 +60,7 @@ export function drawGridPrinterPodV2(rctx: RenderContext, rect: Rect): void {
         glass: "rgba(125, 230, 255, 0.32)",
         glassEdge: "rgba(0, 139, 188, 0.68)",
         glassHighlight: "rgba(255, 255, 255, 0.62)",
-        cyan: "#008BBC",
+        cyan: CYAN_ACCENT.light,
         orange: "#FF9146",
         green: "#2BE0B1",
         yellow: "#F4D44D",
@@ -333,12 +334,12 @@ export function drawPartsBins(rctx: RenderContext, rect: Rect): void {
   const gridLight = rctx.theme === "light";
   const palette = gridDark
     ? {
-        baseFill: "#0F3140",
-        baseTop: "#16495C",
-        baseStroke: "rgba(57, 217, 255, 0.88)",
+        baseFill: WORKBENCH_CASE_PALETTES.dark.baseFill,
+        baseTop: WORKBENCH_CASE_PALETTES.dark.baseTop,
+        baseStroke: WORKBENCH_CASE_PALETTES.dark.baseStroke,
         panel: "#0B2F40",
         header: "#1B6176",
-        headerLine: "#39D9FF",
+        headerLine: CYAN_ACCENT.dark,
         binColors: ["#39D9FF", "#FF9146", "#2BE0B1", "#F4D44D"],
         binStroke: "#04151C",
         label: "#E9FFFF",
@@ -347,12 +348,12 @@ export function drawPartsBins(rctx: RenderContext, rect: Rect): void {
       }
     : gridLight
       ? {
-          baseFill: "#72D0E4",
-          baseTop: "#DDFBFF",
-          baseStroke: "rgba(0, 139, 188, 0.68)",
+          baseFill: WORKBENCH_CASE_PALETTES.light.baseFill,
+          baseTop: WORKBENCH_CASE_PALETTES.light.baseTop,
+          baseStroke: WORKBENCH_CASE_PALETTES.light.baseStroke,
           panel: "#E7FFFF",
           header: "#BBF6FF",
-          headerLine: "#008BBC",
+          headerLine: CYAN_ACCENT.light,
           binColors: ["#008BBC", "#FF9146", "#2BE0B1", "#F4D44D"],
           binStroke: "#0F5368",
           label: "#F9FFFF",
@@ -490,7 +491,7 @@ export function drawToolRack(rctx: RenderContext, rect: Rect): void {
         baseTop: "#16495C",
         baseStroke: "rgba(57, 217, 255, 0.88)",
         panel: "#0B2F40",
-        panelStroke: "#39D9FF",
+        panelStroke: CYAN_ACCENT.dark,
         rail: "#1B6176",
         peg: "rgba(57, 217, 255, 0.34)",
         yellow: "#F4D44D",
@@ -504,7 +505,7 @@ export function drawToolRack(rctx: RenderContext, rect: Rect): void {
           baseTop: "#DDFBFF",
           baseStroke: "rgba(0, 139, 188, 0.68)",
           panel: "#E7FFFF",
-          panelStroke: "#008BBC",
+          panelStroke: CYAN_ACCENT.light,
           rail: "#BBF6FF",
           peg: "rgba(0, 139, 188, 0.28)",
           yellow: "#D99B21",

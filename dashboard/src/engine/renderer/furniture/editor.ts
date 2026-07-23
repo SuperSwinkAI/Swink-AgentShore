@@ -1,6 +1,8 @@
 import type { Rect } from "../../../office/layout";
+import type { ResolvedTheme } from "../../../theme";
 import type { RenderContext, ScreenPoint } from "../context";
 import { drawFurnitureBase } from "./index";
+import { CYAN_ACCENT, GREEN_ACCENT, ORANGE_ACCENT_WARM } from "./palettes";
 import {
   drawPolygon,
   drawRaisedBox,
@@ -13,6 +15,13 @@ import {
   strokeWorldRect,
   strokeWorldSegment,
 } from "../primitives";
+
+// Only reused within this file (editor pair pod NE accent + repo cube),
+// so kept local rather than promoted to the shared palettes module.
+const PURPLE_ACCENT: Record<ResolvedTheme, string> = {
+  dark: "#B266FF",
+  light: "#7E4EBA",
+};
 
 export function drawEditorBookcases(rctx: RenderContext, rect: Rect): void {
   const topZ = rctx.surfaceZ.value;
@@ -383,20 +392,12 @@ export function drawGridEditorPairPod(
   const topZ = rctx.surfaceZ.value;
   const dark = rctx.theme === "dark";
   const accent = rect.name.endsWith("NE")
-    ? dark
-      ? "#B266FF"
-      : "#7E4EBA"
+    ? PURPLE_ACCENT[rctx.theme]
     : rect.name.endsWith("SW")
-      ? dark
-        ? "#FF9146"
-        : "#E45C1C"
+      ? ORANGE_ACCENT_WARM[rctx.theme]
       : rect.name.endsWith("SE")
-        ? dark
-          ? "#2BE0B1"
-          : "#129970"
-        : dark
-          ? "#39D9FF"
-          : "#008BBC";
+        ? GREEN_ACCENT[rctx.theme]
+        : CYAN_ACCENT[rctx.theme];
   const base = dark
     ? {
         top: "rgba(18, 72, 90, 0.94)",
@@ -521,10 +522,10 @@ export function drawGridEditorRepoCube(rctx: RenderContext, rect: Rect): void {
         right: "rgba(4, 18, 30, 0.98)",
         stroke: "rgba(244, 212, 77, 0.74)",
         glass: "rgba(57, 217, 255, 0.16)",
-        cyan: "#39D9FF",
-        purple: "#B266FF",
-        green: "#2BE0B1",
-        orange: "#FF9146",
+        cyan: CYAN_ACCENT.dark,
+        purple: PURPLE_ACCENT.dark,
+        green: GREEN_ACCENT.dark,
+        orange: ORANGE_ACCENT_WARM.dark,
       }
     : {
         top: "rgba(208, 253, 255, 0.98)",
@@ -533,10 +534,10 @@ export function drawGridEditorRepoCube(rctx: RenderContext, rect: Rect): void {
         right: "rgba(72, 149, 176, 0.96)",
         stroke: "rgba(221, 101, 24, 0.66)",
         glass: "rgba(0, 174, 214, 0.14)",
-        cyan: "#008BBC",
-        purple: "#7E4EBA",
-        green: "#129970",
-        orange: "#E45C1C",
+        cyan: CYAN_ACCENT.light,
+        purple: PURPLE_ACCENT.light,
+        green: GREEN_ACCENT.light,
+        orange: ORANGE_ACCENT_WARM.light,
       };
 
   drawRaisedBox(

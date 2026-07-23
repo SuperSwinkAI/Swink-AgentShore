@@ -1,5 +1,6 @@
 import type { Rect } from "../../../office/layout";
 import type { RenderContext } from "../context";
+import { CYAN_ACCENT, GREEN_ACCENT, ORANGE_ACCENT_WARM } from "./palettes";
 import {
   drawRaisedBox,
   drawVerticalFaceX,
@@ -27,10 +28,10 @@ export function drawGridWarTacticalMapTable(
         map: "rgba(57, 217, 255, 0.18)",
         grid: "rgba(147, 246, 255, 0.32)",
         route: "rgba(244, 212, 77, 0.78)",
-        markerA: "#39D9FF",
+        markerA: CYAN_ACCENT.dark,
         markerB: "#F4D44D",
-        markerC: "#2BE0B1",
-        markerD: "#FF9146",
+        markerC: GREEN_ACCENT.dark,
+        markerD: ORANGE_ACCENT_WARM.dark,
         rail: "rgba(57, 217, 255, 0.52)",
         shadow: "rgba(0, 0, 0, 0.24)",
       }
@@ -44,10 +45,10 @@ export function drawGridWarTacticalMapTable(
         map: "rgba(0, 174, 214, 0.18)",
         grid: "rgba(0, 126, 174, 0.30)",
         route: "rgba(221, 101, 24, 0.78)",
-        markerA: "#008BBC",
+        markerA: CYAN_ACCENT.light,
         markerB: "#DD6518",
-        markerC: "#129970",
-        markerD: "#E45C1C",
+        markerC: GREEN_ACCENT.light,
+        markerD: ORANGE_ACCENT_WARM.light,
         rail: "rgba(0, 126, 174, 0.42)",
         shadow: "rgba(0, 88, 120, 0.10)",
       };
