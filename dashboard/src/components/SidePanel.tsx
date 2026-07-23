@@ -1,4 +1,4 @@
-import React, { useEffect, useReducer } from "react";
+import React from "react";
 import type {
   ActivePlay,
   AgentSnapshot,
@@ -15,6 +15,7 @@ import {
 } from "../format";
 import { getPlayStats } from "../hud/agentPlayStats";
 import { AGENT_COLORS } from "../characters/types";
+import { createActionStore } from "../notifyStore";
 
 export type AgentClickHandler = (agentId: string | null) => void;
 
@@ -119,28 +120,17 @@ const INITIAL_STATE: SidePanelState = {
 };
 
 type Dispatch = (action: SidePanelAction) => void;
-const dispatchers = new Set<Dispatch>();
-let latestState = INITIAL_STATE;
+const store = createActionStore<SidePanelState, SidePanelAction>(
+  reducer,
+  INITIAL_STATE,
+);
 
 function usePanel(): [SidePanelState, Dispatch] {
-  const [state, dispatch] = useReducer(reducer, latestState);
-  useEffect(() => {
-    dispatchers.add(dispatch);
-    dispatch({ type: "hydrate", state: latestState });
-    return () => {
-      dispatchers.delete(dispatch);
-    };
-  }, []);
-  return [state, dispatch];
-}
-
-function broadcast(action: SidePanelAction): void {
-  latestState = reducer(latestState, action);
-  dispatchers.forEach((d) => d(action));
+  return [store.use(), store.dispatch];
 }
 
 export function notifySidePanelUpdate(state: StateUpdate): void {
-  broadcast({
+  store.dispatch({
     type: "state_update",
     agents: state.agents,
     activePlay: state.active_play,
@@ -148,21 +138,21 @@ export function notifySidePanelUpdate(state: StateUpdate): void {
 }
 
 export function notifySidePanelPlayEvent(event: PlayEvent): void {
-  broadcast({ type: "play_event", event });
+  store.dispatch({ type: "play_event", event });
 }
 
 export function notifySidePanelSelectAgent(agentId: string | null): void {
-  broadcast({ type: "select_agent", agentId });
+  store.dispatch({ type: "select_agent", agentId });
 }
 
 export function notifySidePanelClickHandler(
   handler: AgentClickHandler | null,
 ): void {
-  broadcast({ type: "set_click_handler", handler });
+  store.dispatch({ type: "set_click_handler", handler });
 }
 
 export function notifySidePanelActivePlay(activePlay: ActivePlay | null): void {
-  broadcast({ type: "set_active_play", activePlay });
+  store.dispatch({ type: "set_active_play", activePlay });
 }
 
 function currentPlayForAgent(

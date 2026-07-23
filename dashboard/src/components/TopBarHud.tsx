@@ -1,5 +1,6 @@
-import React, { useEffect, useState } from "react";
+import React from "react";
 import type { StateUpdate } from "../types";
+import { createNotifyStore } from "../notifyStore";
 
 interface TopBarHudState {
   sessionState: StateUpdate["session_state"];
@@ -7,8 +8,7 @@ interface TopBarHudState {
   openIssueCount: number;
 }
 
-const listeners = new Set<(s: TopBarHudState) => void>();
-let latestState: TopBarHudState | null = null;
+const store = createNotifyStore<TopBarHudState | null>(null);
 
 export function notifyTopBarHud(state: StateUpdate): void {
   // Bridge can report 0/0 availability despite a populated open_issues; fall back to list size.
@@ -16,29 +16,15 @@ export function notifyTopBarHud(state: StateUpdate): void {
   const openFromState = state.open_issues?.length ?? 0;
   const totalReported = availability?.github_open_issue_count ?? 0;
   const openIssueCount = totalReported > 0 ? totalReported : openFromState;
-  const next: TopBarHudState = {
+  store.notify({
     sessionState: state.session_state,
     totalPlays: state.total_plays,
     openIssueCount,
-  };
-  latestState = next;
-  listeners.forEach((fn) => fn(next));
-}
-
-function useTopBarHudState(): TopBarHudState | null {
-  const [state, setState] = useState<TopBarHudState | null>(latestState);
-  useEffect(() => {
-    listeners.add(setState);
-    if (latestState) setState(latestState);
-    return () => {
-      listeners.delete(setState);
-    };
-  }, []);
-  return state;
+  });
 }
 
 export function TopBarHud(): React.ReactElement {
-  const state = useTopBarHudState();
+  const state = store.use();
   const sessionState = state?.sessionState ?? "initializing";
   const totalPlays = state?.totalPlays ?? 0;
   const openIssueCount = state?.openIssueCount ?? 0;

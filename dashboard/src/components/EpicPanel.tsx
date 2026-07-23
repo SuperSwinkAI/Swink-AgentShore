@@ -1,5 +1,6 @@
-import React, { useEffect, useState } from "react";
+import React from "react";
 import type { ProjectGraph, StateUpdate } from "../types";
+import { createNotifyStore } from "../notifyStore";
 
 const MAX_EPICS_SHOWN = 3;
 
@@ -17,25 +18,10 @@ interface EpicPanelState {
   graph: ProjectGraph | null;
 }
 
-const listeners = new Set<(s: EpicPanelState) => void>();
-let latestState: EpicPanelState = { graph: null };
+const store = createNotifyStore<EpicPanelState>({ graph: null });
 
 export function notifyEpicPanel(state: StateUpdate): void {
-  const next: EpicPanelState = { graph: state.graph ?? null };
-  latestState = next;
-  listeners.forEach((fn) => fn(next));
-}
-
-function useEpicPanelState(): EpicPanelState {
-  const [state, setState] = useState<EpicPanelState>(latestState);
-  useEffect(() => {
-    listeners.add(setState);
-    setState(latestState);
-    return () => {
-      listeners.delete(setState);
-    };
-  }, []);
-  return state;
+  store.notify({ graph: state.graph ?? null });
 }
 
 function GlobalBar({ graph }: { graph: ProjectGraph }): React.ReactElement {
@@ -85,7 +71,7 @@ function EpicRows({ graph }: { graph: ProjectGraph }): React.ReactElement {
 }
 
 export function EpicPanel(): React.ReactElement | null {
-  const { graph } = useEpicPanelState();
+  const { graph } = store.use();
   if (!graph) return null;
   return (
     <div id="epic-section">

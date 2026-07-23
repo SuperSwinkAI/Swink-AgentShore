@@ -1,4 +1,4 @@
-import React, { useEffect, useReducer } from "react";
+import React from "react";
 import type {
   ActivePlay,
   AgentSnapshot,
@@ -11,6 +11,7 @@ import {
   formatPlayWithTarget,
   shortAgentName,
 } from "../format";
+import { createActionStore } from "../notifyStore";
 
 const MAX_FINISHED_EVENTS = 8;
 
@@ -427,24 +428,18 @@ export const INITIAL_STATE: DrawerState = {
 };
 
 type Dispatch = (action: DrawerAction) => void;
-const dispatchers = new Set<Dispatch>();
-let latestState = INITIAL_STATE;
-
-function broadcast(action: DrawerAction): void {
-  latestState = reducer(latestState, action);
-  dispatchers.forEach((d) => d(action));
-}
+const store = createActionStore<DrawerState, DrawerAction>(reducer, INITIAL_STATE);
 
 export function notifyEventDrawerStateUpdate(state: StateUpdate): void {
-  broadcast({ type: "state_update", agents: state.agents });
+  store.dispatch({ type: "state_update", agents: state.agents });
 }
 
 export function notifyEventDrawerEvent(event: PlayEvent): void {
-  broadcast({ type: "play_event", event });
+  store.dispatch({ type: "play_event", event });
 }
 
 export function notifyEventDrawerReplay(history: PlayEvent[]): void {
-  broadcast({ type: "replay", history });
+  store.dispatch({ type: "replay", history });
 }
 
 /**
@@ -455,19 +450,11 @@ export function notifyEventDrawerReplay(history: PlayEvent[]): void {
  * contain the old agent_ids.
  */
 export function notifyEventDrawerReset(): void {
-  broadcast({ type: "reset" });
+  store.dispatch({ type: "reset" });
 }
 
 function useDrawer(): [DrawerState, Dispatch] {
-  const [state, dispatch] = useReducer(reducer, latestState);
-  useEffect(() => {
-    dispatchers.add(dispatch);
-    dispatch({ type: "hydrate" });
-    return () => {
-      dispatchers.delete(dispatch);
-    };
-  }, []);
-  return [state, dispatch];
+  return [store.use(), store.dispatch];
 }
 
 const FILTERS: { id: EventFilter; label: string }[] = [

@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useState } from "react";
 import { createPortal } from "react-dom";
 import type {
   AgentSnapshot,
@@ -14,6 +14,7 @@ import {
   type KanbanColumns,
   type Phase,
 } from "../views/kanban/phase";
+import { createNotifyStore } from "../notifyStore";
 
 // Constants mirror render.ts.
 
@@ -200,8 +201,6 @@ function copyText(value: string | number | null | undefined): void {
   void navigator.clipboard.writeText(String(value)).catch(() => undefined);
 }
 
-// Module-level listener registry (TopBarHud pattern).
-
 interface KanbanInsets {
   top: number;
   left: number;
@@ -216,29 +215,23 @@ interface KanbanInternalState {
   insets: KanbanInsets | null;
 }
 
-const listeners = new Set<(s: KanbanInternalState) => void>();
-let latestState: KanbanInternalState = {
+const store = createNotifyStore<KanbanInternalState>({
   state: null,
   focusedAgent: null,
   visible: true,
   insets: null,
-};
-
-function broadcast(next: KanbanInternalState): void {
-  latestState = next;
-  listeners.forEach((fn) => fn(next));
-}
+});
 
 export function notifyKanbanStateUpdate(state: StateUpdate): void {
-  broadcast({ ...latestState, state });
+  store.notify({ ...store.get(), state });
 }
 
 export function notifyKanbanFocusedAgent(agentId: string | null): void {
-  broadcast({ ...latestState, focusedAgent: agentId });
+  store.notify({ ...store.get(), focusedAgent: agentId });
 }
 
 export function notifyKanbanVisible(visible: boolean): void {
-  broadcast({ ...latestState, visible });
+  store.notify({ ...store.get(), visible });
 }
 
 export function notifyKanbanInsets(
@@ -247,19 +240,7 @@ export function notifyKanbanInsets(
   right: number,
   bottom: number,
 ): void {
-  broadcast({ ...latestState, insets: { top, left, right, bottom } });
-}
-
-function useKanbanInternalState(): KanbanInternalState {
-  const [state, setState] = useState<KanbanInternalState>(latestState);
-  useEffect(() => {
-    listeners.add(setState);
-    setState(latestState);
-    return () => {
-      listeners.delete(setState);
-    };
-  }, []);
-  return state;
+  store.notify({ ...store.get(), insets: { top, left, right, bottom } });
 }
 
 interface ResolvedCard {
@@ -880,7 +861,7 @@ function buildColumns(
 }
 
 export default function KanbanStage(): React.ReactElement | null {
-  const internal = useKanbanInternalState();
+  const internal = store.use();
   const [detail, setDetail] = useState<DetailModalState | null>(null);
 
   const { columns, graph } = buildColumns(internal.state);
