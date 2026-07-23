@@ -55,7 +55,7 @@ def test_start_config_flag_loads_specified_file(tmp_path: Path) -> None:
         patch("agentshore.cli_helpers._detect_gh_remote", return_value={}),
         patch("agentshore.cli_helpers._detect_agents", return_value=["claude"]),
         patch("agentshore.cli_helpers._detect_api_keys", return_value={}),
-        patch("agentshore.session_path.is_session_running", return_value=False),
+        patch("agentshore.session_process.is_session_running", return_value=False),
         patch("agentshore.config.load_config", side_effect=capture_load),
         patch("agentshore.core.Orchestrator.bootstrap", new_callable=AsyncMock) as mock_bootstrap,
         patch("asyncio.run", side_effect=_close_asyncio_run_arg),
@@ -85,7 +85,7 @@ def test_start_hard_fail_no_agents_no_keys(tmp_path: Path) -> None:
         patch("agentshore.cli_helpers._detect_gh_remote", return_value={}),
         patch("agentshore.cli_helpers._detect_agents", return_value=[]),
         patch("agentshore.cli_helpers._detect_api_keys", return_value={}),
-        patch("agentshore.session_path.is_session_running", return_value=False),
+        patch("agentshore.session_process.is_session_running", return_value=False),
     ):
         result = runner.invoke(main, ["start"])
 

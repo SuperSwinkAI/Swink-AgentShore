@@ -15,6 +15,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from agentshore.config import RuntimeConfig
+    from agentshore.core.session_runtime import SessionRuntime
     from agentshore.core.velocity_tracker import VelocityTracker
     from agentshore.data.store import DataStore
     from agentshore.rl.metrics import MetricsEngine
@@ -35,7 +36,7 @@ class _RLStateHost(Protocol):
     """
 
     _session_id: str
-    _policy_version: str
+    _runtime: SessionRuntime
     _config_hash: str
     _repo_root: Path
     _step_index: int
@@ -236,7 +237,7 @@ class ExperienceRecorder:
                 value_estimate=pending_step.value,
                 action_mask=pending_step.mask.tobytes(),
                 mask_reason=self.mask_reason_summary(state_before),
-                policy_version=self._host._policy_version,
+                policy_version=self._host._runtime.policy_version,
                 action_space_version=ACTION_SPACE_VERSION,
                 config_hash=self._host._config_hash,
                 step_index=self._host._step_index,

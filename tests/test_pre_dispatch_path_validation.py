@@ -54,7 +54,7 @@ def _build_dispatch_harness(working_dir: Path) -> object:
 
     orch = make_test_orchestrator(Path("/tmp/fake-repo"))
     orch._session_id = "test-pre-dispatch"
-    orch._registry = None
+    orch._runtime.registry = None
 
     manager_mock = orch._manager
     manager_mock._working_dir = working_dir
@@ -63,7 +63,7 @@ def _build_dispatch_harness(working_dir: Path) -> object:
     state_mock = MagicMock()
     state_mock.session_state = MagicMock()
     state_mock.agents = []
-    orch._state_provider = MagicMock()
+    orch._runtime.state_provider = MagicMock()
 
     orch._dispatcher = Dispatcher(
         host=orch,

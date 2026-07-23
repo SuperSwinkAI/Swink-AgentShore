@@ -7,7 +7,6 @@ PlaySelector interface the Orchestrator expects.
 from __future__ import annotations
 
 import asyncio
-from collections import Counter
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -20,7 +19,7 @@ from agentshore.config.models import PolicyMode
 from agentshore.paths import GLOBAL_WEIGHTS_DIR as _GLOBAL_WEIGHTS_DIR
 from agentshore.plays.base import PlayParams
 from agentshore.plays.candidates import PlayCandidatePlan, build_candidate_plan
-from agentshore.rl.action_space import INDEX_TO_PLAY, NUM_ACTIONS, V1_ACTION_ORDER
+from agentshore.rl.action_space import INDEX_TO_PLAY, NUM_ACTIONS
 
 # Re-exported from checkpoint_store so agentshore.core.phases import sites keep
 # resolving them through the selector module.
@@ -31,12 +30,10 @@ from agentshore.rl.checkpoint_store import (
     _prune_local_checkpoints as _prune_local_checkpoints,
 )
 from agentshore.rl.checkpoint_store import (
-    canonical_lock_filename,
-    canonical_weights_filename,
-    write_global_canonical_blocking,
+    cleanup_stale_canonical_weights as cleanup_stale_canonical_weights,
 )
 from agentshore.rl.checkpoint_store import (
-    cleanup_stale_canonical_weights as cleanup_stale_canonical_weights,
+    write_global_canonical_blocking,
 )
 from agentshore.rl.cold_start import apply_cold_start_bias, apply_cold_start_config_bias
 from agentshore.rl.eligibility import EligibilityAuthority
@@ -45,17 +42,44 @@ from agentshore.rl.mask import (
     TerminalNoWorkDecision,
     compute_action_mask,
     compute_config_mask,
-    compute_mask_reasons,
     compute_reverse_failsafe_mask,
     compute_terminal_no_work_config_mask,
     compute_terminal_no_work_decision,
     reverse_failsafe_should_unmask,
 )
-from agentshore.rl.mask_reason import MaskReason, MaskSource
+from agentshore.rl.mask_reason import MaskReason
 from agentshore.rl.observation import encode_observation
 from agentshore.rl.policy import ActorCritic
+
+# Re-exported from selector_diagnostics so existing imports of these
+# formerly-module-local helpers keep resolving through this module.
+from agentshore.rl.selector_diagnostics import (
+    _is_capacity_wait as _is_capacity_wait,
+)
+from agentshore.rl.selector_diagnostics import (
+    _mask_reasons_by_play as _mask_reasons_by_play,
+)
+from agentshore.rl.selector_diagnostics import (
+    _only_capacity_waiting as _only_capacity_waiting,
+)
+from agentshore.rl.selector_diagnostics import (
+    log_all_masked as _diag_log_all_masked,
+)
+from agentshore.rl.selector_diagnostics import (
+    log_resolver_exhausted as _diag_log_resolver_exhausted,
+)
+from agentshore.rl.selector_diagnostics import (
+    log_reverse_failsafe as _diag_log_reverse_failsafe,
+)
+from agentshore.rl.selector_diagnostics import (
+    log_terminal_no_work as _diag_log_terminal_no_work,
+)
+from agentshore.rl.selector_lifecycle import reload_shared_weights
+from agentshore.rl.selector_lifecycle import (
+    save_checkpoint as lifecycle_save_checkpoint,
+)
 from agentshore.rl.training import PPOUpdater, UpdateStats
-from agentshore.state import AgentStatus, PlayType, SessionState
+from agentshore.state import AgentStatus, PlayType
 
 if TYPE_CHECKING:
     import numpy as np
@@ -93,63 +117,26 @@ _REVERSE_FAILSAFE_BYPASS_PRECONDITION_PLAYS = frozenset(
 _LIFECYCLE_PLAY_TYPES = frozenset({PlayType.INSTANTIATE_AGENT, PlayType.END_AGENT})
 
 
-_CAPACITY_WAIT_SOURCES = frozenset({MaskSource.ELIGIBILITY, MaskSource.CONFIG, MaskSource.SPAWN})
+def _build_updater(policy: ActorCritic, cfg: RLConfig) -> PPOUpdater:
+    """Construct the ``PPOUpdater`` shared by ``from_cold_start`` and ``load``.
 
-
-def _is_capacity_wait(reason: MaskReason) -> bool:
-    """Return True if ``reason`` represents a staffing or spawn-rate constraint.
-
-    Eligibility gates (no idle agent, tier/capability/exclude mismatches),
-    config gates (no eligible configuration), and spawn-cooldown gates
-    (``SPAWN`` source) are all considered capacity waits — the selector cannot
-    do more until staffing or cooldown state changes.  Reserved slots are
-    structural noise and are handled by the caller.
+    Both factories build an identical updater around a differently-sourced
+    policy (fresh cold-start weights vs. loaded-from-disk weights); this is
+    the one place that wires ``cfg`` into ``PPOUpdater`` so the two stay in
+    sync.
     """
-    return reason.source in _CAPACITY_WAIT_SOURCES
-
-
-def _only_capacity_waiting(reason_counts: list[dict[str, object]]) -> bool:
-    """Return True when all reported blockers are staffing/capacity waits."""
-    if not reason_counts:
-        return False
-    saw_capacity = False
-    for item in reason_counts:
-        reason = item.get("reason")
-        if not isinstance(reason, MaskReason):
-            return False
-        if reason.source == MaskSource.RESERVED:
-            continue
-        if _is_capacity_wait(reason):
-            saw_capacity = True
-            continue
-        return False
-    return saw_capacity
-
-
-def _mask_reasons_by_play(reasons: dict[PlayType, MaskReason]) -> dict[str, str]:
-    """Full, untruncated ``play -> reason`` map for the all-masked diagnostics.
-
-    ``top_mask_reasons`` runs ``Counter(reasons.values()).most_common(5)``, which
-    (a) collapses the ``play -> reason`` mapping into bare reason-string counts —
-    discarding *which* play each reason blocked — and (b) truncates to five, so
-    the reasons for lower-frequency but high-value work plays (``issue_pickup``,
-    ``code_review``, ``merge_pr``, ``end_session`` …) silently vanish whenever the
-    fleet is fully wedged (many distinct reasons, each count 1). That is exactly
-    what made a real fleet-idle stall (noodle ``edab7597``) undiagnosable from the
-    log alone. This map is keyed by play and bounded by ``NUM_ACTIONS`` (<= 22
-    entries), so it is emitted in full — no truncation — and sorted for stable,
-    greppable output.
-    """
-    return {
-        pt.value: (
-            f"{r.text} [{r.classification.value}/{r.source.value}]"
-            if isinstance(r, MaskReason)
-            # Defensive: this diagnostic runs in the select() hot path and must
-            # never raise on a malformed reason (e.g. a non-typed precondition).
-            else str(r)
-        )
-        for pt, r in sorted(reasons.items(), key=lambda kv: kv[0].value)
-    }
+    return PPOUpdater(
+        policy,
+        lr=cfg.learning_rate,
+        clip_eps=cfg.ppo.clip_epsilon,
+        value_coef=cfg.ppo.value_loss_coef,
+        entropy_coef=cfg.entropy_coef,
+        ppo_epochs=cfg.ppo.ppo_epochs,
+        mini_batch_size=cfg.ppo.mini_batch_size,
+        max_grad_norm=cfg.ppo.max_grad_norm,
+        config_policy_coef=cfg.config_policy_coef,
+        config_entropy_coef=cfg.config_entropy_coef,
+    )
 
 
 @dataclass(slots=True)
@@ -650,69 +637,20 @@ class PPOSelector:
         self._last_masked_plays_digest = digest
         return {"masked_plays": mapping}
 
+    # The four methods below are thin wrappers over rl/selector_diagnostics.py
+    # (TNQA wave-2 selector.py split): they supply this selector's registry/cfg/
+    # config-index and the stateful masked-plays digest cache, and the module
+    # does the candidate-plan/mask-reasons/Counter field building and the
+    # actual structured log call. Event names and field sets are unchanged.
+
     def _log_all_masked(self, state: OrchestratorState) -> None:
         """Emit an actionable all-masked diagnostic with severity based on capacity."""
-        idle_count = sum(1 for a in state.agents if a.status == AgentStatus.IDLE)
-        busy_count = sum(1 for a in state.agents if a.status == AgentStatus.BUSY)
-        error_count = sum(1 for a in state.agents if a.status == AgentStatus.ERROR)
-        terminated_count = sum(1 for a in state.agents if a.status == AgentStatus.TERMINATED)
-        candidate_plan = build_candidate_plan(state)
-        terminal_no_work = compute_terminal_no_work_decision(
+        _diag_log_all_masked(
             state,
             self._registry,
             cfg=self._orchestrator_cfg,
             config_index=self._config_index or None,
-            candidate_plan=candidate_plan,
-        )
-        work = (
-            terminal_no_work.availability
-            if terminal_no_work is not None
-            else candidate_plan.work_availability
-        )
-
-        reasons = compute_mask_reasons(
-            state,
-            self._registry,
-            cfg=self._orchestrator_cfg,
-            config_index=self._config_index or None,
-            candidate_plan=candidate_plan,
-        )
-        reason_counts = [
-            {"reason": reason, "count": count}
-            for reason, count in Counter(reasons.values()).most_common(5)
-        ]
-
-        spawnable_config_count: int | None = None
-        if self._orchestrator_cfg is not None and self._config_index:
-            spawnable_config_count = int(
-                compute_config_mask(state, self._orchestrator_cfg, self._config_index).sum()
-            )
-
-        log = (
-            _logger.debug
-            if _only_capacity_waiting(reason_counts) or (idle_count == 0 and busy_count > 0)
-            else _logger.warning
-        )
-        log(
-            "ppo_selector.all_masked",
-            idle_agents=idle_count,
-            busy_agents=busy_count,
-            error_agents=error_count,
-            terminated_agents=terminated_count,
-            tracked_issues=work.tracked_issue_count,
-            github_open_issues=work.github_open_issue_count,
-            workable_issues=work.workable_issue_count,
-            implementation_eligible=work.implementation_eligible_count,
-            bead_in_progress_issues=work.bead_in_progress_issue_count,
-            ready_tasks=work.ready_task_count,
-            backlog_sync_work=work.backlog_sync_work_count,
-            beads_blocks_issue_pickup=work.beads_blocks_issue_pickup,
-            actionable_pr_work=work.actionable_pr_work_count,
-            open_issues=len(state.open_issues),
-            open_prs=len(state.pull_requests),
-            spawnable_config_count=spawnable_config_count,
-            top_mask_reasons=reason_counts,
-            **self._masked_plays_log_field(reasons),
+            masked_plays_log_field=self._masked_plays_log_field,
         )
 
     def _log_terminal_no_work(
@@ -721,23 +659,7 @@ class PPOSelector:
         decision: TerminalNoWorkDecision,
     ) -> None:
         """Emit a structured terminal no-work mask diagnostic."""
-
-        availability = decision.availability
-        _logger.info(
-            "ppo_selector.terminal_no_work",
-            terminal_reason="no_workable_work_remaining",
-            terminal_mask_mode=decision.mode,
-            tracked_issues=availability.tracked_issue_count,
-            github_open_issues=availability.github_open_issue_count,
-            workable_issues=availability.workable_issue_count,
-            implementation_eligible=availability.implementation_eligible_count,
-            bead_in_progress_issues=availability.bead_in_progress_issue_count,
-            ready_tasks=availability.ready_task_count,
-            backlog_sync_work=availability.backlog_sync_work_count,
-            actionable_pr_work=availability.actionable_pr_work_count,
-            qa_plays_since_last=decision.qa_plays_since_last,
-            in_flight_plays=len(state.in_flight_plays),
-        )
+        _diag_log_terminal_no_work(state, decision)
 
     def _log_resolver_exhausted(
         self,
@@ -750,47 +672,17 @@ class PPOSelector:
         candidate_plan: PlayCandidatePlan | None = None,
     ) -> None:
         """Warn when the policy had legal actions but no resolver produced parameters."""
-
-        candidate_plan = candidate_plan or build_candidate_plan(state)
-        work = candidate_plan.work_availability
-        reasons = compute_mask_reasons(
+        _diag_log_resolver_exhausted(
             state,
             self._registry,
+            mask,
             cfg=self._orchestrator_cfg,
             config_index=self._config_index or None,
-            apply_reverse_failsafe=False,
-            candidate_plan=candidate_plan,
-        )
-        reason_counts = [
-            {"reason": reason, "count": count}
-            for reason, count in Counter(reasons.values()).most_common(5)
-        ]
-        allowed_plays = [pt.value for i, pt in enumerate(V1_ACTION_ORDER) if bool(mask[i])]
-        # During drain the only legal action is end_agent; if no agent qualifies
-        # (e.g. one is still finishing its last play) the resolver harmlessly
-        # cycles every selector tick. Emit at info-level so the drain doesn't
-        # produce a warning storm.
-        is_draining = state.session_state in (
-            SessionState.DRAINING,
-            SessionState.SHUTTING_DOWN,
-        )
-        log_fn = _logger.info if is_draining else _logger.warning
-        log_fn(
-            "ppo_selector.resolver_exhausted",
+            attempted_plays=attempted_plays,
             reason=reason,
             attempt=attempt,
-            attempted_plays=attempted_plays,
-            mask_allowed_plays=allowed_plays,
-            tracked_issues=work.tracked_issue_count,
-            github_open_issues=work.github_open_issue_count,
-            workable_issues=work.workable_issue_count,
-            implementation_eligible=work.implementation_eligible_count,
-            bead_in_progress_issues=work.bead_in_progress_issue_count,
-            ready_tasks=work.ready_task_count,
-            backlog_sync_work=work.backlog_sync_work_count,
-            actionable_pr_work=work.actionable_pr_work_count,
-            top_mask_reasons=reason_counts,
-            **self._masked_plays_log_field(reasons),
+            candidate_plan=candidate_plan,
+            masked_plays_log_field=self._masked_plays_log_field,
         )
 
     def _log_reverse_failsafe(
@@ -801,31 +693,15 @@ class PPOSelector:
         auto_enabled: bool = False,
     ) -> None:
         """Emit diagnostics when the all-masked reverse failsafe opens fallback actions."""
-        reasons = compute_mask_reasons(
+        _diag_log_reverse_failsafe(
             state,
             self._registry,
+            mask,
             cfg=self._orchestrator_cfg,
             config_index=self._config_index or None,
-            apply_reverse_failsafe=False,
-            candidate_plan=build_candidate_plan(state),
-        )
-        reason_counts = [
-            {"reason": reason, "count": count}
-            for reason, count in Counter(reasons.values()).most_common(5)
-        ]
-        unmasked = [pt.value for i, pt in enumerate(V1_ACTION_ORDER) if mask[i]]
-        _logger.warning(
-            "ppo_selector.reverse_failsafe_unmasked",
-            idle_agents=sum(1 for a in state.agents if a.status == AgentStatus.IDLE),
-            busy_agents=sum(1 for a in state.agents if a.status == AgentStatus.BUSY),
-            error_agents=sum(1 for a in state.agents if a.status == AgentStatus.ERROR),
-            open_issues=len(state.open_issues),
-            open_prs=len(state.pull_requests),
-            top_mask_reasons=reason_counts,
-            **self._masked_plays_log_field(reasons),
-            unmasked_plays=unmasked,
             auto_enabled=auto_enabled,
             no_available_play_ticks=self._no_available_play_ticks,
+            masked_plays_log_field=self._masked_plays_log_field,
         )
 
     # ------------------------------------------------------------------
@@ -923,43 +799,14 @@ class PPOSelector:
     def _reload_shared_weights(self) -> None:
         """Load the latest shared policy from disk, with version safety.
 
-        Contract: a rejected reload (the on-disk canonical exists but is
-        incompatible with this session — load failure or config-index mismatch)
-        latches ``self._reload_rejected`` so ``save_checkpoint`` skips the global
-        canonical write. A missing canonical is NOT a rejection (it clears the
-        flag — the first-write / full-overwrite path stays valid). A successful
-        reload also clears the flag and refreshes the delta base.
+        Thin wrapper over :func:`agentshore.rl.selector_lifecycle.
+        reload_shared_weights`; see its docstring for the reload-rejection
+        contract that ``save_checkpoint`` depends on.
         """
-        from agentshore.rl.policy import ActorCritic, IncompatibleCheckpointError
-
-        self._reload_rejected = False
-        shared = _GLOBAL_WEIGHTS_DIR / canonical_weights_filename()
-        if not shared.exists():
-            return
-        try:
-            new_policy = ActorCritic.load(shared)
-        except IncompatibleCheckpointError as exc:
-            _logger.warning(
-                "ppo_selector.checkpoint_incompatible", path=str(shared), error=str(exc)
-            )
-            self._reload_rejected = True
-            return
-        except (FileNotFoundError, RuntimeError, ValueError) as exc:
-            _logger.warning("ppo_selector.reload_failed", path=str(shared), error=str(exc))
-            self._reload_rejected = True
-            return
-        if new_policy.num_configs != self._policy.num_configs:
-            _logger.warning(
-                "ppo_selector.config_index_changed",
-                saved=new_policy.num_configs,
-                current=self._policy.num_configs,
-            )
-            self._reload_rejected = True
-            return
-        new_sd = new_policy.state_dict()
-        self._reload_base = {k: v.clone() for k, v in new_sd.items()}
-        self._policy.load_state_dict(new_sd)
-        _logger.debug("ppo_selector.weights_reloaded", path=str(shared))
+        outcome = reload_shared_weights(self._policy, _GLOBAL_WEIGHTS_DIR)
+        self._reload_rejected = outcome.rejected
+        if outcome.reload_base is not None:
+            self._reload_base = outcome.reload_base
 
     async def value_of(self, state: OrchestratorState) -> float:
         """Bootstrap value estimate for GAE truncation."""
@@ -987,78 +834,18 @@ class PPOSelector:
     ) -> None:
         """Write a numbered local checkpoint and update the global canonical.
 
-        Local numbered checkpoints provide crash recovery; only the last
-        _LOCAL_CHECKPOINT_KEEP are kept. The version-tagged canonical
-        (``canonical_weights_filename()``) is
-        written to the global ~/.config/swink/agentshore/weights/ directory so all projects
-        contribute to and benefit from a shared policy.
+        Thin wrapper over :func:`agentshore.rl.selector_lifecycle.save_checkpoint`;
+        see its docstring for the delta-accumulation and reload-rejection contract.
         """
-        from datetime import UTC, datetime
-
-        from agentshore.data.store import CheckpointRecord
-
-        weights_dir = Path(weights_dir)
-        weights_dir.mkdir(parents=True, exist_ok=True)
-
-        # Numbered local checkpoint for crash recovery.
-        weights_path = weights_dir / f"policy_{total_plays:06d}.pt"
-        self._policy.save(weights_path)
-
-        # Update the global canonical with delta accumulation so concurrent
-        # sessions from different projects don't overwrite each other's learning.
-        # Each session computes delta = (post-update weights) - (pre-update base),
-        # then under an exclusive file lock reads the current global, adds the
-        # delta, and writes back atomically.  If no reload base exists (first
-        # update of this session, or reload was skipped), fall back to a full
-        # overwrite — equivalent to the old behaviour and still correct since
-        # delta == full weights when base == zero.
-        #
-        # Contract (see ``_reload_shared_weights``): when the latest reload was
-        # REJECTED (the on-disk canonical exists but is incompatible with this
-        # session), skip the global write entirely. This session is training on
-        # stale local weights relative to that canonical, so contributing a delta
-        # against a mismatched base would corrupt the shared checkpoint. The local
-        # numbered checkpoint (above) still persists for crash recovery.
-        _GLOBAL_WEIGHTS_DIR.mkdir(parents=True, exist_ok=True)
-        global_canonical = _GLOBAL_WEIGHTS_DIR / canonical_weights_filename()
-        lock_path = _GLOBAL_WEIGHTS_DIR / canonical_lock_filename()
-        if self._reload_rejected:
-            _logger.warning(
-                "ppo_selector.global_canonical_write_skipped",
-                path=str(global_canonical),
-                reason="reload_rejected_incompatible_canonical",
-            )
-        else:
-            try:
-                await asyncio.to_thread(
-                    self._write_global_canonical_blocking,
-                    global_canonical,
-                    lock_path,
-                )
-            except OSError as exc:
-                _logger.warning(
-                    "ppo_selector.global_canonical_update_failed",
-                    path=str(global_canonical),
-                    error=str(exc),
-                )
-
-        # Keep local dir lean — crash recovery only needs the last few.
-        _prune_local_checkpoints(weights_dir)
-
-        record = CheckpointRecord(
+        await lifecycle_save_checkpoint(
+            policy=self._policy,
+            reload_base=self._reload_base,
+            reload_rejected=self._reload_rejected,
+            global_weights_dir=_GLOBAL_WEIGHTS_DIR,
+            store=store,
             session_id=session_id,
-            created_at=datetime.now(UTC).isoformat(),
-            play_count=total_plays,
-            weights_path=str(weights_path),
-        )
-        await store.save_checkpoint(record)
-        _logger.info(
-            "ppo_selector.checkpoint_saved",
-            path=str(weights_path),
-            global_canonical=str(global_canonical),
+            weights_dir=weights_dir,
             total_plays=total_plays,
-            delta_merge=self._reload_base is not None,
-            global_write_skipped=self._reload_rejected,
         )
 
     # ------------------------------------------------------------------
@@ -1106,18 +893,7 @@ class PPOSelector:
         if config_index:
             apply_cold_start_config_bias(policy, config_index)
         buffer = RolloutBuffer(capacity=256)
-        updater = PPOUpdater(
-            policy,
-            lr=cfg.learning_rate,
-            clip_eps=cfg.ppo.clip_epsilon,
-            value_coef=cfg.ppo.value_loss_coef,
-            entropy_coef=cfg.entropy_coef,
-            ppo_epochs=cfg.ppo.ppo_epochs,
-            mini_batch_size=cfg.ppo.mini_batch_size,
-            max_grad_norm=cfg.ppo.max_grad_norm,
-            config_policy_coef=cfg.config_policy_coef,
-            config_entropy_coef=cfg.config_entropy_coef,
-        )
+        updater = _build_updater(policy, cfg)
         return cls(
             policy=policy,
             resolver=resolver,
@@ -1154,18 +930,7 @@ class PPOSelector:
         # instead of freezing on a partial frame (the save path already threads).
         policy = await asyncio.to_thread(ActorCritic.load, Path(weights_path))
         buffer = RolloutBuffer(capacity=256)
-        updater = PPOUpdater(
-            policy,
-            lr=cfg.learning_rate,
-            clip_eps=cfg.ppo.clip_epsilon,
-            value_coef=cfg.ppo.value_loss_coef,
-            entropy_coef=cfg.entropy_coef,
-            ppo_epochs=cfg.ppo.ppo_epochs,
-            mini_batch_size=cfg.ppo.mini_batch_size,
-            max_grad_norm=cfg.ppo.max_grad_norm,
-            config_policy_coef=cfg.config_policy_coef,
-            config_entropy_coef=cfg.config_entropy_coef,
-        )
+        updater = _build_updater(policy, cfg)
         return cls(
             policy=policy,
             resolver=resolver,

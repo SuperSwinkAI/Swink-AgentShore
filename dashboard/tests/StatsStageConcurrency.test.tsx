@@ -5,20 +5,22 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { AGENT_REGISTRY } from "../src/agentRegistry";
 import StatsStage, {
+  notifyStatsStageUpdate,
+  notifyStatsStageVisible,
+  resetStatsStageForTests,
+} from "../src/components/StatsStage";
+import {
   appendConcurrencySample,
   buildConcurrencyChartModel,
   colorForConcurrencyAgentType,
   CONCURRENCY_MAX_WINDOW_MS,
   deriveBusyAgentCounts,
   formatConcurrencyWindowDuration,
-  notifyStatsStageUpdate,
-  notifyStatsStageVisible,
   orderConcurrencyAgentTypes,
   pruneConcurrencySamples,
   resolveConcurrencyWindowMs,
-  resetStatsStageForTests,
   type ConcurrencySample,
-} from "../src/components/StatsStage";
+} from "../src/components/stats/concurrencyModel";
 import type { AgentSnapshot, StateUpdate } from "../src/types";
 
 function agent(

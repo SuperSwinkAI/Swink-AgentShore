@@ -13,6 +13,7 @@ import pytest
 from click.testing import CliRunner
 
 import agentshore.session_path as sp
+import agentshore.session_process as sp_process
 from agentshore.agents.identity import IdentityStatus, RepoAccessStatus
 from agentshore.cli import main
 from agentshore.cli.agent_select import _needs_interactive_agent_selection
@@ -281,7 +282,7 @@ def test_start_rejects_existing_session_without_overwriting_pid(
     pid_path.write_text("12345", encoding="utf-8")
 
     # Liveness uses _process_alive, not bare os.kill (CTRL_C_EVENT on Windows).
-    monkeypatch.setattr(sp, "_process_alive", lambda pid: pid == 12345)
+    monkeypatch.setattr(sp_process, "_process_alive", lambda pid: pid == 12345)
 
     result = runner.invoke(main, ["start", "--project", str(repo), "--headless"])
 
@@ -521,8 +522,8 @@ def test_stop_requests_managed_esr_for_clean_drain(runner: CliRunner, tmp_path: 
     project = _make_git_repo(tmp_path)
 
     with (
-        patch("agentshore.session_path.is_session_running", return_value=True),
-        patch("agentshore.session_path.request_drain", return_value="sent") as request_drain,
+        patch("agentshore.session_process.is_session_running", return_value=True),
+        patch("agentshore.session_process.request_drain", return_value="sent") as request_drain,
         patch("agentshore.cli.commands.stop._wait_for_session_exit", return_value=True),
         patch("agentshore.cli.commands.stop._generate_end_session_report_cli") as generate_report,
     ):
@@ -542,11 +543,11 @@ def test_wait_for_session_exit_waits_indefinitely_for_clean_drain(
         # Liveness via _process_alive (never os.kill(pid, 0) = CTRL_C_EVENT on
         # Windows): alive for several polls, then it exits.
         patch(
-            "agentshore.session_path._process_alive",
+            "agentshore.session_process._process_alive",
             side_effect=[True, True, True, False],
         ) as alive,
         patch("time.sleep") as sleep,
-        patch("agentshore.session_path.hard_stop_session") as hard_stop,
+        patch("agentshore.session_process.hard_stop_session") as hard_stop,
     ):
         clean_exit = _wait_for_session_exit(tmp_path)
 
@@ -563,9 +564,9 @@ def test_wait_for_session_exit_escalates_on_keyboard_interrupt(
     """Ctrl+C during the drain wait escalates to a hard stop (the only deadline)."""
     with (
         patch("agentshore.session_path.read_pid", return_value=1234),
-        patch("agentshore.session_path._process_alive", return_value=True),
+        patch("agentshore.session_process._process_alive", return_value=True),
         patch("time.sleep", side_effect=KeyboardInterrupt),
-        patch("agentshore.session_path.hard_stop_session", return_value=True) as hard_stop,
+        patch("agentshore.session_process.hard_stop_session", return_value=True) as hard_stop,
     ):
         clean_exit = _wait_for_session_exit(tmp_path)
 
@@ -581,9 +582,9 @@ def test_wait_for_session_exit_returns_none_when_hard_stop_fails(
     """When the escalated hard stop can't kill the process, return None (#31)."""
     with (
         patch("agentshore.session_path.read_pid", return_value=1234),
-        patch("agentshore.session_path._process_alive", return_value=True),
+        patch("agentshore.session_process._process_alive", return_value=True),
         patch("time.sleep", side_effect=KeyboardInterrupt),
-        patch("agentshore.session_path.hard_stop_session", return_value=False) as hard_stop,
+        patch("agentshore.session_process.hard_stop_session", return_value=False) as hard_stop,
     ):
         outcome = _wait_for_session_exit(tmp_path)
 
@@ -600,8 +601,8 @@ def test_stop_reports_failure_when_session_survives_hard_stop(
     project = _make_git_repo(tmp_path)
 
     with (
-        patch("agentshore.session_path.is_session_running", return_value=True),
-        patch("agentshore.session_path.request_drain", return_value="sent"),
+        patch("agentshore.session_process.is_session_running", return_value=True),
+        patch("agentshore.session_process.request_drain", return_value="sent"),
         patch("agentshore.cli.commands.stop._wait_for_session_exit", return_value=None),
     ):
         result = runner.invoke(main, ["stop", "--project", str(project)])
@@ -615,8 +616,8 @@ def test_stop_hard_skips_end_session_report(runner: CliRunner, tmp_path: Path) -
     project = _make_git_repo(tmp_path)
 
     with (
-        patch("agentshore.session_path.is_session_running", return_value=True),
-        patch("agentshore.session_path.hard_stop_session", return_value=True),
+        patch("agentshore.session_process.is_session_running", return_value=True),
+        patch("agentshore.session_process.hard_stop_session", return_value=True),
         patch("agentshore.cli.commands.stop._generate_end_session_report_cli") as generate_report,
     ):
         result = runner.invoke(main, ["stop", "--project", str(project), "--hard"])
@@ -710,7 +711,7 @@ def test_start_cleanup_stops_recorded_dashboard_process(
         patch("agentshore.config.load_config", return_value=cfg),
         patch("dataclasses.replace", return_value=cfg),
         patch("asyncio.run", side_effect=_close_asyncio_run_arg),
-        patch("agentshore.session_path.stop_dashboard_process", return_value=True) as stop_dash,
+        patch("agentshore.session_process.stop_dashboard_process", return_value=True) as stop_dash,
     ):
         result = runner.invoke(main, ["start", "--project", str(repo), "--mode", "agent"])
 
@@ -878,7 +879,7 @@ def test_dashboard_does_not_reap_its_own_parent_pid(
     bridge.start = AsyncMock()
 
     with (
-        patch("agentshore.session_path.stop_dashboard_process", side_effect=fake_stop),
+        patch("agentshore.session_process.stop_dashboard_process", side_effect=fake_stop),
         patch("agentshore.dashboard.DashboardBridge", return_value=bridge),
     ):
         result = runner.invoke(

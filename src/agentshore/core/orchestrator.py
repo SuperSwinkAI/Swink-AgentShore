@@ -145,10 +145,10 @@ class Orchestrator(_OrchestratorBase):
                 state_provider=provider,
             )
             orch._seed_path = effective_seed
-            orch._config_path = config_path
-            orch._registry = registry
-            orch._embedded_mode = embedded_mode
-            orch._log_path = log_path
+            orch._runtime.config_path = config_path
+            orch._runtime.registry = registry
+            orch._runtime.embedded_mode = embedded_mode
+            orch._runtime.log_path = log_path
 
             # Wire the requeue callback now that orch owns the override queue.
             executor._requeue_callback = lambda pt, p: orch._overrides.put_nowait(
@@ -160,7 +160,7 @@ class Orchestrator(_OrchestratorBase):
                 )
             )
             # Let sleeping plays (take_break) abort promptly once drain begins (#30).
-            executor._is_draining = lambda: orch._draining
+            executor._is_draining = lambda: orch._runtime.draining
 
             await phases._phase_init_metrics(
                 orch=orch, cfg=cfg, store=store, sid=sid, repo_root=repo_root
@@ -206,7 +206,7 @@ class Orchestrator(_OrchestratorBase):
             )
             # Stamp refresh clock so the first _build_state tick doesn't re-run
             # _refresh_issues (bootstrap already fetched).
-            orch._last_refresh_time = time.monotonic()
+            orch._runtime.last_refresh_time = time.monotonic()
             await phases._phase_ensure_labels(gh=gh, cfg=cfg)
             await phases._phase_load_learnings(cfg=cfg, repo_root=repo_root)
             if selector is None:
@@ -289,13 +289,13 @@ class Orchestrator(_OrchestratorBase):
         )
         await self._store.abandon_active_work_claims(self._session_id)
 
-        self._health = HealthMonitor(
+        self._runtime.health = HealthMonitor(
             handles=self._manager.handles,
             circuit_breakers=self._manager.circuit_breakers,
             on_crash=self._completion.on_crash,
             on_context_pressure=self._completion.on_context_pressure,
         )
-        self._health.start()
+        self._runtime.health.start()
 
         # Loop-liveness watchdog (#9): force-drains if the core loop heartbeat goes
         # stale — a hard freeze the idle/unanswered-pause backstops can't catch. No-op
@@ -307,16 +307,16 @@ class Orchestrator(_OrchestratorBase):
         # assertion also closes the screen-lock corruption window from desktop-tvsb.
         from agentshore.power import acquire as _acquire_power
 
-        self._power_assertion = _acquire_power("AgentShore session active")
+        self._runtime.power_assertion = _acquire_power("AgentShore session active")
 
         # Defense-in-depth against silent SQLite corruption: canary runs PRAGMA
         # quick_check on a schedule, snapshot ring keeps a known-good image, and
         # restore_from_snapshot_ring auto-swaps at next startup if quick_check fails.
-        integrity_cfg = self._cfg.data_integrity
+        integrity_cfg = self._runtime.cfg.data_integrity
         if integrity_cfg.enabled:
             from agentshore.data.integrity import IntegrityMonitor
 
-            self._integrity = IntegrityMonitor(
+            self._runtime.integrity = IntegrityMonitor(
                 self._store,
                 project_dir(self._repo_root),
                 db_path=project_db_path(self._repo_root),
@@ -327,7 +327,7 @@ class Orchestrator(_OrchestratorBase):
                     integrity_cfg.wal_checkpoint_interval_seconds
                 ),
             )
-            self._integrity.start()
+            self._runtime.integrity.start()
         return self
 
     async def __aexit__(self, *exc: object) -> None:
@@ -428,7 +428,7 @@ class Orchestrator(_OrchestratorBase):
         """Publish and return the current state snapshot."""
         state = await self._state_builder.build_state()
         await self._safe_call(
-            self._state_provider.on_state_update(state),
+            self._runtime.state_provider.on_state_update(state),
             "on_state_update_initial",
         )
         return state
@@ -443,7 +443,7 @@ class Orchestrator(_OrchestratorBase):
         as its only argument. The sidecar boot wrapper uses it to fire
         ``session.completed`` over the JSON-RPC stdio transport (DESIGN §5.2).
         """
-        self._natural_exit_callback = callback
+        self._runtime.natural_exit_callback = callback
 
     async def run_until_idle(self) -> None:
         """Drive the RL loop until selector returns None or a stop is requested.
@@ -459,14 +459,14 @@ class Orchestrator(_OrchestratorBase):
 
     def in_flight_ids(self) -> list[str]:
         """Return the dispatch ids of currently in-flight play tasks."""
-        return list(self._in_flight.keys())
+        return list(self._runtime.in_flight.keys())
 
     async def abort_in_flight(self) -> None:
         """Cancel all in-flight play tasks.
 
         The orchestrator loop picks up new work on the next iteration.
         """
-        for task in list(self._in_flight.values()):
+        for task in list(self._runtime.in_flight.values()):
             task.cancel()
 
     async def generate_report(self, report_type: str) -> None:

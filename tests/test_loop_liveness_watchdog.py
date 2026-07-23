@@ -75,7 +75,7 @@ async def test_stale_heartbeat_force_drains_and_stops(monkeypatch: Any) -> None:
 
     orch._drain.begin_drain.assert_awaited_once_with("loop_liveness_timeout")
     orch._drain.stop.assert_awaited_once()
-    assert orch._drain_reason == "loop_liveness_timeout"
+    assert orch._runtime.drain_reason == "loop_liveness_timeout"
 
 
 @pytest.mark.asyncio
@@ -89,7 +89,7 @@ async def test_fresh_heartbeat_does_not_fire(monkeypatch: Any) -> None:
         for _ in range(5):
             orch._loop._last_loop_iteration_at = time.monotonic()
             await asyncio.sleep(0.01)
-        orch._stop_requested = True
+        orch._runtime.stop_requested = True
 
     advancer = asyncio.create_task(_advance_heartbeat())
     await asyncio.wait_for(orch._loop._loop_liveness_watchdog(), timeout=2.0)
@@ -108,7 +108,7 @@ async def test_unarmed_heartbeat_does_not_fire(monkeypatch: Any) -> None:
 
     async def _stop_soon() -> None:
         await asyncio.sleep(0.05)
-        orch._stop_requested = True
+        orch._runtime.stop_requested = True
 
     stopper = asyncio.create_task(_stop_soon())
     await asyncio.wait_for(orch._loop._loop_liveness_watchdog(), timeout=2.0)
@@ -130,9 +130,9 @@ async def test_run_until_idle_stamps_heartbeat() -> None:
     """The loop stamps the heartbeat on entry so the watchdog has a baseline."""
     orch = _make_orch(FeedbackConfig(loop_liveness_timeout_seconds=600.0))
     # Force an immediate exit: stop requested before the first body iteration.
-    orch._stop_requested = True
-    orch._natural_exit_reason = None
-    orch._natural_exit_callback = None
+    orch._runtime.stop_requested = True
+    orch._runtime.natural_exit_reason = None
+    orch._runtime.natural_exit_callback = None
     before = time.monotonic()
     await orch.run_until_idle()
     assert orch._loop._last_loop_iteration_at >= before

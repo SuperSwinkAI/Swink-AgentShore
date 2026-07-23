@@ -14,7 +14,13 @@ from agentshore.core.git_safety import (
     current_head_ref,
     path_contains_backslash_space,
 )
-from agentshore.core.helpers import _log_task_exception, _logger, _ppo_selector_cls, _str_extra
+from agentshore.core.helpers import (
+    _log_task_exception,
+    _logger,
+    _ppo_selector_cls,
+    _SafeCallHost,
+    _str_extra,
+)
 from agentshore.data.store import ExternalMutationRecord
 from agentshore.errors import is_disk_full
 from agentshore.plays.override import OverrideEntry, OverrideKind
@@ -32,10 +38,10 @@ from agentshore.state import (
 from agentshore.utils import now_iso
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable
     from pathlib import Path
 
     from agentshore.agents.manager import AgentManager
+    from agentshore.agents.worktree import TrunkAllocation, WorktreeAllocation, WorktreeManager
     from agentshore.core.main_repo_guard import MainRepoGuard
     from agentshore.core.mixins.completion import CompletionProcessor
     from agentshore.core.mixins.state import StateBuilder
@@ -78,16 +84,16 @@ def _is_git_work_tree(path: Path) -> bool:
     return False
 
 
-class _DispatcherHost(Protocol):
+class _DispatcherHost(_SafeCallHost, Protocol):
     """Orchestrator *behaviour* the :class:`Dispatcher` invokes.
 
     All shared session *state* now lives on :class:`SessionRuntime` (reached via
     ``self._runtime``); this Protocol is the narrow behaviour seam that remains so
     the cross-component methods resolve on the composition root without a circular
-    import. ``_OrchestratorBase`` structurally satisfies it.
+    import. ``_OrchestratorBase`` structurally satisfies it. Extends
+    :class:`_SafeCallHost` for the ``_safe_call`` method shared by every
+    per-component Host Protocol.
     """
-
-    async def _safe_call(self, coro: Awaitable[object], label: str) -> None: ...
 
     def _selector_config_index(self) -> tuple[ConfigKey, ...] | None: ...
 
@@ -546,21 +552,15 @@ class Dispatcher:
             return await self._runtime.selector.select(state)
         return None
 
-    async def dispatch_play(
+    async def _reject_if_paused_or_shutting_down(
         self,
         play_type: PlayType,
         params: PlayParams,
         state: OrchestratorState,
     ) -> bool:
-        """Build the dispatch context and create the play task (fire-and-forget).
+        """Gates 1-3: dispatch-pause latch, END_SESSION in-flight, shutdown mode.
 
-        Emits ``on_state_update`` and (if the executor doesn't) ``on_play_started``
-        before launching the task so IPC/TUI consumers see the new active play
-        immediately.
-
-        Play validity is settled upstream by EligibilityAuthority. Dispatch owns
-        worktree allocation, active-play state, context creation, and task launch
-        using the selector snapshot.
+        Returns True if the play was dropped (caller must not dispatch it).
         """
         # desktop-kqo5: hard pause when auto-restore failed — no new work until
         # the trunk is healed. END_AGENT stays allowed so a drain can finish.
@@ -577,7 +577,7 @@ class Dispatcher:
                 reason="main_repo_dispatch_paused",
                 event="dispatch_blocked_main_repo_paused",
             )
-            return False
+            return True
         if play_type == PlayType.END_SESSION and (
             self._runtime.end_session_dispatch_started
             or any(
@@ -593,7 +593,7 @@ class Dispatcher:
                 reason="end_session_already_in_flight",
                 event="dispatch_revalidation_blocked",
             )
-            return False
+            return True
         if self.shutdown_allows_only_end_agent(state) and play_type != PlayType.END_AGENT:
             await self.drop_selected_play_before_dispatch(
                 play_type,
@@ -601,7 +601,14 @@ class Dispatcher:
                 reason="shutdown_allows_only_end_agent",
                 event="dispatch_blocked_during_shutdown",
             )
-            return False
+            return True
+        return False
+
+    async def _validate_paths_or_reject(self, play_type: PlayType, params: PlayParams) -> bool:
+        """Gate 4: refuse a working directory path with a literal backslash-space.
+
+        Returns True if the play was dropped (caller must not dispatch it).
+        """
         # desktop-4ugk part 2: refuse to spawn into a working dir whose path
         # contains a literal backslash-space (a skill-template quoting leak);
         # the subprocess `cd` would fail or land in a leaked sibling. Reject
@@ -631,15 +638,24 @@ class Dispatcher:
                     reason="worktree_path_backslash_space",
                     event="pre_dispatch_worktree_path_invalid",
                 )
-                return False
+                return True
+        return False
 
+    async def _allocate_worktree_or_reject(
+        self, play_type: PlayType, params: PlayParams
+    ) -> tuple[WorktreeManager | None, WorktreeAllocation | TrunkAllocation | None]:
+        """Gates 5-6: worktree-manager availability, disk-pressure guard, allocation.
+
+        Returns ``(worktree_mgr, allocation)``. ``allocation`` is ``None`` when the
+        play was dropped (caller must not dispatch it) — ``drop_selected_play_before_dispatch``
+        has already been called in that case.
+        """
         # Worktree allocation (desktop-mr1i) runs *before* the active_play
         # snapshot so a failed allocation drops the play without entering the
         # in-flight set. Trunk-scoped / internal plays get a ``TrunkAllocation``
         # at the main repo — no row written, no on-disk worktree created.
         from agentshore.agents.worktree import (
             TrunkAllocation,
-            WorktreeAllocation,
             WorktreeAllocationFailed,
             WorktreeBranchGone,
         )
@@ -657,7 +673,7 @@ class Dispatcher:
                 reason="worktree_manager_unavailable",
                 event="dispatch_blocked_no_worktree_manager",
             )
-            return False
+            return None, None
         # Non-git project path (test harnesses passing a bare ``tmp_path``):
         # short-circuit to a TrunkAllocation at the main repo. Production paths
         # are always git checkouts; this spares tests that mock
@@ -671,98 +687,132 @@ class Dispatcher:
                 play_type=play_type.value,
                 path=str(worktree_mgr.main_repo),
             )
-        else:
-            # Pre-dispatch disk guard (#180): reap idle worktrees (LRU, skipping
-            # in-flight) first; if still below the floor, skip this dispatch
-            # rather than risk an ENOSPC cascade mid-play (spend-while-dropping).
-            # ``min_free_disk_mb == 0`` disables the guard.
-            floor_mb = self._runtime.cfg.worktrees.min_free_disk_mb
-            if floor_mb > 0:
+            return worktree_mgr, allocation
+
+        # Pre-dispatch disk guard (#180): reap idle worktrees (LRU, skipping
+        # in-flight) first; if still below the floor, skip this dispatch
+        # rather than risk an ENOSPC cascade mid-play (spend-while-dropping).
+        # ``min_free_disk_mb == 0`` disables the guard.
+        floor_mb = self._runtime.cfg.worktrees.min_free_disk_mb
+        if floor_mb > 0:
+            free_mb = worktree_mgr.free_disk_mb()
+            if free_mb < floor_mb:
+                await worktree_mgr.reap_for_disk_pressure(target_free_mb=floor_mb)
                 free_mb = worktree_mgr.free_disk_mb()
-                if free_mb < floor_mb:
-                    await worktree_mgr.reap_for_disk_pressure(target_free_mb=floor_mb)
-                    free_mb = worktree_mgr.free_disk_mb()
-                if free_mb < floor_mb:
-                    _logger.warning(
-                        "pre_dispatch_disk_guard_paused",
-                        session_id=self._session_id,
-                        play_type=play_type.value,
-                        free_mb=free_mb,
-                        floor_mb=floor_mb,
-                    )
-                    await self.drop_selected_play_before_dispatch(
-                        play_type,
-                        params,
-                        reason=MaskReason(
-                            text=f"disk below floor ({free_mb}MiB < {floor_mb}MiB)",
-                            classification=MaskClassification.TRANSIENT,
-                            source=MaskSource.SPAWN,
-                        ),
-                        event="dispatch_blocked_disk_pressure",
-                    )
-                    return False
-            try:
-                allocation = await worktree_mgr.allocate_for_dispatch(
-                    play_type=play_type, params=params
-                )
-            except (WorktreeAllocationFailed, WorktreeBranchGone, OSError) as exc:
-                # Disk-full is an *environment* condition, not a structurally-
-                # stuck resource: parking the key would wrongly suppress it for
-                # the session. Reap and drop TRANSIENT so it retries once the
-                # host has room (#180).
-                if is_disk_full(exc):
-                    _logger.warning(
-                        "worktree_allocate_disk_full",
-                        session_id=self._session_id,
-                        play_type=play_type.value,
-                        error=str(exc),
-                    )
-                    await worktree_mgr.reap_for_disk_pressure(
-                        target_free_mb=max(self._runtime.cfg.worktrees.min_free_disk_mb, 1),
-                    )
-                    await self.drop_selected_play_before_dispatch(
-                        play_type,
-                        params,
-                        reason=MaskReason(
-                            text="worktree allocation failed (disk full)",
-                            classification=MaskClassification.TRANSIENT,
-                            source=MaskSource.SPAWN,
-                        ),
-                        event="dispatch_worktree_disk_full",
-                    )
-                    return False
-                if isinstance(exc, OSError):
-                    # Non-ENOSPC OSError isn't a recognized allocation failure;
-                    # re-raise rather than swallow it as a worktree-create miss.
-                    raise
-                alloc_reason = getattr(exc, "reason", None) or getattr(exc, "branch", None)
+            if free_mb < floor_mb:
                 _logger.warning(
-                    "worktree_allocate_failed",
+                    "pre_dispatch_disk_guard_paused",
                     session_id=self._session_id,
                     play_type=play_type.value,
-                    error=str(exc),
-                    reason=alloc_reason,
-                )
-                # Piece A: tally per resource key and park keys past the retry
-                # threshold. A parked resource is structurally stuck (HARD) — the
-                # candidate analyzer stops offering it, so the drop no longer
-                # hot-loops; below threshold it's still retrying (TRANSIENT).
-                parked = self.register_worktree_allocation_failure(params)
-                drop_reason = MaskReason(
-                    text=f"worktree allocation failed ({alloc_reason})"
-                    + (" — resource parked for session" if parked else ""),
-                    classification=(
-                        MaskClassification.HARD if parked else MaskClassification.TRANSIENT
-                    ),
-                    source=MaskSource.SPAWN,
+                    free_mb=free_mb,
+                    floor_mb=floor_mb,
                 )
                 await self.drop_selected_play_before_dispatch(
                     play_type,
                     params,
-                    reason=drop_reason,
-                    event="dispatch_worktree_create_failed",
+                    reason=MaskReason(
+                        text=f"disk below floor ({free_mb}MiB < {floor_mb}MiB)",
+                        classification=MaskClassification.TRANSIENT,
+                        source=MaskSource.SPAWN,
+                    ),
+                    event="dispatch_blocked_disk_pressure",
                 )
-                return False
+                return worktree_mgr, None
+        try:
+            allocation = await worktree_mgr.allocate_for_dispatch(
+                play_type=play_type, params=params
+            )
+        except (WorktreeAllocationFailed, WorktreeBranchGone, OSError) as exc:
+            # Disk-full is an *environment* condition, not a structurally-
+            # stuck resource: parking the key would wrongly suppress it for
+            # the session. Reap and drop TRANSIENT so it retries once the
+            # host has room (#180).
+            if is_disk_full(exc):
+                _logger.warning(
+                    "worktree_allocate_disk_full",
+                    session_id=self._session_id,
+                    play_type=play_type.value,
+                    error=str(exc),
+                )
+                await worktree_mgr.reap_for_disk_pressure(
+                    target_free_mb=max(self._runtime.cfg.worktrees.min_free_disk_mb, 1),
+                )
+                await self.drop_selected_play_before_dispatch(
+                    play_type,
+                    params,
+                    reason=MaskReason(
+                        text="worktree allocation failed (disk full)",
+                        classification=MaskClassification.TRANSIENT,
+                        source=MaskSource.SPAWN,
+                    ),
+                    event="dispatch_worktree_disk_full",
+                )
+                return worktree_mgr, None
+            if isinstance(exc, OSError):
+                # Non-ENOSPC OSError isn't a recognized allocation failure;
+                # re-raise rather than swallow it as a worktree-create miss.
+                raise
+            alloc_reason = getattr(exc, "reason", None) or getattr(exc, "branch", None)
+            _logger.warning(
+                "worktree_allocate_failed",
+                session_id=self._session_id,
+                play_type=play_type.value,
+                error=str(exc),
+                reason=alloc_reason,
+            )
+            # Piece A: tally per resource key and park keys past the retry
+            # threshold. A parked resource is structurally stuck (HARD) — the
+            # candidate analyzer stops offering it, so the drop no longer
+            # hot-loops; below threshold it's still retrying (TRANSIENT).
+            parked = self.register_worktree_allocation_failure(params)
+            drop_reason = MaskReason(
+                text=f"worktree allocation failed ({alloc_reason})"
+                + (" — resource parked for session" if parked else ""),
+                classification=(
+                    MaskClassification.HARD if parked else MaskClassification.TRANSIENT
+                ),
+                source=MaskSource.SPAWN,
+            )
+            await self.drop_selected_play_before_dispatch(
+                play_type,
+                params,
+                reason=drop_reason,
+                event="dispatch_worktree_create_failed",
+            )
+            return worktree_mgr, None
+        return worktree_mgr, allocation
+
+    async def dispatch_play(
+        self,
+        play_type: PlayType,
+        params: PlayParams,
+        state: OrchestratorState,
+    ) -> bool:
+        """Build the dispatch context and create the play task (fire-and-forget).
+
+        Emits ``on_state_update`` and (if the executor doesn't) ``on_play_started``
+        before launching the task so IPC/TUI consumers see the new active play
+        immediately.
+
+        Play validity is settled upstream by EligibilityAuthority. Dispatch owns
+        worktree allocation, active-play state, context creation, and task launch
+        using the selector snapshot. Preconditions run as a sequence of named
+        early-return gates (each funnels its rejection through
+        ``drop_selected_play_before_dispatch``): dispatch-pause / shutdown mode,
+        path validation, then worktree allocation.
+        """
+        if await self._reject_if_paused_or_shutting_down(play_type, params, state):
+            return False
+        if await self._validate_paths_or_reject(play_type, params):
+            return False
+
+        worktree_mgr, allocation = await self._allocate_worktree_or_reject(play_type, params)
+        if allocation is None:
+            return False
+
+        # Import here (not TYPE_CHECKING) since ``TrunkAllocation``/``WorktreeAllocation``
+        # are used below for isinstance checks, not just annotations.
+        from agentshore.agents.worktree import TrunkAllocation, WorktreeAllocation
 
         # Stamp allocator output:
         # (a) The allocation dataclass goes on a private ``_runtime_allocation``

@@ -87,7 +87,7 @@ async def test_abort_in_flight_cancels_tasks(tmp_path: Path) -> None:
     task1 = MagicMock()
     task2 = MagicMock()
     orch = make_test_orchestrator(tmp_path)
-    orch._in_flight = {"d1": task1, "d2": task2}
+    orch._runtime.in_flight = {"d1": task1, "d2": task2}
     await orch.abort_in_flight()
     task1.cancel.assert_called_once()
     task2.cancel.assert_called_once()

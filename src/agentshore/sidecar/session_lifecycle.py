@@ -53,6 +53,7 @@ if TYPE_CHECKING:
     from typing import Protocol
 
     from agentshore.config import RuntimeConfig
+    from agentshore.core.session_runtime import SessionRuntime
     from agentshore.data.store import DataStore
     from agentshore.sidecar.server import JsonRpcNotification, ServerState
     from agentshore.state import AgentType
@@ -70,10 +71,10 @@ if TYPE_CHECKING:
         ``# type: ignore[attr-defined]`` duck-typing comments while keeping the
         engine import lazy.
 
-        The underscored members (``_store``, ``_log_path``,
-        ``_natural_exit_reason``) mirror the orchestrator's own internal
-        accessors; they are declared here so the sidecar's reach-ins are typed
-        rather than silently ``object``-typed.
+        The underscored members (``_store``, ``_runtime`` — the latter for its
+        ``log_path``/``natural_exit_reason`` fields) mirror the orchestrator's
+        own internals; they are declared here so the sidecar's reach-ins are
+        typed rather than silently ``object``-typed.
         """
 
         def request_drain(self, reason: str = ...) -> None: ...
@@ -112,10 +113,7 @@ if TYPE_CHECKING:
         def _store(self) -> DataStore: ...
 
         @property
-        def _log_path(self) -> Path | None: ...
-
-        @property
-        def _natural_exit_reason(self) -> str | None: ...
+        def _runtime(self) -> SessionRuntime: ...
 
 
 _logger = structlog.get_logger(__name__)
@@ -244,6 +242,33 @@ def _emit(
     if notify is None or token is None:
         return
     notify(_progress(token, step, status, error=error))
+
+
+async def _run_phase(
+    notify: Callable[[JsonRpcNotification], None] | None,
+    progress_token: object | None,
+    step: str,
+    fn: Callable[[], Awaitable[None]],
+) -> None:
+    """Emit running/ok/failed ``$/progress`` around one bringup phase body.
+
+    Shared by phases 1-4 and 7 (config_merge, check_agent_auth,
+    install_skills, init_beads, first_snapshot) in ``run_session_start``,
+    which all follow the same emit(running) -> run -> emit(failed)+raise /
+    emit(ok) shape; *fn* is responsible for its own "only when project_path
+    is set" guard and for raising :class:`SessionStartError` (not a bare
+    exception) on failure. Phases 5/6 (bind_ipc, start_bridge) stay bespoke
+    in ``run_session_start`` since they branch on more than "did this
+    raise" (e.g. bridge failure builds its ``SessionStartError`` from a bare
+    exception inline).
+    """
+    _emit(notify, progress_token, step, "running")
+    try:
+        await fn()
+    except SessionStartError as exc:
+        _emit(notify, progress_token, exc.step, "failed", error=str(exc))
+        raise
+    _emit(notify, progress_token, step, "ok")
 
 
 def _check_config_merge(project_path: Path, *, require_tier_coverage: bool = True) -> RuntimeConfig:
@@ -573,15 +598,14 @@ async def run_session_start(
     state.session_id = session_id
 
     # Phase 1: config_merge
-    _emit(notify, progress_token, STEP_CONFIG_MERGE, "running")
     cfg: RuntimeConfig | None = None
-    if project_path is not None:
-        try:
+
+    async def _phase_config_merge() -> None:
+        nonlocal cfg
+        if project_path is not None:
             cfg = _check_config_merge(project_path, require_tier_coverage=start_orchestrator)
-        except SessionStartError as exc:
-            _emit(notify, progress_token, exc.step, "failed", error=str(exc))
-            raise
-    _emit(notify, progress_token, STEP_CONFIG_MERGE, "ok")
+
+    await _run_phase(notify, progress_token, STEP_CONFIG_MERGE, _phase_config_merge)
 
     # Bind the per-session NDJSON log file handler now — cfg and session_id
     # are both available, and later phases (init_beads in particular) log
@@ -598,37 +622,28 @@ async def run_session_start(
     # definitive failure in any of the three blocks the launch with a
     # remediation message; transient probe failures are logged and tolerated.
     # Skipped in legacy stub mode (no active project / cfg).
-    _emit(notify, progress_token, STEP_CHECK_AGENT_AUTH, "running")
-    if project_path is not None and cfg is not None:
-        try:
+    async def _phase_check_agent_auth() -> None:
+        if project_path is not None and cfg is not None:
             await asyncio.to_thread(_check_agent_auth, cfg, project_path)
-        except SessionStartError as exc:
-            _emit(notify, progress_token, exc.step, "failed", error=str(exc))
-            raise
-    _emit(notify, progress_token, STEP_CHECK_AGENT_AUTH, "ok")
+
+    await _run_phase(notify, progress_token, STEP_CHECK_AGENT_AUTH, _phase_check_agent_auth)
 
     # Phase 3: install_skills — copy bundled skill templates into
     # ``.agents/skills/``. Idempotent: only stale templates are
     # overwritten. Skipped when there's no active project so the
     # legacy stub-mode call path stays a no-op.
-    _emit(notify, progress_token, STEP_INSTALL_SKILLS, "running")
-    if project_path is not None:
-        try:
+    async def _phase_install_skills() -> None:
+        if project_path is not None:
             _run_install_skills(project_path)
-        except SessionStartError as exc:
-            _emit(notify, progress_token, exc.step, "failed", error=str(exc))
-            raise
-    _emit(notify, progress_token, STEP_INSTALL_SKILLS, "ok")
+
+    await _run_phase(notify, progress_token, STEP_INSTALL_SKILLS, _phase_install_skills)
 
     # Phase 4: init_beads
-    _emit(notify, progress_token, STEP_INIT_BEADS, "running")
-    if project_path is not None:
-        try:
+    async def _phase_init_beads() -> None:
+        if project_path is not None:
             await _run_init_beads(project_path, cfg=cfg, session_id=session_id, notify=notify)
-        except SessionStartError as exc:
-            _emit(notify, progress_token, exc.step, "failed", error=str(exc))
-            raise
-    _emit(notify, progress_token, STEP_INIT_BEADS, "ok")
+
+    await _run_phase(notify, progress_token, STEP_INIT_BEADS, _phase_init_beads)
 
     # Phase 5: bind_ipc — always allocates a fresh endpoint, even without
     # an active project.
@@ -681,26 +696,25 @@ async def run_session_start(
     # bridge's state_dir. When disabled, the bridge-ready signal from
     # phase 5 is already sufficient evidence that the dashboard can
     # subscribe; we emit ``ok`` immediately.
-    _emit(notify, progress_token, STEP_FIRST_SNAPSHOT, "running")
-    if start_orchestrator and project_path is not None and cfg is not None:
-        try:
-            await _start_orchestrator(
-                state=state,
-                project_path=project_path,
-                cfg=cfg,
-                session_id=session_id,
-                notify=notify,
-                first_snapshot_timeout_seconds=first_snapshot_timeout_seconds,
-                seed_path=seed_path,
-            )
-        except SessionStartError as exc:
-            _emit(notify, progress_token, exc.step, "failed", error=str(exc))
-            raise
-        except Exception as exc:
-            msg = f"failed to start orchestrator: {exc}"
-            _emit(notify, progress_token, STEP_FIRST_SNAPSHOT, "failed", error=msg)
-            raise SessionStartError(STEP_FIRST_SNAPSHOT, -32603, msg) from exc
-    _emit(notify, progress_token, STEP_FIRST_SNAPSHOT, "ok")
+    async def _phase_first_snapshot() -> None:
+        if start_orchestrator and project_path is not None and cfg is not None:
+            try:
+                await _start_orchestrator(
+                    state=state,
+                    project_path=project_path,
+                    cfg=cfg,
+                    session_id=session_id,
+                    notify=notify,
+                    first_snapshot_timeout_seconds=first_snapshot_timeout_seconds,
+                    seed_path=seed_path,
+                )
+            except SessionStartError:
+                raise
+            except Exception as exc:
+                msg = f"failed to start orchestrator: {exc}"
+                raise SessionStartError(STEP_FIRST_SNAPSHOT, -32603, msg) from exc
+
+    await _run_phase(notify, progress_token, STEP_FIRST_SNAPSHOT, _phase_first_snapshot)
 
     started_at = state.started_at or datetime.now(UTC).isoformat()
     state.started_at = started_at
@@ -784,12 +798,20 @@ async def _await_prior_store_teardown(state: ServerState) -> None:
 def _clear_session_state(state: ServerState) -> None:
     """Reset per-session ``ServerState`` after a session ends (#283).
 
-    The explicit ``session.stop`` path clears these inline
-    (``handlers/session.py``); the natural-exit (self-drain → shutdown_complete)
-    and crash paths must do the same. Otherwise, in the long-lived sidecar, the
-    stale ``session_id`` is reused by the next ``session.start`` — colliding with
-    its persisted ``sessions`` row (UNIQUE constraint) — and the dead
-    orchestrator + its (closed) store linger reachable instead of being GC'd.
+    Shared by the explicit ``session.stop`` path (``handlers/session.py``)
+    and the natural-exit (self-drain → shutdown_complete) / crash paths
+    here. Otherwise, in the long-lived sidecar, the stale ``session_id`` is
+    reused by the next ``session.start`` — colliding with its persisted
+    ``sessions`` row (UNIQUE constraint) — and the dead orchestrator + its
+    (closed) store linger reachable instead of being GC'd.
+
+    ``handlers/session.py`` nulls ``orchestrator``/``orchestrator_task``
+    itself immediately after closing the store — ahead of calling this
+    helper — so a concurrent RPC arriving during the (possibly slow)
+    timelapse-render wait never dials an orchestrator whose store is
+    already closed; this function re-nulling them here is an idempotent
+    no-op in that case.
+
     Does not touch the dashboard bridge: the desktop still serves the ESR after a
     natural end, so bridge teardown stays owned by the explicit-stop path.
     """
@@ -939,7 +961,7 @@ async def _start_orchestrator(
     # callback; until then report_path stays empty rather than inventing a
     # placeholder path.
     archive_dir = project_path / ".agentshore" / "archives" / session_id
-    log_path = orch._log_path
+    log_path = orch._runtime.log_path
     state.session_context = SessionContext(
         session_id=session_id,
         store=orch._store,
@@ -975,7 +997,7 @@ async def _start_orchestrator(
             raise
         # Only the natural-exit path proceeds to ESR emission; explicit
         # session.stop callers own their own ESR build in the stop path.
-        if orch._natural_exit_reason is None:
+        if orch._runtime.natural_exit_reason is None:
             return
         # Snapshot both locals immediately — a concurrent _clear_session_state
         # (or the explicit-stop path) can null state.session_context during the
@@ -984,7 +1006,7 @@ async def _start_orchestrator(
         # leaves only a bare $/esr_ready on natural exit. Mirror the robust
         # explicit-stop snapshot in rpc/handlers/session.py:117.
         ctx = state.session_context
-        reason = orch._natural_exit_reason
+        reason = orch._runtime.natural_exit_reason
         # Build the ESR payload BEFORE ``orch.stop()`` — ``stop()`` closes
         # the underlying DataStore as part of shutdown_step:store_close
         # (DESIGN §5.2), and ``ReportDataCollector.collect_end_session_report``

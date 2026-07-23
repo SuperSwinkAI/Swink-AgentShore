@@ -57,7 +57,7 @@ async def _drive_completion(
         pending_step=None,
         dispatched_at=time.perf_counter(),
     )
-    orch._dispatch_ctx["d-test"] = ctx
+    orch._runtime.dispatch_ctx["d-test"] = ctx
 
     async def _result() -> PlayOutcome:
         return outcome
@@ -82,7 +82,7 @@ async def test_play_completion_emits_agent_idle(tmp_path: Path) -> None:
     state_provider.on_play_started = AsyncMock()
     state_provider.on_feedback_requested = AsyncMock()
     state_provider.on_session_paused = AsyncMock()
-    orch._state_provider = state_provider
+    orch._runtime.state_provider = state_provider
 
     # Pretend "agent-1" is currently registered with the agent manager.
     # Pin the circuit-breaker counters to real ints — build_state copies these
@@ -123,7 +123,7 @@ async def test_play_completion_skips_idle_emit_when_agent_unknown(tmp_path: Path
     state_provider.on_play_started = AsyncMock()
     state_provider.on_feedback_requested = AsyncMock()
     state_provider.on_session_paused = AsyncMock()
-    orch._state_provider = state_provider
+    orch._runtime.state_provider = state_provider
 
     # No "agent-1" handle registered.
     orch._manager.handles.pop("agent-1", None)
@@ -153,7 +153,7 @@ async def test_play_completion_skips_idle_emit_when_no_agent_id(tmp_path: Path) 
     state_provider.on_play_started = AsyncMock()
     state_provider.on_feedback_requested = AsyncMock()
     state_provider.on_session_paused = AsyncMock()
-    orch._state_provider = state_provider
+    orch._runtime.state_provider = state_provider
 
     async with orch:
         await _drive_completion(orch, _outcome(agent_id=None))

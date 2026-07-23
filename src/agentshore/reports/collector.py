@@ -132,10 +132,27 @@ __all__ = [
 ]
 
 
-def _load_tier_config_maxes(project_path: Path) -> dict[str, int]:
-    """Return ``agent_type/tier`` spawn caps from the project's config, best-effort."""
+def _load_agent_spawn_maxes(
+    project_path: Path,
+    *,
+    require_enabled: bool,
+    use_enabled_tiers: bool,
+    per_tier_keys: bool,
+) -> dict[str, int]:
+    """Shared load-config/iterate/resolve scaffolding for the two spawn-cap
+    loaders below, best-effort (any load/parse error yields ``{}``).
+
+    For each configured agent resolving to a supported ``AgentType``
+    (skipped when *require_enabled* and the agent is disabled), selects its
+    tiers — the tiers explicitly declared in YAML (``agent_cfg.model_tiers``)
+    when *use_enabled_tiers* is False, or the fully-resolved enabled tier set
+    (:func:`enabled_model_tiers`, which also honors legacy top-level
+    ``model``/``reasoning_effort`` and built-in tier defaults) when True —
+    then either emits one ``agent_type/tier`` entry per tier (*per_tier_keys*)
+    or sums the tiers into a single ``agent_type`` entry, omitting zero totals.
+    """
     try:
-        from agentshore.agents.model_tiers import effective_model_tier_config
+        from agentshore.agents.model_tiers import effective_model_tier_config, enabled_model_tiers
         from agentshore.config import load_config
         from agentshore.state import AgentType
 
@@ -145,17 +162,38 @@ def _load_tier_config_maxes(project_path: Path) -> dict[str, int]:
 
     maxes: dict[str, int] = {}
     for agent_name, agent_cfg in cfg.agents.items():
+        if require_enabled and not agent_cfg.enabled:
+            continue
         try:
             agent_type = AgentType(agent_name)
         except ValueError:
             continue
-        for tier in agent_cfg.model_tiers:
-            maxes[f"{agent_type.value}/{tier}"] = effective_model_tier_config(
-                agent_type,
-                agent_cfg,
-                tier,
-            ).max
+        tiers = (
+            enabled_model_tiers(agent_type, agent_cfg)
+            if use_enabled_tiers
+            else agent_cfg.model_tiers
+        )
+        if per_tier_keys:
+            for tier in tiers:
+                maxes[f"{agent_type.value}/{tier}"] = effective_model_tier_config(
+                    agent_type,
+                    agent_cfg,
+                    tier,
+                ).max
+        else:
+            total = sum(
+                effective_model_tier_config(agent_type, agent_cfg, tier).max for tier in tiers
+            )
+            if total:
+                maxes[agent_type.value] = total
     return maxes
+
+
+def _load_tier_config_maxes(project_path: Path) -> dict[str, int]:
+    """Return ``agent_type/tier`` spawn caps from the project's config, best-effort."""
+    return _load_agent_spawn_maxes(
+        project_path, require_enabled=False, use_enabled_tiers=False, per_tier_keys=True
+    )
 
 
 def _load_harness_capacity_maxes(project_path: Path) -> dict[str, int]:
@@ -166,31 +204,9 @@ def _load_harness_capacity_maxes(project_path: Path) -> dict[str, int]:
     :func:`enabled_model_tiers`), unlike ``_load_tier_config_maxes`` above
     which only reflects tiers explicitly listed in the YAML.
     """
-    try:
-        from agentshore.agents.model_tiers import (
-            effective_model_tier_config,
-            enabled_model_tiers,
-        )
-        from agentshore.config import load_config
-        from agentshore.state import AgentType
-
-        cfg = load_config(project_path / "agentshore.yaml")
-    except Exception:
-        return {}
-
-    maxes: dict[str, int] = {}
-    for agent_name, agent_cfg in cfg.agents.items():
-        if not agent_cfg.enabled:
-            continue
-        try:
-            agent_type = AgentType(agent_name)
-        except ValueError:
-            continue
-        tiers = enabled_model_tiers(agent_type, agent_cfg)
-        total = sum(effective_model_tier_config(agent_type, agent_cfg, tier).max for tier in tiers)
-        if total:
-            maxes[agent_type.value] = total
-    return maxes
+    return _load_agent_spawn_maxes(
+        project_path, require_enabled=True, use_enabled_tiers=True, per_tier_keys=False
+    )
 
 
 def _load_learnings_for_session(project_path: Path) -> list[object]:

@@ -15,6 +15,7 @@ import os
 import subprocess
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 import pytest
@@ -149,18 +150,20 @@ async def test_session_start_sweep_phase_reaps_orphans_only(
     )
 
     # Minimal orchestrator stub — _phase_session_start_worktree_sweep only
-    # touches ``orch._worktrees``, so we don't need a fully bootstrapped
+    # touches ``orch._runtime.worktrees``, so we don't need a fully bootstrapped
     # orchestrator.
     class _OrchStub:
         pass
 
     orch = _OrchStub()
-    orch._worktrees = WorktreeManager(  # type: ignore[attr-defined]
-        session_id="sess-current",
-        store=store,
-        main_repo=main_repo,
-        worktree_root=worktree_root,
-        cfg=RuntimeConfig(),
+    orch._runtime = SimpleNamespace(  # type: ignore[attr-defined]
+        worktrees=WorktreeManager(
+            session_id="sess-current",
+            store=store,
+            main_repo=main_repo,
+            worktree_root=worktree_root,
+            cfg=RuntimeConfig(),
+        )
     )
 
     await _phase_session_start_worktree_sweep(orch=orch, sid="sess-current")  # type: ignore[arg-type]
@@ -177,10 +180,10 @@ async def test_session_start_sweep_phase_reaps_orphans_only(
 async def test_session_start_sweep_phase_is_noop_when_disabled(
     store: DataStore, main_repo: Path
 ) -> None:
-    """If ``orch._worktrees`` is None, the phase short-circuits cleanly."""
+    """If ``orch._runtime.worktrees`` is None, the phase short-circuits cleanly."""
 
     class _OrchStub:
-        _worktrees = None
+        _runtime = SimpleNamespace(worktrees=None)
 
     # Should not raise.
     await _phase_session_start_worktree_sweep(orch=_OrchStub(), sid="sess-current")  # type: ignore[arg-type]
@@ -263,8 +266,6 @@ async def test_mark_worktrees_stale_transitions_active_to_stale_on_pr_close(
     which the GitHub poll tick calls with the PRs it just re-pulled at
     ``state='all'`` to confirm new state.
     """
-    from types import SimpleNamespace
-
     from agentshore.core.mixins.completion import CompletionProcessor
 
     active_id, _ = await _seed_real_worktree(

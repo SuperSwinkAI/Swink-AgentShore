@@ -77,7 +77,7 @@ def test_launch_dashboard_waits_for_tcp_ipc_before_dashboard_pid(
     monkeypatch.setattr(webbrowser, "open", lambda url: events.append(f"open:{url}"))
     monkeypatch.setattr("agentshore.session_path.session_dir", lambda _project: tmp_path / "s")
     monkeypatch.setattr("agentshore.session_path.find_dashboard_port", lambda: 9400)
-    monkeypatch.setattr("agentshore.session_path.stop_dashboard_process", lambda _project: False)
+    monkeypatch.setattr("agentshore.session_process.stop_dashboard_process", lambda _project: False)
     monkeypatch.setattr(
         "agentshore.session_path.write_dashboard_pid",
         lambda _project, pid: events.append(f"dashboard-pid:{pid}"),
@@ -110,7 +110,7 @@ def test_launch_dashboard_aborts_if_orchestrator_exits_before_ipc_ready(
     monkeypatch.setattr(socket, "create_connection", lambda *_a, **_k: events.append("connect"))
     monkeypatch.setattr(webbrowser, "open", lambda url: events.append(f"open:{url}"))
     monkeypatch.setattr("agentshore.session_path.session_dir", lambda _project: tmp_path / "s")
-    monkeypatch.setattr("agentshore.session_path.stop_dashboard_process", lambda _project: False)
+    monkeypatch.setattr("agentshore.session_process.stop_dashboard_process", lambda _project: False)
     monkeypatch.setattr(
         "agentshore.session_path.write_dashboard_pid",
         lambda _project, pid: events.append(f"dashboard-pid:{pid}"),

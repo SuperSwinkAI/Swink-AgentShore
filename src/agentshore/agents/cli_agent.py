@@ -25,9 +25,7 @@ from agentshore import subprocess_env
 from agentshore.agents import cli_antigravity
 from agentshore.agents.cli import conpty
 from agentshore.agents.cli.argv import (
-    _DEFAULT_YOLO_FLAGS,
     _RESUMABLE_AGENT_TYPES,
-    _apply_yolo_default,
     _prompt_on_stdin,
     _resolve_executable,
     _write_grok_prompt_file,
@@ -35,48 +33,18 @@ from agentshore.agents.cli.argv import (
     build_resume_argv,
 )
 from agentshore.agents.cli.errors import (
-    _AUTH_PATTERNS,
-    _AUTH_STDOUT,
-    _CACHE_RENEWAL_MARKERS,
-    _CODEX_ROLLOUT_PATTERNS,
-    _ENOSPC_PATTERNS,
-    _INVALID_MODEL_PATTERNS,
-    _INVALID_MODEL_STDOUT,
-    _OOM_PATTERNS,
-    _PARSE_EOF_MARKERS,
-    _RATE_LIMIT_PATTERNS,
-    _RATE_LIMIT_STDOUT,
-    _STDIN_CLOSED_AFTER_CACHE_RENEWAL_MARKERS,
-    _TIMEOUT_PATTERNS,
-    _TIMEOUT_STDOUT,
-    _TRANSIENT_NETWORK_PATTERNS,
     _classify_error,
-    _clean_stderr,
-    _extract_cli_report_path,
-    _is_cache_renewal_stdin_hang,
-    _is_transient_cache_blip,
     _process_error_detail,
     is_post_response_hook_failure,
 )
 from agentshore.agents.cli.parsing import (
     _PARSERS,
-    _TERMINAL_EVENT_TYPES,
-    CliOutputFormat,
-    _extract_session_id_from_jsonl,
-    _extract_text_from_codex_jsonl,
-    _extract_text_from_grok_jsonl,
-    _extract_text_from_stream_json,
-    _extract_text_value,
-    _FunctionFormat,
     _is_terminal_event,
-    _maybe_parse_usage,
-    _parse_claude_output,
     _ReadOutput,
 )
 from agentshore.agents.cli.watchdogs import (
     _FIRST_BYTE_DEADLINE_BY_TYPE,
     _FIRST_BYTE_DEADLINE_S,
-    _NEVER_S,
     _POST_RESPONSE_GRACE_S,
     _DispatchArgv,
     _ReadOutputFailed,
@@ -1127,37 +1095,26 @@ async def dispatch_cli(
 
 
 # ---------------------------------------------------------------------------
-# Re-exports — keep agentshore.agents.cli_agent.<symbol> resolving for all
-# external callers (manager.py, cli_grok.py, cli_antigravity.py, tests).
+# Re-exports — keep agentshore.agents.cli_agent.<symbol> resolving for the
+# external callers that need it (manager.py's dispatch_cli import, and the
+# tests that patch these names on this module rather than on the satellite
+# they're defined in — patching only takes effect on the namespace a call
+# site actually looks the name up in, which for dispatch_cli's internals is
+# this module's). Only names cli_agent.py imports from cli/*.py are listed
+# here — see test_all_reexports_satellite_imports_are_declared, which fails
+# if this list and those imports ever drift apart. This is deliberately NOT
+# every public name the four satellite modules define: names nothing outside
+# their own module needs (e.g. individual error-marker tuples, the unused
+# ``CliOutputFormat``/``_FunctionFormat`` parser-adapter plumbing) are not
+# re-exported at all.
 # ---------------------------------------------------------------------------
 
 __all__ = [
     # errors.py
-    "_AUTH_PATTERNS",
-    "_AUTH_STDOUT",
-    "_CACHE_RENEWAL_MARKERS",
     "_classify_error",
-    "_clean_stderr",
-    "_CODEX_ROLLOUT_PATTERNS",
-    "_ENOSPC_PATTERNS",
-    "_extract_cli_report_path",
-    "_INVALID_MODEL_PATTERNS",
-    "_INVALID_MODEL_STDOUT",
-    "_is_cache_renewal_stdin_hang",
-    "_is_transient_cache_blip",
     "is_post_response_hook_failure",
-    "_OOM_PATTERNS",
-    "_PARSE_EOF_MARKERS",
     "_process_error_detail",
-    "_RATE_LIMIT_PATTERNS",
-    "_RATE_LIMIT_STDOUT",
-    "_STDIN_CLOSED_AFTER_CACHE_RENEWAL_MARKERS",
-    "_TIMEOUT_PATTERNS",
-    "_TIMEOUT_STDOUT",
-    "_TRANSIENT_NETWORK_PATTERNS",
     # argv.py
-    "_apply_yolo_default",
-    "_DEFAULT_YOLO_FLAGS",
     "_prompt_on_stdin",
     "_resolve_executable",
     "_RESUMABLE_AGENT_TYPES",
@@ -1168,7 +1125,6 @@ __all__ = [
     "_DispatchArgv",
     "_FIRST_BYTE_DEADLINE_BY_TYPE",
     "_FIRST_BYTE_DEADLINE_S",
-    "_NEVER_S",
     "_POST_RESPONSE_GRACE_S",
     "_ReadOutputFailed",
     "_StderrSniffer",
@@ -1180,19 +1136,9 @@ __all__ = [
     "_await_output_or_timeout",
     "_resolve_first_byte_deadline",
     # parsing.py
-    "_extract_session_id_from_jsonl",
-    "_extract_text_from_codex_jsonl",
-    "_extract_text_from_grok_jsonl",
-    "_extract_text_from_stream_json",
-    "_extract_text_value",
-    "_FunctionFormat",
     "_is_terminal_event",
-    "_maybe_parse_usage",
-    "_parse_claude_output",
     "_PARSERS",
     "_ReadOutput",
-    "_TERMINAL_EVENT_TYPES",
-    "CliOutputFormat",
     # driver (this module)
     "_build_dispatch_argv",
     "_close_process_transport",

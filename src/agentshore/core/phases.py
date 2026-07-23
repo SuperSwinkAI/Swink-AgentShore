@@ -160,7 +160,7 @@ async def _phase_init_metrics(
     async with _step("init_metrics"):
         from agentshore.rl.metrics import MetricsEngine
 
-        orch._metrics = MetricsEngine(
+        orch._runtime.metrics = MetricsEngine(
             store=store,
             session_id=sid,
             repo_root=repo_root,
@@ -170,7 +170,7 @@ async def _phase_init_metrics(
             executor_skip_rate_provider=orch._velocity.executor_skip_rate_recent_50,
         )
         orch._config_hash = _compute_config_hash(cfg)
-        orch._policy_version = f"ppo-v1-{orch._config_hash[:8]}"
+        orch._runtime.policy_version = f"ppo-v1-{orch._config_hash[:8]}"
 
 
 def _phase_cleanup_stale_weights(repo_root: Path) -> None:
@@ -262,7 +262,7 @@ async def _phase_init_ppo_selector(
     async with _step("init_ppo_selector"):
         from agentshore.rl.config_head import build_config_index
 
-        if orch._metrics is None:
+        if orch._runtime.metrics is None:
             msg = "Metrics engine must be initialized before PPO selector bootstrap"
             raise RuntimeError(msg)
 
@@ -283,10 +283,10 @@ async def _phase_init_ppo_selector(
                     weights_path=pp,
                     resolver=executor._resolver,
                     registry=registry,
-                    metrics=orch._metrics,
+                    metrics=orch._runtime.metrics,
                     cfg=cfg.rl,
                     policy_mode=policy_mode,
-                    policy_version=orch._policy_version,
+                    policy_version=orch._runtime.policy_version,
                     config_hash=orch._config_hash,
                     orchestrator_cfg=cfg,
                     config_index=config_index,
@@ -298,16 +298,16 @@ async def _phase_init_ppo_selector(
             ppo = ppo_cls.from_cold_start(
                 resolver=executor._resolver,
                 registry=registry,
-                metrics=orch._metrics,
+                metrics=orch._runtime.metrics,
                 cfg=cfg.rl,
                 policy_mode=policy_mode,
-                policy_version=orch._policy_version,
+                policy_version=orch._runtime.policy_version,
                 config_hash=orch._config_hash,
                 orchestrator_cfg=cfg,
                 config_index=config_index,
             )
 
-        orch._selector = ppo
+        orch._runtime.selector = ppo
 
         # Wire the RL experience recorder now selector/metrics/versions are final.
         # Completion no-ops the RL tail when this stays None (non-PPO / headless).
@@ -315,9 +315,9 @@ async def _phase_init_ppo_selector(
         from agentshore.core.experience_recorder import ExperienceRecorder
         from agentshore.session_path import session_dir
 
-        orch._experience_recorder = ExperienceRecorder(
+        orch._runtime.experience_recorder = ExperienceRecorder(
             store=orch._store,
-            metrics=orch._metrics,
+            metrics=orch._runtime.metrics,
             selector=ppo,
             cfg=cfg,
             host=orch,
@@ -329,7 +329,7 @@ async def _phase_init_ppo_selector(
         # agent dispatch, all agents idle, and no beads/GitHub graph change.
         from agentshore.core.progress_monitor import ForwardProgressMonitor
 
-        orch._progress_monitor = ForwardProgressMonitor()
+        orch._runtime.progress_monitor = ForwardProgressMonitor()
 
 
 async def _phase_create_session_row(
@@ -351,11 +351,11 @@ async def _phase_create_session_row(
 async def _phase_init_worktree_manager(
     *, orch: Orchestrator, cfg: RuntimeConfig, store: DataStore, sid: str, repo_root: Path
 ) -> None:
-    """Construct the ``WorktreeManager`` and attach it as ``orch._worktrees``.
+    """Construct the ``WorktreeManager`` and attach it as ``orch._runtime.worktrees``.
 
     The manager owns the worktree lifecycle for the session — A2's dispatch
-    wiring reads ``orch._worktrees`` (or the AgentManager-held reference) to
-    allocate per-play worktrees, and the reaper hooks (session-start sweep,
+    wiring reads ``orch._runtime.worktrees`` (or the AgentManager-held reference)
+    to allocate per-play worktrees, and the reaper hooks (session-start sweep,
     PR-close TTL) call ``reap_session_start`` / ``reap_closed_prs`` here.
     """
     async with _step("init_worktree_manager"):
@@ -363,7 +363,7 @@ async def _phase_init_worktree_manager(
 
         worktree_root = default_worktree_root(repo_root, cfg)
         worktree_root.mkdir(parents=True, exist_ok=True)
-        orch._worktrees = WorktreeManager(
+        orch._runtime.worktrees = WorktreeManager(
             session_id=sid,
             store=store,
             main_repo=repo_root,
@@ -387,11 +387,11 @@ async def _phase_session_start_worktree_sweep(*, orch: Orchestrator, sid: str) -
     Errors here are logged and swallowed — a transient SQLite or filesystem
     fault during a bootstrap sweep must not stop the session from starting.
     """
-    if orch._worktrees is None:
+    if orch._runtime.worktrees is None:
         return
     async with _step("session_start_worktree_sweep"):
         try:
-            report = await orch._worktrees.reap_session_start()
+            report = await orch._runtime.worktrees.reap_session_start()
         except Exception as exc:
             _logger.warning(
                 "session_start_worktree_sweep_failed",
@@ -1015,56 +1015,121 @@ async def _phase_load_learnings(*, cfg: RuntimeConfig, repo_root: Path) -> None:
             _logger.warning("learnings_load_failed", error=str(exc))
 
 
-def _phase_queue_agent_instantiation(
+def _enqueue_instantiate(
+    orch: Orchestrator,
+    agent_type: AgentType,
+    tier: str,
+    *,
+    wait_for_play_type: PlayType | None = None,
+) -> None:
+    """Queue one bootstrap INSTANTIATE_AGENT override. Shared by both recipes."""
+    orch._overrides.put_nowait(
+        OverrideEntry(
+            play_type=PlayType.INSTANTIATE_AGENT,
+            params=PlayParams(
+                target_agent_type=agent_type.value,
+                target_model_tier=tier,
+                bypass_preconditions=True,
+            ),
+            kind=OverrideKind.BOOTSTRAP,
+            enqueue_classification=MaskClassification.INDEFINITE_WAIT,
+            wait_for_play_type=wait_for_play_type,
+        )
+    )
+
+
+def _enqueue_groom(
+    orch: Orchestrator,
+    cfg: RuntimeConfig,
+    *,
+    wait_for_play_type: PlayType | None = None,
+) -> None:
+    """Queue one bootstrap GROOM_BACKLOG override, unless the user disabled it.
+
+    GROOM_BACKLOG is user-disableable (preferences.yaml). The bootstrap
+    override bypasses the action mask, so the mask-level USER_DISABLED
+    suppression can't reach it — honor the preference here or a disabled
+    groom is force-run at cold start. Shared by both recipes.
+    """
+    if PlayType.GROOM_BACKLOG.value in cfg.preferences.disabled_plays:
+        _logger.info(
+            "bootstrap_groom_skipped",
+            reason="user_disabled",
+            wait_for_play_type=wait_for_play_type.value if wait_for_play_type else None,
+        )
+        return
+    orch._overrides.put_nowait(
+        OverrideEntry(
+            play_type=PlayType.GROOM_BACKLOG,
+            params=PlayParams(bypass_preconditions=True),
+            kind=OverrideKind.BOOTSTRAP,
+            enqueue_classification=MaskClassification.INDEFINITE_WAIT,
+            wait_for_play_type=wait_for_play_type,
+        )
+    )
+
+
+def _first_enabled_for_tier(
+    cfg: RuntimeConfig,
+    tier: str,
+    *,
+    exclude: frozenset[AgentType] = frozenset(),
+) -> AgentType | None:
+    """First configured enabled agent type offering *tier*. Used by the seed recipe."""
+    for agent_key, agent_cfg in cfg.agents.items():
+        try:
+            agent_type = AgentType(agent_key)
+        except ValueError:
+            continue
+        if agent_type in exclude:
+            continue
+        if (
+            agent_cfg is not None
+            and not isinstance(agent_cfg, dict)
+            and getattr(agent_cfg, "enabled", False)
+            and tier in enabled_model_tiers(agent_type, agent_cfg)
+        ):
+            return agent_type
+    return None
+
+
+def _enqueue_full_fleet(orch: Orchestrator, cfg: RuntimeConfig) -> int:
+    """Queue one INSTANTIATE_AGENT override per enabled ``(agent_type, tier)``.
+
+    The open recipe has no seed / first-play to serialize trunk access
+    around, so the whole configured fleet spawns from cold and the PPO
+    drives against a fully-staffed start ("full open"). The config *is* the
+    fleet definition — every enabled tier the user configured comes up.
+    Returns the number of overrides queued.
+    """
+    count = 0
+    for agent_key, agent_cfg in cfg.agents.items():
+        try:
+            agent_type = AgentType(agent_key)
+        except ValueError:
+            continue
+        if (
+            agent_cfg is None
+            or isinstance(agent_cfg, dict)
+            or not getattr(agent_cfg, "enabled", False)
+        ):
+            continue
+        for tier in enabled_model_tiers(agent_type, agent_cfg):
+            _enqueue_instantiate(orch, agent_type, tier)
+            count += 1
+    return count
+
+
+def _queue_open_recipe(
     *,
     orch: Orchestrator,
     cfg: RuntimeConfig,
-    seed_path: Path | None,
-    open_issues_count: int = 0,
-    graph_has_epics: bool = True,
-    graph_read_failed: bool = False,
+    open_issues_count: int,
+    graph_read_failed: bool,
 ) -> None:
-    """Queue the bootstrap recipe.
+    """Open-start "full open" recipe: no seed input, graph already has epics.
 
-    The **seed recipe** runs whenever a seed input was provided *or* the beads
-    graph has no epics yet (``graph_has_epics`` is False). In the latter case
-    SEED_PROJECT runs *seedless* — it bootstraps the graph from the repo +
-    GitHub issues (its precondition carve-out makes it eligible exactly when the
-    graph is empty). Routing the no-epic case here is what prevents the
-    open-path deadlock: GROOM_BACKLOG against an epic-less graph has nothing to
-    reconcile and fails, so we must create epics first.
-
-    ``graph_read_failed`` distinguishes "the graph load itself failed" (e.g.
-    beads schema drift — ``BeadsSchemaDriftError``) from "the graph loaded
-    fine and is genuinely empty" (``graph_has_epics=False`` with a successful
-    read). The two used to be indistinguishable at this call site — a caught
-    ``GraphReadError`` and a truly epic-less graph both surfaced as
-    ``graph_has_epics=False`` — which let a live session's seedless
-    SEED_PROJECT re-run over a project whose real epics/tasks simply
-    couldn't be read that tick. When the read failed, this function *never*
-    routes to the seed recipe (below): it treats the graph like the open
-    recipe would (spawn the fleet; skip nothing on the strength of a guess),
-    because seeding on top of an unknown, possibly-populated graph is the
-    one truly harmful thing this bootstrap step could do, while spawning the
-    configured fleet cannot touch the beads store at all. Each agent's own
-    first play then discovers and reports the same drift on its own via the
-    normal ``BeadsSchemaDriftError``/precondition path — this function's job
-    is only to not compound the failure by guessing "empty" and reseeding.
-
-    Seed recipe:
-      1. INSTANTIATE_AGENT — first configured enabled large-tier agent.
-      2. SEED_PROJECT — runs on the large agent (against the seed input when
-         present, else seedless); agent is BUSY so the idle-agent gate holds the
-         remaining queue until the seed audit completes.
-      3. INSTANTIATE_AGENT — first configured enabled medium-tier agent of a
-         different type, giving the initial fleet cross-backend coverage.
-      4. GROOM_BACKLOG — reconciles the freshly-seeded beads graph against
-         GitHub before the PPO takes over; gated on SEED_PROJECT completing
-         (same trunk-exclusivity gate as the medium spawn, #569).
-
-    **Open recipe** — no seed input *and* the graph already has epics (a project
-    being resumed): spawn the full enabled fleet ("full open") plus a grooming
-    pass:
+    Spawns the full enabled fleet plus a grooming pass:
       1. INSTANTIATE_AGENT — one per enabled ``(agent_type, tier)`` (#11). The
          mask zeroes INSTANTIATE_AGENT for a zero-agent / no-work / non-terminal
          fleet, so the forced spawns break the catch-22. No large-only pin: the
@@ -1084,135 +1149,58 @@ def _phase_queue_agent_instantiation(
          staffing. No gate ⇒ groom dispatches the next tick onto the freshly
          idle agent, before PPO ever gets a turn.
 
-    All entries are queued with ``bypass_preconditions=True`` so the
-    deterministic recipe is not stalled by the cooldown, warmup-floor, or
-    first-play-completion gates that PPO selections still see.
+    Mask.py zeroes INSTANTIATE_AGENT in the "no agents + no work + not
+    terminal" state, so a quiet zero-agent repo idle-deadlocks; these forced
+    bootstrap overrides break that catch-22. No deterministic step here
+    touches trunk (groom is a beads↔GitHub reconcile), so #569's
+    trunk-exclusivity gating (used by the seed recipe) doesn't apply.
 
-    The GROOM_BACKLOG step in either recipe is skipped entirely when the user
-    has disabled it via ``preferences.yaml`` — the bootstrap override bypasses
-    the action mask, so the preference must be honored at enqueue time.
+    ``graph_read_failed`` also routes here rather than the seed recipe (see
+    ``_phase_queue_agent_instantiation``'s docstring) — spawning agents never
+    touches the beads store, so it's the only safe move when we don't
+    actually know whether the graph has epics. GROOM_BACKLOG may still fail
+    cleanly against the same unreadable store; that's the expected,
+    self-diagnosing outcome.
     """
+    spawned = _enqueue_full_fleet(orch, cfg)
+    _logger.info(
+        "bootstrap_open_start",
+        reason="graph_read_failed" if graph_read_failed else "no_seed_full_open",
+        open_issues_count=open_issues_count,
+        agents_spawned=spawned,
+    )
+    if spawned:
+        # Reconcile beads↔GitHub once the fleet is online, before PPO takes
+        # over. NO wait_for gate: as first agent-consumer, groom claims an
+        # agent by queue position — a gate yields a None tick that lets PPO
+        # free-select onto the idle agent first and starves groom.
+        _enqueue_groom(orch, cfg)
 
-    def _enqueue_instantiate(
-        agent_type: AgentType,
-        tier: str,
-        *,
-        wait_for_play_type: PlayType | None = None,
-    ) -> None:
-        orch._overrides.put_nowait(
-            OverrideEntry(
-                play_type=PlayType.INSTANTIATE_AGENT,
-                params=PlayParams(
-                    target_agent_type=agent_type.value,
-                    target_model_tier=tier,
-                    bypass_preconditions=True,
-                ),
-                kind=OverrideKind.BOOTSTRAP,
-                enqueue_classification=MaskClassification.INDEFINITE_WAIT,
-                wait_for_play_type=wait_for_play_type,
-            )
-        )
 
-    def _enqueue_groom(*, wait_for_play_type: PlayType | None = None) -> None:
-        # GROOM_BACKLOG is user-disableable (preferences.yaml). The bootstrap
-        # override bypasses the action mask, so the mask-level USER_DISABLED
-        # suppression can't reach it — honor the preference here or a disabled
-        # groom is force-run at cold start. Applies to both recipes.
-        if PlayType.GROOM_BACKLOG.value in cfg.preferences.disabled_plays:
-            _logger.info(
-                "bootstrap_groom_skipped",
-                reason="user_disabled",
-                wait_for_play_type=wait_for_play_type.value if wait_for_play_type else None,
-            )
-            return
-        orch._overrides.put_nowait(
-            OverrideEntry(
-                play_type=PlayType.GROOM_BACKLOG,
-                params=PlayParams(bypass_preconditions=True),
-                kind=OverrideKind.BOOTSTRAP,
-                enqueue_classification=MaskClassification.INDEFINITE_WAIT,
-                wait_for_play_type=wait_for_play_type,
-            )
-        )
+def _queue_seed_recipe(
+    *,
+    orch: Orchestrator,
+    cfg: RuntimeConfig,
+    seed_path: Path | None,
+    open_issues_count: int,
+    graph_has_epics: bool,
+) -> None:
+    """Seed recipe: explicit seed input, or seedless because the graph has no epics yet.
 
-    def _first_enabled_for_tier(
-        tier: str,
-        *,
-        exclude: frozenset[AgentType] = frozenset(),
-    ) -> AgentType | None:
-        for agent_key, agent_cfg in cfg.agents.items():
-            try:
-                agent_type = AgentType(agent_key)
-            except ValueError:
-                continue
-            if agent_type in exclude:
-                continue
-            if (
-                agent_cfg is not None
-                and not isinstance(agent_cfg, dict)
-                and getattr(agent_cfg, "enabled", False)
-                and tier in enabled_model_tiers(agent_type, agent_cfg)
-            ):
-                return agent_type
-        return None
+    Routing the no-epic case here (rather than the open recipe) avoids the
+    groom-against-empty-graph deadlock — SEED_PROJECT creates the epics groom
+    needs.
 
-    def _enqueue_full_fleet() -> int:
-        """Queue one INSTANTIATE_AGENT override per enabled ``(agent_type, tier)``.
-
-        The open recipe has no seed / first-play to serialize trunk access
-        around, so the whole configured fleet spawns from cold and the PPO
-        drives against a fully-staffed start ("full open"). The config *is* the
-        fleet definition — every enabled tier the user configured comes up.
-        Returns the number of overrides queued.
-        """
-        count = 0
-        for agent_key, agent_cfg in cfg.agents.items():
-            try:
-                agent_type = AgentType(agent_key)
-            except ValueError:
-                continue
-            if (
-                agent_cfg is None
-                or isinstance(agent_cfg, dict)
-                or not getattr(agent_cfg, "enabled", False)
-            ):
-                continue
-            for tier in enabled_model_tiers(agent_type, agent_cfg):
-                _enqueue_instantiate(agent_type, tier)
-                count += 1
-        return count
-
-    if seed_path is None and (graph_has_epics or graph_read_failed):
-        # Open-start "full open" (#11): mask.py zeroes INSTANTIATE_AGENT in the
-        # "no agents + no work + not terminal" state, so a quiet zero-agent repo
-        # idle-deadlocks. Forced bootstrap overrides break that catch-22, and we
-        # spawn the whole enabled fleet (not a single large backstop) so cheaper
-        # tiers are present immediately. No deterministic step here touches trunk
-        # (groom is a beads↔GitHub reconcile), so #569 gating doesn't apply.
-        #
-        # graph_read_failed also lands here (see the docstring) rather than the
-        # seed recipe below — spawning agents never touches the beads store, so
-        # it's the only safe move when we don't actually know whether the graph
-        # has epics. GROOM_BACKLOG may still fail cleanly against the same
-        # unreadable store; that's the expected, self-diagnosing outcome.
-        spawned = _enqueue_full_fleet()
-        _logger.info(
-            "bootstrap_open_start",
-            reason="graph_read_failed" if graph_read_failed else "no_seed_full_open",
-            open_issues_count=open_issues_count,
-            agents_spawned=spawned,
-        )
-        if spawned:
-            # Reconcile beads↔GitHub once the fleet is online, before PPO takes
-            # over. NO wait_for gate: as first agent-consumer, groom claims an
-            # agent by queue position — a gate yields a None tick that lets PPO
-            # free-select onto the idle agent first and starves groom.
-            _enqueue_groom()
-        return
-
-    # Seed recipe: explicit seed input, or seedless because the graph has no
-    # epics yet (routing the no-epic case here avoids the groom-against-empty-
-    # graph deadlock — SEED_PROJECT creates the epics groom needs).
+      1. INSTANTIATE_AGENT — first configured enabled large-tier agent.
+      2. SEED_PROJECT — runs on the large agent (against the seed input when
+         present, else seedless); agent is BUSY so the idle-agent gate holds the
+         remaining queue until the seed audit completes.
+      3. INSTANTIATE_AGENT — first configured enabled medium-tier agent of a
+         different type, giving the initial fleet cross-backend coverage.
+      4. GROOM_BACKLOG — reconciles the freshly-seeded beads graph against
+         GitHub before the PPO takes over; gated on SEED_PROJECT completing
+         (same trunk-exclusivity gate as the medium spawn, #569).
+    """
     first_play_type = PlayType.SEED_PROJECT
     _logger.info(
         "bootstrap_first_play_decided",
@@ -1225,9 +1213,9 @@ def _phase_queue_agent_instantiation(
 
     t0 = time.perf_counter()
     try:
-        large_agent_type = _first_enabled_for_tier("large")
+        large_agent_type = _first_enabled_for_tier(cfg, "large")
         if large_agent_type is not None:
-            _enqueue_instantiate(large_agent_type, "large")
+            _enqueue_instantiate(orch, large_agent_type, "large")
 
         first_play_params = PlayParams(
             seed_path=str(seed_path) if seed_path is not None else None,
@@ -1243,20 +1231,85 @@ def _phase_queue_agent_instantiation(
         )
 
         medium_agent_type = (
-            _first_enabled_for_tier("medium", exclude=frozenset({large_agent_type}))
+            _first_enabled_for_tier(cfg, "medium", exclude=frozenset({large_agent_type}))
             if large_agent_type is not None
             else None
         )
         if medium_agent_type is not None:
             # #569: gate the medium spawn behind the first-play completing — both
             # touch trunk and need exclusive access.
-            _enqueue_instantiate(medium_agent_type, "medium", wait_for_play_type=first_play_type)
+            _enqueue_instantiate(
+                orch, medium_agent_type, "medium", wait_for_play_type=first_play_type
+            )
         # Groom the seeded graph once SEED_PROJECT completes — same trunk-
         # exclusivity gate (#569). Needs an agent, so requires the large spawn.
         if large_agent_type is not None:
-            _enqueue_groom(wait_for_play_type=first_play_type)
+            _enqueue_groom(orch, cfg, wait_for_play_type=first_play_type)
     finally:
         elapsed_ms = (time.perf_counter() - t0) * 1000
         _logger.info(
             "bootstrap_step", step="queue_agent_instantiation", elapsed_ms=round(elapsed_ms, 1)
         )
+
+
+def _phase_queue_agent_instantiation(
+    *,
+    orch: Orchestrator,
+    cfg: RuntimeConfig,
+    seed_path: Path | None,
+    open_issues_count: int = 0,
+    graph_has_epics: bool = True,
+    graph_read_failed: bool = False,
+) -> None:
+    """Queue the bootstrap recipe: ``_queue_open_recipe`` or ``_queue_seed_recipe``.
+
+    The **seed recipe** (``_queue_seed_recipe``) runs whenever a seed input was
+    provided *or* the beads graph has no epics yet (``graph_has_epics`` is
+    False). In the latter case SEED_PROJECT runs *seedless* — it bootstraps the
+    graph from the repo + GitHub issues (its precondition carve-out makes it
+    eligible exactly when the graph is empty). Routing the no-epic case there
+    is what prevents the open-path deadlock: GROOM_BACKLOG against an
+    epic-less graph has nothing to reconcile and fails, so we must create
+    epics first. Otherwise the **open recipe** (``_queue_open_recipe``) runs.
+
+    ``graph_read_failed`` distinguishes "the graph load itself failed" (e.g.
+    beads schema drift — ``BeadsSchemaDriftError``) from "the graph loaded
+    fine and is genuinely empty" (``graph_has_epics=False`` with a successful
+    read). The two used to be indistinguishable at this call site — a caught
+    ``GraphReadError`` and a truly epic-less graph both surfaced as
+    ``graph_has_epics=False`` — which let a live session's seedless
+    SEED_PROJECT re-run over a project whose real epics/tasks simply
+    couldn't be read that tick. When the read failed, this function *never*
+    routes to the seed recipe: it treats the graph like the open recipe would
+    (spawn the fleet; skip nothing on the strength of a guess), because
+    seeding on top of an unknown, possibly-populated graph is the one truly
+    harmful thing this bootstrap step could do, while spawning the configured
+    fleet cannot touch the beads store at all. Each agent's own first play
+    then discovers and reports the same drift on its own via the normal
+    ``BeadsSchemaDriftError``/precondition path — this function's job is only
+    to not compound the failure by guessing "empty" and reseeding.
+
+    All entries are queued with ``bypass_preconditions=True`` so the
+    deterministic recipe is not stalled by the cooldown, warmup-floor, or
+    first-play-completion gates that PPO selections still see.
+
+    The GROOM_BACKLOG step in either recipe is skipped entirely when the user
+    has disabled it via ``preferences.yaml`` — the bootstrap override bypasses
+    the action mask, so the preference must be honored at enqueue time (see
+    ``_enqueue_groom``).
+    """
+    if seed_path is None and (graph_has_epics or graph_read_failed):
+        _queue_open_recipe(
+            orch=orch,
+            cfg=cfg,
+            open_issues_count=open_issues_count,
+            graph_read_failed=graph_read_failed,
+        )
+        return
+    _queue_seed_recipe(
+        orch=orch,
+        cfg=cfg,
+        seed_path=seed_path,
+        open_issues_count=open_issues_count,
+        graph_has_epics=graph_has_epics,
+    )

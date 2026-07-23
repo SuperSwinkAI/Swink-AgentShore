@@ -83,8 +83,8 @@ async def test_build_state_includes_in_flight_plays(tmp_path: Path) -> None:
     pending = asyncio.get_running_loop().create_future()
     done = asyncio.get_running_loop().create_future()
     done.set_result(MagicMock())
-    orch._in_flight = {"pending": pending, "done": done}
-    orch._dispatch_ctx = {
+    orch._runtime.in_flight = {"pending": pending, "done": done}
+    orch._runtime.dispatch_ctx = {
         "pending": _DispatchContext(
             dispatch_id="pending",
             play_type=PlayType.SEED_PROJECT,
@@ -166,10 +166,10 @@ async def test_budget_reserve_reached_begins_drain(tmp_path: Path) -> None:
     result = await orch._lifecycle.begin_budget_reserve_drain_if_needed(state)
 
     assert result is draining_state
-    assert orch._draining is True
-    assert orch._drain_reason == "budget_reserve_reached"
-    assert orch._end_session_report_requested is True
-    assert orch._end_session_report_open_browser is True
+    assert orch._runtime.draining is True
+    assert orch._runtime.drain_reason == "budget_reserve_reached"
+    assert orch._runtime.end_session_report_requested is True
+    assert orch._runtime.end_session_report_open_browser is True
     orch._store.update_session_state.assert_awaited_once_with("test-session", "draining")
 
 
@@ -204,8 +204,8 @@ async def test_time_reserve_reached_begins_drain(tmp_path: Path) -> None:
     result = await orch._lifecycle.begin_budget_reserve_drain_if_needed(state)
 
     assert result is draining_state
-    assert orch._draining is True
-    assert orch._drain_reason == "time_budget_reserve_reached"
+    assert orch._runtime.draining is True
+    assert orch._runtime.drain_reason == "time_budget_reserve_reached"
 
 
 def test_should_terminate_on_time_budget(monkeypatch: Any) -> None:
@@ -217,7 +217,7 @@ def test_should_terminate_on_time_budget(monkeypatch: Any) -> None:
         RuntimeConfig(), budget=BudgetConfig(time_enabled=True, time_total_minutes=1)
     )
     orch = _make_orch(Path("/tmp"), cfg)
-    orch._loop_started_at = time.monotonic() - 70  # 70 seconds ago = past 1-min cap
+    orch._runtime.loop_started_at = time.monotonic() - 70  # 70 seconds ago = past 1-min cap
     state = _make_state()
     should_stop, reason = orch._lifecycle.should_terminate(state)
     assert should_stop
@@ -505,9 +505,9 @@ async def test_skipped_completion_updates_state_without_play_event_or_ppo(tmp_pa
     cfg = RuntimeConfig()
     orch = _make_orch(tmp_path, cfg)
     provider = Provider()
-    orch._state_provider = provider
+    orch._runtime.state_provider = provider
     orch._state_builder.build_state = AsyncMock(return_value=_make_state())
-    orch._selector.on_play_completed = AsyncMock()
+    orch._runtime.selector.on_play_completed = AsyncMock()
 
     task: asyncio.Future[PlayOutcome] = asyncio.Future()
     task.set_result(
@@ -517,7 +517,7 @@ async def test_skipped_completion_updates_state_without_play_event_or_ppo(tmp_pa
             error="unresolved parameters",
         )
     )
-    orch._dispatch_ctx = {
+    orch._runtime.dispatch_ctx = {
         "skip": _DispatchContext(
             dispatch_id="skip",
             play_type=PlayType.MERGE_PR,
@@ -532,7 +532,7 @@ async def test_skipped_completion_updates_state_without_play_event_or_ppo(tmp_pa
 
     assert provider.play_completed == 0
     assert provider.state_updates == 1
-    orch._selector.on_play_completed.assert_not_awaited()
+    orch._runtime.selector.on_play_completed.assert_not_awaited()
     orch._store.record_trajectory_snapshot.assert_not_awaited()
 
 
@@ -562,7 +562,7 @@ async def test_orchestrator_records_trajectory_snapshot_on_success(tmp_path: Pat
             play_id=7,
         )
     )
-    orch._dispatch_ctx = {
+    orch._runtime.dispatch_ctx = {
         "ok": _DispatchContext(
             dispatch_id="ok",
             play_type=PlayType.ISSUE_PICKUP,
@@ -599,7 +599,7 @@ async def test_orchestrator_skips_trajectory_snapshot_on_failure(tmp_path: Path)
             dollar_cost=0.1,
         )
     )
-    orch._dispatch_ctx = {
+    orch._runtime.dispatch_ctx = {
         "fail": _DispatchContext(
             dispatch_id="fail",
             play_type=PlayType.ISSUE_PICKUP,
@@ -643,11 +643,11 @@ async def test_override_queue_drains_one_per_iteration(tmp_path: Path) -> None:
         return mock_outcome
 
     orch._executor.execute = mock_execute
-    orch._selector.select = AsyncMock(return_value=None)
-    orch._selector.consume_pending = MagicMock(return_value=None)
-    orch._selector.should_update = MagicMock(return_value=False)
-    orch._selector.should_checkpoint = MagicMock(return_value=False)
-    orch._selector.on_play_completed = AsyncMock()
+    orch._runtime.selector.select = AsyncMock(return_value=None)
+    orch._runtime.selector.consume_pending = MagicMock(return_value=None)
+    orch._runtime.selector.should_update = MagicMock(return_value=False)
+    orch._runtime.selector.should_checkpoint = MagicMock(return_value=False)
+    orch._runtime.selector.on_play_completed = AsyncMock()
 
     orch._store.get_play_history = AsyncMock(return_value=[])
     orch._store.get_open_issues = AsyncMock(return_value=[])
@@ -672,7 +672,7 @@ async def test_override_queue_drains_one_per_iteration(tmp_path: Path) -> None:
         select_calls += 1
         return None
 
-    orch._selector.select = mock_select_after_overrides
+    orch._runtime.selector.select = mock_select_after_overrides
 
     await orch.run_until_idle()
 

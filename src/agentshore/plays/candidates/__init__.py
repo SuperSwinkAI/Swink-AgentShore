@@ -9,7 +9,6 @@ from dataclasses import asdict, dataclass, replace
 from typing import TYPE_CHECKING
 
 from agentshore.agents._selection import allowed_tiers_for
-from agentshore.agents.capabilities import AGENT_CAPABILITIES
 from agentshore.agents.model_tiers import DEFAULT_MODEL_TIER
 from agentshore.beads import BeadStatus, ready_tasks
 from agentshore.cooldown import Clock, Cooldown, CooldownSpec
@@ -1041,14 +1040,18 @@ class PlayCandidateService:
 
 
 def idle_can_review_agents(state: OrchestratorState) -> list[AgentSnapshot]:
-    """Idle, can_review, tier-eligible agents sorted for deterministic pinning."""
+    """Idle, tier-eligible agents sorted for deterministic pinning.
+
+    Every agent type is capable of review (``can_review`` was always ``True``
+    in ``AGENT_CAPABILITIES`` — see the wave-2 TNQA capability-flag removal),
+    so this no longer filters on it.
+    """
 
     allowed = allowed_tiers_for(PlayType.CODE_REVIEW) or frozenset()
     eligible = [
         agent
         for agent in state.agents
         if agent.status == AgentStatus.IDLE
-        and bool(AGENT_CAPABILITIES.get(agent.agent_type, {}).get("can_review", False))
         and (agent.model_tier or DEFAULT_MODEL_TIER) in allowed
         # Circuit breaker (#22): don't pin a review to a known-dead reviewer
         # (circuit-breaker case — 0 successes, repeated timeouts).

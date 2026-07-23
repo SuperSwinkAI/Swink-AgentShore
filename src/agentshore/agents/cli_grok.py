@@ -81,9 +81,11 @@ def build_argv(
     model: str | None,
     reasoning_effort: str | None,
     extra_flags: tuple[str, ...],
+    context_path: str | None = None,
     project_dir: str | None,
     prompt_on_stdin: bool,
     prompt_file: str | None = None,
+    model_tier: str | None = None,
 ) -> list[str]:
     """Return argv for one non-interactive Grok CLI invocation.
 
@@ -95,6 +97,10 @@ def build_argv(
     (Windows arg-length limits), it writes the prompt to a temp file and passes
     its path as *prompt_file*; Grok reads it via ``--prompt-file``. Otherwise
     the prompt is passed directly via ``-p`` — never as an empty string.
+
+    *context_path* and *model_tier* are accepted only for signature parity
+    with the shared ``cli.argv._ArgvBuilder`` registry and are ignored: the
+    Grok CLI has no system-prompt-file flag and no tier_map concept.
     """
     resolved_binary = binary or default_binary()
     # Hard-pinned to grok-4.5; cli_model warns + collapses any other value.
@@ -136,6 +142,7 @@ def build_resume_argv(
     project_dir: str | None,
     prompt_on_stdin: bool,
     prompt_file: str | None = None,
+    model_tier: str | None = None,
 ) -> list[str]:
     """Return argv for a Grok JSON-retry RESUME dispatch (``-r <id>``).
 
@@ -143,7 +150,8 @@ def build_resume_argv(
     the prior session and emits the result block it omitted. ``--no-memory`` is
     retained from :func:`build_argv`: session resume re-enters a persisted
     transcript and is independent of Grok's cross-session *memory* feature.
-    Narrow single-shot use only (desktop-dy2j).
+    Narrow single-shot use only (desktop-dy2j). *model_tier* is accepted only
+    for signature parity with the shared registry and is ignored.
     """
     argv = build_argv(
         prompt=prompt,
@@ -154,6 +162,7 @@ def build_resume_argv(
         project_dir=project_dir,
         prompt_on_stdin=prompt_on_stdin,
         prompt_file=prompt_file,
+        model_tier=model_tier,
     )
     # argv[0] is the binary; inject -r <id> directly after it.
     return [argv[0], "-r", resume_session_id, *argv[1:]]

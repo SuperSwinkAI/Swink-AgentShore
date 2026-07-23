@@ -1,5 +1,6 @@
 import type { Rect } from "../../../office/layout";
 import type { RenderContext } from "../context";
+import { CYAN_ACCENT, GREEN_ACCENT } from "./palettes";
 import {
   drawPolygon,
   drawRaisedBox,
@@ -18,7 +19,7 @@ export function drawGridZenRechargeMatV2(
 ): void {
   const topZ = rctx.surfaceZ.value;
   const dark = rctx.theme === "dark";
-  const accent = dark ? "#2BE0B1" : "#129970";
+  const accent = GREEN_ACCENT[rctx.theme];
   const palette = dark
     ? {
         top: "rgba(16, 70, 75, 0.96)",
@@ -157,7 +158,7 @@ export function drawGridZenRechargePylonClusterV2(
 ): void {
   const topZ = rctx.surfaceZ.value;
   const dark = rctx.theme === "dark";
-  const accent = dark ? "#39D9FF" : "#008BBC";
+  const accent = CYAN_ACCENT[rctx.theme];
   const base = dark ? "rgba(8, 49, 58, 0.92)" : "rgba(211, 252, 255, 0.92)";
 
   drawRaisedBox(
@@ -366,8 +367,8 @@ export function drawGridZenVendingMachineV2(
 ): void {
   const topZ = rctx.surfaceZ.value;
   const dark = rctx.theme === "dark";
-  const accent = dark ? "#2BE0B1" : "#129970";
-  const secondary = dark ? "#39D9FF" : "#008BBC";
+  const accent = GREEN_ACCENT[rctx.theme];
+  const secondary = CYAN_ACCENT[rctx.theme];
   const colors = dark
     ? {
         top: "rgba(15, 77, 74, 0.98)",

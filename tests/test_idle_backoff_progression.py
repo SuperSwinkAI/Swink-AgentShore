@@ -31,7 +31,7 @@ def test_idle_streak_advances_through_backoff_table(tmp_path: Path) -> None:
     for _ in range(len(_IDLE_BACKOFF_SECONDS) + 5):
         # Simulate the loop branch on selection is None: log+increment+wait.
         observed_waits.append(orch._loop.idle_backoff())
-        orch._idle_streak += 1
+        orch._runtime.idle_streak += 1
 
     # First N values match the table in order.
     for i, expected in enumerate(_IDLE_BACKOFF_SECONDS):
@@ -49,13 +49,13 @@ def test_idle_streak_reaches_index_3_and_matches_table(tmp_path: Path) -> None:
     ``_IDLE_BACKOFF_SECONDS[3]``."""
     orch = _orch(tmp_path)
     for _ in range(3):
-        orch._idle_streak += 1
-    assert orch._idle_streak >= 3
+        orch._runtime.idle_streak += 1
+    assert orch._runtime.idle_streak >= 3
     assert orch._loop.idle_backoff() == _IDLE_BACKOFF_SECONDS[3]
 
 
 def test_idle_backoff_clamps_at_ceiling_for_long_idles(tmp_path: Path) -> None:
     """The streak can run arbitrarily long without the wait crossing the ceiling."""
     orch = _orch(tmp_path)
-    orch._idle_streak = 10_000
+    orch._runtime.idle_streak = 10_000
     assert orch._loop.idle_backoff() == _IDLE_BACKOFF_SECONDS[-1]

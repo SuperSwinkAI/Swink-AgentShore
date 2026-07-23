@@ -1,14 +1,16 @@
 //! Tauri app entry point: state registration, the JSON-RPC bridge to the
 //! Python sidecar (`jsonrpc_call`), session-facing commands, and `run()`
 //! wiring. Window geometry, UI-state persistence, quit confirmation, the
-//! heartbeat watchdog, the app menu, and Help-menu diagnostics each live in
-//! their own module — see `window`, `ui_state`, `quit`, `heartbeat`, `menu`,
-//! `diagnostics`.
+//! heartbeat watchdog, the app menu, Help-menu diagnostics, and the
+//! session-lifecycle side effects `jsonrpc_call` and the sidecar's
+//! notification handler share each live in their own module — see `window`,
+//! `ui_state`, `quit`, `heartbeat`, `menu`, `diagnostics`, `session_state`.
 
 use serde::Serialize;
 use serde_json::Value;
 use std::path::Path;
 use std::path::PathBuf;
+#[cfg(not(test))]
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 #[cfg(not(test))]
@@ -24,6 +26,7 @@ mod menu;
 pub mod methods;
 mod quit;
 pub mod readiness;
+mod session_state;
 pub mod sidecar;
 mod sidecar_env;
 mod sidecar_pid;
@@ -142,43 +145,9 @@ async fn jsonrpc_call(
     // is always true at this point (transport errors propagated earlier via `??`).
     if let Ok(ref rpc_value) = result {
         if rpc_value.get("error").is_none() {
-            let holder = app.state::<activity::ActivityHolder>();
             match method_for_hook.as_str() {
-                methods::SESSION_START => {
-                    holder.acquire("AgentShore session active");
-                    // Re-arm the ESR-ready/draining gates for the new session
-                    // (heartbeat watchdog, #274 follow-up) — a prior session's
-                    // disarm must not suppress wedge detection for this one.
-                    let heartbeat = app.state::<WebviewHeartbeat>();
-                    heartbeat.esr_ready.store(false, Ordering::SeqCst);
-                    heartbeat.draining.store(false, Ordering::SeqCst);
-                    // Cache session info for current_session() + reattach (#274).
-                    // dashboardUrl shape: http://{host}:{port}/ (mirrors
-                    // StartingProgressRoute.tsx dashboardUrlFromEndpoint ~58-69).
-                    let dashboard_url = rpc_value.get("ipc_endpoint").and_then(|ep| {
-                        let host = ep.get("host").and_then(Value::as_str)?;
-                        let port = ep.get("port").and_then(Value::as_u64)?;
-                        Some(format!("http://{}:{}/", host, port))
-                    });
-                    let session_id = rpc_value
-                        .get("session_id")
-                        .and_then(Value::as_str)
-                        .map(str::to_string);
-                    if let (Some(url), Some(id)) = (dashboard_url, session_id) {
-                        if let Ok(mut guard) = app.state::<SessionInfoHolder>().0.lock() {
-                            *guard = Some(SessionInfo {
-                                dashboard_url: url,
-                                session_id: id,
-                            });
-                        }
-                    }
-                }
-                methods::SESSION_STOP => {
-                    holder.release();
-                    if let Ok(mut guard) = app.state::<SessionInfoHolder>().0.lock() {
-                        *guard = None;
-                    }
-                }
+                methods::SESSION_START => session_state::SessionState::on_session_started(&app, rpc_value),
+                methods::SESSION_STOP => session_state::SessionState::on_session_stopped(&app),
                 _ => {}
             }
         }

@@ -15,12 +15,15 @@ import os
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TypedDict
+from typing import TYPE_CHECKING, TypedDict
 
 from agentshore import subprocess_env
 from agentshore.beads import resolve_bd_binary
 from agentshore.command import CommandResult, git_sync
 from agentshore.config.models import TimelapseConfig
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 # Internal project.* error codes (mapped to public codes by the dispatcher).
 # ERR_PROJECT_NOT_ACTIVE is remapped to server.ERR_NO_ACTIVE_PROJECT (-32011)
@@ -382,6 +385,43 @@ def _build_branch_rows(
     return rows
 
 
+def _parse_ref_listing(
+    local_res: CommandResult, remote_res: CommandResult
+) -> tuple[list[str], list[str]]:
+    """Parse a ``git for-each-ref`` local/remote-tracking probe pair.
+
+    Shared by :func:`_list_branches_sync` and the ``refresh=True`` path in
+    :func:`branches`: both run the identical pair of ``for-each-ref`` probes
+    (local ``refs/heads/`` and remote ``refs/remotes/origin/``) and need the
+    same order-preserving local dedup plus ``origin/`` prefix stripping.
+    Returns ``(local_order, remote_names)``; a failed probe (non-zero
+    returncode) contributes an empty list for that side.
+    """
+    local_order: list[str] = []
+    remote_names: list[str] = []
+    local_seen: set[str] = set()
+
+    if local_res.returncode == 0:
+        for line in local_res.stdout.splitlines():
+            ref = line.strip()
+            if not ref or ref == "origin":
+                continue
+            if ref not in local_seen:
+                local_seen.add(ref)
+                local_order.append(ref)
+
+    if remote_res.returncode == 0:
+        for line in remote_res.stdout.splitlines():
+            ref = line.strip()
+            if not ref or not ref.startswith("origin/"):
+                continue
+            name = ref[len("origin/") :]
+            if name and name != "HEAD":
+                remote_names.append(name)
+
+    return local_order, remote_names
+
+
 def _list_branches_sync(path: Path, deadline: float | None = None) -> list[_BranchRow]:
     """List branches via ``git for-each-ref`` (synchronous; no fetch).
 
@@ -409,27 +449,7 @@ def _list_branches_sync(path: Path, deadline: float | None = None) -> list[_Bran
         timeout_seconds=_remaining(),
     )
 
-    local_order: list[str] = []
-    remote_names: list[str] = []
-    local_seen: set[str] = set()
-
-    if local_res.returncode == 0:
-        for line in local_res.stdout.splitlines():
-            ref = line.strip()
-            if not ref or ref == "origin":
-                continue
-            if ref not in local_seen:
-                local_seen.add(ref)
-                local_order.append(ref)
-
-    if remote_res.returncode == 0:
-        for line in remote_res.stdout.splitlines():
-            ref = line.strip()
-            if not ref or not ref.startswith("origin/"):
-                continue
-            name = ref[len("origin/") :]
-            if name and name != "HEAD":
-                remote_names.append(name)
+    local_order, remote_names = _parse_ref_listing(local_res, remote_res)
 
     # No deadline passed to _build_branch_rows — ahead/behind stay None
     return _build_branch_rows(
@@ -493,27 +513,7 @@ async def branches(*, refresh: bool = False) -> list[_BranchRow]:
             timeout_seconds=_rem(),
         )
 
-        local_seen: set[str] = set()
-        local_order: list[str] = []
-        remote_names: list[str] = []
-
-        if local_res.returncode == 0:
-            for line in local_res.stdout.splitlines():
-                ref = line.strip()
-                if not ref or ref == "origin":
-                    continue
-                if ref not in local_seen:
-                    local_seen.add(ref)
-                    local_order.append(ref)
-
-        if remote_res.returncode == 0:
-            for line in remote_res.stdout.splitlines():
-                ref = line.strip()
-                if not ref or not ref.startswith("origin/"):
-                    continue
-                name = ref[len("origin/") :]
-                if name and name != "HEAD":
-                    remote_names.append(name)
+        local_order, remote_names = _parse_ref_listing(local_res, remote_res)
 
         return _build_branch_rows(
             path,
@@ -540,6 +540,31 @@ def _atomic_write_text(path: Path, content: str) -> None:
         with contextlib.suppress(OSError):
             os.unlink(tmp_path)
         raise
+
+
+def _persist_yaml_patch(
+    path: Path,
+    write_fn: Callable[..., str],
+    *args: object,
+) -> Path:
+    """Read agentshore.yaml (or empty), apply *write_fn*, and atomically persist it.
+
+    Shared by every ``set_*`` handler below: they differ only in which
+    ``write_*`` function (``yaml_edits.py``) and args to call. A
+    ``ProjectError`` raised by *write_fn*/validation propagates unwrapped;
+    any other exception is wrapped into a ``ProjectError`` (code -32003) so
+    callers never see a raw I/O/YAML exception.
+    """
+    yaml_path = path / "agentshore.yaml"
+    try:
+        existing = yaml_path.read_text(encoding="utf-8") if yaml_path.exists() else ""
+        new_text = write_fn(existing, *args)
+        _atomic_write_text(yaml_path, new_text)
+    except ProjectError:
+        raise
+    except Exception as exc:
+        raise ProjectError(f"agentshore.yaml update failed: {exc}", code=-32003) from exc
+    return yaml_path
 
 
 def set_target_branch(name: str) -> dict[str, object]:
@@ -586,13 +611,7 @@ def set_target_branch(name: str) -> dict[str, object]:
             code=-32002,
         )
 
-    yaml_path = path / "agentshore.yaml"
-    try:
-        existing = yaml_path.read_text(encoding="utf-8") if yaml_path.exists() else ""
-        new_text = _write(existing, name)
-        _atomic_write_text(yaml_path, new_text)
-    except Exception as exc:
-        raise ProjectError(f"agentshore.yaml update failed: {exc}", code=-32003) from exc
+    yaml_path = _persist_yaml_patch(path, _write, name)
     return {"target_branch": name, "yaml_path": str(yaml_path)}
 
 
@@ -628,15 +647,7 @@ def set_seed_paths(payload: object) -> dict[str, object]:
             raise ProjectError(f"seed path not found: {s}", code=-32002)
         seed_paths.append(s)
 
-    yaml_path = path / "agentshore.yaml"
-    try:
-        existing = yaml_path.read_text(encoding="utf-8") if yaml_path.exists() else ""
-        new_text = _write(existing, seed_paths)
-        _atomic_write_text(yaml_path, new_text)
-    except ProjectError:
-        raise
-    except Exception as exc:
-        raise ProjectError(f"agentshore.yaml update failed: {exc}", code=-32003) from exc
+    yaml_path = _persist_yaml_patch(path, _write, seed_paths)
     return {"seed_paths": seed_paths, "yaml_path": str(yaml_path)}
 
 
@@ -660,15 +671,7 @@ def set_budget(payload: object) -> dict[str, object]:
 
     path = _require_active()
     budget = validate_budget_payload(payload, exc_class=ProjectError)
-    yaml_path = path / "agentshore.yaml"
-    try:
-        existing = yaml_path.read_text(encoding="utf-8") if yaml_path.exists() else ""
-        new_text = _write(existing, budget)
-        _atomic_write_text(yaml_path, new_text)
-    except ProjectError:
-        raise
-    except Exception as exc:
-        raise ProjectError(f"agentshore.yaml update failed: {exc}", code=-32003) from exc
+    yaml_path = _persist_yaml_patch(path, _write, budget)
     return {
         "budget": {
             "enabled": budget.enabled,
@@ -697,15 +700,7 @@ def set_trusted_issue_enforcement(payload: object) -> dict[str, object]:
     if not isinstance(payload, bool):
         raise ProjectError("enabled must be a boolean")
     enabled = payload
-    yaml_path = path / "agentshore.yaml"
-    try:
-        existing = yaml_path.read_text(encoding="utf-8") if yaml_path.exists() else ""
-        new_text = _write(existing, enabled)
-        _atomic_write_text(yaml_path, new_text)
-    except ProjectError:
-        raise
-    except Exception as exc:
-        raise ProjectError(f"agentshore.yaml update failed: {exc}", code=-32003) from exc
+    yaml_path = _persist_yaml_patch(path, _write, enabled)
     return {"enabled": enabled, "yaml_path": str(yaml_path)}
 
 
@@ -738,16 +733,7 @@ def _persist_timelapse(path: Path, timelapse: TimelapseConfig) -> str:
     """Write the ``timelapse`` block into *path*/agentshore.yaml; return yaml path."""
     from agentshore.sidecar.yaml_edits import write_timelapse as _write
 
-    yaml_path = path / "agentshore.yaml"
-    try:
-        existing = yaml_path.read_text(encoding="utf-8") if yaml_path.exists() else ""
-        new_text = _write(existing, timelapse)
-        _atomic_write_text(yaml_path, new_text)
-    except ProjectError:
-        raise
-    except Exception as exc:
-        raise ProjectError(f"agentshore.yaml update failed: {exc}", code=-32003) from exc
-    return str(yaml_path)
+    return str(_persist_yaml_patch(path, _write, timelapse))
 
 
 def set_timelapse(payload: object) -> dict[str, object]:

@@ -1,6 +1,7 @@
 import type { Rect } from "../../../office/layout";
 import type { RenderContext, ScreenPoint } from "../context";
 import { drawFurnitureBase } from "./index";
+import { CYAN_ACCENT, WORKBENCH_CASE_PALETTES } from "./palettes";
 import {
   drawPolygon,
   drawRaisedBox,
@@ -58,14 +59,9 @@ export function drawAssemblyBench(rctx: RenderContext, rect: Rect): void {
   const gridLight = rctx.theme === "light";
   const palette = gridDark
     ? {
-        baseFill: "#0F3140",
-        baseTop: "#16495C",
-        baseStroke: "rgba(57, 217, 255, 0.88)",
-        surface: "rgba(125, 230, 255, 0.24)",
-        surfaceStroke: "rgba(57, 217, 255, 0.82)",
-        frontRail: "#04151C",
+        ...WORKBENCH_CASE_PALETTES.dark,
         mat: "#0B2F40",
-        matStroke: "#39D9FF",
+        matStroke: CYAN_ACCENT.dark,
         matGrid: "rgba(57, 217, 255, 0.24)",
         boardStroke: "#F4D44D",
         drawer: "#061925",
@@ -73,14 +69,9 @@ export function drawAssemblyBench(rctx: RenderContext, rect: Rect): void {
       }
     : gridLight
       ? {
-          baseFill: "#72D0E4",
-          baseTop: "#DDFBFF",
-          baseStroke: "rgba(0, 139, 188, 0.68)",
-          surface: "rgba(244, 255, 255, 0.72)",
-          surfaceStroke: "rgba(0, 139, 188, 0.62)",
-          frontRail: "#168AA5",
+          ...WORKBENCH_CASE_PALETTES.light,
           mat: "#E7FFFF",
-          matStroke: "#008BBC",
+          matStroke: CYAN_ACCENT.light,
           matGrid: "rgba(0, 139, 188, 0.22)",
           boardStroke: "#D99B21",
           drawer: "#0F6F88",
@@ -280,22 +271,12 @@ export function drawPrototypeBench(rctx: RenderContext, rect: Rect): void {
   const gridLight = rctx.theme === "light";
   const palette = gridDark
     ? {
-        baseFill: "#0F3140",
-        baseTop: "#16495C",
-        baseStroke: "rgba(57, 217, 255, 0.88)",
-        surface: "rgba(125, 230, 255, 0.24)",
-        surfaceStroke: "rgba(57, 217, 255, 0.82)",
-        frontRail: "#04151C",
+        ...WORKBENCH_CASE_PALETTES.dark,
         leg: "#061925",
       }
     : gridLight
       ? {
-          baseFill: "#72D0E4",
-          baseTop: "#DDFBFF",
-          baseStroke: "rgba(0, 139, 188, 0.68)",
-          surface: "rgba(244, 255, 255, 0.72)",
-          surfaceStroke: "rgba(0, 139, 188, 0.62)",
-          frontRail: "#168AA5",
+          ...WORKBENCH_CASE_PALETTES.light,
           leg: "#0F6F88",
         }
       : {
@@ -472,35 +453,25 @@ export function drawGridElectronicsBench(
   const dark = rctx.theme === "dark";
   const palette = dark
     ? {
-        baseFill: "#0F3140",
-        baseTop: "#16495C",
-        baseStroke: "rgba(57, 217, 255, 0.88)",
-        surface: "rgba(125, 230, 255, 0.24)",
-        surfaceStroke: "rgba(57, 217, 255, 0.82)",
+        ...WORKBENCH_CASE_PALETTES.dark,
         panel: "#061925",
         panelGrid: "rgba(57, 217, 255, 0.28)",
-        cyan: "#39D9FF",
+        cyan: CYAN_ACCENT.dark,
         green: "#2BE0B1",
         yellow: "#F4D44D",
         orange: "#FF9146",
         violet: "#B880FF",
-        frontRail: "#04151C",
         drawer: "#081D27",
       }
     : {
-        baseFill: "#72D0E4",
-        baseTop: "#DDFBFF",
-        baseStroke: "rgba(0, 139, 188, 0.68)",
-        surface: "rgba(244, 255, 255, 0.72)",
-        surfaceStroke: "rgba(0, 139, 188, 0.62)",
+        ...WORKBENCH_CASE_PALETTES.light,
         panel: "#E7FFFF",
         panelGrid: "rgba(0, 139, 188, 0.24)",
-        cyan: "#008BBC",
+        cyan: CYAN_ACCENT.light,
         green: "#2BE0B1",
         yellow: "#F4D44D",
         orange: "#FF9146",
         violet: "#7B42D9",
-        frontRail: "#168AA5",
         drawer: "#0F6F88",
       };
 

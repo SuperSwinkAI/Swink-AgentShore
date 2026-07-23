@@ -18,7 +18,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Protocol
 
-from agentshore.agents.capabilities import AGENT_CAPABILITIES
 from agentshore.errors import ErrorClass
 from agentshore.rl.mask_reason import MaskClassification, MaskReason, MaskSource
 from agentshore.state import AgentStatus, PlayType, is_agent_circuit_broken
@@ -34,10 +33,14 @@ class Gate(Protocol):
 
 
 class CapabilityGate:
-    """Mask unless an IDLE non-rate-limited agent has the named capability.
+    """Mask unless an IDLE, non-rate-limited, non-circuit-broken agent exists.
 
-    Shared with ``SkillBackedPlay._capability_check`` so behavior and mask
-    reason text stay consistent across the migration.
+    ``capability`` no longer filters agents — every ``AGENT_CAPABILITIES``
+    ``can_*`` flag was ``True`` for every agent type (no provider ever failed
+    this check), so the per-type gating was removed as dead weight. The name
+    is kept as the declared requirement for the reason text and as
+    documentation of intent at each call site (e.g. ``CapabilityGate
+    ("can_review")`` on ``code_review``).
     """
 
     __slots__ = ("capability",)
@@ -63,7 +66,6 @@ class CapabilityGate:
                 timeout_count=a.timeout_count,
                 consecutive_timeouts=a.consecutive_timeouts,
             )
-            and bool(AGENT_CAPABILITIES.get(a.agent_type, {}).get(self.capability, False))
         ]
         if capable:
             return None

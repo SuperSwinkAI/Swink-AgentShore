@@ -125,6 +125,12 @@ def test_serialize_state_includes_human_feedback_count() -> None:
 
 
 def test_serialize_state_includes_work_availability_counts() -> None:
+    """The serializer no longer computes eligibility itself (TNQA wave-2): it
+    just reads the precomputed field the state builder populates alongside
+    action_mask/mask_reasons — so build the candidate plan here, exactly as
+    ``core.mixins.state.annotate_action_mask`` does in production."""
+    from agentshore.plays.candidates import build_candidate_plan
+
     issue = IssueSnapshot(
         issue_number=209,
         title="Blocked issue",
@@ -133,13 +139,23 @@ def test_serialize_state_includes_work_availability_counts() -> None:
         labels=["agentshore/blocked", "agentshore/disallowed"],
         source=None,
     )
-    result = serialize_state(_minimal_state(open_issues=[issue]))
+    state = _minimal_state(open_issues=[issue])
+    state.work_availability = build_candidate_plan(state).work_availability
+    result = serialize_state(state)
 
     availability = result["work_availability"]
     assert isinstance(availability, dict)
     assert availability["github_open_issue_count"] == 1
     assert availability["workable_issue_count"] == 0
     assert "issue_availability" not in result
+
+
+def test_serialize_state_work_availability_is_none_when_not_populated() -> None:
+    """Unlike the old inline-compute behavior, a state that never went through
+    the builder's annotate_action_mask (e.g. registry unavailable) serializes
+    work_availability as null — mirroring action_mask's empty-tuple default."""
+    result = serialize_state(_minimal_state())
+    assert result["work_availability"] is None
 
 
 def test_serialize_paused_session_state_as_string() -> None:

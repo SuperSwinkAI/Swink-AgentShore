@@ -1,6 +1,6 @@
 """Regression: the sidecar must boot the orchestrator with a config_path.
 
-Without it, ``orch._config_path`` is None and ``Orchestrator.set_budget(
+Without it, ``orch._runtime.config_path`` is None and ``Orchestrator.set_budget(
 persist=True)`` silently no-ops — a desktop "Adjust Budget…" change would not
 survive a restart (it only lived as an in-memory override). See #41/#43.
 """

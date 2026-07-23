@@ -26,6 +26,59 @@ from agentshore.rl.observation import OBSERVATION_DIM, OBSERVATION_VERSION
 _logger = structlog.get_logger(__name__)
 
 
+def _masked_categorical_act(
+    logits: torch.Tensor,
+    mask: torch.Tensor,
+    *,
+    greedy: bool,
+    empty_mask_msg: str,
+) -> tuple[int, float]:
+    """Sample (or greedily pick) one index from ``logits`` restricted to ``mask``.
+
+    Shared by ``ActorCritic.act`` and ``ActorCritic.act_config`` — both mask
+    invalid entries to ``-inf``, guard against an all-masked input, then either
+    argmax or multinomial-sample and read back the log-prob of the pick.
+    """
+    masked_logits = logits.clone()
+    masked_logits[~mask] = float("-inf")
+
+    if not mask.any():
+        raise RuntimeError(empty_mask_msg)
+
+    if greedy:
+        idx = int(masked_logits.argmax().item())
+    else:
+        probs = torch.softmax(masked_logits, dim=0)
+        idx = int(torch.multinomial(probs, 1).item())
+
+    log_prob = float(torch.log_softmax(masked_logits, dim=0)[idx].item())
+    return idx, log_prob
+
+
+def _masked_categorical_evaluate(
+    logits: torch.Tensor,
+    actions: torch.Tensor,
+    mask: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Batched (log_probs, entropy) for ``actions`` under ``logits`` restricted to ``mask``.
+
+    Shared by ``ActorCritic.evaluate`` and ``ActorCritic.evaluate_config`` —
+    same masking-then-softmax strategy, entropy computed only over valid
+    (unmasked) actions to avoid ``-inf * 0 = NaN``.
+    """
+    masked_logits = logits.clone()
+    masked_logits[~mask] = float("-inf")
+
+    log_probs_all = torch.log_softmax(masked_logits, dim=-1)
+    log_probs = log_probs_all.gather(1, actions.unsqueeze(1)).squeeze(1)
+
+    probs = torch.softmax(masked_logits, dim=-1)
+    log_p_safe = torch.where(mask, log_probs_all, torch.zeros_like(log_probs_all))
+    entropy = -(probs * log_p_safe).sum(dim=-1)
+
+    return log_probs, entropy
+
+
 class IncompatibleCheckpointError(ValueError):
     """Raised when a checkpoint's version metadata doesn't match the current build.
 
@@ -105,20 +158,12 @@ class ActorCritic(nn.Module):
             logits = logits.squeeze(0)
             v = v.squeeze()
 
-            # Apply mask: set forbidden logits to -inf
-            masked_logits = logits.clone()
-            masked_logits[~mask] = float("-inf")
-
-            if not mask.any():
-                raise RuntimeError("All actions are masked — cannot select action")
-
-            if greedy:
-                action = int(masked_logits.argmax().item())
-            else:
-                probs = torch.softmax(masked_logits, dim=0)
-                action = int(torch.multinomial(probs, 1).item())
-
-            log_prob = float(torch.log_softmax(masked_logits, dim=0)[action].item())
+            action, log_prob = _masked_categorical_act(
+                logits,
+                mask,
+                greedy=greedy,
+                empty_mask_msg="All actions are masked — cannot select action",
+            )
             value = float(v.item())
 
         return action, log_prob, value
@@ -136,19 +181,7 @@ class ActorCritic(nn.Module):
         mask:    (batch, num_actions) bool
         """
         logits, values = self.forward(obs)
-
-        # Apply mask per row
-        masked_logits = logits.clone()
-        masked_logits[~mask] = float("-inf")
-
-        log_probs_all = torch.log_softmax(masked_logits, dim=-1)
-        log_probs = log_probs_all.gather(1, actions.unsqueeze(1)).squeeze(1)
-
-        probs = torch.softmax(masked_logits, dim=-1)
-        # Entropy: only over valid actions (avoid -inf * 0 = NaN)
-        log_p_safe = torch.where(mask, log_probs_all, torch.zeros_like(log_probs_all))
-        entropy = -(probs * log_p_safe).sum(dim=-1)
-
+        log_probs, entropy = _masked_categorical_evaluate(logits, actions, mask)
         return log_probs, values.squeeze(-1), entropy
 
     def value(self, obs: torch.Tensor) -> float:
@@ -178,20 +211,12 @@ class ActorCritic(nn.Module):
             logits = self.forward_config(obs.unsqueeze(0)).squeeze(0)
             # Trim padding (the head may be wider than num_configs by 1).
             logits = logits[: self._num_configs]
-            masked_logits = logits.clone()
-            masked_logits[~mask] = float("-inf")
-
-            if not mask.any():
-                msg = "All config slots are masked — cannot select config"
-                raise RuntimeError(msg)
-
-            if greedy:
-                idx = int(masked_logits.argmax().item())
-            else:
-                probs = torch.softmax(masked_logits, dim=0)
-                idx = int(torch.multinomial(probs, 1).item())
-
-            log_prob = float(torch.log_softmax(masked_logits, dim=0)[idx].item())
+            idx, log_prob = _masked_categorical_act(
+                logits,
+                mask,
+                greedy=greedy,
+                empty_mask_msg="All config slots are masked — cannot select config",
+            )
 
         return idx, log_prob
 
@@ -213,17 +238,7 @@ class ActorCritic(nn.Module):
             msg = "evaluate_config called on a policy with num_configs == 0"
             raise RuntimeError(msg)
         logits = self.forward_config(obs)[:, : self._num_configs]
-        masked_logits = logits.clone()
-        masked_logits[~masks] = float("-inf")
-
-        log_probs_all = torch.log_softmax(masked_logits, dim=-1)
-        log_probs = log_probs_all.gather(1, config_actions.unsqueeze(1)).squeeze(1)
-
-        probs = torch.softmax(masked_logits, dim=-1)
-        log_p_safe = torch.where(masks, log_probs_all, torch.zeros_like(log_probs_all))
-        entropy = -(probs * log_p_safe).sum(dim=-1)
-
-        return log_probs, entropy
+        return _masked_categorical_evaluate(logits, config_actions, masks)
 
     def save(self, path: Path) -> None:
         """Atomically write weights + metadata to *path*."""

@@ -17,12 +17,17 @@ from agentshore.budget import (
     time_budget_reserve_reached,
 )
 from agentshore.config.models import BudgetConfig
-from agentshore.core.helpers import _emit_weights_dir_inventory, _logger, _ppo_selector_cls
+from agentshore.core.helpers import (
+    _emit_weights_dir_inventory,
+    _logger,
+    _ppo_selector_cls,
+    _SafeCallHost,
+)
 from agentshore.errors import OrchestratorError
 from agentshore.paths import project_reports_dir
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+    from collections.abc import Callable
     from pathlib import Path
 
     from agentshore.agents.manager import AgentManager
@@ -43,17 +48,16 @@ SHUTDOWN_GRACE_PERIOD_SECONDS = 5.0
 _GRACEFUL_DRAIN_CHECK_INTERVAL_SECONDS = 15.0
 
 
-class _DrainHost(Protocol):
+class _DrainHost(_SafeCallHost, Protocol):
     """Orchestrator *behaviour* the :class:`DrainController` invokes.
 
     All shared session *state* now lives on :class:`SessionRuntime` (reached via
     ``self._runtime``); this Protocol is the narrow behaviour seam that remains so
     the cross-component methods and the ``_completion`` sibling reference resolve
     on the composition root without a circular import. ``_OrchestratorBase``
-    structurally satisfies it.
+    structurally satisfies it. Extends :class:`_SafeCallHost` for the
+    ``_safe_call`` method shared by every per-component Host Protocol.
     """
-
-    async def _safe_call(self, coro: Awaitable[object], label: str) -> None: ...
 
     def effective_budget_caps(self) -> BudgetConfig:
         """Live-effective budget caps (overrides shadowing ``cfg.budget``)."""

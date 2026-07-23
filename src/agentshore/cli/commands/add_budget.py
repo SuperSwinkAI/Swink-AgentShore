@@ -44,7 +44,7 @@ def add_budget(project: str, budget: float | None, time: str | None) -> None:
     ``--budget`` adds dollars and ``--time`` extends the wall-clock cap; the
     deltas are added to the live caps (never replace them). Supply at least one.
     """
-    from agentshore.session_path import is_session_running, request_add_budget
+    from agentshore.session_process import is_session_running, request_add_budget
 
     if budget is None and time is None:
         raise click.UsageError("Provide at least one of --budget or --time.")

@@ -104,19 +104,23 @@ def build_argv(
     model: str | None,
     reasoning_effort: str | None,
     extra_flags: tuple[str, ...],
+    context_path: str | None = None,
     project_dir: str | None,
     prompt_on_stdin: bool,
     prompt_file: str | None = None,
+    model_tier: str | None = None,
 ) -> list[str]:
     """Return argv for one non-interactive Antigravity (``agy``) invocation.
 
     Keyword signature mirrors ``cli_grok.build_argv`` so the ``cli_agent``
     dispatch call site stays uniform across CLI agent types. ``reasoning_effort``
-    (baked into *model*), ``prompt_on_stdin``, and ``prompt_file`` are accepted
-    only for signature parity and are intentionally ignored: ``agy`` has no
-    effort flag, no stdin prompt mode, and no prompt-file mode. *model* is the
-    display-name string (e.g. ``"Gemini 3.5 Flash (Low)"``). *extra_flags*
-    carries ``--dangerously-skip-permissions`` via the YOLO default.
+    (baked into *model*), ``prompt_on_stdin``, ``prompt_file``, ``context_path``,
+    and ``model_tier`` are accepted only for signature parity and are
+    intentionally ignored: ``agy`` has no effort flag, no stdin prompt mode, no
+    prompt-file mode, no system-prompt-file flag, and no tier_map concept.
+    *model* is the display-name string (e.g. ``"Gemini 3.5 Flash (Low)"``).
+    *extra_flags* carries ``--dangerously-skip-permissions`` via the YOLO
+    default.
     """
     resolved_binary = binary or "agy"
     args = [resolved_binary]
@@ -249,6 +253,7 @@ def build_resume_argv(
     project_dir: str | None,
     prompt_on_stdin: bool,
     prompt_file: str | None = None,
+    model_tier: str | None = None,
 ) -> list[str]:
     """Return argv for an agy JSON-retry RESUME dispatch (``--conversation <id>``).
 
@@ -256,7 +261,8 @@ def build_resume_argv(
     re-enters the prior conversation and emits the result block it omitted.
     Narrow single-shot use only (desktop-dy2j) — not general session reuse.
     Unlike the other CLIs, ``agy`` reveals no id on stdout; the caller resolves
-    it from disk via :func:`resolve_conversation_id`.
+    it from disk via :func:`resolve_conversation_id`. *model_tier* is accepted
+    only for signature parity with the shared registry and is ignored.
     """
     argv = build_argv(
         prompt=prompt,
@@ -267,6 +273,7 @@ def build_resume_argv(
         project_dir=project_dir,
         prompt_on_stdin=prompt_on_stdin,
         prompt_file=prompt_file,
+        model_tier=model_tier,
     )
     # argv[0] is the binary; inject --conversation <id> directly after it.
     return [argv[0], "--conversation", resume_session_id, *argv[1:]]

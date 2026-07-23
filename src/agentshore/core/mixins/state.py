@@ -456,6 +456,7 @@ class StateBuilder:
                 apply_reverse_failsafe=cfg.rl.reverse_failsafe_enabled,
                 candidate_plan=candidate_plan,
             )
+            state.work_availability = candidate_plan.work_availability
         except (KeyError, ValueError, AttributeError) as exc:
             _logger.warning("action_mask_compute_failed", error=str(exc))
 

@@ -31,8 +31,8 @@ async def test_loop_detected_pause_arms_deadline(tmp_path: Path) -> None:
     orch = _make_orch(tmp_path, FeedbackConfig(unanswered_timeout_seconds=120.0))
     before = time.monotonic()
     await orch.pause("loop_detected")
-    assert orch._pause_deadline is not None
-    assert orch._pause_deadline >= before + 119.0
+    assert orch._runtime.pause_deadline is not None
+    assert orch._runtime.pause_deadline >= before + 119.0
 
 
 @pytest.mark.asyncio
@@ -40,24 +40,24 @@ async def test_user_request_pause_does_not_arm_deadline(tmp_path: Path) -> None:
     """An explicit operator pause must not auto-stop — they are present."""
     orch = _make_orch(tmp_path, FeedbackConfig(unanswered_timeout_seconds=120.0))
     await orch.pause("user_request")
-    assert orch._pause_deadline is None
+    assert orch._runtime.pause_deadline is None
 
 
 @pytest.mark.asyncio
 async def test_timeout_none_disables_backstop(tmp_path: Path) -> None:
     orch = _make_orch(tmp_path, FeedbackConfig(unanswered_timeout_seconds=None))
     await orch.pause("loop_detected")
-    assert orch._pause_deadline is None
+    assert orch._runtime.pause_deadline is None
 
 
 @pytest.mark.asyncio
 async def test_resume_clears_deadline(tmp_path: Path) -> None:
     orch = _make_orch(tmp_path, FeedbackConfig(unanswered_timeout_seconds=120.0))
     await orch.pause("loop_detected")
-    assert orch._pause_deadline is not None
+    assert orch._runtime.pause_deadline is not None
     await orch.resume()
-    assert orch._pause_deadline is None
-    assert orch._pause_event.is_set()
+    assert orch._runtime.pause_deadline is None
+    assert orch._runtime.pause_event.is_set()
 
 
 @pytest.mark.asyncio
@@ -66,12 +66,12 @@ async def test_auto_stop_unanswered_pause_drains_and_unblocks(tmp_path: Path) ->
     # No actionable work → the guard does not defer; the pause auto-stops.
     orch._loop.actionable_work_remains = AsyncMock(return_value=(False, 0, 0))
     await orch.pause("loop_detected")
-    orch._pause_event.clear()  # still paused
+    orch._runtime.pause_event.clear()  # still paused
     await orch._loop.auto_stop_unanswered_pause()
-    assert orch._draining is True
-    assert orch._drain_reason == "loop_detection_prompt_timeout"
-    assert orch._pause_event.is_set()  # gate unblocked so loop reaches drain
-    assert orch._pause_deadline is None
+    assert orch._runtime.draining is True
+    assert orch._runtime.drain_reason == "loop_detection_prompt_timeout"
+    assert orch._runtime.pause_event.is_set()  # gate unblocked so loop reaches drain
+    assert orch._runtime.pause_deadline is None
 
 
 @pytest.mark.asyncio
@@ -87,9 +87,9 @@ async def test_auto_stop_always_drains_even_with_work(tmp_path: Path) -> None:
     # Even with actionable work present, the simplified path drains.
     orch._loop.actionable_work_remains = AsyncMock(return_value=(True, 2, 0))
     await orch.pause("loop_detected")
-    orch._pause_event.clear()
+    orch._runtime.pause_event.clear()
     await orch._loop.auto_stop_unanswered_pause()
-    assert orch._draining is True
-    assert orch._drain_reason == "loop_detection_prompt_timeout"
-    assert orch._pause_event.is_set()
-    assert orch._pause_deadline is None
+    assert orch._runtime.draining is True
+    assert orch._runtime.drain_reason == "loop_detection_prompt_timeout"
+    assert orch._runtime.pause_event.is_set()
+    assert orch._runtime.pause_deadline is None

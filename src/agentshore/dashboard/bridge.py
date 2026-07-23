@@ -37,6 +37,7 @@ import structlog
 from agentshore.ipc.commands import parse_command, validate_command
 from agentshore.ipc.serializer import active_play_from_started
 from agentshore.ipc.state_writer import EVENTS_FILENAME, STATE_FILENAME
+from agentshore.ipc.wire import frame
 
 _logger = structlog.get_logger()
 
@@ -574,7 +575,7 @@ class DashboardBridge:
 
         assert self._ipc_writer is not None
         try:
-            self._ipc_writer.write((stripped.rstrip("\n") + "\n").encode("utf-8"))
+            self._ipc_writer.write(frame(parsed).encode("utf-8"))
             await self._ipc_writer.drain()
         except (ConnectionError, OSError) as exc:
             await _logger.awarning("dashboard.ipc_write_failed", error=str(exc))

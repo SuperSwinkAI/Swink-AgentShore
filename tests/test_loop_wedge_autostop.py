@@ -25,7 +25,7 @@ def _harness(tmp_path: Path, *, paused: bool, in_flight: bool, ticks: int) -> Or
     orch = make_test_orchestrator(tmp_path)
     orch._session_id = "t"
     orch._main_repo.dispatch_paused = paused
-    orch._in_flight = {"a": object()} if in_flight else {}  # type: ignore[dict-item]
+    orch._runtime.in_flight = {"a": object()} if in_flight else {}  # type: ignore[dict-item]
     orch._loop._wedged_idle_ticks = ticks
     return orch
 
@@ -46,9 +46,9 @@ async def test_latched_pause_auto_stops_after_grace(tmp_path: Path) -> None:
         _state(), reason="unchanged_digest"
     )
     assert cont is False
-    assert orch._draining is True
-    assert orch._drain_reason == "main_repo_wedged"
-    assert orch._pause_event.is_set()
+    assert orch._runtime.draining is True
+    assert orch._runtime.drain_reason == "main_repo_wedged"
+    assert orch._runtime.pause_event.is_set()
 
 
 @pytest.mark.asyncio
@@ -56,8 +56,8 @@ async def test_in_flight_work_does_not_trip_watchdog(tmp_path: Path) -> None:
     # Pause latched but a play is in flight → not the wedge signature; counter resets, no stop.
     orch = _harness(tmp_path, paused=True, in_flight=True, ticks=_WEDGED_IDLE_STOP_TICKS - 1)
     # Downstream candidate-plan path is unstubbed; only assert the watchdog branch didn't fire.
-    orch._registry = None
+    orch._runtime.registry = None
     with contextlib.suppress(Exception):
         await orch._loop.continue_if_selector_idle_work_remains(_state(), reason="x")
-    assert orch._draining is False
+    assert orch._runtime.draining is False
     assert orch._loop._wedged_idle_ticks == 0
