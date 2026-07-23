@@ -37,8 +37,8 @@ def test_add_budget_dollars_happy_path(monkeypatch: pytest.MonkeyPatch, project_
         captured["delta_minutes"] = delta_minutes
         return _APPLIED
 
-    monkeypatch.setattr("agentshore.session_path.is_session_running", lambda p: True)
-    monkeypatch.setattr("agentshore.session_path.request_add_budget", fake_request)
+    monkeypatch.setattr("agentshore.session_process.is_session_running", lambda p: True)
+    monkeypatch.setattr("agentshore.session_process.request_add_budget", fake_request)
 
     result = CliRunner().invoke(main, ["add-budget", "--project", project_dir, "--budget", "25"])
 
@@ -57,8 +57,8 @@ def test_add_budget_time_happy_path(monkeypatch: pytest.MonkeyPatch, project_dir
         captured["delta_minutes"] = delta_minutes
         return _APPLIED
 
-    monkeypatch.setattr("agentshore.session_path.is_session_running", lambda p: True)
-    monkeypatch.setattr("agentshore.session_path.request_add_budget", fake_request)
+    monkeypatch.setattr("agentshore.session_process.is_session_running", lambda p: True)
+    monkeypatch.setattr("agentshore.session_process.request_add_budget", fake_request)
 
     result = CliRunner().invoke(main, ["add-budget", "--project", project_dir, "--time", "30m"])
 
@@ -77,8 +77,8 @@ def test_add_budget_both(monkeypatch: pytest.MonkeyPatch, project_dir: str) -> N
         captured["delta_minutes"] = delta_minutes
         return _APPLIED
 
-    monkeypatch.setattr("agentshore.session_path.is_session_running", lambda p: True)
-    monkeypatch.setattr("agentshore.session_path.request_add_budget", fake_request)
+    monkeypatch.setattr("agentshore.session_process.is_session_running", lambda p: True)
+    monkeypatch.setattr("agentshore.session_process.request_add_budget", fake_request)
 
     result = CliRunner().invoke(
         main,
@@ -97,7 +97,7 @@ def test_add_budget_no_args_errors(project_dir: str) -> None:
 
 
 def test_add_budget_no_running_session(monkeypatch: pytest.MonkeyPatch, project_dir: str) -> None:
-    monkeypatch.setattr("agentshore.session_path.is_session_running", lambda p: False)
+    monkeypatch.setattr("agentshore.session_process.is_session_running", lambda p: False)
 
     result = CliRunner().invoke(main, ["add-budget", "--project", project_dir, "--budget", "25"])
 
@@ -106,9 +106,9 @@ def test_add_budget_no_running_session(monkeypatch: pytest.MonkeyPatch, project_
 
 
 def test_add_budget_no_session_sentinel(monkeypatch: pytest.MonkeyPatch, project_dir: str) -> None:
-    monkeypatch.setattr("agentshore.session_path.is_session_running", lambda p: True)
+    monkeypatch.setattr("agentshore.session_process.is_session_running", lambda p: True)
     monkeypatch.setattr(
-        "agentshore.session_path.request_add_budget",
+        "agentshore.session_process.request_add_budget",
         lambda p, **k: "no_session",
     )
 
@@ -121,9 +121,9 @@ def test_add_budget_no_session_sentinel(monkeypatch: pytest.MonkeyPatch, project
 def test_add_budget_ipc_error_exits_nonzero(
     monkeypatch: pytest.MonkeyPatch, project_dir: str
 ) -> None:
-    monkeypatch.setattr("agentshore.session_path.is_session_running", lambda p: True)
+    monkeypatch.setattr("agentshore.session_process.is_session_running", lambda p: True)
     monkeypatch.setattr(
-        "agentshore.session_path.request_add_budget",
+        "agentshore.session_process.request_add_budget",
         lambda p, **k: "error",
     )
 
@@ -137,9 +137,9 @@ def test_add_budget_rejection_exits_nonzero(
     monkeypatch: pytest.MonkeyPatch, project_dir: str
 ) -> None:
     """Orchestrator rejection (rejected:<msg>) exits non-zero and surfaces the message."""
-    monkeypatch.setattr("agentshore.session_path.is_session_running", lambda p: True)
+    monkeypatch.setattr("agentshore.session_process.is_session_running", lambda p: True)
     monkeypatch.setattr(
-        "agentshore.session_path.request_add_budget",
+        "agentshore.session_process.request_add_budget",
         lambda p, **k: "rejected:resulting dollar cap $0.01 is below the $1.00 minimum",
     )
 
@@ -174,9 +174,9 @@ def test_request_add_budget_returns_no_session_when_no_endpoint(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Any
 ) -> None:
     """Returns ``"no_session"`` when IPC endpoint is not discoverable."""
-    from agentshore.session_path import request_add_budget
+    from agentshore.session_process import request_add_budget
 
-    monkeypatch.setattr("agentshore.session_path.discover_ipc_endpoint", lambda p: None)
+    monkeypatch.setattr("agentshore.session_process.discover_ipc_endpoint", lambda p: None)
     result = request_add_budget(tmp_path, delta_usd=10.0, delta_minutes=None)
     assert result == "no_session"
 
@@ -187,7 +187,8 @@ def test_request_add_budget_parses_ok_reply(monkeypatch: pytest.MonkeyPatch, tmp
     import socket
     import threading
 
-    from agentshore.session_path import IpcEndpoint, request_add_budget
+    from agentshore.session_path import IpcEndpoint
+    from agentshore.session_process import request_add_budget
 
     reply = json.dumps({"type": "add_budget_ok", "enabled": True, "total": 60.0}) + "\n"
     server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -206,7 +207,7 @@ def test_request_add_budget_parses_ok_reply(monkeypatch: pytest.MonkeyPatch, tmp
     t.start()
 
     endpoint = IpcEndpoint.tcp(host, port)
-    monkeypatch.setattr("agentshore.session_path.discover_ipc_endpoint", lambda p: endpoint)
+    monkeypatch.setattr("agentshore.session_process.discover_ipc_endpoint", lambda p: endpoint)
     result = request_add_budget(tmp_path, delta_usd=10.0, delta_minutes=None)
     t.join(timeout=5)
 
@@ -223,7 +224,8 @@ def test_request_add_budget_returns_rejected_on_error_reply(
     import socket
     import threading
 
-    from agentshore.session_path import IpcEndpoint, request_add_budget
+    from agentshore.session_path import IpcEndpoint
+    from agentshore.session_process import request_add_budget
 
     reply = json.dumps({"type": "error", "error": "cap too low"}) + "\n"
     server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -242,7 +244,7 @@ def test_request_add_budget_returns_rejected_on_error_reply(
     t.start()
 
     endpoint = IpcEndpoint.tcp(host, port)
-    monkeypatch.setattr("agentshore.session_path.discover_ipc_endpoint", lambda p: endpoint)
+    monkeypatch.setattr("agentshore.session_process.discover_ipc_endpoint", lambda p: endpoint)
     result = request_add_budget(tmp_path, delta_usd=10.0, delta_minutes=None)
     t.join(timeout=5)
 

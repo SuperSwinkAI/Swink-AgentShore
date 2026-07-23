@@ -18,12 +18,8 @@ from agentshore.cli.helpers import (
 )
 from agentshore.cli_helpers import _PROJECT_DIR
 from agentshore.errors import OrchestratorError
-from agentshore.session_path import (
-    IpcEndpoint,
-    is_session_running,
-    resolve_start_ipc_endpoint,
-    session_socket_path,
-)
+from agentshore.session_path import IpcEndpoint, resolve_start_ipc_endpoint, session_socket_path
+from agentshore.session_process import is_session_running
 
 if TYPE_CHECKING:
     from agentshore.config.models import BudgetConfig, PolicyMode, RunMode, RuntimeConfig

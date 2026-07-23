@@ -21,7 +21,7 @@ def reload_config_cmd(project: str) -> None:
     re-reads and applies the updated configuration.  This is the cross-platform
     equivalent of ``kill -HUP`` for Windows users where SIGHUP does not exist.
     """
-    from agentshore.session_path import is_session_running, request_reload_config
+    from agentshore.session_process import is_session_running, request_reload_config
 
     project_path = Path(project).resolve()
 

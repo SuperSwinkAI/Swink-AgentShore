@@ -18,7 +18,7 @@ from __future__ import annotations
 import os
 from typing import TYPE_CHECKING
 
-from agentshore import session_path
+from agentshore import session_path, session_process
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -42,7 +42,7 @@ def supersede_prior_bridge(project_path: Path, *, own_lineage: set[int] | None =
     prior_pid = session_path.read_dashboard_pid(project_path)
     if prior_pid is None or prior_pid in lineage:
         return False
-    return session_path.stop_dashboard_process(project_path, pid=prior_pid)
+    return session_process.stop_dashboard_process(project_path, pid=prior_pid)
 
 
 def reap_before_orchestrator_spawn(project_path: Path) -> bool:
@@ -55,7 +55,7 @@ def reap_before_orchestrator_spawn(project_path: Path) -> bool:
     and frees the port. The caller here is the launcher (not the bridge), so
     there is no own-lineage to exclude: read the pid from disk and stop it.
     """
-    return session_path.stop_dashboard_process(project_path)
+    return session_process.stop_dashboard_process(project_path)
 
 
 def claim_bridge_pid(project_path: Path) -> None:

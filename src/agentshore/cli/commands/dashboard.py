@@ -67,11 +67,8 @@ def dashboard(
     import asyncio
 
     from agentshore.dashboard.lifecycle import claim_bridge_pid, supersede_prior_bridge
-    from agentshore.session_path import (
-        IpcEndpoint,
-        discover_ipc_endpoint,
-        session_dir,
-    )
+    from agentshore.session_path import IpcEndpoint, session_dir
+    from agentshore.session_process import discover_ipc_endpoint
 
     project_path = Path(project).resolve()
 

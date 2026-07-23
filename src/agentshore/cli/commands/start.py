@@ -272,12 +272,8 @@ def start(
     )
 
     # -- Dispatch: run the orchestrator -----------------------------------------
-    from agentshore.session_path import (
-        cleanup_session,
-        stop_dashboard_process,
-        write_pid,
-        write_session_info,
-    )
+    from agentshore.session_path import cleanup_session, write_pid, write_session_info
+    from agentshore.session_process import stop_dashboard_process
 
     cfg = resolved.cfg
     _cfg_path = resolved.cfg_path

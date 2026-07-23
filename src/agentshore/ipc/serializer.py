@@ -21,7 +21,6 @@ from typing import TYPE_CHECKING, Any, Literal, TypedDict
 
 from agentshore.beads import BeadStatus, EpicStatus, GraphTask, ProjectGraph
 from agentshore.ipc.wire import frame as _frame
-from agentshore.plays.candidates import build_candidate_plan
 from agentshore.state import (
     ActivePlay,
     AgentPlaySpecializationSnapshot,
@@ -588,7 +587,9 @@ def serialize_state(state: OrchestratorState) -> dict[str, object]:
     All enum values are converted to their string ``.value``.
     None fields remain None.  Lists of dataclasses become lists of dicts.
     """
-    work_availability = build_candidate_plan(state).work_availability.to_dict()
+    work_availability = (
+        state.work_availability.to_dict() if state.work_availability is not None else None
+    )
     return {
         "session_id": state.session_id,
         "session_state": state.session_state.value,

@@ -23,7 +23,7 @@ def test_supersede_excludes_own_lineage(monkeypatch: pytest.MonkeyPatch, tmp_pat
     monkeypatch.setattr(lifecycle.os, "getpid", lambda: 4321)
     monkeypatch.setattr(lifecycle.os, "getppid", lambda: 1)
     monkeypatch.setattr(
-        lifecycle.session_path,
+        lifecycle.session_process,
         "stop_dashboard_process",
         lambda _p, *, pid=None: reaped.append(pid) or True,
     )
@@ -41,7 +41,7 @@ def test_supersede_reaps_foreign_pid_with_pin(
     monkeypatch.setattr(lifecycle.os, "getpid", lambda: 4321)
     monkeypatch.setattr(lifecycle.os, "getppid", lambda: 1)
     monkeypatch.setattr(
-        lifecycle.session_path,
+        lifecycle.session_process,
         "stop_dashboard_process",
         lambda _p, *, pid=None: reaped.append(pid) or True,
     )
@@ -59,7 +59,7 @@ def test_supersede_noop_when_no_prior_pid(monkeypatch: pytest.MonkeyPatch, tmp_p
         called = True
         return True
 
-    monkeypatch.setattr(lifecycle.session_path, "stop_dashboard_process", _stop)
+    monkeypatch.setattr(lifecycle.session_process, "stop_dashboard_process", _stop)
     assert lifecycle.supersede_prior_bridge(tmp_path) is False
     assert called is False
 
@@ -70,7 +70,7 @@ def test_reap_before_orchestrator_spawn_reads_disk_pid(
     """The launcher reap has no own-lineage exclusion — it stops the disk pid."""
     calls: list[tuple[Path, int | None]] = []
     monkeypatch.setattr(
-        lifecycle.session_path,
+        lifecycle.session_process,
         "stop_dashboard_process",
         lambda p, *, pid=None: calls.append((p, pid)) or True,
     )

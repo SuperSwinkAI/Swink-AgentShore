@@ -155,8 +155,8 @@ def test_stop_finalizes_timelapse_when_present(tmp_path: Path) -> None:
     info = {"run_id": "run-1", "runs_cwd": str(project / ".agentshore")}
     runner = CliRunner()
     with (
-        patch("agentshore.session_path.is_session_running", return_value=True),
-        patch("agentshore.session_path.request_drain", return_value="sent"),
+        patch("agentshore.session_process.is_session_running", return_value=True),
+        patch("agentshore.session_process.request_drain", return_value="sent"),
         patch("agentshore.session_path.read_timelapse_info", return_value=info),
         patch("agentshore.cli.commands.stop._wait_for_session_exit", return_value=True),
         patch("agentshore.cli.runtime._finalize_cli_timelapse", return_value="/out.mp4") as fin,
@@ -171,8 +171,8 @@ def test_stop_skips_finalize_when_no_timelapse(tmp_path: Path) -> None:
     project = _make_git_repo(tmp_path)
     runner = CliRunner()
     with (
-        patch("agentshore.session_path.is_session_running", return_value=True),
-        patch("agentshore.session_path.request_drain", return_value="sent"),
+        patch("agentshore.session_process.is_session_running", return_value=True),
+        patch("agentshore.session_process.request_drain", return_value="sent"),
         patch("agentshore.session_path.read_timelapse_info", return_value=None),
         patch("agentshore.cli.commands.stop._wait_for_session_exit", return_value=True),
         patch("agentshore.cli.runtime._finalize_cli_timelapse") as fin,
