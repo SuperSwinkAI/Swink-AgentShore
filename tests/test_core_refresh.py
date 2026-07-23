@@ -146,6 +146,34 @@ async def test_refresh_resyncs_pr_dropped_from_open_fetch() -> None:
 
 
 @pytest.mark.asyncio
+async def test_refresh_skipped_tick_is_explicit_when_probe_fails() -> None:
+    """#369: a failed probe used to silently drop the entire refresh tick.
+    The skip must be logged as github_refresh_skipped carrying the probe's
+    diagnosis, and no sync work may run."""
+    orch = _make_orchestrator()
+
+    gh = MagicMock()
+    gh.probe = AsyncMock()
+    gh.available = False
+    gh.probe_failure_reason = "gh auth status exited 1: HTTP 503: Service Unavailable"
+    gh.list_issues = AsyncMock()
+    gh.list_pull_requests = AsyncMock()
+
+    with (
+        patch("agentshore.github.adapter.GitHubAdapter", return_value=gh),
+        patch("agentshore.core.issue_syncer._logger") as logger,
+    ):
+        await orch._completion.refresh_issues()
+
+    gh.list_issues.assert_not_awaited()
+    gh.list_pull_requests.assert_not_awaited()
+    logger.error.assert_called_once_with(
+        "github_refresh_skipped",
+        reason="gh auth status exited 1: HTTP 503: Service Unavailable",
+    )
+
+
+@pytest.mark.asyncio
 async def test_refresh_no_resync_when_open_fetch_is_complete() -> None:
     """When every locally-cached open PR appears in the open-fetch,
     state="all" must NOT be queried (saves an unnecessary API call)."""

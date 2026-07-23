@@ -119,6 +119,7 @@ class GitHubAdapter:
         self._session_id = session_id
         self._cfg = cfg
         self._available: bool = True
+        self._probe_failure_reason: str | None = None
 
     # -------------------------------------------------------------------------
     # Lifecycle
@@ -128,23 +129,44 @@ class GitHubAdapter:
         """Check that `gh` is on PATH and authenticated.
 
         Sets ``_available = False`` on any failure so callers can proceed in
-        degraded mode rather than crashing.
+        degraded mode rather than crashing. ``probe_failure_reason`` then
+        carries a one-line diagnosis (#369) — a non-zero exit is NOT
+        necessarily an auth problem (a github.com 503 or a reaped subprocess
+        exits non-zero too), so the stderr tail is preserved to tell them
+        apart after the fact.
         """
         try:
-            rc, _, _ = await _run_gh(["auth", "status"], timeout=_GH_TIMEOUT)
+            rc, stdout, stderr = await _run_gh(["auth", "status"], timeout=_GH_TIMEOUT)
             if rc != 0:
-                _logger.warning("gh_auth_failed", session_id=self._session_id)
+                stderr_tail = stderr.strip()[-500:]
+                self._probe_failure_reason = (
+                    f"gh auth status exited {rc}: {stderr_tail or '<no stderr>'}"
+                )
+                _logger.warning(
+                    "gh_auth_failed",
+                    session_id=self._session_id,
+                    rc=rc,
+                    stderr_tail=stderr_tail,
+                    stdout_tail=stdout.strip()[-500:],
+                )
                 self._available = False
         except FileNotFoundError:
+            self._probe_failure_reason = "gh not found on PATH"
             _logger.warning("gh_not_found", session_id=self._session_id)
             self._available = False
         except (OSError, TimeoutError) as exc:
+            self._probe_failure_reason = f"probe error: {exc}"
             _logger.warning("gh_probe_error", error=str(exc), session_id=self._session_id)
             self._available = False
 
     @property
     def available(self) -> bool:
         return self._available
+
+    @property
+    def probe_failure_reason(self) -> str | None:
+        """Why the last ``probe()`` marked the adapter unavailable, or None."""
+        return self._probe_failure_reason
 
     # -------------------------------------------------------------------------
     # Read operations
