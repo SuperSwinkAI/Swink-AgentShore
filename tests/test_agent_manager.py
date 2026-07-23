@@ -443,6 +443,33 @@ async def test_dispatch_timeout_is_transient_and_keeps_agent_idle(
     assert handle.consecutive_timeouts == 1
 
 
+async def test_dispatch_unexpected_exception_resets_busy_handle(
+    store: DataStore, tmp_path: Path, mock_agent_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#385: an exception outside the expected tuple (e.g. ValueError during
+    argv construction) must not leave the handle pinned BUSY until the
+    busy-watchdog — it lands in ERROR with UNKNOWN, records the circuit-breaker
+    failure, and increments failed tasks like any other dispatch failure."""
+    mgr = _make_manager(store, tmp_path, mock_binary=str(mock_agent_path))
+    handle = await mgr.instantiate(AgentType.CODEX)
+    agent_id = handle.agent_id
+
+    dispatch_cli = AsyncMock(side_effect=ValueError("tier_map model requires model_tier"))
+    monkeypatch.setattr("agentshore.agents.manager.dispatch_cli", dispatch_cli)
+
+    with pytest.raises(ValueError, match="model_tier"):
+        await mgr.dispatch(agent_id, "prompt")
+
+    assert handle.status == AgentStatus.ERROR
+    assert handle.last_error_class == ErrorClass.UNKNOWN
+    assert len(mgr._circuit_breakers[agent_id]._failure_times) == 1
+    cursor = await store._conn.execute(
+        "SELECT tasks_failed FROM agents WHERE agent_id = ?", (agent_id,)
+    )
+    row = await cursor.fetchone()
+    assert row[0] == 1
+
+
 async def test_dispatch_stamps_busy_watchdog_deadline(
     store: DataStore, tmp_path: Path, mock_agent_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

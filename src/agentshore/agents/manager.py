@@ -544,6 +544,25 @@ class AgentManager:
                 error=str(exc),
             )
             raise
+        except Exception as exc:
+            # #385: an exception outside the expected tuple (e.g. a ValueError
+            # raised during argv construction) must not escape with the handle
+            # still BUSY — that benches the agent until the ~3h busy-watchdog
+            # and can block a graceful drain. Same recovery as the generic
+            # branch above, classified UNKNOWN so the completion path routes it
+            # through the standard take_break recovery.
+            cb.record_failure()
+            handle.last_error_class = ErrorClass.UNKNOWN
+            handle.transition_to(AgentStatus.ERROR)
+            await self._store.increment_agent_tasks(agent_id, failed=1)
+            _logger.warning(
+                "agent_dispatch_failed",
+                agent_id=agent_id,
+                error_class=handle.last_error_class,
+                error=str(exc),
+                exc_type=type(exc).__name__,
+            )
+            raise
 
         cb.record_success()
         handle.consecutive_timeouts = 0
