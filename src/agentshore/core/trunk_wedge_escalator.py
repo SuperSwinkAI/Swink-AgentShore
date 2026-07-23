@@ -84,9 +84,7 @@ class TrunkWedgeEscalator:
                 self, root_untracked, play_id=outcome.play_id
             )
 
-    async def escalate_trunk_wedge(
-        self, root_untracked: list[str], *, play_id: int | None
-    ) -> None:
+    async def escalate_trunk_wedge(self, root_untracked: list[str], *, play_id: int | None) -> None:
         """Resolve + surface a wedged trunk once the same-cause streak hits threshold (#330).
 
         ``MainRepoGuard`` documents that it "never forces a session action" —

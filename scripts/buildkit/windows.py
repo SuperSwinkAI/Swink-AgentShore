@@ -71,19 +71,37 @@ def _powershell() -> str:
 
 
 def setup_self_signed_cert(args: argparse.Namespace) -> None:
-    run([
-        _powershell(), "-ExecutionPolicy", "Bypass", "-File", str(_SIGN_HELPER),
-        "-Action", "SetupCert", *_signing_params(args),
-    ])
+    run(
+        [
+            _powershell(),
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(_SIGN_HELPER),
+            "-Action",
+            "SetupCert",
+            *_signing_params(args),
+        ]
+    )
     log("Self-signed certificate setup complete")
 
 
 def _sign_file(file: Path, args: argparse.Namespace) -> int:
     """Sign a file via the helper. Returns 0 (signed), 2 (no cert/tool), or raises."""
-    result = subprocess.run([
-        _powershell(), "-ExecutionPolicy", "Bypass", "-File", str(_SIGN_HELPER),
-        "-Action", "Sign", "-File", str(file), *_signing_params(args),
-    ])
+    result = subprocess.run(
+        [
+            _powershell(),
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(_SIGN_HELPER),
+            "-Action",
+            "Sign",
+            "-File",
+            str(file),
+            *_signing_params(args),
+        ]
+    )
     if result.returncode not in (0, 2):
         raise die(f"signing failed for {file} (exit {result.returncode})")
     return result.returncode
@@ -263,18 +281,20 @@ def compile_inno(ctx: BuildContext, args: argparse.Namespace) -> Path:
 
     iss_out = stage / "AgentShore.iss"
     shutil.copy(template, iss_out)
-    run([
-        iscc,
-        f"/DAppVersion={version}",
-        f"/DStageDir={stage}",
-        f"/DOutputDir={output_dir}",
-        f"/DWheelFileName={ctx.bundled_wheel.name}",
-        "/DUvFileName=uv.exe",
-        "/DProvisionerFileName=agentshore-provisioner.exe",
-        f"/DLicenseFile={license_path}",
-        f"/DIconFile={icon}",
-        str(iss_out),
-    ])
+    run(
+        [
+            iscc,
+            f"/DAppVersion={version}",
+            f"/DStageDir={stage}",
+            f"/DOutputDir={output_dir}",
+            f"/DWheelFileName={ctx.bundled_wheel.name}",
+            "/DUvFileName=uv.exe",
+            "/DProvisionerFileName=agentshore-provisioner.exe",
+            f"/DLicenseFile={license_path}",
+            f"/DIconFile={icon}",
+            str(iss_out),
+        ]
+    )
     setup_out = output_dir / f"AgentShoreSetup-{version}-x64.exe"
     if not setup_out.is_file():
         raise die(f"Inno Setup completed but expected installer is missing: {setup_out}")

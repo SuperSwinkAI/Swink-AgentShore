@@ -75,9 +75,7 @@ def test_clean_stage_passes(tmp_path: Path) -> None:
             f"agentshore-{canonical}-py3-none-any.whl",
         ],
     )
-    assert (
-        verify.verify_windows(app_dir, installer_dir, _REPO, require_signature=False) == []
-    )
+    assert verify.verify_windows(app_dir, installer_dir, _REPO, require_signature=False) == []
 
 
 def test_stray_binary_in_app_stage_fails(tmp_path: Path) -> None:
