@@ -1,6 +1,6 @@
 [package]
 name = "agentshore-provisioner"
-version = "0.10.2"
+version = "0.10.3"
 description = "AgentShore Windows installer provisioner helper"
 authors = ["SuperSwink"]
 license = "MIT"
