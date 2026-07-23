@@ -18,6 +18,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from . import verify
 from ._proc import BuildError, die, fatal, info, log, require_tool, run, run_text
 from .context import BuildContext, default_context
 from .phases import build_dashboard, build_frontend, build_wheel
@@ -196,6 +197,27 @@ def stage_payload(ctx: BuildContext, app_exe: Path, provisioner_exe: Path, uv: s
     shutil.copy(uv, installer_stage / "uv.exe")
 
 
+def verify_payload(ctx: BuildContext, args: argparse.Namespace) -> None:
+    """Post-stage verification gate — the Windows analogue of macos.verify_app.
+
+    Runs against the staged app/installer directories (before compile_inno wraps
+    them), the equivalent phase position to macOS's post-Tauri-build, pre-.pkg
+    gate. See verify.verify_windows for what it checks and how it differs from
+    the macOS gate.
+    """
+    log("Verifying staged installer payload")
+    stage = _stage_dir(ctx)
+    require_signature = not args.no_sign and ctx.build_mode != "debug"
+    problems = verify.verify_windows(
+        stage / "app", stage / "installer", ctx.root, require_signature=require_signature
+    )
+    if problems:
+        for problem in problems:
+            info(f"  - {problem}")
+        raise die("artifact verification failed — see problems above")
+    info("Verification OK")
+
+
 def run_eula_generator(ctx: BuildContext, uv: str) -> None:
     log("Regenerating EULA.rtf from LICENSE")
     builder = ctx.packaging_dir / "installer-resources" / "build-eula-rtf.py"
@@ -284,6 +306,7 @@ def run_windows(ctx: BuildContext, args: argparse.Namespace) -> None:
         log("Skipping Authenticode signing (--no-sign)")
 
     stage_payload(ctx, app_exe, provisioner_exe, uv)
+    verify_payload(ctx, args)
     run_eula_generator(ctx, uv)
     setup_out = compile_inno(ctx, args)
 
