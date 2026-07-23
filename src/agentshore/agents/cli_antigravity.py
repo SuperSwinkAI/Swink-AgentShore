@@ -25,6 +25,8 @@ import os
 import re
 from pathlib import Path
 
+from agentshore.state import AgentType
+
 # Terminal-control escape sequences. Under a ConPTY (the Windows spawn path —
 # see ``agents/cli/conpty.py``) ``agy`` emits a terminal prelude before its real
 # output, e.g. ``ESC[1t ESC[c ESC[?1004h ESC[?9001h`` (window-title stack,
@@ -66,6 +68,33 @@ _CONVERSATIONS_CACHE_RELPATH = (
 
 # agy's global CLI settings file (theme, model, verbosity, …). Relative to HOME.
 _SETTINGS_RELPATH = (".gemini", "antigravity-cli", "settings.json")
+
+# #242: agy auto-backgrounds long commands and ends the ``-p`` turn narrating it is "waiting
+# for the background task" (prose, no JSON). Appended to the INITIAL dispatch so the handoff
+# is prevented, not just retried (verified Gemini 3.5 Flash + 3.1 Pro: ~0/4 without → ~7/8
+# with; residual leak caught by ``is_async_handoff`` below). agy-only — other CLIs don't
+# auto-background.
+_ANTIGRAVITY_SYNCHRONOUS_DIRECTIVE = (
+    "\n\n## Antigravity: run every command synchronously\n\n"
+    "Run every shell command in the FOREGROUND and BLOCK until it returns, no matter how "
+    "long it takes. Do NOT send commands to the background, do NOT use a task or "
+    "manage_task tool, and do NOT pause to 'wait for a background task to finish' or "
+    "'wait for a notification' — there is no scheduler that will wake you up. Do NOT end "
+    "your turn until every command has returned and you have emitted the fenced JSON "
+    "result block."
+)
+
+
+def decorate_initial_prompt(prompt: str, agent_type: AgentType | None) -> str:
+    """Append the agy synchronous-execution directive, no-op for every other vendor.
+
+    Single entry point the dispatch base class calls without knowing the vendor —
+    it decorates the INITIAL prompt only (the resume/retry prompts have their own
+    per-defect wording chosen by the caller).
+    """
+    if agent_type == AgentType.ANTIGRAVITY:
+        return prompt + _ANTIGRAVITY_SYNCHRONOUS_DIRECTIVE
+    return prompt
 
 
 def build_argv(
