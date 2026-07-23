@@ -22,6 +22,7 @@ BINARY_TO_AGENT_TYPE: dict[str, AgentType] = {
     "grok": AgentType.GROK,
     "grok-build": AgentType.GROK,
     "agy": AgentType.ANTIGRAVITY,
+    "swink-coding": AgentType.SWINK_CODING,
 }
 
 # Inverse: AgentType → canonical binary name (first/primary name only).
@@ -31,6 +32,16 @@ AGENT_TYPE_TO_BINARY: dict[AgentType, str] = {
     AgentType.CODEX: "codex",
     AgentType.GROK: "grok",
     AgentType.ANTIGRAVITY: "agy",
+    AgentType.SWINK_CODING: "swink-coding",
+}
+
+# AgentType → human-facing display prefix ("Claude: Fiery Robot").
+AGENT_TYPE_DISPLAY_PREFIX: dict[AgentType, str] = {
+    AgentType.CLAUDE_CODE: "Claude",
+    AgentType.CODEX: "Codex",
+    AgentType.GROK: "Grok",
+    AgentType.ANTIGRAVITY: "Antigravity",
+    AgentType.SWINK_CODING: "Swink",
 }
 
 # String-keyed variants for callers that compare against AgentType.value
@@ -41,3 +52,12 @@ BINARY_TO_AGENT_KEY: dict[str, str] = {
 }
 
 SUPPORTED_CLI_AGENT_KEYS: frozenset[str] = frozenset(BINARY_TO_AGENT_KEY.values())
+
+# Exhaustiveness guard: every AgentType must appear in every AgentType-keyed
+# map above, so adding a sixth agent type fails loudly here instead of
+# degrading silently at a call site (the handle.py display-name bug class).
+_missing = [
+    t for t in AgentType if t not in AGENT_TYPE_TO_BINARY or t not in AGENT_TYPE_DISPLAY_PREFIX
+]
+if _missing:  # pragma: no cover - import-time invariant
+    raise RuntimeError(f"agents.registry maps missing AgentType entries: {_missing}")

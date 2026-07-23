@@ -24,7 +24,7 @@ run right now?", not "should it?".
 
 ## Observation
 
-`OBSERVATION_DIM = 250`, `OBSERVATION_VERSION = 14`. The exact slot layout lives
+`OBSERVATION_DIM = 252`, `OBSERVATION_VERSION = 15`. The exact slot layout lives
 in `src/agentshore/rl/observation.py` and is summarized in
 [V1_CONTRACT.md](../V1_CONTRACT.md). The per-config block and config policy head
 share the deterministic index built by `build_config_index()`.

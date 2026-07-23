@@ -4,7 +4,10 @@ DESIGN §10.2 specifies seven canonical bringup phases that the desktop
 Screen 8 checklist mirrors:
 
 1. ``config_merge`` — load ``agentshore.yaml`` for the active project.
-2. ``check_agent_auth`` — probe each configured CLI agent's backend auth.
+2. ``check_agent_auth`` — identity preconditions, then probe each configured
+   CLI agent's backend auth and each identity's git-remote auth (shared
+   sequencing with the CLI's ``agentshore start`` preflight via
+   :func:`agentshore.session.preflight.run_session_preflight`, gh-151/178/179).
 3. ``install_skills`` — ensure project-level skill templates are current.
 4. ``init_beads`` — ensure the beads graph is initialised.
 5. ``bind_ipc`` — reserve a TCP loopback endpoint for the orchestrator.
@@ -50,6 +53,7 @@ if TYPE_CHECKING:
     from typing import Protocol
 
     from agentshore.config import RuntimeConfig
+    from agentshore.core.session_runtime import SessionRuntime
     from agentshore.data.store import DataStore
     from agentshore.sidecar.server import JsonRpcNotification, ServerState
     from agentshore.state import AgentType
@@ -67,10 +71,10 @@ if TYPE_CHECKING:
         ``# type: ignore[attr-defined]`` duck-typing comments while keeping the
         engine import lazy.
 
-        The underscored members (``_store``, ``_log_path``,
-        ``_natural_exit_reason``) mirror the orchestrator's own internal
-        accessors; they are declared here so the sidecar's reach-ins are typed
-        rather than silently ``object``-typed.
+        The underscored members (``_store``, ``_runtime`` — the latter for its
+        ``log_path``/``natural_exit_reason`` fields) mirror the orchestrator's
+        own internals; they are declared here so the sidecar's reach-ins are
+        typed rather than silently ``object``-typed.
         """
 
         def request_drain(self, reason: str = ...) -> None: ...
@@ -109,10 +113,7 @@ if TYPE_CHECKING:
         def _store(self) -> DataStore: ...
 
         @property
-        def _log_path(self) -> Path | None: ...
-
-        @property
-        def _natural_exit_reason(self) -> str | None: ...
+        def _runtime(self) -> SessionRuntime: ...
 
 
 _logger = structlog.get_logger(__name__)
@@ -243,6 +244,33 @@ def _emit(
     notify(_progress(token, step, status, error=error))
 
 
+async def _run_phase(
+    notify: Callable[[JsonRpcNotification], None] | None,
+    progress_token: object | None,
+    step: str,
+    fn: Callable[[], Awaitable[None]],
+) -> None:
+    """Emit running/ok/failed ``$/progress`` around one bringup phase body.
+
+    Shared by phases 1-4 and 7 (config_merge, check_agent_auth,
+    install_skills, init_beads, first_snapshot) in ``run_session_start``,
+    which all follow the same emit(running) -> run -> emit(failed)+raise /
+    emit(ok) shape; *fn* is responsible for its own "only when project_path
+    is set" guard and for raising :class:`SessionStartError` (not a bare
+    exception) on failure. Phases 5/6 (bind_ipc, start_bridge) stay bespoke
+    in ``run_session_start`` since they branch on more than "did this
+    raise" (e.g. bridge failure builds its ``SessionStartError`` from a bare
+    exception inline).
+    """
+    _emit(notify, progress_token, step, "running")
+    try:
+        await fn()
+    except SessionStartError as exc:
+        _emit(notify, progress_token, exc.step, "failed", error=str(exc))
+        raise
+    _emit(notify, progress_token, step, "ok")
+
+
 def _check_config_merge(project_path: Path, *, require_tier_coverage: bool = True) -> RuntimeConfig:
     """Load and return the merged AgentShore config for ``project_path``.
 
@@ -282,58 +310,98 @@ def _check_config_merge(project_path: Path, *, require_tier_coverage: bool = Tru
     return cfg
 
 
-def _check_agent_auth(cfg: RuntimeConfig) -> None:
-    """Validate agent identity and backend auth before the desktop starts.
+def _check_agent_auth(cfg: RuntimeConfig, project_path: Path) -> None:
+    """Validate agent identity, backend auth, and git-remote auth before the
+    desktop starts.
 
-    This mirrors the CLI start path's identity guard: enabled CLI agents must
-    resolve to at least two distinct GitHub logins so review / merge can satisfy
-    anti-confirmation-bias constraints, and every identity must cover all model
-    tiers (small/medium/large) — code_review is large-tier-only, so concentrating
-    ``large`` on one identity deadlocks review (no distinct-identity reviewer).
-    After that, probe each configured CLI
-    agent's backend auth. The backend probe is blocking in nature
-    (``probe_configured_cli_auth`` shells out via ``subprocess.run``); call
-    from the async runner through ``asyncio.to_thread``.
+    Runs the same three gates as the CLI's ``agentshore start`` preflight, in
+    the same order, via the shared :func:`agentshore.session.preflight.
+    run_session_preflight` sequencer (gh-151/178/179 — the desktop path used
+    to skip the git-remote probe entirely, so a broken git credential slipped
+    past launch and wedged mid-session instead of failing fast here):
 
-    A definitively-expired backend session (e.g. the Codex CLI's cached
-    ``chatgpt.com`` token) raises a structured :class:`SessionStartError` so the
-    desktop blocks the launch and points at the failing agent type(s) —
-    otherwise that agent would hang every dispatch to the idle timeout mid-run.
-    Non-blocking non-ok statuses (timeout / probe error / unprobeable) are
-    logged and tolerated so a transient probe hiccup never strands an
-    otherwise-fine session.
+    1. Identities — enabled CLI agents must resolve to at least two distinct
+       GitHub logins so review/merge can satisfy anti-confirmation-bias, and
+       every identity must cover all model tiers (small/medium/large) —
+       code_review is large-tier-only, so concentrating ``large`` on one
+       identity deadlocks review (no distinct-identity reviewer).
+    2. CLI-agent backend auth — probe each configured CLI agent's
+       model-provider session (e.g. the Codex CLI's cached chatgpt.com
+       token). Blocking in nature (shells out via ``subprocess.run``); this
+       whole function runs off the event loop via ``asyncio.to_thread``.
+    3. Git-remote auth — probe each configured identity's ability to
+       authenticate to the repo's git remote non-interactively, the same
+       probe :func:`agentshore.session.bootstrap.preflight_git_auth` runs
+       for the CLI.
+
+    Any definitive failure (identity precondition, expired backend session,
+    or a git-auth rejection) raises a structured :class:`SessionStartError`
+    with step ``check_agent_auth`` so the desktop blocks the launch and shows
+    the failing detail. Non-blocking non-ok statuses (timeout / probe error /
+    unprobeable) are logged and tolerated so a transient probe hiccup never
+    strands an otherwise-fine session.
     """
     from agentshore.agents.auth_probe import probe_configured_cli_auth
+    from agentshore.agents.git_auth_probe import probe_all_identities
     from agentshore.agents.identity import (
         require_per_identity_model_tier_coverage,
         require_two_distinct_gh_identities,
     )
     from agentshore.errors import ConfigError
+    from agentshore.session.preflight import run_session_preflight
 
-    try:
-        require_two_distinct_gh_identities(cfg)
-        require_per_identity_model_tier_coverage(cfg)
-    except ConfigError as exc:
-        raise SessionStartError(STEP_CHECK_AGENT_AUTH, -32603, str(exc)) from exc
+    def _identities() -> None:
+        try:
+            require_two_distinct_gh_identities(cfg)
+            require_per_identity_model_tier_coverage(cfg)
+        except ConfigError as exc:
+            raise SessionStartError(STEP_CHECK_AGENT_AUTH, -32603, str(exc)) from exc
 
-    results = probe_configured_cli_auth(cfg)
-    blocking = [r for r in results if r.blocks_launch]
-    if blocking:
-        names = ", ".join(sorted(r.agent_type.value for r in blocking))
-        details = "; ".join(f"{r.agent_type.value}: {r.detail}" for r in blocking)
-        msg = (
-            f"backend auth expired for: {names}. Re-authenticate the agent CLI "
-            f"(e.g. run `codex login`) and retry. Details: {details}"
-        )
-        raise SessionStartError(STEP_CHECK_AGENT_AUTH, -32603, msg)
-    for result in results:
-        if not result.ok:
-            _logger.warning(
-                "agent_auth_probe_non_blocking",
-                agent_type=result.agent_type.value,
-                status=result.status,
-                detail=result.detail,
+    def _cli_agent_auth() -> None:
+        results = probe_configured_cli_auth(cfg)
+        blocking = [r for r in results if r.blocks_launch]
+        if blocking:
+            names = ", ".join(sorted(r.agent_type.value for r in blocking))
+            details = "; ".join(f"{r.agent_type.value}: {r.detail}" for r in blocking)
+            msg = (
+                f"backend auth expired for: {names}. Re-authenticate the agent CLI "
+                f"(e.g. run `codex login`) and retry. Details: {details}"
             )
+            raise SessionStartError(STEP_CHECK_AGENT_AUTH, -32603, msg)
+        for result in results:
+            if not result.ok:
+                _logger.warning(
+                    "agent_auth_probe_non_blocking",
+                    agent_type=result.agent_type.value,
+                    status=result.status,
+                    detail=result.detail,
+                )
+
+    def _git_auth() -> None:
+        results = probe_all_identities(cfg, project_path=project_path)
+        blocking = [r for r in results if r.blocks_launch]
+        if blocking:
+            remote = blocking[0].remote or "the git remote"
+            names = ", ".join(r.identity_name for r in blocking)
+            msg = (
+                f"git-remote auth failed for identity {names}; cannot authenticate to "
+                f"{remote}. Re-provision the identity's token/SSH key (see docs/identity.md)."
+            )
+            raise SessionStartError(STEP_CHECK_AGENT_AUTH, -32603, msg)
+        for result in results:
+            if not result.ok:
+                _logger.warning(
+                    "git_auth_probe_non_blocking",
+                    identity=result.identity_name,
+                    status=result.status,
+                    detail=result.detail,
+                )
+
+    run_session_preflight(
+        identities=_identities,
+        cli_agent_auth=_cli_agent_auth,
+        git_auth=_git_auth,
+    )
 
 
 def _run_install_skills(project_path: Path) -> None:
@@ -530,15 +598,14 @@ async def run_session_start(
     state.session_id = session_id
 
     # Phase 1: config_merge
-    _emit(notify, progress_token, STEP_CONFIG_MERGE, "running")
     cfg: RuntimeConfig | None = None
-    if project_path is not None:
-        try:
+
+    async def _phase_config_merge() -> None:
+        nonlocal cfg
+        if project_path is not None:
             cfg = _check_config_merge(project_path, require_tier_coverage=start_orchestrator)
-        except SessionStartError as exc:
-            _emit(notify, progress_token, exc.step, "failed", error=str(exc))
-            raise
-    _emit(notify, progress_token, STEP_CONFIG_MERGE, "ok")
+
+    await _run_phase(notify, progress_token, STEP_CONFIG_MERGE, _phase_config_merge)
 
     # Bind the per-session NDJSON log file handler now — cfg and session_id
     # are both available, and later phases (init_beads in particular) log
@@ -549,43 +616,34 @@ async def run_session_start(
 
         attach_session_file_handler(project_path / cfg.logging.log_dir, session_id)
 
-    # Phase 2: check_agent_auth — probe each configured CLI agent's backend
-    # auth (e.g. the Codex CLI's cached chatgpt.com session) now that cfg is
-    # resolved but before anything expensive boots. A definitively-expired
-    # session blocks the launch with a remediation message; transient probe
-    # failures are logged and tolerated. Skipped in legacy stub mode (no
-    # active project / cfg).
-    _emit(notify, progress_token, STEP_CHECK_AGENT_AUTH, "running")
-    if project_path is not None and cfg is not None:
-        try:
-            await asyncio.to_thread(_check_agent_auth, cfg)
-        except SessionStartError as exc:
-            _emit(notify, progress_token, exc.step, "failed", error=str(exc))
-            raise
-    _emit(notify, progress_token, STEP_CHECK_AGENT_AUTH, "ok")
+    # Phase 2: check_agent_auth — identities, then CLI-agent backend auth
+    # (e.g. the Codex CLI's cached chatgpt.com session), then git-remote auth,
+    # now that cfg is resolved but before anything expensive boots. A
+    # definitive failure in any of the three blocks the launch with a
+    # remediation message; transient probe failures are logged and tolerated.
+    # Skipped in legacy stub mode (no active project / cfg).
+    async def _phase_check_agent_auth() -> None:
+        if project_path is not None and cfg is not None:
+            await asyncio.to_thread(_check_agent_auth, cfg, project_path)
+
+    await _run_phase(notify, progress_token, STEP_CHECK_AGENT_AUTH, _phase_check_agent_auth)
 
     # Phase 3: install_skills — copy bundled skill templates into
     # ``.agents/skills/``. Idempotent: only stale templates are
     # overwritten. Skipped when there's no active project so the
     # legacy stub-mode call path stays a no-op.
-    _emit(notify, progress_token, STEP_INSTALL_SKILLS, "running")
-    if project_path is not None:
-        try:
+    async def _phase_install_skills() -> None:
+        if project_path is not None:
             _run_install_skills(project_path)
-        except SessionStartError as exc:
-            _emit(notify, progress_token, exc.step, "failed", error=str(exc))
-            raise
-    _emit(notify, progress_token, STEP_INSTALL_SKILLS, "ok")
+
+    await _run_phase(notify, progress_token, STEP_INSTALL_SKILLS, _phase_install_skills)
 
     # Phase 4: init_beads
-    _emit(notify, progress_token, STEP_INIT_BEADS, "running")
-    if project_path is not None:
-        try:
+    async def _phase_init_beads() -> None:
+        if project_path is not None:
             await _run_init_beads(project_path, cfg=cfg, session_id=session_id, notify=notify)
-        except SessionStartError as exc:
-            _emit(notify, progress_token, exc.step, "failed", error=str(exc))
-            raise
-    _emit(notify, progress_token, STEP_INIT_BEADS, "ok")
+
+    await _run_phase(notify, progress_token, STEP_INIT_BEADS, _phase_init_beads)
 
     # Phase 5: bind_ipc — always allocates a fresh endpoint, even without
     # an active project.
@@ -638,26 +696,25 @@ async def run_session_start(
     # bridge's state_dir. When disabled, the bridge-ready signal from
     # phase 5 is already sufficient evidence that the dashboard can
     # subscribe; we emit ``ok`` immediately.
-    _emit(notify, progress_token, STEP_FIRST_SNAPSHOT, "running")
-    if start_orchestrator and project_path is not None and cfg is not None:
-        try:
-            await _start_orchestrator(
-                state=state,
-                project_path=project_path,
-                cfg=cfg,
-                session_id=session_id,
-                notify=notify,
-                first_snapshot_timeout_seconds=first_snapshot_timeout_seconds,
-                seed_path=seed_path,
-            )
-        except SessionStartError as exc:
-            _emit(notify, progress_token, exc.step, "failed", error=str(exc))
-            raise
-        except Exception as exc:
-            msg = f"failed to start orchestrator: {exc}"
-            _emit(notify, progress_token, STEP_FIRST_SNAPSHOT, "failed", error=msg)
-            raise SessionStartError(STEP_FIRST_SNAPSHOT, -32603, msg) from exc
-    _emit(notify, progress_token, STEP_FIRST_SNAPSHOT, "ok")
+    async def _phase_first_snapshot() -> None:
+        if start_orchestrator and project_path is not None and cfg is not None:
+            try:
+                await _start_orchestrator(
+                    state=state,
+                    project_path=project_path,
+                    cfg=cfg,
+                    session_id=session_id,
+                    notify=notify,
+                    first_snapshot_timeout_seconds=first_snapshot_timeout_seconds,
+                    seed_path=seed_path,
+                )
+            except SessionStartError:
+                raise
+            except Exception as exc:
+                msg = f"failed to start orchestrator: {exc}"
+                raise SessionStartError(STEP_FIRST_SNAPSHOT, -32603, msg) from exc
+
+    await _run_phase(notify, progress_token, STEP_FIRST_SNAPSHOT, _phase_first_snapshot)
 
     started_at = state.started_at or datetime.now(UTC).isoformat()
     state.started_at = started_at
@@ -741,12 +798,20 @@ async def _await_prior_store_teardown(state: ServerState) -> None:
 def _clear_session_state(state: ServerState) -> None:
     """Reset per-session ``ServerState`` after a session ends (#283).
 
-    The explicit ``session.stop`` path clears these inline
-    (``handlers/session.py``); the natural-exit (self-drain → shutdown_complete)
-    and crash paths must do the same. Otherwise, in the long-lived sidecar, the
-    stale ``session_id`` is reused by the next ``session.start`` — colliding with
-    its persisted ``sessions`` row (UNIQUE constraint) — and the dead
-    orchestrator + its (closed) store linger reachable instead of being GC'd.
+    Shared by the explicit ``session.stop`` path (``handlers/session.py``)
+    and the natural-exit (self-drain → shutdown_complete) / crash paths
+    here. Otherwise, in the long-lived sidecar, the stale ``session_id`` is
+    reused by the next ``session.start`` — colliding with its persisted
+    ``sessions`` row (UNIQUE constraint) — and the dead orchestrator + its
+    (closed) store linger reachable instead of being GC'd.
+
+    ``handlers/session.py`` nulls ``orchestrator``/``orchestrator_task``
+    itself immediately after closing the store — ahead of calling this
+    helper — so a concurrent RPC arriving during the (possibly slow)
+    timelapse-render wait never dials an orchestrator whose store is
+    already closed; this function re-nulling them here is an idempotent
+    no-op in that case.
+
     Does not touch the dashboard bridge: the desktop still serves the ESR after a
     natural end, so bridge teardown stays owned by the explicit-stop path.
     """
@@ -896,7 +961,7 @@ async def _start_orchestrator(
     # callback; until then report_path stays empty rather than inventing a
     # placeholder path.
     archive_dir = project_path / ".agentshore" / "archives" / session_id
-    log_path = orch._log_path
+    log_path = orch._runtime.log_path
     state.session_context = SessionContext(
         session_id=session_id,
         store=orch._store,
@@ -932,7 +997,7 @@ async def _start_orchestrator(
             raise
         # Only the natural-exit path proceeds to ESR emission; explicit
         # session.stop callers own their own ESR build in the stop path.
-        if orch._natural_exit_reason is None:
+        if orch._runtime.natural_exit_reason is None:
             return
         # Snapshot both locals immediately — a concurrent _clear_session_state
         # (or the explicit-stop path) can null state.session_context during the
@@ -941,7 +1006,7 @@ async def _start_orchestrator(
         # leaves only a bare $/esr_ready on natural exit. Mirror the robust
         # explicit-stop snapshot in rpc/handlers/session.py:117.
         ctx = state.session_context
-        reason = orch._natural_exit_reason
+        reason = orch._runtime.natural_exit_reason
         # Build the ESR payload BEFORE ``orch.stop()`` — ``stop()`` closes
         # the underlying DataStore as part of shutdown_step:store_close
         # (DESIGN §5.2), and ``ReportDataCollector.collect_end_session_report``

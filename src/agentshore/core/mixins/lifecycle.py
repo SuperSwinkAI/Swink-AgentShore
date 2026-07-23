@@ -9,14 +9,13 @@ from typing import TYPE_CHECKING, Protocol
 
 from agentshore.config import load_config
 from agentshore.core.git_safety import resolve_default_branch
-from agentshore.core.helpers import _logger, _ppo_selector_cls
+from agentshore.core.helpers import _logger, _ppo_selector_cls, _SafeCallHost
 from agentshore.data.store import HumanFeedbackRecord
 from agentshore.errors import ConfigError
 from agentshore.state import AgentStatus, SessionState
 from agentshore.utils import now_iso
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable
     from pathlib import Path
 
     from agentshore.config.models import BudgetConfig
@@ -38,21 +37,20 @@ _AUTO_STOP_PAUSE_REASONS: frozenset[str] = frozenset(
 )
 
 
-class _LifecycleHost(Protocol):
+class _LifecycleHost(_SafeCallHost, Protocol):
     """Orchestrator *behaviour* the :class:`LifecycleController` invokes.
 
     All shared session *state* now lives on :class:`SessionRuntime` (reached via
     ``self._runtime``); this Protocol is the narrow behaviour seam that remains so
-    the cross-component method (``_safe_call`` / ``effective_budget_caps``) and the
+    the cross-component method (``effective_budget_caps``) and the
     sibling-component references (``_state_builder``, ``_drain``) resolve on the
     composition root without a circular import. ``_OrchestratorBase`` structurally
-    satisfies it.
+    satisfies it. Extends :class:`_SafeCallHost` for the ``_safe_call`` method
+    shared by every per-component Host Protocol.
     """
 
     _state_builder: StateBuilder
     _drain: DrainController
-
-    async def _safe_call(self, coro: Awaitable[object], label: str) -> None: ...
 
     def effective_budget_caps(self) -> BudgetConfig:
         """Live-effective budget caps (overrides shadowing ``cfg.budget``)."""

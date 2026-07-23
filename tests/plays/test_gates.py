@@ -80,7 +80,8 @@ def _state(
 
 
 def test_capability_gate_passes_when_capable_idle_agent_present() -> None:
-    # CLAUDE_CODE has can_run_skill=True per capabilities defaults.
+    # The capability name no longer filters (every AGENT_CAPABILITIES can_*
+    # flag was always True) — an IDLE, healthy agent of any type suffices.
     gate = CapabilityGate("can_run_skill")
     assert gate(_state()) is None
 

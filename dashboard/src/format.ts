@@ -90,8 +90,15 @@ function formatAgentKind(agentType: string): string {
   return titleCase(agentType.replace(/_/g, " "));
 }
 
-function titleCase(value: string): string {
-  return value.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+export function titleCase(
+  value: string | null | undefined,
+  empty = "Unknown",
+): string {
+  if (!value) return empty;
+  return value
+    .replace(/[_-]+/g, " ")
+    .toLowerCase()
+    .replace(/\b\w/g, (char) => char.toUpperCase());
 }
 
 function preferredPlayTarget(

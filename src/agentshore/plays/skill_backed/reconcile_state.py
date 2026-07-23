@@ -93,6 +93,40 @@ class ReconcileStatePlay(SkillBackedPlay):
         # for genuinely-new bugs it can't classify.
         return "can_run_skill"
 
+    async def _extra_context(
+        self,
+        extra_context: dict[str, object],
+        ctx: PlayExecutionContext,
+        state: OrchestratorState,
+    ) -> None:
+        """Inject wedge diagnostics and the shared worktree guards (#218).
+
+        Pre-write structured diagnostic signals so the skill can diagnose
+        wedge pathologies (dirty trunk, orphan worktrees, recent failed
+        plays) without re-deriving them from the log/DB inside the agent
+        prompt. See ``agentshore/core/wedge_signals.py``.
+
+        RECONCILE_STATE also removes worktrees (orphan + #214 divergent-stale
+        paths), so it needs the same active-claim + age guards PRUNE uses —
+        without them its diagnose-then-remediate-later flow can delete a
+        worktree allocated mid-run to a freshly dispatched agent (#218).
+        """
+        from agentshore.core.wedge_signals import build_recent_wedge_signals
+
+        try:
+            extra_context["recent_wedge_signals"] = build_recent_wedge_signals(
+                state,
+                ctx.project_path,
+                session_id=ctx.session_id,
+            )
+        except Exception as exc:  # noqa: BLE001 — diagnostic is best-effort
+            _logger.warning(
+                "reconcile_state_wedge_signals_failed",
+                error=str(exc),
+                play_id=ctx.play_id,
+            )
+        await self._inject_worktree_guards(extra_context, ctx)
+
 
 async def _sweep_mid_session_orphans(state: OrchestratorState, ctx: PlayExecutionContext) -> None:
     """Reclaim orphaned trunk-scoped artifacts on every RECONCILE_STATE dispatch.

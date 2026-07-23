@@ -241,3 +241,6 @@ docs/_build/
 
 # ── Scratch / temp ────────────────────────────────────────────────────────────
 /tmp/
+
+# oat-postcard session triage file (local mail notes, not project state)
+/TODO.md

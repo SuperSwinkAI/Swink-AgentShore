@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 
+import pytest
+
+from agentshore.beads import BeadStatus, GraphTask, ProjectGraph
+from agentshore.ipc import serializer as serializer_module
 from agentshore.ipc.serializer import (
     make_message,
     serialize_feedback_requested,
@@ -120,6 +125,12 @@ def test_serialize_state_includes_human_feedback_count() -> None:
 
 
 def test_serialize_state_includes_work_availability_counts() -> None:
+    """The serializer no longer computes eligibility itself (TNQA wave-2): it
+    just reads the precomputed field the state builder populates alongside
+    action_mask/mask_reasons — so build the candidate plan here, exactly as
+    ``core.mixins.state.annotate_action_mask`` does in production."""
+    from agentshore.plays.candidates import build_candidate_plan
+
     issue = IssueSnapshot(
         issue_number=209,
         title="Blocked issue",
@@ -128,13 +139,23 @@ def test_serialize_state_includes_work_availability_counts() -> None:
         labels=["agentshore/blocked", "agentshore/disallowed"],
         source=None,
     )
-    result = serialize_state(_minimal_state(open_issues=[issue]))
+    state = _minimal_state(open_issues=[issue])
+    state.work_availability = build_candidate_plan(state).work_availability
+    result = serialize_state(state)
 
     availability = result["work_availability"]
     assert isinstance(availability, dict)
     assert availability["github_open_issue_count"] == 1
     assert availability["workable_issue_count"] == 0
     assert "issue_availability" not in result
+
+
+def test_serialize_state_work_availability_is_none_when_not_populated() -> None:
+    """Unlike the old inline-compute behavior, a state that never went through
+    the builder's annotate_action_mask (e.g. registry unavailable) serializes
+    work_availability as null — mirroring action_mask's empty-tuple default."""
+    result = serialize_state(_minimal_state())
+    assert result["work_availability"] is None
 
 
 def test_serialize_paused_session_state_as_string() -> None:
@@ -306,6 +327,11 @@ def test_serialize_state_pull_requests() -> None:
             "github_author": "octocat",
             "author_agent_id": None,
             "author_agent_type": None,
+            "head_sha": None,
+            "mergeable": None,
+            "base_ref": None,
+            "last_reviewed_sha": None,
+            "last_review_status": None,
         }
     ]
 
@@ -631,3 +657,148 @@ def test_make_message_seq_not_in_payload() -> None:
     msg = json.loads(make_message("state_update", {"foo": 1}))
     assert "seq" in msg
     assert "seq" not in msg["payload"]
+
+
+# Regression coverage for the TNQA critical serializer-drift fix: fields
+# present on the source dataclass but previously missing from the wire dict.
+
+
+def test_serialize_agent_includes_timeout_and_identity_fields() -> None:
+    agent = AgentSnapshot(
+        agent_id="a1",
+        agent_type=AgentType.CLAUDE_CODE,
+        status=AgentStatus.IDLE,
+        context_size=0,
+        total_cost=0.0,
+        total_tokens=0,
+        tasks_completed=0,
+        tasks_failed=0,
+        timeout_count=2,
+        consecutive_timeouts=1,
+        github_identity="agent-bot",
+    )
+    state = _minimal_state(agents=[agent])
+
+    result = serialize_state(state)
+    payload = result["agents"][0]  # type: ignore[index]
+
+    assert payload["timeout_count"] == 2  # type: ignore[index]
+    assert payload["consecutive_timeouts"] == 1  # type: ignore[index]
+    assert payload["github_identity"] == "agent-bot"  # type: ignore[index]
+
+
+def test_serialize_issue_includes_github_author() -> None:
+    issue = IssueSnapshot(
+        issue_number=1,
+        title="t",
+        state="open",
+        priority=None,
+        labels=[],
+        source=None,
+        github_author="reporter",
+    )
+    result = serialize_state(_minimal_state(open_issues=[issue]))
+    payload = result["open_issues"][0]  # type: ignore[index]
+    assert payload["github_author"] == "reporter"  # type: ignore[index]
+
+
+def test_serialize_pull_request_includes_review_and_merge_fields() -> None:
+    pr = PullRequestSnapshot(
+        pr_number=1,
+        title="t",
+        state="open",
+        branch="b",
+        issue_number=None,
+        labels=[],
+        review_decision=None,
+        status_check_summary=None,
+        is_draft=False,
+        blocked=False,
+        blocked_reasons=[],
+        head_sha="abc123",
+        mergeable="MERGEABLE",
+        base_ref="main",
+        last_reviewed_sha="def456",
+        last_review_status="APPROVED",
+    )
+    result = serialize_state(_minimal_state(pull_requests=[pr]))
+    payload = result["pull_requests"][0]  # type: ignore[index]
+    assert payload["head_sha"] == "abc123"  # type: ignore[index]
+    assert payload["mergeable"] == "MERGEABLE"  # type: ignore[index]
+    assert payload["base_ref"] == "main"  # type: ignore[index]
+    assert payload["last_reviewed_sha"] == "def456"  # type: ignore[index]
+    assert payload["last_review_status"] == "APPROVED"  # type: ignore[index]
+
+
+def test_serialize_graph_task_includes_dependency_ids() -> None:
+    task = GraphTask(
+        bead_id="bd-1",
+        title="t",
+        status=BeadStatus.OPEN,
+        depends_on_ids=frozenset({"bd-2", "bd-3"}),
+        blocked_by_ids=frozenset({"bd-2"}),
+    )
+    graph = ProjectGraph(tasks=[task], tasks_total=1)
+    state = _minimal_state(graph=graph)
+
+    result = serialize_state(state)
+    graph_payload = result["graph"]
+    assert isinstance(graph_payload, dict)
+    task_payload = graph_payload["tasks"][0]
+    assert task_payload["depends_on_ids"] == ["bd-2", "bd-3"]
+    assert task_payload["blocked_by_ids"] == ["bd-2"]
+
+
+def test_serialize_graph_includes_tasks_blocked() -> None:
+    graph = ProjectGraph(tasks_blocked=3)
+    state = _minimal_state(graph=graph)
+
+    result = serialize_state(state)
+    graph_payload = result["graph"]
+    assert isinstance(graph_payload, dict)
+    assert graph_payload["tasks_blocked"] == 3
+
+
+# Wire-field parity guard: exercise `_assert_field_parity` directly so its
+# failure mode is covered, not just its import-time invocations.
+
+
+def test_assert_field_parity_passes_when_keys_match() -> None:
+    @dataclasses.dataclass(frozen=True, slots=True)
+    class _Probe:
+        a: int
+        b: str
+
+    serializer_module._assert_field_parity(_Probe, {"a", "b"}, omitted=frozenset(), label="test")
+
+
+def test_assert_field_parity_raises_on_missing_field() -> None:
+    @dataclasses.dataclass(frozen=True, slots=True)
+    class _Probe:
+        a: int
+        b: str
+
+    with pytest.raises(ValueError, match="test"):
+        serializer_module._assert_field_parity(_Probe, {"a"}, omitted=frozenset(), label="test")
+
+
+def test_assert_field_parity_raises_on_extra_field() -> None:
+    @dataclasses.dataclass(frozen=True, slots=True)
+    class _Probe:
+        a: int
+
+    with pytest.raises(ValueError, match="test"):
+        serializer_module._assert_field_parity(
+            _Probe, {"a", "unexpected"}, omitted=frozenset(), label="test"
+        )
+
+
+def test_assert_field_parity_respects_omitted_allowlist() -> None:
+    @dataclasses.dataclass(frozen=True, slots=True)
+    class _Probe:
+        a: int
+        internal_only: str = "x"
+
+    serializer_module._assert_field_parity(
+        _Probe, {"a"}, omitted=frozenset({"internal_only"}), label="test"
+    )

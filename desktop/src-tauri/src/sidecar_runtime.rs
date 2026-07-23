@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+#[cfg(target_os = "windows")]
 use crate::install_layout;
 
 /// Development fallback command for the Python sidecar.

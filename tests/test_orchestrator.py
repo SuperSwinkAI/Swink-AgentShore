@@ -461,7 +461,9 @@ async def test_run_until_idle_retries_unchanged_digest_when_work_remains(tmp_pat
     selector = FixedPlanSelector([])
     orch = await Orchestrator.bootstrap(cfg=_cfg(), repo_root=tmp_path, selector=selector)
     state = _idle_state_with_issue()
-    orch._last_selection_digest = orch._loop.selection_state_digest(state, list(state.agents))
+    orch._runtime.last_selection_digest = orch._loop.selection_state_digest(
+        state, list(state.agents)
+    )
     sleep_calls: list[float] = []
 
     async def _sleep(delay: float) -> None:
@@ -600,7 +602,7 @@ async def test_audit_play_completion_forces_issue_refresh(
     refresh_issues = AsyncMock()
 
     async with orch:
-        orch._last_refresh_time = time.monotonic()
+        orch._runtime.last_refresh_time = time.monotonic()
         with (
             patch.object(orch._completion, "refresh_issues", new=refresh_issues),
             patch.object(
@@ -639,7 +641,7 @@ async def test_end_session_revalidation_blocks_when_refresh_finds_work(
     assert any(
         call.args == ("end_session_revalidation_blocked",) for call in warning.call_args_list
     )
-    assert orch._last_selection_digest is None
+    assert orch._runtime.last_selection_digest is None
 
 
 def _wedge_candidate_plan() -> SimpleNamespace:
@@ -723,7 +725,7 @@ async def test_end_session_force_drain_after_repeated_revalidation_blocks(
     # re-runs the selector; mirror that so the loop keeps re-attempting (the
     # whole point of the wedge) rather than idling on an unchanged digest.
     async def _block(*, failsafe: bool = False) -> bool:
-        orch._last_selection_digest = None
+        orch._runtime.last_selection_digest = None
         return False
 
     stop_reasons: list[str] = []
@@ -733,7 +735,7 @@ async def test_end_session_force_drain_after_repeated_revalidation_blocks(
         orch.request_stop("test_complete")
 
     async with orch:
-        orch._last_refresh_time = time.monotonic()
+        orch._runtime.last_refresh_time = time.monotonic()
         with (
             patch.object(
                 orch._state_builder,
@@ -777,7 +779,7 @@ async def test_blocked_failsafe_end_session_preserves_idle_streak(tmp_path: Path
 
     async with orch:
         orch._runtime.pause_event.set()
-        orch._last_refresh_time = time.monotonic()
+        orch._runtime.last_refresh_time = time.monotonic()
         orch._runtime.idle_streak = 5
         with (
             patch.object(
@@ -816,7 +818,7 @@ async def test_run_until_idle_does_not_dispatch_stale_end_session(tmp_path: Path
     selector.select = AsyncMock(side_effect=_select)
 
     async with orch:
-        orch._last_refresh_time = time.monotonic()
+        orch._runtime.last_refresh_time = time.monotonic()
         with (
             patch.object(
                 orch._state_builder,
@@ -866,7 +868,7 @@ async def test_run_until_idle_dispatches_single_end_session(tmp_path: Path) -> N
         return end_outcome
 
     async with orch:
-        orch._last_refresh_time = time.monotonic()
+        orch._runtime.last_refresh_time = time.monotonic()
         with (
             patch.object(orch._completion, "refresh_issues", new=AsyncMock()),
             patch.object(
@@ -897,7 +899,7 @@ async def test_run_until_idle_terminates_on_end_session(tmp_path: Path) -> None:
     end_outcome = _idle_outcome(PlayType.END_SESSION)
 
     async with orch:
-        orch._last_refresh_time = time.monotonic()
+        orch._runtime.last_refresh_time = time.monotonic()
         with (
             patch.object(orch._completion, "refresh_issues", new=AsyncMock()),
             patch.object(
@@ -925,7 +927,7 @@ async def test_closed_graph_does_not_auto_dispatch_end_session(tmp_path: Path) -
     orch = await Orchestrator.bootstrap(cfg=_cfg(), repo_root=tmp_path, selector=selector)
 
     async def _select_once(_state: OrchestratorState) -> None:
-        orch._stop_requested = True
+        orch._runtime.stop_requested = True
         return None
 
     selector.select = AsyncMock(side_effect=_select_once)
@@ -960,11 +962,11 @@ async def test_closed_graph_does_not_auto_dispatch_end_session(tmp_path: Path) -
         history = await orch._store.get_play_history(orch._session_id)
         end_session_rows = [p for p in history if p.play_type == PlayType.END_SESSION.value]
         assert end_session_rows == []
-        assert orch._end_session_report_requested is False
-        assert orch._drain_reason is None
+        assert orch._runtime.end_session_report_requested is False
+        assert orch._runtime.drain_reason is None
         selector.select.assert_awaited()
     finally:
-        orch._end_session_report_open_browser = False
+        orch._runtime.end_session_report_open_browser = False
         await orch.__aexit__(None, None, None)
 
 
@@ -991,7 +993,9 @@ async def test_run_until_idle_begins_drain_on_budget_reserve(tmp_path: Path) -> 
     async def _fake_state() -> OrchestratorState:
         return OrchestratorState(
             session_id=orch._session_id,
-            session_state=SessionState.DRAINING if orch._draining else SessionState.RUNNING,
+            session_state=(
+                SessionState.DRAINING if orch._runtime.draining else SessionState.RUNNING
+            ),
             total_plays=10,
             total_cost=15.0,
             budget=reserve_budget,
@@ -1001,8 +1005,8 @@ async def test_run_until_idle_begins_drain_on_budget_reserve(tmp_path: Path) -> 
         with patch.object(orch._state_builder, "build_state", new=_fake_state):
             await orch.run_until_idle()
 
-    assert orch._draining is True
-    assert orch._drain_reason == "budget_reserve_reached"
+    assert orch._runtime.draining is True
+    assert orch._runtime.drain_reason == "budget_reserve_reached"
     selector.select.assert_not_called()
 
 
@@ -1042,7 +1046,7 @@ async def test_instantiate_override_queue_dequeues_with_in_flight_work(
     )
 
     async with orch:
-        orch._in_flight["dispatch-1"] = asyncio.create_task(asyncio.sleep(5))
+        orch._runtime.in_flight["dispatch-1"] = asyncio.create_task(asyncio.sleep(5))
         from agentshore.plays.override import OverrideEntry, OverrideKind
 
         orch._overrides.put_nowait(
@@ -1054,9 +1058,9 @@ async def test_instantiate_override_queue_dequeues_with_in_flight_work(
         )
 
         async def _wait_once(*_args: object, **_kwargs: object) -> None:
-            for task in orch._in_flight.values():
+            for task in orch._runtime.in_flight.values():
                 task.cancel()
-            orch._in_flight.clear()
+            orch._runtime.in_flight.clear()
 
         with (
             patch.object(orch._completion, "refresh_issues", new=AsyncMock()),
@@ -1118,13 +1122,13 @@ async def test_instantiate_selector_pick_dispatches_with_in_flight_work(
     )
 
     async with orch:
-        orch._in_flight["dispatch-1"] = asyncio.create_task(asyncio.sleep(5))
+        orch._runtime.in_flight["dispatch-1"] = asyncio.create_task(asyncio.sleep(5))
         dispatch_mock = AsyncMock(return_value=False)
 
         async def _wait_once(*_args: object, **_kwargs: object) -> None:
-            for task in orch._in_flight.values():
+            for task in orch._runtime.in_flight.values():
                 task.cancel()
-            orch._in_flight.clear()
+            orch._runtime.in_flight.clear()
 
         with (
             patch.object(orch._completion, "refresh_issues", new=AsyncMock()),
@@ -1172,7 +1176,7 @@ async def test_on_context_pressure_annotates_hints(tmp_path: Path) -> None:
     orch = await Orchestrator.bootstrap(cfg=_cfg(), repo_root=tmp_path)
     async with orch:
         await orch._completion.on_context_pressure("agent-42", 0.87)
-        assert orch.context_pressure_hints.get("agent-42") == pytest.approx(0.87)
+        assert orch._runtime.context_pressure_hints.get("agent-42") == pytest.approx(0.87)
 
 
 # ---------------------------------------------------------------------------
@@ -1241,7 +1245,7 @@ async def test_stop_wakes_paused_loop(tmp_path: Path) -> None:
             # than sleeping a fixed interval (the prior wall-clock wait raced
             # under xdist load, #13).
             await asyncio.wait_for(paused.wait(), timeout=5.0)
-            assert not orch._pause_event.is_set()
+            assert not orch._runtime.pause_event.is_set()
             # stop() should wake it
             await orch.stop()
             await asyncio.wait_for(task, timeout=5.0)
@@ -1281,7 +1285,7 @@ async def test_executor_exception_does_not_crash_loop(tmp_path: Path) -> None:
         return end_outcome
 
     async with orch:
-        orch._last_refresh_time = time.monotonic()
+        orch._runtime.last_refresh_time = time.monotonic()
         with (
             patch.object(orch._completion, "refresh_issues", new=AsyncMock()),
             patch.object(
@@ -1471,25 +1475,25 @@ async def test_stagnation_escalation_ladder_and_reset(tmp_path: Path) -> None:
             total_plays=0,
             total_cost=0.0,
         )
-        orch._metrics = SimpleNamespace(
+        orch._runtime.metrics = SimpleNamespace(
             snapshot=AsyncMock(return_value=SimpleNamespace(stagnation_counter=1))
         )
         assert await orch._check_stagnation_escalation(state) is False
         assert orch._loop._last_stagnation_stage == 1
 
-        orch._metrics = SimpleNamespace(
+        orch._runtime.metrics = SimpleNamespace(
             snapshot=AsyncMock(return_value=SimpleNamespace(stagnation_counter=3))
         )
         assert await orch._check_stagnation_escalation(state) is True
         assert orch._loop._last_stagnation_stage == 2
 
-        orch._metrics = SimpleNamespace(
+        orch._runtime.metrics = SimpleNamespace(
             snapshot=AsyncMock(return_value=SimpleNamespace(stagnation_counter=5))
         )
         assert await orch._check_stagnation_escalation(state) is True
         assert orch._loop._last_stagnation_stage == 3
 
-        orch._metrics = SimpleNamespace(
+        orch._runtime.metrics = SimpleNamespace(
             snapshot=AsyncMock(return_value=SimpleNamespace(stagnation_counter=0))
         )
         assert await orch._check_stagnation_escalation(state) is False
@@ -1507,7 +1511,7 @@ async def test_stagnation_stage_one_boosts_entropy_coef(tmp_path: Path) -> None:
             total_plays=0,
             total_cost=0.0,
         )
-        orch._metrics = SimpleNamespace(
+        orch._runtime.metrics = SimpleNamespace(
             snapshot=AsyncMock(return_value=SimpleNamespace(stagnation_counter=1))
         )
 
@@ -1519,10 +1523,10 @@ async def test_stagnation_stage_one_boosts_entropy_coef(tmp_path: Path) -> None:
                 self.values.append(value)
 
         dummy = _DummySelector()
-        orch._selector = dummy  # type: ignore[assignment]
+        orch._runtime.selector = dummy  # type: ignore[assignment]
         with patch("agentshore.core.mixins.loop._ppo_selector_cls", return_value=_DummySelector):
             await orch._check_stagnation_escalation(state)
-            orch._metrics = SimpleNamespace(
+            orch._runtime.metrics = SimpleNamespace(
                 snapshot=AsyncMock(return_value=SimpleNamespace(stagnation_counter=0))
             )
             await orch._check_stagnation_escalation(state)

@@ -1,7 +1,7 @@
 """Observation encoder — builds a fixed-size float32 vector from OrchestratorState
 and ObservationContext.
 
-Slot layout (OBSERVATION_DIM=250, OBSERVATION_VERSION=14):
+Slot layout (OBSERVATION_DIM=252, OBSERVATION_VERSION=15):
   0-1     dependency ( 2)  blocked_task_ratio + ready_task_ratio from beads graph (v13)
   2-7     retired    ( 6)  permanently zero-filled
   8-11    epic       ( 4)  global_closure_ratio + top-3 epic closure ratios (Track 5, beads-native)
@@ -17,22 +17,23 @@ Slot layout (OBSERVATION_DIM=250, OBSERVATION_VERSION=14):
   68-70   learnings  ( 3)  count, avg-confidence, injection-rate
   71      churn      ( 1)  issue churn rate over last 10 plays
   72-167  per-config (96)  32×(idle_count, busy_count, success_rate) zero-padded
-  168-175 pr-author  ( 8)  open + awaiting-review counts per CLI provider, in the
-                          curated order claude_code/codex/grok/antigravity (#91)
-  176     velocity   ( 1)  rolling velocity (issues+PRs closed per play, last K plays)
-  177     busy-agents( 1)  normalized busy-agent count
-  178     unreviewed ( 1)  fraction of open PRs with unreviewed commits
-  179     mergeable  ( 1)  fraction of open PRs with mergeable=MERGEABLE
-  180     in-flight  ( 1)  normalized in-flight issue_pickup issue count
-  181     skip-rate  ( 1)  fraction of recent selection cycles that hit a clean
+  168-177 pr-author  (10)  open + awaiting-review counts per CLI provider, in the
+                          curated order claude_code/codex/grok/antigravity/
+                          swink_coding (#91, swink appended in v15 / #325)
+  178     velocity   ( 1)  rolling velocity (issues+PRs closed per play, last K plays)
+  179     busy-agents( 1)  normalized busy-agent count
+  180     unreviewed ( 1)  fraction of open PRs with unreviewed commits
+  181     mergeable  ( 1)  fraction of open PRs with mergeable=MERGEABLE
+  182     in-flight  ( 1)  normalized in-flight issue_pickup issue count
+  183     skip-rate  ( 1)  fraction of recent selection cycles that hit a clean
                           confirm/claim re-pick (live-drift signal; slot repointed
                           from the removed executor masked-skip path)
-  182     pr-pressure( 1)  open_pr_count / SAT_OPEN_PRS_COUNT, clamped to [0, 1]
-  183-248 spec       (66)  3 tiers × 22 plays specialization success rates (0.5 default)
-  249     reserved   ( 1)  version marker = 1.0 (a stable per-version constant)
+  184     pr-pressure( 1)  open_pr_count / SAT_OPEN_PRS_COUNT, clamped to [0, 1]
+  185-250 spec       (66)  3 tiers × 22 plays specialization success rates (0.5 default)
+  251     reserved   ( 1)  version marker = 1.0 (a stable per-version constant)
 
 Tier order is (small, medium, large) — index 0/1/2 — matching `cheapest-first`
-across the tier-fleet block (17-32) and the specialization block (183-248).
+across the tier-fleet block (17-32) and the specialization block (185-250).
 Fleet-wide counts saturate at ``_MAX_TOTAL_AGENTS`` to cover typical
 multi-cell expansion without making the vector sensitive to very high caps.
 """
@@ -72,9 +73,10 @@ _PR_AUTHOR_AGENT_ORDER: Final[tuple[AgentType, ...]] = (
     AgentType.CODEX,
     AgentType.GROK,
     AgentType.ANTIGRAVITY,
+    AgentType.SWINK_CODING,  # appended in v15 (#325) — never reorder, only append
 )
 _PR_AUTHOR_FEATURES_PER_TYPE: Final[int] = 2  # (open, awaiting-review)
-_PR_AUTHOR_FEATURES: Final[int] = len(_PR_AUTHOR_AGENT_ORDER) * _PR_AUTHOR_FEATURES_PER_TYPE  # 8
+_PR_AUTHOR_FEATURES: Final[int] = len(_PR_AUTHOR_AGENT_ORDER) * _PR_AUTHOR_FEATURES_PER_TYPE  # 10
 # author_agent_type string → block index. Unknown / None / retired-provider authors
 # resolve to ``None`` here and contribute no slot.
 _PR_AUTHOR_VALUE_TO_INDEX: Final[dict[str, int]] = {
@@ -111,14 +113,14 @@ _SPEC_BLOCK_SIZE: Final[int] = _NUM_TIERS * NUM_ACTIONS  # = 66 at v0.15
 # Neutral prior for cells with no observations yet (matches per-config block).
 _SPEC_NEUTRAL: Final[float] = 0.5
 
-# Slot 181 is the executor-skip-rate diagnostic between the in-flight slot
-# (180) and the pr_pressure_ratio slot at 182 (desktop-8zzy pressure ratio,
+# Slot 183 is the executor-skip-rate diagnostic between the in-flight slot
+# (182) and the pr_pressure_ratio slot at 184 (desktop-8zzy pressure ratio,
 # added in OBSERVATION_VERSION 12). The `+ 7` below counts the
 # velocity/busy/unreviewed/mergeable/in-flight/skip-rate/pr-pressure block.
 OBSERVATION_DIM: Final[int] = (
     73 + _CONFIG_BLOCK_SIZE + _PR_AUTHOR_FEATURES + 7 + _SPEC_BLOCK_SIZE
-)  # = 250 with NUM_ACTIONS=22 and a 4-provider PR-author block (#91)
-OBSERVATION_VERSION: Final[int] = 14
+)  # = 252 with NUM_ACTIONS=22 and a 5-provider PR-author block (#91, #325)
+OBSERVATION_VERSION: Final[int] = 15
 
 # Per-feature saturation points (clip then scale → [0, 1])
 _SAT_DOLLAR_PER_PLAY: Final[float] = 2.0
@@ -188,30 +190,30 @@ _S_ISSUE_CHURN: Final[int] = 71
 _S_CONFIG_BLOCK_START: Final[int] = 72
 _S_CONFIG_BLOCK_END: Final[int] = _S_CONFIG_BLOCK_START + _CONFIG_BLOCK_SIZE  # 168
 # PR-author block: 2 features (open, awaiting) per curated CLI provider, slots
-# 168..175 (#91). Downstream slots are computed off the block end so a change to
+# 168..177 (#91). Downstream slots are computed off the block end so a change to
 # the provider set never requires hand-renumbering the rest of the layout.
 _S_PR_AUTHOR_BLOCK_START: Final[int] = _S_CONFIG_BLOCK_END  # 168
-_S_PR_AUTHOR_BLOCK_END: Final[int] = _S_PR_AUTHOR_BLOCK_START + _PR_AUTHOR_FEATURES  # 176
-_S_ROLLING_VELOCITY: Final[int] = _S_PR_AUTHOR_BLOCK_END  # 176
-_S_BUSY_AGENTS: Final[int] = _S_ROLLING_VELOCITY + 1  # 177
-_S_FRAC_UNREVIEWED_PRS: Final[int] = _S_BUSY_AGENTS + 1  # 178
-_S_FRAC_MERGEABLE_PRS: Final[int] = _S_FRAC_UNREVIEWED_PRS + 1  # 179
-_S_INFLIGHT_ISSUES: Final[int] = _S_FRAC_MERGEABLE_PRS + 1  # 180
+_S_PR_AUTHOR_BLOCK_END: Final[int] = _S_PR_AUTHOR_BLOCK_START + _PR_AUTHOR_FEATURES  # 178
+_S_ROLLING_VELOCITY: Final[int] = _S_PR_AUTHOR_BLOCK_END  # 178
+_S_BUSY_AGENTS: Final[int] = _S_ROLLING_VELOCITY + 1  # 179
+_S_FRAC_UNREVIEWED_PRS: Final[int] = _S_BUSY_AGENTS + 1  # 180
+_S_FRAC_MERGEABLE_PRS: Final[int] = _S_FRAC_UNREVIEWED_PRS + 1  # 181
+_S_INFLIGHT_ISSUES: Final[int] = _S_FRAC_MERGEABLE_PRS + 1  # 182
 # Clean confirm/claim re-pick rate over recent selection cycles. Diagnostic
 # signal so PPO sees the live-drift rate (a selected play whose live confirm or
 # work-claim CAS lost a race); no associated action. Repointed from the removed
 # executor masked-skip path — same slot, same [0, 1] range.
-_S_EXECUTOR_SKIP_RATE: Final[int] = _S_INFLIGHT_ISSUES + 1  # 181
+_S_EXECUTOR_SKIP_RATE: Final[int] = _S_INFLIGHT_ISSUES + 1  # 183
 # desktop-8zzy: open_pr_count / SAT_OPEN_PRS_COUNT, clamped to [0, 1]. Mirrors
 # the _PR_PRESSURE_BONUS reward shaping; lets PPO learn "drain harder near the
 # cap" from a normalised ratio rather than inferring it from slot 56.
-_S_PR_PRESSURE_RATIO: Final[int] = _S_EXECUTOR_SKIP_RATE + 1  # 182
+_S_PR_PRESSURE_RATIO: Final[int] = _S_EXECUTOR_SKIP_RATE + 1  # 184
 # Specialization block: 3 tiers × NUM_ACTIONS play actions, success-rate cells.
-# Auto-sizes with the action space; at NUM_ACTIONS=22 the block runs 183..248.
-_S_SPEC_BLOCK_START: Final[int] = _S_PR_PRESSURE_RATIO + 1  # 183
-_S_SPEC_BLOCK_END: Final[int] = _S_SPEC_BLOCK_START + _SPEC_BLOCK_SIZE  # 249
+# Auto-sizes with the action space; at NUM_ACTIONS=22 the block runs 185..250.
+_S_SPEC_BLOCK_START: Final[int] = _S_PR_PRESSURE_RATIO + 1  # 185
+_S_SPEC_BLOCK_END: Final[int] = _S_SPEC_BLOCK_START + _SPEC_BLOCK_SIZE  # 251
 # version marker
-_S_OBS_VERSION: Final[int] = _S_SPEC_BLOCK_END  # 249
+_S_OBS_VERSION: Final[int] = _S_SPEC_BLOCK_END  # 251
 
 
 @dataclass(frozen=True, slots=True)
@@ -450,7 +452,7 @@ def encode_observation(
         # untested configs.
         obs[base + 2] = (completed / total) if total > 0 else 0.5
 
-    # ---- PR-AUTHOR (168-175) ----
+    # ---- PR-AUTHOR (168-177) ----
     # Open-PR counts and "awaiting review" counts split by author agent type, one
     # (open, awaiting) pair per curated CLI provider (claude_code, codex, grok,
     # antigravity — #91). Awaiting review = open and not approved by GitHub or
@@ -475,11 +477,11 @@ def encode_observation(
         obs[base] = _norm(pr_author_open[idx], SAT_OPEN_PRS_COUNT)
         obs[base + 1] = _norm(pr_author_awaiting[idx], SAT_OPEN_PRS_COUNT)
 
-    # ---- VELOCITY + BUSY-AGENTS (176-177) ----
+    # ---- VELOCITY + BUSY-AGENTS (178-179) ----
     obs[_S_ROLLING_VELOCITY] = float(np.clip(ctx.rolling_velocity, 0.0, 1.0))
     obs[_S_BUSY_AGENTS] = float(min(ctx.busy_agent_count, _MAX_TOTAL_AGENTS)) / _MAX_TOTAL_AGENTS
 
-    # ---- PR REVIEW / MERGE READINESS (178-180) ----
+    # ---- PR REVIEW / MERGE READINESS (180-182) ----
     open_prs = [pr for pr in state.pull_requests if pr.state == "open"]
     n_open = max(1, len(open_prs))
     unreviewed = sum(
@@ -492,12 +494,12 @@ def encode_observation(
         min(len(state.in_flight_issues), _MAX_TOTAL_AGENTS) / _MAX_TOTAL_AGENTS
     )
 
-    # ---- EXECUTOR SKIP RATE (181) ----
+    # ---- EXECUTOR SKIP RATE (183) ----
     # Fraction of recent selection cycles ending in a clean confirm/claim
     # re-pick (live-drift signal). Already a rate in [0.0, 1.0]; just clamp.
     obs[_S_EXECUTOR_SKIP_RATE] = _clamp(ctx.executor_skip_rate_recent_50)
 
-    # ---- PR PRESSURE RATIO (182) ----
+    # ---- PR PRESSURE RATIO (184) ----
     # desktop-8zzy: open_pr_count divided by SAT_OPEN_PRS_COUNT (the same
     # saturation point used for the raw open-prs slot at 56). Lets PPO learn
     # "press harder near the cap" from a normalised ratio rather than
@@ -505,7 +507,7 @@ def encode_observation(
     # in reward.py — both share max_open_prs = 10.0.
     obs[_S_PR_PRESSURE_RATIO] = _norm(ctx.open_pr_count, SAT_OPEN_PRS_COUNT)
 
-    # ---- SPECIALIZATION (183-248 at NUM_ACTIONS=22) ----
+    # ---- SPECIALIZATION (185-250 at NUM_ACTIONS=22) ----
     # Per-tier × per-play-type success rate. Cells aggregate every per-agent
     # snapshot whose ``model_tier`` resolves to one of (small, medium, large)
     # — weighted by total plays per (agent, play_type) cell — so a 10-agent
@@ -539,7 +541,7 @@ def encode_observation(
             rate = tier_play_success.get((cell_tier, action_idx), 0) / total
             obs[_S_SPEC_BLOCK_START + cell_tier * NUM_ACTIONS + action_idx] = _clamp(rate)
 
-    # ---- RESERVED (249) — version marker ----
+    # ---- RESERVED (251) — version marker ----
     # A stable per-version constant in [0, 1]. Self-normalizing (always 1.0) so
     # an OBSERVATION_VERSION bump can never feed the policy an out-of-range
     # marker it never saw in training. Intentionally retained as a constant

@@ -53,12 +53,8 @@ def stop(project: str, hard: bool) -> None:
 
     Use --hard to request immediate platform-specific process-tree termination.
     """
-    from agentshore.session_path import (
-        hard_stop_session,
-        is_session_running,
-        read_timelapse_info,
-        request_drain,
-    )
+    from agentshore.session_path import read_timelapse_info
+    from agentshore.session_process import hard_stop_session, is_session_running, request_drain
 
     project_path = Path(project).resolve()
 
@@ -130,7 +126,8 @@ def _wait_for_session_exit(project_path: Path) -> bool | None:
     """
     import time
 
-    from agentshore.session_path import _process_alive, hard_stop_session, read_pid
+    from agentshore.session_path import read_pid
+    from agentshore.session_process import _process_alive, hard_stop_session
 
     pid = read_pid(project_path)
     if pid is None:

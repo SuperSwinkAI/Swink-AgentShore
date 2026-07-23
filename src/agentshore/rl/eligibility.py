@@ -30,7 +30,6 @@ import numpy as np
 import structlog
 
 from agentshore.agents._selection import allowed_tiers_for
-from agentshore.agents.capabilities import AGENT_CAPABILITIES
 from agentshore.agents.model_tiers import (
     DEFAULT_MODEL_TIER,
     effective_model_tier_config,
@@ -75,7 +74,7 @@ if TYPE_CHECKING:
     from agentshore.plays.base import PlayParams
     from agentshore.plays.registry import PlayRegistry
     from agentshore.rl.config_head import ConfigKey
-    from agentshore.state import OrchestratorState
+    from agentshore.state import AgentSnapshot, OrchestratorState
 
     # Returns a freshly-loaded beads graph (or None on a live-read blip). The
     # one live read ``confirm()`` is permitted, supplied by the dispatch layer
@@ -351,6 +350,178 @@ _VALIDITY_FNS: dict[
 }
 
 
+@dataclass(frozen=True, slots=True)
+class _AgentEligibilityContext:
+    """Per-play parameters the agent-eligibility stage chain filters against."""
+
+    pt: PlayType
+    state: OrchestratorState
+    allowed_tiers: frozenset[str] | None
+    excluded_types: frozenset[str]
+    rate_limited_types: frozenset[str]
+
+
+@dataclass(frozen=True, slots=True)
+class _EligibilityStage:
+    """One link in the agent-eligibility chain.
+
+    ``filter_agents`` narrows the candidate list; ``reason`` is the typed
+    reason to report when this stage is the one that empties it. Both
+    ``compute_agent_eligibility_mask`` (folds every stage to a bool) and
+    ``EligibilityAuthority._eligibility_reason`` (stops at the first stage
+    that empties the set) walk ``_AGENT_ELIGIBILITY_STAGES`` in this same
+    order, so the mask and its human-readable reason cannot drift apart —
+    there is exactly one chain, not two that must be kept in sync.
+    """
+
+    name: str
+    filter_agents: Callable[[list[AgentSnapshot], _AgentEligibilityContext], list[AgentSnapshot]]
+    reason: Callable[[_AgentEligibilityContext], MaskReason]
+
+
+def _stage_idle_filter(
+    agents: list[AgentSnapshot], _ctx: _AgentEligibilityContext
+) -> list[AgentSnapshot]:
+    return [a for a in agents if a.status == AgentStatus.IDLE]
+
+
+def _stage_idle_reason(_ctx: _AgentEligibilityContext) -> MaskReason:
+    return MaskReason(
+        text="No IDLE agents",
+        classification=MaskClassification.TRANSIENT,
+        source=MaskSource.ELIGIBILITY,
+    )
+
+
+def _stage_tier_filter(
+    agents: list[AgentSnapshot], ctx: _AgentEligibilityContext
+) -> list[AgentSnapshot]:
+    return [
+        a
+        for a in agents
+        if ctx.allowed_tiers is None or (a.model_tier or DEFAULT_MODEL_TIER) in ctx.allowed_tiers
+    ]
+
+
+def _stage_tier_reason(ctx: _AgentEligibilityContext) -> MaskReason:
+    tier_str = "|".join(sorted(ctx.allowed_tiers)) if ctx.allowed_tiers else "any"
+    return MaskReason(
+        text=f"No IDLE agent of allowed tier ({tier_str})",
+        classification=MaskClassification.TRANSIENT,
+        source=MaskSource.ELIGIBILITY,
+    )
+
+
+def _stage_exclude_filter(
+    agents: list[AgentSnapshot], ctx: _AgentEligibilityContext
+) -> list[AgentSnapshot]:
+    return [a for a in agents if a.agent_type.value not in ctx.excluded_types]
+
+
+def _stage_exclude_reason(ctx: _AgentEligibilityContext) -> MaskReason:
+    return MaskReason(
+        text=f"No IDLE agent type permitted by exclude rule for {ctx.pt.value!r}",
+        classification=MaskClassification.TRANSIENT,
+        source=MaskSource.ELIGIBILITY,
+    )
+
+
+def _stage_rate_limit_filter(
+    agents: list[AgentSnapshot], ctx: _AgentEligibilityContext
+) -> list[AgentSnapshot]:
+    return [a for a in agents if a.agent_type.value not in ctx.rate_limited_types]
+
+
+def _stage_rate_limit_reason(ctx: _AgentEligibilityContext) -> MaskReason:
+    return MaskReason(
+        text=f"No IDLE agent of a non-rate-limited type for {ctx.pt.value!r}",
+        classification=MaskClassification.TRANSIENT,
+        source=MaskSource.ELIGIBILITY,
+    )
+
+
+def _stage_anti_confirmation_filter(
+    agents: list[AgentSnapshot], ctx: _AgentEligibilityContext
+) -> list[AgentSnapshot]:
+    """CODE_REVIEW only: keep ``agents`` iff some (agent, PR-author) pair clears
+    anti-confirmation (reviewer identity != PR author). No-op for every other
+    play type. An empty ``review_authors`` (no PR actually needs review) also
+    yields no viable pair, so it naturally falls through to "not viable"
+    without a separate empty-check.
+    """
+    if ctx.pt != PlayType.CODE_REVIEW:
+        return agents
+    state = ctx.state
+    pr_by_number = {pr.pr_number: pr for pr in state.pull_requests}
+    if state.pending_review_queue:
+        review_authors: list[str | None] = [
+            pr_by_number[row.pr_number].github_author if row.pr_number in pr_by_number else None
+            for row in state.pending_review_queue
+        ]
+    else:
+        review_authors = [
+            pr.github_author for pr in state.pull_requests if not pr.is_draft and needs_review(pr)
+        ]
+    for author in review_authors:
+        for agent in agents:
+            if author is None or not same_identity(agent.github_identity, author):
+                return agents
+    return []
+
+
+def _stage_anti_confirmation_reason(_ctx: _AgentEligibilityContext) -> MaskReason:
+    return MaskReason(
+        text=(
+            "No eligible reviewer for any open PR"
+            " (anti-confirmation: all candidates authored the PR)"
+        ),
+        classification=MaskClassification.TRANSIENT,
+        source=MaskSource.ELIGIBILITY,
+    )
+
+
+# The canonical agent-eligibility chain. Order is the single source of truth:
+# both the mask fold and the reason lookup walk this same list.
+_AGENT_ELIGIBILITY_STAGES: tuple[_EligibilityStage, ...] = (
+    _EligibilityStage("idle", _stage_idle_filter, _stage_idle_reason),
+    _EligibilityStage("tier", _stage_tier_filter, _stage_tier_reason),
+    _EligibilityStage("exclude", _stage_exclude_filter, _stage_exclude_reason),
+    _EligibilityStage("rate_limit", _stage_rate_limit_filter, _stage_rate_limit_reason),
+    _EligibilityStage(
+        "anti_confirmation", _stage_anti_confirmation_filter, _stage_anti_confirmation_reason
+    ),
+)
+
+
+def _agent_eligibility_candidates(
+    pt: PlayType,
+    state: OrchestratorState,
+    cfg: RuntimeConfig,
+) -> tuple[list[AgentSnapshot], MaskReason | None]:
+    """Walk ``_AGENT_ELIGIBILITY_STAGES`` for one play type.
+
+    Returns the surviving candidate agents and, when some stage emptied the
+    set, that stage's reason (``None`` when eligible).
+    """
+    ctx = _AgentEligibilityContext(
+        pt=pt,
+        state=state,
+        allowed_tiers=allowed_tiers_for(pt),
+        excluded_types=frozenset(cfg.agent_preferences.exclude.get(pt.value, ())),
+        rate_limited_types=frozenset(
+            a.agent_type.value
+            for a in state.agents
+            if a.status == AgentStatus.ERROR and a.last_error_class == ErrorClass.RATE_LIMIT
+        ),
+    )
+    candidates: list[AgentSnapshot] = list(state.agents)
+    for stage in _AGENT_ELIGIBILITY_STAGES:
+        candidates = stage.filter_agents(candidates, ctx)
+        if not candidates:
+            return [], stage.reason(ctx)
+    return candidates, None
+
+
 def has_terminal_error_agent(state: OrchestratorState) -> bool:
     """True if any agent is in a non-recoverable ERROR state (#20).
 
@@ -466,7 +637,7 @@ class EligibilityAuthority:
         if precondition_reason is not None and not wedged_end_agent_reenable:
             return precondition_reason
 
-        # 2. Agent eligibility (tier / exclude / capability / anti-confirmation).
+        # 2. Agent eligibility (tier / exclude / anti-confirmation).
         if agent_mask is not None and not bool(agent_mask[idx]):
             return self._eligibility_reason(pt, state)
 
@@ -546,7 +717,12 @@ class EligibilityAuthority:
         return unmet[0] if unmet else None
 
     def _eligibility_reason(self, pt: PlayType, state: OrchestratorState) -> MaskReason:
-        """Return a typed reason explaining why the agent-eligibility gate fired."""
+        """Return a typed reason explaining why the agent-eligibility gate fired.
+
+        Only called when ``agent_mask[idx]`` is False, which itself only
+        happens when ``self._cfg`` is not None (see ``eligibility()``) — so
+        ``self._cfg`` is trusted non-None here.
+        """
         try:
             play = self._registry.get(pt)
         except KeyError:
@@ -555,78 +731,11 @@ class EligibilityAuthority:
                 classification=MaskClassification.HARD,
                 source=MaskSource.ELIGIBILITY,
             )
-        cap_key = play.capability
-        if cap_key is None:
+        if play.capability is None or self._cfg is None:
             return NOT_AVAILABLE
 
-        allowed_tiers = allowed_tiers_for(pt)
-        excluded_types = (
-            set(self._cfg.agent_preferences.exclude.get(pt.value, []))
-            if self._cfg is not None
-            else set()
-        )
-        idle = [a for a in state.agents if a.status == AgentStatus.IDLE]
-        if not idle:
-            return MaskReason(
-                text="No IDLE agents",
-                classification=MaskClassification.TRANSIENT,
-                source=MaskSource.ELIGIBILITY,
-            )
-        tier_ok = [
-            a
-            for a in idle
-            if allowed_tiers is None or (a.model_tier or DEFAULT_MODEL_TIER) in allowed_tiers
-        ]
-        if not tier_ok:
-            tier_str = "|".join(sorted(allowed_tiers)) if allowed_tiers else "any"
-            return MaskReason(
-                text=f"No IDLE agent of allowed tier ({tier_str})",
-                classification=MaskClassification.TRANSIENT,
-                source=MaskSource.ELIGIBILITY,
-            )
-        excl_ok = [a for a in tier_ok if a.agent_type.value not in excluded_types]
-        if not excl_ok:
-            return MaskReason(
-                text=f"No IDLE agent type permitted by exclude rule for {pt.value!r}",
-                classification=MaskClassification.TRANSIENT,
-                source=MaskSource.ELIGIBILITY,
-            )
-        # Rate-limit filter — must mirror ``compute_agent_eligibility_mask`` so the
-        # reported cause matches why the mask actually fired. All instances of a
-        # type share the same API quota, so a rate_limit hold on one benches the
-        # type. Omitting this previously misreported a quota-blocked type as a
-        # generic "no eligible agent."
-        rate_limited_types = {
-            a.agent_type.value
-            for a in state.agents
-            if a.status == AgentStatus.ERROR and a.last_error_class == ErrorClass.RATE_LIMIT
-        }
-        rate_ok = [a for a in excl_ok if a.agent_type.value not in rate_limited_types]
-        if not rate_ok:
-            return MaskReason(
-                text=f"No IDLE agent of a non-rate-limited type for {pt.value!r}",
-                classification=MaskClassification.TRANSIENT,
-                source=MaskSource.ELIGIBILITY,
-            )
-        cap_ok = [
-            a for a in rate_ok if bool(AGENT_CAPABILITIES.get(a.agent_type, {}).get(cap_key, False))
-        ]
-        if not cap_ok:
-            return MaskReason(
-                text=f"No IDLE agent with {cap_key!r} capability",
-                classification=MaskClassification.TRANSIENT,
-                source=MaskSource.ELIGIBILITY,
-            )
-        if pt == PlayType.CODE_REVIEW:
-            return MaskReason(
-                text=(
-                    "No eligible reviewer for any open PR"
-                    " (anti-confirmation: all candidates authored the PR)"
-                ),
-                classification=MaskClassification.TRANSIENT,
-                source=MaskSource.ELIGIBILITY,
-            )
-        return MaskReason(
+        _, reason = _agent_eligibility_candidates(pt, state, self._cfg)
+        return reason or MaskReason(
             text="No eligible agent (eligibility filter)",
             classification=MaskClassification.TRANSIENT,
             source=MaskSource.ELIGIBILITY,
@@ -678,16 +787,6 @@ class EligibilityAuthority:
             and a.current_play_type != PlayType.TAKE_BREAK
             for a in state.agents
         )
-
-    @staticmethod
-    def _has_terminal_error_agent(state: OrchestratorState) -> bool:
-        """Backward-compatible alias for :func:`has_terminal_error_agent`.
-
-        Retained so existing call sites that reach the authority's private
-        staticmethod keep resolving; the module-level function is the canonical
-        implementation.
-        """
-        return has_terminal_error_agent(state)
 
     async def confirm(
         self,
@@ -882,9 +981,7 @@ def compute_agent_eligibility_mask(
        ``allowed_tiers_for(play_type)``.
     2. Exclude list — agent's ``agent_type`` must not be in
        ``cfg.agent_preferences.exclude[play_type]``.
-    3. Capability — agent must have the play's required capability flag set
-       in ``AGENT_CAPABILITIES``.
-    4. Anti-confirmation (CODE_REVIEW only) — at least one (IDLE+eligible,
+    3. Anti-confirmation (CODE_REVIEW only) — at least one (IDLE+eligible,
        open-reviewable-PR) pair must exist where the agent's ``github_identity``
        differs from the PR's ``github_author``. Identity is the only
        deconfliction key (humans and agents may share a GH login; agents of
@@ -892,21 +989,17 @@ def compute_agent_eligibility_mask(
        confirmation: it runs against the merged trunk.
 
     Internal plays (``capability is None``) are not restricted here; they
-    bypass agent selection entirely.
+    bypass agent selection entirely. (A per-type capability stage used to sit
+    here too, but every ``AGENT_CAPABILITIES`` ``can_*`` flag was ``True`` for
+    every agent type, so it never filtered anything — removed in the wave-2
+    TNQA cleanup; ``play.capability`` is still checked below purely to decide
+    whether the play needs an agent at all.) The per-play filter chain itself
+    lives in ``_AGENT_ELIGIBILITY_STAGES`` (walked via
+    ``_agent_eligibility_candidates``) — the same chain
+    ``EligibilityAuthority._eligibility_reason`` walks to explain a False bit,
+    so mask and reason cannot drift apart.
     """
     mask = np.ones(NUM_ACTIONS, dtype=bool)
-
-    excluded_by_prefs: dict[str, set[str]] = {}
-    for pt_val, types in cfg.agent_preferences.exclude.items():
-        excluded_by_prefs[pt_val] = set(types)
-
-    # Agent types with an active rate_limit quota hold — all instances share
-    # the same API quota, so blocking one blocks all of the same type.
-    rate_limited_types: set[str] = {
-        a.agent_type.value
-        for a in state.agents
-        if a.status == AgentStatus.ERROR and a.last_error_class == ErrorClass.RATE_LIMIT
-    }
     for i, pt in enumerate(V1_ACTION_ORDER):
         try:
             play = registry.get(pt)
@@ -917,64 +1010,9 @@ def compute_agent_eligibility_mask(
         if play.capability is None:
             continue
 
-        cap_key: str = play.capability  # capability is non-None: checked above
-        allowed_tiers = allowed_tiers_for(pt)
-        excluded_types = excluded_by_prefs.get(pt.value, set())
-
-        candidates = [
-            a
-            for a in state.agents
-            if a.status == AgentStatus.IDLE
-            and (allowed_tiers is None or (a.model_tier or DEFAULT_MODEL_TIER) in allowed_tiers)
-            and a.agent_type.value not in excluded_types
-            and a.agent_type.value not in rate_limited_types
-            and bool(AGENT_CAPABILITIES.get(a.agent_type, {}).get(cap_key, False))
-        ]
-
+        candidates, _ = _agent_eligibility_candidates(pt, state, cfg)
         if not candidates:
             mask[i] = False
-            continue
-
-        # Anti-confirmation for CODE_REVIEW: at least one (eligible agent,
-        # reviewable PR) pair must satisfy ``agent.github_identity !=
-        # pr.github_author``. PR author is the GitHub creator login (truth);
-        # identity is the agent's resolved GH login. When a queue row has
-        # no corresponding PR snapshot (or the PR has no recorded author),
-        # treat author as unknown and allow any candidate — the resolver
-        # / executor's identity check is the final arbiter.
-        if pt == PlayType.CODE_REVIEW:
-            pr_by_number = {pr.pr_number: pr for pr in state.pull_requests}
-            if state.pending_review_queue:
-                # Each queue row represents a PR needing review. Use the PR
-                # snapshot when available (to read github_author); otherwise
-                # treat the row as "review wanted, author unknown."
-                review_authors: list[str | None] = [
-                    pr_by_number[row.pr_number].github_author
-                    if row.pr_number in pr_by_number
-                    else None
-                    for row in state.pending_review_queue
-                ]
-            else:
-                review_authors = [
-                    pr.github_author
-                    for pr in state.pull_requests
-                    if not pr.is_draft and needs_review(pr)
-                ]
-
-            if not review_authors:
-                mask[i] = False
-                continue
-
-            viable = False
-            for author in review_authors:
-                for agent in candidates:
-                    if author is None or not same_identity(agent.github_identity, author):
-                        viable = True
-                        break
-                if viable:
-                    break
-            if not viable:
-                mask[i] = False
 
     return mask
 

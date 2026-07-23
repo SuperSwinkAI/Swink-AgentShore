@@ -62,7 +62,7 @@ The system runs as a single asyncio process. The core loop is: observe state →
 
 **UI and transport modes, same core**: In solo mode, a Textual TUI renders state. In embedded/headless agent mode, state streams over a Unix domain socket or TCP IPC. Dashboard mode is a browser bridge on top of the same IPC stream. The `StateProvider` protocol (`src/agentshore/state.py`) decouples core from the consumers.
 
-**RL engine** (`src/agentshore/rl/`): Custom PPO policy network in PyTorch. 22-action discrete head (19 active plays + 3 permanently reserved/masked slots, action-space version 13). State vector (250 features, observation version 14) encodes alignment scores, budget, agent states, failure counts, trajectory projections. Policy outputs are masked to prevent invalid plays (e.g., can't review a PR that doesn't exist).
+**RL engine** (`src/agentshore/rl/`): Custom PPO policy network in PyTorch. 22-action discrete head (19 active plays + 3 permanently reserved/masked slots, action-space version 13). State vector (252 features, observation version 15) encodes alignment scores, budget, agent states, failure counts, trajectory projections. Policy outputs are masked to prevent invalid plays (e.g., can't review a PR that doesn't exist).
 
 **Plays** (`src/agentshore/plays/`): Each play implements a `Play` protocol with `preconditions()`, `execute()`, and `estimated_cost()`. The RL engine selects the play type; a separate parameter resolver picks which agent/issue/PR. Anti-confirmation bias is a hard invariant for Code Review: the reviewer GitHub identity must differ from the PR author. Run QA validates trunk/default-branch state and is not identity-blocked in the current implementation.
 

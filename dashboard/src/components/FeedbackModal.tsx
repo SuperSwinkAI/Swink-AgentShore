@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
+import { createNotifyStore } from "../notifyStore";
 
 // React port of `dashboard/src/hud/feedbackModal.ts`: visibility/reason via
 // module-level notify*() (TopBarHud's pattern), the budget-vs-buttons sub-mode
@@ -37,29 +38,14 @@ interface FeedbackModalState {
   reason: string | null;
 }
 
-const listeners = new Set<(s: FeedbackModalState) => void>();
-let latestState: FeedbackModalState = { visible: false, reason: null };
+const store = createNotifyStore<FeedbackModalState>({ visible: false, reason: null });
 
 export function notifyFeedbackModalShow(reason: string): void {
-  latestState = { visible: true, reason };
-  listeners.forEach((fn) => fn(latestState));
+  store.notify({ visible: true, reason });
 }
 
 export function notifyFeedbackModalHide(): void {
-  latestState = { visible: false, reason: latestState.reason };
-  listeners.forEach((fn) => fn(latestState));
-}
-
-function useFeedbackModalState(): FeedbackModalState {
-  const [state, setState] = useState<FeedbackModalState>(latestState);
-  useEffect(() => {
-    listeners.add(setState);
-    setState(latestState);
-    return () => {
-      listeners.delete(setState);
-    };
-  }, []);
-  return state;
+  store.notify({ visible: false, reason: store.get().reason });
 }
 
 export interface FeedbackModalProps {
@@ -89,7 +75,7 @@ export function FeedbackModal({
   onAdjustBudget,
   autoStopSeconds = DEFAULT_AUTO_STOP_SECONDS,
 }: FeedbackModalProps): React.ReactElement {
-  const { visible, reason } = useFeedbackModalState();
+  const { visible, reason } = store.use();
   const [budgetMode, setBudgetMode] = useState(false);
   const [budgetValue, setBudgetValue] = useState("");
   const [stopSending, setStopSending] = useState(false);

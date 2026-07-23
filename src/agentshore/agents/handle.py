@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
+from agentshore.agents.registry import AGENT_TYPE_DISPLAY_PREFIX
 from agentshore.logging import get_logger
 
 if TYPE_CHECKING:
@@ -126,12 +127,7 @@ _NOUNS = (
 
 def _generate_display_name(agent_type: AgentType, model_tier: str | None = None) -> str:
     """Generate a memorable display name like 'Claude: Fiery Robot'."""
-    prefix = {
-        "claude_code": "Claude",
-        "codex": "Codex",
-        "grok": "Grok",
-        "antigravity": "Antigravity",
-    }.get(agent_type.value, "Agent")
+    prefix = AGENT_TYPE_DISPLAY_PREFIX.get(agent_type, "Agent")
     if model_tier:
         prefix = f"{prefix}/{model_tier}"
     adj = secrets.choice(_ADJECTIVES)

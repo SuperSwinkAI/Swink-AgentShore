@@ -44,12 +44,12 @@ def _minimal_orch(tmp_path: Path) -> Orchestrator:
 
     orch = make_test_orchestrator(tmp_path)
     orch._session_id = "sess-test"
-    orch._stop_reason = "ppo_selected"
+    orch._runtime.stop_reason = "ppo_selected"
     orch._manager = MagicMock()
     orch._manager.handles = {}
     orch._loop = MagicMock()
-    orch._end_session_report_requested = True
-    orch._end_session_report_open_browser = True
+    orch._runtime.end_session_report_requested = True
+    orch._runtime.end_session_report_open_browser = True
     orch._state_builder = MagicMock()
     orch._state_builder.build_state = AsyncMock(return_value=_state(SessionState.DRAINING))
     orch._completion = MagicMock()
@@ -57,8 +57,8 @@ def _minimal_orch(tmp_path: Path) -> Orchestrator:
     orch._store = AsyncMock()
     orch._store.complete_session = AsyncMock()
     orch._store.close = AsyncMock()
-    orch._state_provider = MagicMock()
-    orch._state_provider.on_session_ended = AsyncMock()
+    orch._runtime.state_provider = MagicMock()
+    orch._runtime.state_provider.on_session_ended = AsyncMock()
     orch._drain = DrainController(
         host=orch,
         runtime=orch._runtime,
@@ -79,9 +79,9 @@ async def test_non_embedded_mode_opens_browser(tmp_path: Path) -> None:
     report_path.touch()
 
     orch = _minimal_orch(tmp_path)
-    orch._embedded_mode = False
+    orch._runtime.embedded_mode = False
     callback_calls: list[tuple[str, str, str | None]] = []
-    orch._esr_ready_callback = lambda sid, path, log_path: callback_calls.append(
+    orch._runtime.esr_ready_callback = lambda sid, path, log_path: callback_calls.append(
         (sid, path, log_path)
     )
     orch._drain.generate_end_session_report = AsyncMock(return_value=report_path)
@@ -103,11 +103,13 @@ async def test_embedded_mode_skips_browser_and_emits_callback(tmp_path: Path) ->
     report_path.touch()
 
     orch = _minimal_orch(tmp_path)
-    orch._embedded_mode = True
+    orch._runtime.embedded_mode = True
     log_path = tmp_path / ".agentshore" / "logs" / "agentshore-sess-test.log"
-    orch._log_path = log_path
+    orch._runtime.log_path = log_path
     callback_calls: list[tuple[str, str, str | None]] = []
-    orch._esr_ready_callback = lambda sid, path, log: callback_calls.append((sid, path, log))
+    orch._runtime.esr_ready_callback = lambda sid, path, log: callback_calls.append(
+        (sid, path, log)
+    )
     orch._drain.generate_end_session_report = AsyncMock(return_value=report_path)
 
     with patch("webbrowser.open") as mock_open:
@@ -130,8 +132,8 @@ async def test_embedded_mode_without_callback_is_no_op(tmp_path: Path) -> None:
     report_path.touch()
 
     orch = _minimal_orch(tmp_path)
-    orch._embedded_mode = True
-    orch._esr_ready_callback = None
+    orch._runtime.embedded_mode = True
+    orch._runtime.esr_ready_callback = None
     orch._drain.generate_end_session_report = AsyncMock(return_value=report_path)
 
     with patch("webbrowser.open") as mock_open:
@@ -148,12 +150,12 @@ async def test_embedded_callback_exception_does_not_fail_drain(tmp_path: Path) -
     report_path.touch()
 
     orch = _minimal_orch(tmp_path)
-    orch._embedded_mode = True
+    orch._runtime.embedded_mode = True
 
     def _boom(_sid: str, _path: str, _log_path: str | None) -> None:
         raise RuntimeError("notify pipe closed")
 
-    orch._esr_ready_callback = _boom
+    orch._runtime.esr_ready_callback = _boom
     orch._drain.generate_end_session_report = AsyncMock(return_value=report_path)
 
     with patch("webbrowser.open") as mock_open:
@@ -165,16 +167,16 @@ async def test_embedded_callback_exception_does_not_fail_drain(tmp_path: Path) -
 def test_register_esr_ready_callback_stores_handler(tmp_path: Path) -> None:
     """The register_* helper exists on the orchestrator and survives None reset."""
     orch = _minimal_orch(tmp_path)
-    orch._esr_ready_callback = None
+    orch._runtime.esr_ready_callback = None
 
     received: list[tuple[str, str, str | None]] = []
     orch.register_esr_ready_callback(lambda sid, p, log: received.append((sid, p, log)))
-    assert orch._esr_ready_callback is not None
-    orch._esr_ready_callback("sid-1", "/tmp/r.html", "/tmp/session.log")
+    assert orch._runtime.esr_ready_callback is not None
+    orch._runtime.esr_ready_callback("sid-1", "/tmp/r.html", "/tmp/session.log")
     assert received == [("sid-1", "/tmp/r.html", "/tmp/session.log")]
 
     orch.register_esr_ready_callback(None)
-    assert orch._esr_ready_callback is None
+    assert orch._runtime.esr_ready_callback is None
 
 
 def test_build_esr_ready_notification_shape() -> None:
@@ -219,16 +221,16 @@ def test_build_esr_ready_emitter_dispatches_through_notify() -> None:
 def test_register_session_draining_callback_stores_handler(tmp_path: Path) -> None:
     """The register_* helper exists on the orchestrator and survives None reset."""
     orch = _minimal_orch(tmp_path)
-    orch._session_draining_callback = None
+    orch._runtime.session_draining_callback = None
 
     received: list[tuple[str, str]] = []
     orch.register_session_draining_callback(lambda sid, reason: received.append((sid, reason)))
-    assert orch._session_draining_callback is not None
-    orch._session_draining_callback("sid-1", "budget_exhausted")
+    assert orch._runtime.session_draining_callback is not None
+    orch._runtime.session_draining_callback("sid-1", "budget_exhausted")
     assert received == [("sid-1", "budget_exhausted")]
 
     orch.register_session_draining_callback(None)
-    assert orch._session_draining_callback is None
+    assert orch._runtime.session_draining_callback is None
 
 
 def test_build_session_draining_notification_shape() -> None:

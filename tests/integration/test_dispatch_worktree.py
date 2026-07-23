@@ -304,9 +304,9 @@ async def test_allocation_failure_drops_play_with_worktree_create_failed(
 
         orch = make_test_orchestrator(main_repo, cfg, store=store)
         orch._session_id = "s-fail"
-        orch._registry = None
+        orch._runtime.registry = None
         orch._manager = manager  # real manager — its worktrees is patched above
-        orch._state_provider = MagicMock()
+        orch._runtime.state_provider = MagicMock()
 
         orch._dispatcher = Dispatcher(
             host=orch,
@@ -354,7 +354,7 @@ async def test_allocation_failure_drops_play_with_worktree_create_failed(
         # No worktrees row was written for the failed attempt.
         assert await _count_active_worktrees(store, session_id="s-fail") == 0
         # No active_play snapshot was published (allocator runs before that).
-        assert not orch._in_flight
+        assert not orch._runtime.in_flight
     finally:
         await store.close()
 
@@ -393,9 +393,9 @@ async def test_pre_dispatch_disk_guard_pauses_when_below_floor(
 
         orch = make_test_orchestrator(main_repo, cfg, store=store)
         orch._session_id = "s-disk"
-        orch._registry = None
+        orch._runtime.registry = None
         orch._manager = manager
-        orch._state_provider = MagicMock()
+        orch._runtime.state_provider = MagicMock()
         orch._dispatcher = Dispatcher(
             host=orch,
             runtime=orch._runtime,
@@ -428,7 +428,7 @@ async def test_pre_dispatch_disk_guard_pauses_when_below_floor(
         reason = call.kwargs["reason"]
         assert isinstance(reason, MaskReason)
         assert reason.classification == MaskClassification.TRANSIENT
-        assert not orch._in_flight
+        assert not orch._runtime.in_flight
     finally:
         await store.close()
 

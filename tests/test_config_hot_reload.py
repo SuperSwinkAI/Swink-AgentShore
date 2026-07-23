@@ -32,13 +32,13 @@ async def test_reload_config_swaps_cfg(tmp_path: Path) -> None:
         cfg=RuntimeConfig(), repo_root=tmp_path, config_path=config_path
     )
     async with orch:
-        assert orch._cfg.budget.enabled is False
-        assert orch._cfg.budget.total == 0.0
+        assert orch._runtime.cfg.budget.enabled is False
+        assert orch._runtime.cfg.budget.total == 0.0
 
         _write_config(config_path, {"budget": {"enabled": True, "total": 25.0}})
         await orch._lifecycle.reload_config()
 
-        assert orch._cfg.budget.total == 25.0
+        assert orch._runtime.cfg.budget.total == 25.0
 
 
 @pytest.mark.asyncio
@@ -46,9 +46,9 @@ async def test_reload_config_no_path(tmp_path: Path) -> None:
     """Reload with no config_path logs warning and returns without error."""
     orch = await Orchestrator.bootstrap(cfg=RuntimeConfig(), repo_root=tmp_path)
     async with orch:
-        original_cfg = orch._cfg
+        original_cfg = orch._runtime.cfg
         await orch._lifecycle.reload_config()
-        assert orch._cfg is original_cfg
+        assert orch._runtime.cfg is original_cfg
 
 
 @pytest.mark.asyncio
@@ -60,10 +60,10 @@ async def test_reload_config_invalid_yaml(tmp_path: Path) -> None:
 
     orch = await Orchestrator.bootstrap(cfg=cfg, repo_root=tmp_path, config_path=config_path)
     async with orch:
-        original_cfg = orch._cfg
+        original_cfg = orch._runtime.cfg
         config_path.write_text("invalid: yaml: {{{", encoding="utf-8")
         await orch._lifecycle.reload_config()
-        assert orch._cfg is original_cfg
+        assert orch._runtime.cfg is original_cfg
 
 
 @pytest.mark.asyncio
@@ -75,10 +75,10 @@ async def test_reload_config_no_changes(tmp_path: Path) -> None:
 
     orch = await Orchestrator.bootstrap(cfg=cfg, repo_root=tmp_path, config_path=config_path)
     async with orch:
-        original_cfg = orch._cfg
+        original_cfg = orch._runtime.cfg
         # Reload an unchanged file — content still matches, no swap.
         await orch._lifecycle.reload_config()
-        assert orch._cfg is original_cfg
+        assert orch._runtime.cfg is original_cfg
 
 
 @pytest.mark.asyncio
@@ -102,8 +102,8 @@ async def test_reload_config_logs_changed_fields(tmp_path: Path) -> None:
         )
         await orch._lifecycle.reload_config()
 
-        assert orch._cfg.budget.total == 99.0
-        assert orch._cfg.scope.strict_mode is True
+        assert orch._runtime.cfg.budget.total == 99.0
+        assert orch._runtime.cfg.scope.strict_mode is True
 
 
 def _sonnet_pricing(output_rate: float, input_rate: float = 0.1) -> dict[str, object]:
@@ -139,7 +139,9 @@ async def test_reload_picks_up_global_pricing_edit(
         global_pricing.write_text(yaml.dump(_sonnet_pricing(0.9)), encoding="utf-8")
         await orch._lifecycle.reload_config()
 
-        assert orch._cfg.pricebook.resolve("claude_code", "sonnet").cost_per_1k_output == 0.9
+        assert (
+            orch._runtime.cfg.pricebook.resolve("claude_code", "sonnet").cost_per_1k_output == 0.9
+        )
 
 
 @pytest.mark.asyncio
@@ -160,13 +162,17 @@ async def test_reload_rejects_malformed_global_pricing(
     )
     async with orch:
         await orch._lifecycle.reload_config()
-        assert orch._cfg.pricebook.resolve("claude_code", "sonnet").cost_per_1k_output == 0.9
+        assert (
+            orch._runtime.cfg.pricebook.resolve("claude_code", "sonnet").cost_per_1k_output == 0.9
+        )
 
         # Negative rate → ConfigError → reload aborts, prior pricing stands.
         global_pricing.write_text(yaml.dump(_sonnet_pricing(0.2, input_rate=-5)), encoding="utf-8")
         await orch._lifecycle.reload_config()
 
-        assert orch._cfg.pricebook.resolve("claude_code", "sonnet").cost_per_1k_output == 0.9
+        assert (
+            orch._runtime.cfg.pricebook.resolve("claude_code", "sonnet").cost_per_1k_output == 0.9
+        )
 
 
 @pytest.mark.asyncio
@@ -178,13 +184,13 @@ async def test_reload_config_rejects_budget_below_floor(tmp_path: Path) -> None:
 
     orch = await Orchestrator.bootstrap(cfg=cfg, repo_root=tmp_path, config_path=config_path)
     async with orch:
-        original_cfg = orch._cfg
+        original_cfg = orch._runtime.cfg
         _write_config(config_path, {"budget": {"enabled": True, "total": 19.99}})
 
         await orch._lifecycle.reload_config()
 
-        assert orch._cfg is original_cfg
-        assert orch._cfg.budget.total == 20.0
+        assert orch._runtime.cfg is original_cfg
+        assert orch._runtime.cfg.budget.total == 20.0
 
 
 @pytest.mark.asyncio
@@ -209,13 +215,13 @@ async def test_reload_refreshes_live_ppo_selector_cfg(tmp_path: Path) -> None:
     async with orch:
         # spec=PPOSelector so isinstance(selector, _ppo_selector_cls()) holds.
         selector = MagicMock(spec=PPOSelector)
-        orch._selector = selector
+        orch._runtime.selector = selector
 
         _write_config(config_path, {"budget": {"enabled": True, "total": 25.0}})
         await orch._lifecycle.reload_config()
 
-        selector.update_orchestrator_cfg.assert_called_once_with(orch._cfg)
-        assert orch._cfg.budget.total == 25.0
+        selector.update_orchestrator_cfg.assert_called_once_with(orch._runtime.cfg)
+        assert orch._runtime.cfg.budget.total == 25.0
 
         # Restore so the mock is not exercised during orchestrator shutdown.
-        orch._selector = None
+        orch._runtime.selector = None

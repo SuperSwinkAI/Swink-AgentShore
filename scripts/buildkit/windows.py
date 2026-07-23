@@ -18,6 +18,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from . import verify
 from ._proc import BuildError, die, fatal, info, log, require_tool, run, run_text
 from .context import BuildContext, default_context
 from .phases import build_dashboard, build_frontend, build_wheel
@@ -70,19 +71,37 @@ def _powershell() -> str:
 
 
 def setup_self_signed_cert(args: argparse.Namespace) -> None:
-    run([
-        _powershell(), "-ExecutionPolicy", "Bypass", "-File", str(_SIGN_HELPER),
-        "-Action", "SetupCert", *_signing_params(args),
-    ])
+    run(
+        [
+            _powershell(),
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(_SIGN_HELPER),
+            "-Action",
+            "SetupCert",
+            *_signing_params(args),
+        ]
+    )
     log("Self-signed certificate setup complete")
 
 
 def _sign_file(file: Path, args: argparse.Namespace) -> int:
     """Sign a file via the helper. Returns 0 (signed), 2 (no cert/tool), or raises."""
-    result = subprocess.run([
-        _powershell(), "-ExecutionPolicy", "Bypass", "-File", str(_SIGN_HELPER),
-        "-Action", "Sign", "-File", str(file), *_signing_params(args),
-    ])
+    result = subprocess.run(
+        [
+            _powershell(),
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(_SIGN_HELPER),
+            "-Action",
+            "Sign",
+            "-File",
+            str(file),
+            *_signing_params(args),
+        ]
+    )
     if result.returncode not in (0, 2):
         raise die(f"signing failed for {file} (exit {result.returncode})")
     return result.returncode
@@ -196,6 +215,27 @@ def stage_payload(ctx: BuildContext, app_exe: Path, provisioner_exe: Path, uv: s
     shutil.copy(uv, installer_stage / "uv.exe")
 
 
+def verify_payload(ctx: BuildContext, args: argparse.Namespace) -> None:
+    """Post-stage verification gate — the Windows analogue of macos.verify_app.
+
+    Runs against the staged app/installer directories (before compile_inno wraps
+    them), the equivalent phase position to macOS's post-Tauri-build, pre-.pkg
+    gate. See verify.verify_windows for what it checks and how it differs from
+    the macOS gate.
+    """
+    log("Verifying staged installer payload")
+    stage = _stage_dir(ctx)
+    require_signature = not args.no_sign and ctx.build_mode != "debug"
+    problems = verify.verify_windows(
+        stage / "app", stage / "installer", ctx.root, require_signature=require_signature
+    )
+    if problems:
+        for problem in problems:
+            info(f"  - {problem}")
+        raise die("artifact verification failed — see problems above")
+    info("Verification OK")
+
+
 def run_eula_generator(ctx: BuildContext, uv: str) -> None:
     log("Regenerating EULA.rtf from LICENSE")
     builder = ctx.packaging_dir / "installer-resources" / "build-eula-rtf.py"
@@ -241,18 +281,20 @@ def compile_inno(ctx: BuildContext, args: argparse.Namespace) -> Path:
 
     iss_out = stage / "AgentShore.iss"
     shutil.copy(template, iss_out)
-    run([
-        iscc,
-        f"/DAppVersion={version}",
-        f"/DStageDir={stage}",
-        f"/DOutputDir={output_dir}",
-        f"/DWheelFileName={ctx.bundled_wheel.name}",
-        "/DUvFileName=uv.exe",
-        "/DProvisionerFileName=agentshore-provisioner.exe",
-        f"/DLicenseFile={license_path}",
-        f"/DIconFile={icon}",
-        str(iss_out),
-    ])
+    run(
+        [
+            iscc,
+            f"/DAppVersion={version}",
+            f"/DStageDir={stage}",
+            f"/DOutputDir={output_dir}",
+            f"/DWheelFileName={ctx.bundled_wheel.name}",
+            "/DUvFileName=uv.exe",
+            "/DProvisionerFileName=agentshore-provisioner.exe",
+            f"/DLicenseFile={license_path}",
+            f"/DIconFile={icon}",
+            str(iss_out),
+        ]
+    )
     setup_out = output_dir / f"AgentShoreSetup-{version}-x64.exe"
     if not setup_out.is_file():
         raise die(f"Inno Setup completed but expected installer is missing: {setup_out}")
@@ -284,6 +326,7 @@ def run_windows(ctx: BuildContext, args: argparse.Namespace) -> None:
         log("Skipping Authenticode signing (--no-sign)")
 
     stage_payload(ctx, app_exe, provisioner_exe, uv)
+    verify_payload(ctx, args)
     run_eula_generator(ctx, uv)
     setup_out = compile_inno(ctx, args)
 

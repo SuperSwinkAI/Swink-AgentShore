@@ -23,6 +23,24 @@ _logger = structlog.get_logger(__name__)
 type OptimizerStateDict = dict[str, Any]
 
 
+def _clipped_surrogate_loss(
+    new_log_probs: torch.Tensor,
+    old_log_probs: torch.Tensor,
+    advantages: torch.Tensor,
+    clip_eps: float,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """PPO clipped surrogate loss: -min(ratio * adv, clip(ratio) * adv).mean().
+
+    Shared by the play-head and config-head loss terms in ``PPOUpdater.update``.
+    Returns ``(loss, ratio)`` — ``ratio`` is exposed because the play-head
+    caller also needs it for the clip-fraction stat.
+    """
+    ratio = torch.exp(new_log_probs - old_log_probs)
+    clip_ratio = torch.clamp(ratio, 1.0 - clip_eps, 1.0 + clip_eps)
+    loss = -torch.min(ratio * advantages, clip_ratio * advantages).mean()
+    return loss, ratio
+
+
 @dataclass(slots=True)
 class UpdateStats:
     policy_loss: float = 0.0
@@ -115,11 +133,10 @@ class PPOUpdater:
                     batch.states, batch.actions, batch.masks
                 )
 
-                ratio = torch.exp(log_probs - batch.old_log_probs)
-                clip_ratio = torch.clamp(ratio, 1.0 - self._clip_eps, 1.0 + self._clip_eps)
                 adv = batch.advantages
-
-                policy_loss = -torch.min(ratio * adv, clip_ratio * adv).mean()
+                policy_loss, ratio = _clipped_surrogate_loss(
+                    log_probs, batch.old_log_probs, adv, self._clip_eps
+                )
                 value_loss = nn.functional.mse_loss(values, batch.returns)
                 entropy_loss = -entropy.mean()
 
@@ -158,13 +175,9 @@ class PPOUpdater:
                     cfg_old_log_probs = batch.config_old_log_probs[active]
                     cfg_adv = batch.advantages[active]
 
-                    cfg_ratio = torch.exp(cfg_log_probs - cfg_old_log_probs)
-                    cfg_clip_ratio = torch.clamp(
-                        cfg_ratio, 1.0 - self._clip_eps, 1.0 + self._clip_eps
+                    config_policy_loss, _cfg_ratio = _clipped_surrogate_loss(
+                        cfg_log_probs, cfg_old_log_probs, cfg_adv, self._clip_eps
                     )
-                    config_policy_loss = -torch.min(
-                        cfg_ratio * cfg_adv, cfg_clip_ratio * cfg_adv
-                    ).mean()
                     config_entropy_loss = -cfg_entropy.mean()
 
                     loss = (

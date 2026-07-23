@@ -22,6 +22,9 @@ import antigravitySmallSpriteUrl from "./assets/agents/v2/antigravity-small-ball
 import grokLargeSpriteUrl from "./assets/agents/v2/grok-large-humanoid.png";
 import grokMediumSpriteUrl from "./assets/agents/v2/grok-medium-humanoid.png";
 import grokSmallSpriteUrl from "./assets/agents/v2/grok-small-ball.png";
+import swinkCodingLargeSpriteUrl from "./assets/agents/v2/swink-large-humanoid.png";
+import swinkCodingMediumSpriteUrl from "./assets/agents/v2/swink-medium-humanoid.png";
+import swinkCodingSmallSpriteUrl from "./assets/agents/v2/swink-small-ball.png";
 import type { AgentModelTier } from "./characters/types";
 
 const V2_SPRITE_FRAME_WIDTH = 416;
@@ -101,6 +104,17 @@ export const AGENT_REGISTRY = {
       small: antigravitySmallSpriteUrl,
       medium: antigravityMediumSpriteUrl,
       large: antigravityLargeSpriteUrl,
+    },
+  },
+  swink_coding: {
+    label: "Swink Coding",
+    colorFill: "#3ED421",
+    colorLabel: "S",
+    beta: true,
+    spriteUrls: {
+      small: swinkCodingSmallSpriteUrl,
+      medium: swinkCodingMediumSpriteUrl,
+      large: swinkCodingLargeSpriteUrl,
     },
   },
 } as const satisfies Record<string, AgentRegistryEntry>;

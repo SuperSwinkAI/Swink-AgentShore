@@ -121,7 +121,7 @@ async def test_all_masked_live_ppo_keeps_polling(info_calls: MagicMock, tmp_path
     """
     orch = _orch(tmp_path)
     stub_ppo = MagicMock()
-    orch._selector = stub_ppo
+    orch._runtime.selector = stub_ppo
     state = _StateStub(action_mask=(False, False, False, False))
 
     with (

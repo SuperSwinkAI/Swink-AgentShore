@@ -8,7 +8,7 @@ as the driver.
 from __future__ import annotations
 
 import contextlib
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 
 from agentshore.state import AgentType
 
@@ -82,18 +82,21 @@ _DEFAULT_YOLO_FLAGS: dict[AgentType, tuple[str, ...]] = {
     ),
     AgentType.GROK: ("--permission-mode", "bypassPermissions"),
     AgentType.ANTIGRAVITY: ("--dangerously-skip-permissions",),
+    AgentType.SWINK_CODING: ("--yolo",),
 }
 
 # Agent types whose CLI exposes a resume-by-id flag AND for which AgentShore
-# holds a stable session id (claude/codex/grok parse it from stdout; agy
-# resolves it from its on-disk conversation cache). The narrow JSON-retry path
-# (desktop-dy2j) re-enters that one session to recover the omitted result block.
+# holds a stable session id (claude/codex/grok/swink-coding parse it from
+# stdout; agy resolves it from its on-disk conversation cache). The narrow
+# JSON-retry path (desktop-dy2j) re-enters that one session to recover the
+# omitted result block.
 _RESUMABLE_AGENT_TYPES: frozenset[AgentType] = frozenset(
     {
         AgentType.CLAUDE_CODE,
         AgentType.CODEX,
         AgentType.GROK,
         AgentType.ANTIGRAVITY,
+        AgentType.SWINK_CODING,
     }
 )
 
@@ -103,6 +106,211 @@ def _apply_yolo_default(agent_type: AgentType, extra_flags: tuple[str, ...]) -> 
     if extra_flags:
         return extra_flags
     return _DEFAULT_YOLO_FLAGS.get(agent_type, ())
+
+
+# ---------------------------------------------------------------------------
+# Builder registry
+#
+# Every per-type builder shares one keyword-only shape (a plain function for
+# claude/codex, module-level ``build_argv``/``build_resume_argv`` for
+# grok/antigravity/swink-coding) so the two dispatchers below are a dict
+# lookup, not an if/elif chain — the same registry treatment
+# ``cli/parsing.py``'s ``_PARSERS`` already uses for output parsing. A builder
+# ignores whichever keywords its CLI doesn't support; that's documented on the
+# builder itself, not here.
+# ---------------------------------------------------------------------------
+
+
+class _ArgvBuilder(Protocol):
+    """Shape every entry in ``_ARGV_BUILDERS`` matches."""
+
+    def __call__(
+        self,
+        *,
+        prompt: str,
+        binary: str | None,
+        model: str | None,
+        reasoning_effort: str | None,
+        extra_flags: tuple[str, ...],
+        context_path: str | None,
+        project_dir: str | None,
+        prompt_on_stdin: bool,
+        prompt_file: str | None,
+        model_tier: str | None,
+    ) -> list[str]: ...
+
+
+class _ResumeArgvBuilder(Protocol):
+    """Shape every entry in ``_RESUME_ARGV_BUILDERS`` matches."""
+
+    def __call__(
+        self,
+        *,
+        resume_session_id: str,
+        prompt: str,
+        binary: str | None,
+        model: str | None,
+        reasoning_effort: str | None,
+        extra_flags: tuple[str, ...],
+        project_dir: str | None,
+        prompt_on_stdin: bool,
+        prompt_file: str | None,
+        model_tier: str | None,
+    ) -> list[str]: ...
+
+
+def _build_argv_claude_code(
+    *,
+    prompt: str,
+    binary: str | None,
+    model: str | None,
+    reasoning_effort: str | None,
+    extra_flags: tuple[str, ...],
+    context_path: str | None,
+    project_dir: str | None,
+    prompt_on_stdin: bool,
+    prompt_file: str | None,
+    model_tier: str | None,
+) -> list[str]:
+    """Claude Code argv. ``project_dir``, ``prompt_file``, and ``model_tier``
+    are accepted only for ``_ArgvBuilder`` signature parity and ignored:
+    Claude has no working-directory flag, no prompt-file mode, and no
+    tier_map concept.
+    """
+    binary = binary or "claude"
+    args = [binary, "-p", "--verbose", "--output-format", "stream-json"]
+    if model:
+        args += ["--model", model]
+    if reasoning_effort:
+        args += ["--effort", reasoning_effort]
+    args.extend(extra_flags)
+    if context_path:
+        args += ["--append-system-prompt", f"Context file: {context_path}"]
+    if not prompt_on_stdin:
+        args.append(prompt)
+    return args
+
+
+def _build_argv_codex(
+    *,
+    prompt: str,
+    binary: str | None,
+    model: str | None,
+    reasoning_effort: str | None,
+    extra_flags: tuple[str, ...],
+    context_path: str | None,
+    project_dir: str | None,
+    prompt_on_stdin: bool,
+    prompt_file: str | None,
+    model_tier: str | None,
+) -> list[str]:
+    """Codex argv. ``context_path``, ``prompt_file``, and ``model_tier`` are
+    accepted only for ``_ArgvBuilder`` signature parity and ignored: Codex has
+    no system-prompt-file flag, no prompt-file mode, and no tier_map concept.
+    """
+    binary = binary or "codex"
+    yolo = "--dangerously-bypass-approvals-and-sandbox" in extra_flags
+    args = [binary, "exec", "--json"]
+    if not yolo:
+        args.append("--full-auto")
+    if model:
+        args += ["-m", model]
+    if reasoning_effort:
+        args += ["-c", f'model_reasoning_effort="{reasoning_effort}"']
+    # desktop-pxg: codex's shell tool otherwise strips the env, so our
+    # injected GH_TOKEN/GH_CONFIG_DIR never reach `gh api user` (identity
+    # mismatch, refused mutations). inherit=all passes them through.
+    args += ["-c", "shell_environment_policy.inherit=all"]
+    args.extend(extra_flags)
+    if project_dir:
+        args += ["-C", project_dir]
+    # "-" tells `codex exec` to read the prompt from stdin.
+    args.append("-" if prompt_on_stdin else prompt)
+    return args
+
+
+def _build_resume_argv_claude_code(
+    *,
+    resume_session_id: str,
+    prompt: str,
+    binary: str | None,
+    model: str | None,
+    reasoning_effort: str | None,
+    extra_flags: tuple[str, ...],
+    project_dir: str | None,
+    prompt_on_stdin: bool,
+    prompt_file: str | None,
+    model_tier: str | None,
+) -> list[str]:
+    """Claude Code resume argv. ``model``, ``reasoning_effort``, ``extra_flags``,
+    ``project_dir``, ``prompt_file``, and ``model_tier`` are accepted only for
+    ``_ResumeArgvBuilder`` signature parity and ignored: ``--resume`` re-enters
+    the prior session verbatim with no per-dispatch flags.
+    """
+    binary = binary or "claude"
+    argv = [
+        binary,
+        "--resume",
+        resume_session_id,
+        "-p",
+        "--verbose",
+        "--output-format",
+        "stream-json",
+    ]
+    if not prompt_on_stdin:
+        argv.append(prompt)
+    return argv
+
+
+def _build_resume_argv_codex(
+    *,
+    resume_session_id: str,
+    prompt: str,
+    binary: str | None,
+    model: str | None,
+    reasoning_effort: str | None,
+    extra_flags: tuple[str, ...],
+    project_dir: str | None,
+    prompt_on_stdin: bool,
+    prompt_file: str | None,
+    model_tier: str | None,
+) -> list[str]:
+    """Codex resume argv — splices ``exec resume <id>`` into the base
+    :func:`_build_argv_codex` argv (issue #329, see the ``-C`` strip below)."""
+    base = _build_argv_codex(
+        prompt=prompt,
+        binary=binary,
+        model=model,
+        reasoning_effort=reasoning_effort,
+        extra_flags=extra_flags,
+        context_path=None,
+        project_dir=project_dir,
+        prompt_on_stdin=prompt_on_stdin,
+        prompt_file=prompt_file,
+        model_tier=model_tier,
+    )
+    # Splice "resume <id>" into base [binary, "exec", "--json", ...].
+    # `codex exec resume` (unlike `codex exec`) does not accept the `-C
+    # <dir>` working-directory flag and exits 2 with "unexpected argument
+    # '-C' found" if it's present (issue #329). Strip that flag/value pair
+    # from the tail before splicing — the subprocess is already launched
+    # with cwd=effective_cwd (see cli_agent._build_dispatch_argv callers),
+    # so `-C` is redundant here, not merely unsupported. Only the exact
+    # standalone `-C` token is matched (case-sensitive), so the unrelated
+    # lowercase `-c model_reasoning_effort=...` / `-c
+    # shell_environment_policy...` config flags are left untouched.
+    tail = base[2:]
+    filtered_tail: list[str] = []
+    skip_next = False
+    for arg in tail:
+        if skip_next:
+            skip_next = False
+            continue
+        if arg == "-C":
+            skip_next = True
+            continue
+        filtered_tail.append(arg)
+    return [base[0], "exec", "resume", resume_session_id, *filtered_tail]
 
 
 # ---------------------------------------------------------------------------
@@ -122,6 +330,7 @@ def build_argv(
     project_dir: str | None = None,
     prompt_on_stdin: bool = False,
     prompt_file: str | None = None,
+    model_tier: str | None = None,
 ) -> list[str]:
     """Return the argv list for invoking *agent_type* with *prompt*.
 
@@ -142,72 +351,39 @@ def build_argv(
     the prompt to a temp file and passes its path as *prompt_file*, which Grok
     reads via ``--prompt-file`` (see ``cli_grok.build_argv`` and issue #160).
 
+    *model_tier* is swink-coding-specific (SuperSwink-Coding#282): only used
+    when *model* is a ``provider:model[@endpoint]`` tier_map override rather
+    than a plain tier alias, to say which tier's backend is being overridden
+    for this dispatch. Ignored by every other agent type.
+
     Exported so tests can assert command shape without spawning a subprocess.
     """
-    from agentshore.agents import cli_antigravity, cli_grok
+    from agentshore.agents import cli_antigravity, cli_grok, cli_swink_coding
 
     extra_flags = _apply_yolo_default(agent_type, tuple(extra_flags))
-    if agent_type == AgentType.CLAUDE_CODE:
-        binary = binary or "claude"
-        args = [binary, "-p", "--verbose", "--output-format", "stream-json"]
-        if model:
-            args += ["--model", model]
-        if reasoning_effort:
-            args += ["--effort", reasoning_effort]
-        args.extend(extra_flags)
-        if context_path:
-            args += ["--append-system-prompt", f"Context file: {context_path}"]
-        if not prompt_on_stdin:
-            args.append(prompt)
-        return args
-
-    if agent_type == AgentType.CODEX:
-        binary = binary or "codex"
-        yolo = "--dangerously-bypass-approvals-and-sandbox" in extra_flags
-        args = [binary, "exec", "--json"]
-        if not yolo:
-            args.append("--full-auto")
-        if model:
-            args += ["-m", model]
-        if reasoning_effort:
-            args += ["-c", f'model_reasoning_effort="{reasoning_effort}"']
-        # desktop-pxg: codex's shell tool otherwise strips the env, so our
-        # injected GH_TOKEN/GH_CONFIG_DIR never reach `gh api user` (identity
-        # mismatch, refused mutations). inherit=all passes them through.
-        args += ["-c", "shell_environment_policy.inherit=all"]
-        args.extend(extra_flags)
-        if project_dir:
-            args += ["-C", project_dir]
-        # "-" tells `codex exec` to read the prompt from stdin.
-        args.append("-" if prompt_on_stdin else prompt)
-        return args
-
-    if agent_type == AgentType.GROK:
-        return cli_grok.build_argv(
-            prompt=prompt,
-            binary=binary,
-            model=model,
-            reasoning_effort=reasoning_effort,
-            extra_flags=extra_flags,
-            project_dir=project_dir,
-            prompt_on_stdin=prompt_on_stdin,
-            prompt_file=prompt_file,
-        )
-
-    if agent_type == AgentType.ANTIGRAVITY:
-        return cli_antigravity.build_argv(
-            prompt=prompt,
-            binary=binary,
-            model=model,
-            reasoning_effort=reasoning_effort,
-            extra_flags=extra_flags,
-            project_dir=project_dir,
-            prompt_on_stdin=prompt_on_stdin,
-            prompt_file=prompt_file,
-        )
-
-    msg = f"build_argv: unsupported CLI agent type {agent_type!r}"
-    raise ValueError(msg)
+    builders: dict[AgentType, _ArgvBuilder] = {
+        AgentType.CLAUDE_CODE: _build_argv_claude_code,
+        AgentType.CODEX: _build_argv_codex,
+        AgentType.GROK: cli_grok.build_argv,
+        AgentType.ANTIGRAVITY: cli_antigravity.build_argv,
+        AgentType.SWINK_CODING: cli_swink_coding.build_argv,
+    }
+    builder = builders.get(agent_type)
+    if builder is None:
+        msg = f"build_argv: unsupported CLI agent type {agent_type!r}"
+        raise ValueError(msg)
+    return builder(
+        prompt=prompt,
+        binary=binary,
+        model=model,
+        reasoning_effort=reasoning_effort,
+        extra_flags=extra_flags,
+        context_path=context_path,
+        project_dir=project_dir,
+        prompt_on_stdin=prompt_on_stdin,
+        prompt_file=prompt_file,
+        model_tier=model_tier,
+    )
 
 
 def build_resume_argv(
@@ -222,6 +398,7 @@ def build_resume_argv(
     project_dir: str | None = None,
     prompt_on_stdin: bool = False,
     prompt_file: str | None = None,
+    model_tier: str | None = None,
 ) -> list[str]:
     """Return argv for a single JSON-retry RESUME dispatch (desktop-dy2j).
 
@@ -232,87 +409,34 @@ def build_resume_argv(
     claude (``--resume``), codex (``exec resume``), grok (``-r``), antigravity
     (``--conversation``, id from :func:`cli_antigravity.resolve_conversation_id`).
 
+    *model_tier* is swink-coding-specific (SuperSwink-Coding#282) — see
+    :func:`build_argv`. Ignored by every other agent type.
+
     Exported so tests can assert command shape without spawning a subprocess.
     """
-    from agentshore.agents import cli_antigravity, cli_grok
+    from agentshore.agents import cli_antigravity, cli_grok, cli_swink_coding
 
     extra_flags = _apply_yolo_default(agent_type, tuple(extra_flags))
-
-    if agent_type == AgentType.CLAUDE_CODE:
-        binary = binary or "claude"
-        argv = [
-            binary,
-            "--resume",
-            resume_session_id,
-            "-p",
-            "--verbose",
-            "--output-format",
-            "stream-json",
-        ]
-        if not prompt_on_stdin:
-            argv.append(prompt)
-        return argv
-
-    if agent_type == AgentType.CODEX:
-        base = build_argv(
-            agent_type,
-            prompt,
-            binary=binary,
-            model=model,
-            reasoning_effort=reasoning_effort,
-            extra_flags=extra_flags,
-            project_dir=project_dir,
-            prompt_on_stdin=prompt_on_stdin,
-            prompt_file=prompt_file,
-        )
-        # Splice "resume <id>" into base [binary, "exec", "--json", ...].
-        # `codex exec resume` (unlike `codex exec`) does not accept the `-C
-        # <dir>` working-directory flag and exits 2 with "unexpected argument
-        # '-C' found" if it's present (issue #329). Strip that flag/value pair
-        # from the tail before splicing — the subprocess is already launched
-        # with cwd=effective_cwd (see cli_agent._build_dispatch_argv callers),
-        # so `-C` is redundant here, not merely unsupported. Only the exact
-        # standalone `-C` token is matched (case-sensitive), so the unrelated
-        # lowercase `-c model_reasoning_effort=...` / `-c
-        # shell_environment_policy...` config flags are left untouched.
-        tail = base[2:]
-        filtered_tail: list[str] = []
-        skip_next = False
-        for arg in tail:
-            if skip_next:
-                skip_next = False
-                continue
-            if arg == "-C":
-                skip_next = True
-                continue
-            filtered_tail.append(arg)
-        return [base[0], "exec", "resume", resume_session_id, *filtered_tail]
-
-    if agent_type == AgentType.GROK:
-        return cli_grok.build_resume_argv(
-            resume_session_id=resume_session_id,
-            prompt=prompt,
-            binary=binary,
-            model=model,
-            reasoning_effort=reasoning_effort,
-            extra_flags=extra_flags,
-            project_dir=project_dir,
-            prompt_on_stdin=prompt_on_stdin,
-            prompt_file=prompt_file,
-        )
-
-    if agent_type == AgentType.ANTIGRAVITY:
-        return cli_antigravity.build_resume_argv(
-            resume_session_id=resume_session_id,
-            prompt=prompt,
-            binary=binary,
-            model=model,
-            reasoning_effort=reasoning_effort,
-            extra_flags=extra_flags,
-            project_dir=project_dir,
-            prompt_on_stdin=prompt_on_stdin,
-            prompt_file=prompt_file,
-        )
-
-    msg = f"build_resume_argv: unsupported CLI agent type {agent_type!r}"
-    raise ValueError(msg)
+    builders: dict[AgentType, _ResumeArgvBuilder] = {
+        AgentType.CLAUDE_CODE: _build_resume_argv_claude_code,
+        AgentType.CODEX: _build_resume_argv_codex,
+        AgentType.GROK: cli_grok.build_resume_argv,
+        AgentType.ANTIGRAVITY: cli_antigravity.build_resume_argv,
+        AgentType.SWINK_CODING: cli_swink_coding.build_resume_argv,
+    }
+    builder = builders.get(agent_type)
+    if builder is None:
+        msg = f"build_resume_argv: unsupported CLI agent type {agent_type!r}"
+        raise ValueError(msg)
+    return builder(
+        resume_session_id=resume_session_id,
+        prompt=prompt,
+        binary=binary,
+        model=model,
+        reasoning_effort=reasoning_effort,
+        extra_flags=extra_flags,
+        project_dir=project_dir,
+        prompt_on_stdin=prompt_on_stdin,
+        prompt_file=prompt_file,
+        model_tier=model_tier,
+    )

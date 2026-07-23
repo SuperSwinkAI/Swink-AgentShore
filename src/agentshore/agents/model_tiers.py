@@ -45,6 +45,14 @@ DEFAULT_MODEL_TIERS: dict[AgentType, dict[str, ModelTierConfig]] = {
         "medium": ModelTierConfig(model="Gemini 3.5 Flash (High)"),
         "large": ModelTierConfig(model="Gemini 3.1 Pro (High)"),
     },
+    AgentType.SWINK_CODING: {
+        # --model only accepts the tier aliases themselves; the tier→model-id
+        # map lives in swink-coding's own config (~/.swink-coding/config.toml),
+        # so reasoning_effort is unset (REASONING_EFFORTS is empty).
+        "small": ModelTierConfig(model="small"),
+        "medium": ModelTierConfig(model="medium"),
+        "large": ModelTierConfig(model="large"),
+    },
 }
 
 
@@ -55,6 +63,7 @@ REASONING_EFFORTS: dict[AgentType, tuple[str, ...]] = {
     AgentType.GROK: ("low", "medium", "high", "xhigh", "max"),
     AgentType.CODEX: ("minimal", "low", "medium", "high", "xhigh"),
     AgentType.ANTIGRAVITY: (),
+    AgentType.SWINK_CODING: (),
 }
 
 

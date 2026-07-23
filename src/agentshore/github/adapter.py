@@ -119,6 +119,7 @@ class GitHubAdapter:
         self._session_id = session_id
         self._cfg = cfg
         self._available: bool = True
+        self._probe_failure_reason: str | None = None
 
     # -------------------------------------------------------------------------
     # Lifecycle
@@ -128,23 +129,44 @@ class GitHubAdapter:
         """Check that `gh` is on PATH and authenticated.
 
         Sets ``_available = False`` on any failure so callers can proceed in
-        degraded mode rather than crashing.
+        degraded mode rather than crashing. ``probe_failure_reason`` then
+        carries a one-line diagnosis (#369) — a non-zero exit is NOT
+        necessarily an auth problem (a github.com 503 or a reaped subprocess
+        exits non-zero too), so the stderr tail is preserved to tell them
+        apart after the fact.
         """
         try:
-            rc, _, _ = await _run_gh(["auth", "status"], timeout=_GH_TIMEOUT)
+            rc, stdout, stderr = await _run_gh(["auth", "status"], timeout=_GH_TIMEOUT)
             if rc != 0:
-                _logger.warning("gh_auth_failed", session_id=self._session_id)
+                stderr_tail = stderr.strip()[-500:]
+                self._probe_failure_reason = (
+                    f"gh auth status exited {rc}: {stderr_tail or '<no stderr>'}"
+                )
+                _logger.warning(
+                    "gh_auth_failed",
+                    session_id=self._session_id,
+                    rc=rc,
+                    stderr_tail=stderr_tail,
+                    stdout_tail=stdout.strip()[-500:],
+                )
                 self._available = False
         except FileNotFoundError:
+            self._probe_failure_reason = "gh not found on PATH"
             _logger.warning("gh_not_found", session_id=self._session_id)
             self._available = False
         except (OSError, TimeoutError) as exc:
+            self._probe_failure_reason = f"probe error: {exc}"
             _logger.warning("gh_probe_error", error=str(exc), session_id=self._session_id)
             self._available = False
 
     @property
     def available(self) -> bool:
         return self._available
+
+    @property
+    def probe_failure_reason(self) -> str | None:
+        """Why the last ``probe()`` marked the adapter unavailable, or None."""
+        return self._probe_failure_reason
 
     # -------------------------------------------------------------------------
     # Read operations
@@ -417,14 +439,10 @@ class GitHubAdapter:
     ) -> dict[str, object] | None:
         if not self._available:
             return None
-        pre_key = f"create_issue:{idempotency_key}"
-        if await self._mutation_exists(pre_key):
-            return None
-        await self._record_mutation(pre_key, "create_issue", title, "pending")
         cmd = ["issue", "create", "--title", title, "--body", body]
         for lbl in labels:
             cmd += ["--label", lbl]
-        result = await self._run_mutation(pre_key, "create_issue", title, cmd)
+        _, result = await self._idempotent_mutation("create_issue", title, idempotency_key, cmd)
         return result
 
     async def label_issue(
@@ -435,13 +453,11 @@ class GitHubAdapter:
     ) -> bool:
         if not self._available:
             return False
-        pre_key = f"label_issue:{idempotency_key}"
-        if await self._mutation_exists(pre_key):
-            return True
-        await self._record_mutation(pre_key, "label_issue", str(issue_number), "pending")
         cmd = ["issue", "edit", str(issue_number), "--add-label", ",".join(labels)]
-        result = await self._run_mutation(pre_key, "label_issue", str(issue_number), cmd)
-        return result is not None
+        already, result = await self._idempotent_mutation(
+            "label_issue", str(issue_number), idempotency_key, cmd
+        )
+        return already or result is not None
 
     async def comment_issue(
         self,
@@ -451,13 +467,11 @@ class GitHubAdapter:
     ) -> bool:
         if not self._available or not body:
             return False
-        pre_key = f"comment_issue:{idempotency_key}"
-        if await self._mutation_exists(pre_key):
-            return True
-        await self._record_mutation(pre_key, "comment_issue", str(issue_number), "pending")
         cmd = ["issue", "comment", str(issue_number), "--body", body]
-        result = await self._run_mutation(pre_key, "comment_issue", str(issue_number), cmd)
-        return result is not None
+        already, result = await self._idempotent_mutation(
+            "comment_issue", str(issue_number), idempotency_key, cmd
+        )
+        return already or result is not None
 
     async def close_issue(
         self,
@@ -466,13 +480,11 @@ class GitHubAdapter:
     ) -> bool:
         if not self._available:
             return False
-        pre_key = f"close_issue:{idempotency_key}"
-        if await self._mutation_exists(pre_key):
-            return True
-        await self._record_mutation(pre_key, "close_issue", str(issue_number), "pending")
         cmd = ["issue", "close", str(issue_number)]
-        result = await self._run_mutation(pre_key, "close_issue", str(issue_number), cmd)
-        return result is not None
+        already, result = await self._idempotent_mutation(
+            "close_issue", str(issue_number), idempotency_key, cmd
+        )
+        return already or result is not None
 
     async def create_pr(
         self,
@@ -486,10 +498,6 @@ class GitHubAdapter:
     ) -> dict[str, object] | None:
         if not self._available:
             return None
-        pre_key = f"create_pr:{idempotency_key}"
-        if await self._mutation_exists(pre_key):
-            return None
-        await self._record_mutation(pre_key, "create_pr", head, "pending")
         cmd = [
             "pr",
             "create",
@@ -502,9 +510,14 @@ class GitHubAdapter:
             "--base",
             base,
         ]
-        result = await self._run_mutation(
-            pre_key, "create_pr", head, cmd, identity_env=identity_env
+        already, result = await self._idempotent_mutation(
+            "create_pr", head, idempotency_key, cmd, identity_env=identity_env
         )
+        # Bespoke: unlike the bool-returning mutations, an empty/failed run
+        # (but NOT an already-recorded dedup) falls back to a live lookup —
+        # `gh pr create` can fail after the PR actually landed.
+        if already:
+            return None
         if result:
             return result
         return await self.find_open_pr_by_branch(head, identity_env=identity_env)
@@ -567,19 +580,43 @@ class GitHubAdapter:
         """
         if not self._available or not base:
             return False
-        pre_key = f"retarget_pr_base:{idempotency_key}"
-        if await self._mutation_exists(pre_key):
-            return True
-        await self._record_mutation(pre_key, "retarget_pr_base", str(pr_number), "pending")
         cmd = ["pr", "edit", str(pr_number), "--base", base]
-        result = await self._run_mutation(
-            pre_key, "retarget_pr_base", str(pr_number), cmd, identity_env=identity_env
+        already, result = await self._idempotent_mutation(
+            "retarget_pr_base", str(pr_number), idempotency_key, cmd, identity_env=identity_env
         )
-        return result is not None
+        return already or result is not None
 
     # -------------------------------------------------------------------------
     # Internal helpers
     # -------------------------------------------------------------------------
+
+    async def _idempotent_mutation(
+        self,
+        mutation_type: str,
+        target: str,
+        idempotency_key: str,
+        cmd: list[str],
+        *,
+        identity_env: dict[str, str] | None = None,
+    ) -> tuple[bool, dict[str, object] | None]:
+        """Run *cmd* through the mutation idempotency ledger.
+
+        Shared check-exists → record-pending → run-mutation contract for
+        all mutating methods. Returns ``(already_recorded, result)``: if
+        *idempotency_key* already resolved ok/pending, ``(True, None)``
+        without invoking ``gh`` at all. Otherwise records a pending row,
+        runs *cmd*, and returns ``(False, result)`` where *result* is
+        ``_run_mutation``'s parsed response (``None`` on failure). Callers
+        map this pair onto their own return shape (bool vs. dict-or-None).
+        """
+        pre_key = f"{mutation_type}:{idempotency_key}"
+        if await self._mutation_exists(pre_key):
+            return True, None
+        await self._record_mutation(pre_key, mutation_type, target, "pending")
+        result = await self._run_mutation(
+            pre_key, mutation_type, target, cmd, identity_env=identity_env
+        )
+        return False, result
 
     async def _gh_json(
         self,

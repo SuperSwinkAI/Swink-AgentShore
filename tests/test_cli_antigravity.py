@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from agentshore.agents import cli_antigravity
+from agentshore.state import AgentType
 
 
 def _write_cache(home: Path, mapping: dict[str, str]) -> None:
@@ -157,6 +158,25 @@ def test_is_async_handoff_detects_real_242_phrasings(tail: str) -> None:
 )
 def test_is_async_handoff_false_for_ordinary_prose(tail: str) -> None:
     assert cli_antigravity.is_async_handoff(tail) is False
+
+
+# decorate_initial_prompt (agy synchronous-execution directive, #242)
+
+
+def test_decorate_initial_prompt_appended_only_for_agy() -> None:
+    """The agy auto-background directive is appended for ANTIGRAVITY only."""
+    base_prompt = "## Skill body\n\n...result block..."
+
+    agy = cli_antigravity.decorate_initial_prompt(base_prompt, AgentType.ANTIGRAVITY)
+    assert agy.endswith(cli_antigravity._ANTIGRAVITY_SYNCHRONOUS_DIRECTIVE)
+    assert agy.startswith(base_prompt)
+    # The directive must name the failure mechanism so agy stops backgrounding.
+    assert "manage_task" in agy
+    assert "FOREGROUND" in agy
+
+    # Other agent types (and an unresolved type) are untouched.
+    for other in (AgentType.CLAUDE_CODE, AgentType.CODEX, AgentType.GROK, None):
+        assert cli_antigravity.decorate_initial_prompt(base_prompt, other) == base_prompt
 
 
 # ensure_low_verbosity_setting

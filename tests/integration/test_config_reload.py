@@ -122,8 +122,8 @@ async def test_orchestrator_uses_config_budget(tmp_path: Path) -> None:
 
     assert len(recorded) == 1
     assert recorded[0] == PlayType.ISSUE_PICKUP
-    assert orch._draining is True
-    assert orch._drain_reason == "budget_reserve_reached"
+    assert orch._runtime.draining is True
+    assert orch._runtime.drain_reason == "budget_reserve_reached"
 
 
 @pytest.mark.asyncio

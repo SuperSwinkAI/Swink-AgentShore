@@ -451,7 +451,7 @@ class ParameterResolver:
 
         # A non-recoverable ERROR agent (auth/invalid_model/crash_*/timeout/...)
         # has no recovery path; the mask unmasks END_AGENT for it
-        # (``_has_terminal_error_agent``). Target it directly and bypass the
+        # (``has_terminal_error_agent``). Target it directly and bypass the
         # min-plays / two-agent precondition so the PPO's retire choice
         # dispatches instead of resolving to no target (#20).
         terminal_error = [

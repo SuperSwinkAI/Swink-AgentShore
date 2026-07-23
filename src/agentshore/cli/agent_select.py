@@ -115,6 +115,7 @@ _AGENT_LABELS: dict[str, str] = {
     "codex": "codex",
     "grok": "grok",
     "antigravity": "agy",
+    "swink_coding": "swink-coding",
 }
 
 
@@ -385,6 +386,13 @@ def _interactive_agent_select(
 
         efforts = reasoning_efforts_for(agent_type)
         is_grok = agent_type == AgentType.GROK
+        # swink-coding's `--model` flag accepts the small/medium/large tier
+        # aliases directly, or a `provider:model[@endpoint]` value dispatched
+        # via `--tier-map` (both surface through the model catalog below), so
+        # the free-form custom-model entry must still not be offered here —
+        # a hand-typed value skips `classify_swink_model` validation and could
+        # be an invalid CLI value.
+        is_swink_coding = agent_type == AgentType.SWINK_CODING
         # total prompt count: enable + model (skipped for grok) + effort (if any) + max.
         total = 2 + (0 if is_grok else 1) + (1 if efforts else 0)
         n = 0
@@ -416,7 +424,10 @@ def _interactive_agent_select(
             click.echo("  model · grok-4.5 (fixed)")
         else:
             n += 1
-            available_models = model_catalogs.get(agent_key, []) + [_CUSTOM_MODEL_SENTINEL]
+            catalog_models = model_catalogs.get(agent_key, [])
+            available_models = (
+                catalog_models if is_swink_coding else catalog_models + [_CUSTOM_MODEL_SENTINEL]
+            )
             default_model = cur.model if cur and cur.model else dtcfg.model or ""
             cursor_idx = (
                 available_models.index(default_model) if default_model in available_models else 0

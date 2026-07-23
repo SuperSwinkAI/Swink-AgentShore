@@ -1,3 +1,4 @@
+#[cfg(target_os = "windows")]
 use crate::install_layout;
 
 pub(crate) fn write_sidecar_pid_file(pid: u32) {

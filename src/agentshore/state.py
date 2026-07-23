@@ -14,6 +14,7 @@ if TYPE_CHECKING:
     from agentshore.beads import ProjectGraph
     from agentshore.errors import FailureKind
     from agentshore.plays.base import PlayParams
+    from agentshore.plays.candidates import WorkAvailability
     from agentshore.rl.mask_reason import MaskReason
 
 JsonObject = dict[str, object]
@@ -89,6 +90,7 @@ class AgentType(enum.Enum):
     CODEX = "codex"
     GROK = "grok"
     ANTIGRAVITY = "antigravity"
+    SWINK_CODING = "swink_coding"
 
 
 # Single canonical definition of which AgentType values are CLI (subprocess)
@@ -101,6 +103,7 @@ CLI_AGENT_TYPES: frozenset[AgentType] = frozenset(
         AgentType.CODEX,
         AgentType.GROK,
         AgentType.ANTIGRAVITY,
+        AgentType.SWINK_CODING,
     }
 )
 
@@ -748,6 +751,12 @@ class OrchestratorState:
     # boundary. Kept as ``dict`` (not ``Mapping``) for ergonomic mutation
     # during state assembly.
     mask_reasons: dict[PlayType, MaskReason] = field(default_factory=dict)
+    # Precomputed candidate-plan work-availability counts, computed once per
+    # tick alongside action_mask/mask_reasons (same build_candidate_plan call)
+    # rather than re-derived by every consumer. IPC serializer converts via
+    # ``.to_dict()`` at the surface boundary. None when the registry is
+    # unavailable, mirroring action_mask's empty-tuple default.
+    work_availability: WorkAvailability | None = None
     drain_reason: str | None = None
     # V1 contract fields (V1_CONTRACT.md §"AgentShore State Snapshot"). These let
     # IPC consumers (TUI status bar, dashboard HUD, desktop session.status)

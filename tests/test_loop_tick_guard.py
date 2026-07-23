@@ -16,8 +16,8 @@ def _orch(tmp_path: Path):
 
     orch = make_test_orchestrator(tmp_path, RuntimeConfig())
     orch._loop._tick_failure_streak = 0
-    orch._natural_exit_reason = None
-    orch._drain_reason = None
+    orch._runtime.natural_exit_reason = None
+    orch._runtime.drain_reason = None
     orch._drain.begin_drain = AsyncMock()
     return orch
 
@@ -50,5 +50,5 @@ async def test_circuit_breaker_trips_and_drains_at_threshold(tmp_path, monkeypat
     assert result is True  # last call trips the breaker
     assert orch._loop._tick_failure_streak == _MAX_CONSECUTIVE_TICK_FAILURES
     orch._drain.begin_drain.assert_awaited_once_with("tick_failure_circuit_breaker")
-    assert orch._drain_reason == "tick_failure_circuit_breaker"
-    assert orch._natural_exit_reason == "tick_failure_circuit_breaker"
+    assert orch._runtime.drain_reason == "tick_failure_circuit_breaker"
+    assert orch._runtime.natural_exit_reason == "tick_failure_circuit_breaker"

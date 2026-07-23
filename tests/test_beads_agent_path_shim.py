@@ -67,7 +67,7 @@ def test_creates_shim_and_prepends_path_on_mismatch(
 
     monkeypatch.setenv("AGENTSHORE_BD_BIN", str(orchestrator_bd))
     shim_dir = tmp_path / "shim"
-    monkeypatch.setattr("agentshore.beads._bd_shim_dir", lambda: shim_dir)
+    monkeypatch.setattr("agentshore.beads.lock._bd_shim_dir", lambda: shim_dir)
 
     env = {"PATH": str(stale_bin_dir)}
     new_env = ensure_bd_on_agent_path(env)
@@ -93,7 +93,7 @@ def test_idempotent_does_not_recreate_correct_shim(
 
     monkeypatch.setenv("AGENTSHORE_BD_BIN", str(orchestrator_bd))
     shim_dir = tmp_path / "shim"
-    monkeypatch.setattr("agentshore.beads._bd_shim_dir", lambda: shim_dir)
+    monkeypatch.setattr("agentshore.beads.lock._bd_shim_dir", lambda: shim_dir)
 
     env = {"PATH": str(stale_bin_dir)}
     ensure_bd_on_agent_path(env)
@@ -113,7 +113,7 @@ def test_windows_shim_is_a_batch_wrapper(tmp_path: Path, monkeypatch: pytest.Mon
 
     monkeypatch.setenv("AGENTSHORE_BD_BIN", str(orchestrator_bd))
     shim_dir = tmp_path / "shim"
-    monkeypatch.setattr("agentshore.beads._bd_shim_dir", lambda: shim_dir)
+    monkeypatch.setattr("agentshore.beads.lock._bd_shim_dir", lambda: shim_dir)
     monkeypatch.setattr(sys, "platform", "win32")
 
     env = {"PATH": str(stale_bd.parent)}
@@ -139,7 +139,7 @@ def test_best_effort_returns_env_unchanged_when_shim_dir_uncreatable(
     _make_executable(stale_bin_dir / "bd", "1.0.4")
 
     monkeypatch.setenv("AGENTSHORE_BD_BIN", str(orchestrator_bd))
-    monkeypatch.setattr("agentshore.beads._bd_shim_dir", lambda: tmp_path / "shim")
+    monkeypatch.setattr("agentshore.beads.lock._bd_shim_dir", lambda: tmp_path / "shim")
 
     env = {"PATH": str(stale_bin_dir)}
     with (

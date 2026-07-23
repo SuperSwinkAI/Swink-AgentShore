@@ -23,6 +23,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -33,6 +34,7 @@ from agentshore.agents.auth_probe import (
     AUTH_TIMEOUT,
     AuthProbeResult,
 )
+from agentshore.agents.git_auth_probe import GIT_AUTH_FAILED, GitAuthProbeResult
 from agentshore.sidecar.server import ServerState, SessionContext, handle_request
 from agentshore.sidecar.session_lifecycle import (
     STEP_CHECK_AGENT_AUTH,
@@ -427,6 +429,85 @@ agents:
     assert STEP_INSTALL_SKILLS not in steps
 
 
+@pytest.mark.asyncio
+async def test_check_agent_auth_invokes_git_auth_probe_and_blocks_on_failure(
+    tmp_path: Path,
+) -> None:
+    """Desktop session.start must run the git-remote auth probe too (gh-151/178/
+    179 class): the sidecar historically ran only identity + CLI-agent backend
+    auth and silently skipped git-remote auth, so a broken git credential slid
+    past launch and wedged mid-session instead of failing fast here. Both gates
+    now share sequencing via ``run_session_preflight``."""
+    project = _write_valid_project(
+        tmp_path / "git-auth-broken", agentshore_yaml=VALID_TIERED_CONFIG
+    )
+    state = ServerState(active_project_path=str(project))
+    notifications: list[dict[str, object]] = []
+
+    clean_backend_auth = [AuthProbeResult(AgentType.CODEX, AUTH_OK, "authenticated")]
+    broken_git_auth = [
+        GitAuthProbeResult(
+            "beta", GIT_AUTH_FAILED, "authentication failed", "https://github.com/owner/repo.git"
+        )
+    ]
+    with (
+        patch(
+            "agentshore.agents.auth_probe.probe_configured_cli_auth",
+            return_value=clean_backend_auth,
+        ),
+        patch(
+            "agentshore.agents.git_auth_probe.probe_all_identities",
+            return_value=broken_git_auth,
+        ) as git_auth_probe,
+        pytest.raises(SessionStartError) as excinfo,
+    ):
+        await run_session_start(
+            state,
+            progress_token="tok-git-auth",
+            notify=notifications.append,
+            start_bridge=False,
+            start_orchestrator=False,
+        )
+
+    git_auth_probe.assert_called_once()
+    assert excinfo.value.step == STEP_CHECK_AGENT_AUTH
+    assert excinfo.value.code == -32603
+    assert "beta" in str(excinfo.value)
+    steps = [n["params"]["step"] for n in notifications]  # type: ignore[index]
+    # Same phase-failure shape as the other check_agent_auth sub-gates: running
+    # then failed, nothing after.
+    assert steps == [
+        STEP_CONFIG_MERGE,
+        STEP_CONFIG_MERGE,
+        STEP_CHECK_AGENT_AUTH,
+        STEP_CHECK_AGENT_AUTH,
+    ]
+
+
+@pytest.mark.asyncio
+async def test_check_agent_auth_clean_git_auth_probe_proceeds(tmp_path: Path) -> None:
+    """A clean git-auth probe (no configured identities, or all ok) never blocks
+    — session.start proceeds past check_agent_auth as before."""
+    project = _write_valid_project(tmp_path / "git-auth-clean", agentshore_yaml=VALID_TIERED_CONFIG)
+    state = ServerState(active_project_path=str(project))
+
+    clean_backend_auth = [AuthProbeResult(AgentType.CODEX, AUTH_OK, "authenticated")]
+    with (
+        patch(
+            "agentshore.agents.auth_probe.probe_configured_cli_auth",
+            return_value=clean_backend_auth,
+        ),
+        patch(
+            "agentshore.agents.git_auth_probe.probe_all_identities",
+            return_value=[],
+        ) as git_auth_probe,
+    ):
+        outcome = await run_session_start(state, start_bridge=False, start_orchestrator=False)
+
+    git_auth_probe.assert_called_once()
+    assert outcome.session_id == state.session_id
+
+
 # ---------------------------------------------------------------------------
 # session.stop with a registered orchestrator (drain / hard semantics)
 # ---------------------------------------------------------------------------
@@ -657,12 +738,14 @@ async def test_natural_exit_emits_session_completed_notification(tmp_path: Path)
     class _NaturalOrch:
         """Fake orchestrator that exits naturally after registering the hook."""
 
-        _natural_exit_reason: str | None = None
         _natural_exit_callback: object = None
         _esr_ready_callback: object = None
         _session_draining_callback: object = None
         _store = store
-        _log_path = Path(generated_log_path)
+        # TNQA wave-2 (Task 1): the real Orchestrator no longer exposes
+        # _natural_exit_reason/_log_path property shims — session_lifecycle.py
+        # reads them off ``orch._runtime`` directly, so this fake mirrors that.
+        _runtime = SimpleNamespace(natural_exit_reason=None, log_path=Path(generated_log_path))
 
         def on_natural_exit(self, cb: object) -> None:
             self._natural_exit_callback = cb
@@ -680,11 +763,11 @@ async def test_natural_exit_emits_session_completed_notification(tmp_path: Path)
             pass
 
         async def run_until_idle(self) -> None:
-            self._natural_exit_reason = "max_plays"
+            self._runtime.natural_exit_reason = "max_plays"
             if callable(self._session_draining_callback):
                 self._session_draining_callback(session_id, "max_plays")  # type: ignore[misc]
             if callable(self._natural_exit_callback):
-                await self._natural_exit_callback(self._natural_exit_reason)  # type: ignore[misc]
+                await self._natural_exit_callback(self._runtime.natural_exit_reason)  # type: ignore[misc]
 
         async def stop(self) -> None:
             if callable(self._esr_ready_callback):
@@ -767,10 +850,9 @@ class _NoopOrch:
     """Minimal orchestrator stub for the seed_path forwarding tests (#5)."""
 
     _natural_exit_callback: object = None
-    _natural_exit_reason: str | None = None
     _esr_ready_callback: object = None
     _store = None
-    _log_path = None
+    _runtime = SimpleNamespace(natural_exit_reason=None, log_path=None)
 
     def on_natural_exit(self, cb: object) -> None:
         self._natural_exit_callback = cb
@@ -890,12 +972,11 @@ async def test_natural_exit_emits_session_completed_when_context_nulled_during_b
         build function, not here, so that ctx captures a valid object.
         """
 
-        _natural_exit_reason: str | None = None
         _natural_exit_callback: object = None
         _esr_ready_callback: object = None
         _session_draining_callback: object = None
         _store = store
-        _log_path = Path(generated_log_path)
+        _runtime = SimpleNamespace(natural_exit_reason=None, log_path=Path(generated_log_path))
 
         def on_natural_exit(self, cb: object) -> None:
             self._natural_exit_callback = cb
@@ -911,9 +992,9 @@ async def test_natural_exit_emits_session_completed_when_context_nulled_during_b
 
         async def run_until_idle(self) -> None:
             # Natural exit — session_context remains valid when we return.
-            self._natural_exit_reason = "drain_complete"
+            self._runtime.natural_exit_reason = "drain_complete"
             if callable(self._natural_exit_callback):
-                await self._natural_exit_callback(self._natural_exit_reason)  # type: ignore[misc]
+                await self._natural_exit_callback(self._runtime.natural_exit_reason)  # type: ignore[misc]
 
         async def stop(self) -> None:
             if callable(self._esr_ready_callback):

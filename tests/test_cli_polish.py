@@ -437,6 +437,68 @@ def test_agent_setup_wizard_edit_tier_cell_sets_max(
     assert "max: 7" in saved
 
 
+def test_agent_setup_wizard_swink_coding_skips_custom_model_sentinel(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """swink-coding's --model only accepts small/medium/large aliases; the
+    free-form "[ enter custom model... ]" sentinel must not be offered — a
+    typed value there would be an invalid CLI argument for that harness.
+
+    DEFAULT_MODEL_TIERS for AgentType.SWINK_CODING is owned by another
+    in-flight change (model_tiers.py) and may not be landed yet, so this test
+    patches it in directly rather than depending on that file.
+    """
+    import beaupy
+    import click
+
+    from agentshore.agents import model_tiers as model_tiers_mod
+    from agentshore.config.models import ModelTierConfig
+    from agentshore.state import AgentType
+
+    patched_tiers = dict(model_tiers_mod.DEFAULT_MODEL_TIERS)
+    patched_tiers[AgentType.SWINK_CODING] = {
+        "small": ModelTierConfig(model="small"),
+        "medium": ModelTierConfig(model="medium"),
+        "large": ModelTierConfig(model="large"),
+    }
+    monkeypatch.setattr(model_tiers_mod, "DEFAULT_MODEL_TIERS", patched_tiers)
+
+    cfg = RuntimeConfig(agents={})
+    config_path = tmp_path / "agentshore.yaml"
+    config_path.write_text("agents: {}\n", encoding="utf-8")
+
+    monkeypatch.delenv("AGENTSHORE_NONINTERACTIVE", raising=False)
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr(
+        "agentshore.agents.model_catalog.models_for_agent",
+        lambda *_a, **_k: ["small", "medium", "large"],
+    )
+
+    captured_options: list[list[str]] = []
+
+    def _fake_select(options: list[str], **_k: object) -> str:
+        captured_options.append(list(options))
+        return options[0]
+
+    monkeypatch.setattr(beaupy, "select", _fake_select)
+    monkeypatch.setattr(beaupy, "prompt", lambda *_a, **_k: "")
+    # click.prompt sequence: keystroke 'a' (swink_coding·small) → max 3 → Enter (confirm).
+    inputs = iter(["a", 3, ""])
+    monkeypatch.setattr(click, "prompt", lambda *_a, **_k: next(inputs))
+
+    updated = _interactive_agent_select(cfg, ["swink-coding"], config_path, force_run=True)
+
+    small = updated.agents["swink_coding"].model_tiers["small"]
+    assert small.enabled is True
+    assert small.model == "small"
+    assert small.max == 3
+    # None of the beaupy.select calls (enable/disable, model pick) offered the
+    # custom-entry sentinel for this agent type.
+    for options in captured_options:
+        assert "[ enter custom model... ]" not in options
+
+
 def test_agent_identity_keys_filter_to_detected_enabled_agents(tmp_path: Path) -> None:
     config_path = tmp_path / "agentshore.yaml"
     config_path.write_text(

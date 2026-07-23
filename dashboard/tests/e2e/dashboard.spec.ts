@@ -291,6 +291,7 @@ test("agent avatars preserve v2 sprite-designed scale against standard eight-foo
       "codex",
       "antigravity",
       "grok",
+      "swink_coding",
     ] as const) {
       for (const modelTier of ["small", "medium", "large"] as const) {
         measuredFrames[`${agentType}:${modelTier}`] =
@@ -361,6 +362,9 @@ test("agent avatars preserve v2 sprite-designed scale against standard eight-foo
     "grok:small": 275,
     "grok:medium": 570,
     "grok:large": 741,
+    "swink_coding:small": 275,
+    "swink_coding:medium": 570,
+    "swink_coding:large": 741,
   });
   expect(metrics.smallFrameHeight).toBe(275);
   expect(metrics.mediumFrameHeight).toBe(570);
@@ -496,6 +500,11 @@ test("agent sprite specs map every provider and model tier to v2 sheets", async 
         "agent-antigravity",
       ),
       grokMedium: sprites.agentSpriteSpecFor("grok", "medium", "agent-grok"),
+      swinkCodingLarge: sprites.agentSpriteSpecFor(
+        "swink_coding",
+        "large",
+        "agent-swink-coding",
+      ),
       unknown: sprites.agentSpriteSpecFor(
         "unknown_agent",
         "medium",
@@ -515,6 +524,7 @@ test("agent sprite specs map every provider and model tier to v2 sheets", async 
   expect(specs.antigravitySmall).toMatchObject({ key: "antigravity-small-ball" });
   expect(specs.antigravityDefault).toMatchObject({ key: "antigravity-medium-humanoid" });
   expect(specs.grokMedium).toMatchObject({ key: "grok-medium-humanoid" });
+  expect(specs.swinkCodingLarge).toMatchObject({ key: "swink-large-humanoid" });
   expect(specs.unknown).toBeNull();
 });
 

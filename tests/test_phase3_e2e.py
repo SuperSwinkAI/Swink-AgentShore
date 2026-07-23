@@ -213,11 +213,11 @@ async def test_cold_start_session_writes_experience_and_checkpoint(
         metrics=metrics,
         cfg=cfg.rl,
         policy_mode=PolicyMode.LEARNING,
-        policy_version=orch._policy_version,
+        policy_version=orch._runtime.policy_version,
         config_hash=orch._config_hash,
     )
-    orch._selector = selector
-    orch._metrics = metrics
+    orch._runtime.selector = selector
+    orch._runtime.metrics = metrics
 
     # Force END_SESSION on the 10th call so the loop terminates deterministically
     play_counter = 0
@@ -465,7 +465,7 @@ def test_phase4_readiness_import_smoke() -> None:
         PLAY_TO_INDEX,
     )
 
-    assert OBSERVATION_DIM == 250
+    assert OBSERVATION_DIM == 252
     assert NUM_ACTIONS == 22
     assert len(PLAY_TO_INDEX) == 22
 
@@ -513,8 +513,8 @@ async def test_experience_rows_satisfy_v1_contract(tmp_path: Path) -> None:
         policy_version="ppo-v1-test",
         config_hash="deadbeef",
     )
-    orch._selector = selector
-    orch._metrics = metrics
+    orch._runtime.selector = selector
+    orch._runtime.metrics = metrics
 
     call_count = 0
 

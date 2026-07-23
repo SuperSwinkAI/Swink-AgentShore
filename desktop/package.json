@@ -1,7 +1,7 @@
 {
   "name": "agentshore-desktop",
   "private": true,
-  "version": "0.9.2",
+  "version": "0.10.3",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -19,7 +19,7 @@
   },
   "dependencies": {
     "@tauri-apps/api": "2.11.1",
-    "@tauri-apps/plugin-dialog": "2.7.1",
+    "@tauri-apps/plugin-dialog": "2.7.2",
     "@tauri-apps/plugin-updater": "2.10.1",
     "@agentshore/dashboard": "*",
     "react": "19.2.7",
@@ -37,7 +37,7 @@
     "@vitejs/plugin-react": "6.0.3",
     "jsdom": "29.1.1",
     "typescript": "7.0.2",
-    "vite": "8.1.4",
+    "vite": "8.1.5",
     "vitest": "4.1.10"
   }
 }

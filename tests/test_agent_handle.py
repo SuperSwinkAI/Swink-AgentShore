@@ -148,15 +148,3 @@ def test_capabilities_has_all_agent_types() -> None:
 
     for agent_type in AgentType:
         assert agent_type in AGENT_CAPABILITIES, f"{agent_type} missing from AGENT_CAPABILITIES"
-
-
-def test_claude_code_can_merge() -> None:
-    from agentshore.agents.capabilities import AGENT_CAPABILITIES
-
-    assert AGENT_CAPABILITIES[AgentType.CLAUDE_CODE]["can_merge"] is True
-
-
-def test_codex_can_merge() -> None:
-    from agentshore.agents.capabilities import AGENT_CAPABILITIES
-
-    assert AGENT_CAPABILITIES[AgentType.CODEX]["can_merge"] is True

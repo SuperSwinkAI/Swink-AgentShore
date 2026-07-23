@@ -10,7 +10,7 @@ import time
 from contextlib import suppress
 from typing import TYPE_CHECKING, Protocol, assert_never, cast
 
-from agentshore.core.helpers import _logger, _ppo_selector_cls
+from agentshore.core.helpers import _logger, _ppo_selector_cls, _SafeCallHost
 from agentshore.core.tick_action import (
     Break,
     Continue,
@@ -124,16 +124,16 @@ _LOOP_LIVENESS_CHECK_INTERVAL_SECONDS = 15.0
 _MAX_CONSECUTIVE_TICK_FAILURES = 10
 
 
-class _LoopHost(Protocol):
+class _LoopHost(_SafeCallHost, Protocol):
     """Orchestrator *behaviour* the :class:`LoopRunner` invokes.
 
     All shared session *state* now lives on :class:`SessionRuntime` (reached via
     ``self._runtime``); this Protocol is the narrow behaviour seam that remains so
     the cross-component methods resolve on the composition root without a circular
-    import. ``_OrchestratorBase`` structurally satisfies it.
+    import. ``_OrchestratorBase`` structurally satisfies it. Extends
+    :class:`_SafeCallHost` for the ``_safe_call`` method shared by every
+    per-component Host Protocol.
     """
-
-    async def _safe_call(self, coro: Awaitable[object], label: str) -> None: ...
 
     def _selector_config_index(self) -> tuple[ConfigKey, ...] | None: ...
 

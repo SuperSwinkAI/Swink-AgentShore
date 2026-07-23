@@ -80,8 +80,8 @@ async def test_budget_reserve_allows_work_below_threshold(tmp_path: Path) -> Non
             await asyncio.wait_for(orch.run_until_idle(), timeout=5.0)
 
             assert call_count == 1
-            assert orch._draining is False
-            assert orch._pause_event.is_set()
+            assert orch._runtime.draining is False
+            assert orch._runtime.pause_event.is_set()
 
 
 @pytest.mark.asyncio
@@ -130,6 +130,6 @@ async def test_budget_reserve_starts_drain_at_threshold(tmp_path: Path) -> None:
             await asyncio.wait_for(orch.run_until_idle(), timeout=5.0)
 
             assert call_count == 1
-            assert orch._draining is True
-            assert orch._drain_reason == "budget_reserve_reached"
-            assert orch._pause_event.is_set()
+            assert orch._runtime.draining is True
+            assert orch._runtime.drain_reason == "budget_reserve_reached"
+            assert orch._runtime.pause_event.is_set()

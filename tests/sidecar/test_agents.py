@@ -224,6 +224,15 @@ def test_detect_available_agents_maps_grok_aliases(monkeypatch) -> None:
     assert detect_available_agents() == ["grok"]
 
 
+def test_detect_available_agents_maps_swink_coding(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "agentshore.sidecar.agents.detect_agent_binaries",
+        lambda: ("swink-coding",),
+    )
+
+    assert detect_available_agents() == ["swink_coding"]
+
+
 def test_configure_agent_rejects_unknown_fields(tmp_path: Path) -> None:
     _write_config(tmp_path / "agentshore.yaml", {"agents": {"codex": {"enabled": True}}})
 

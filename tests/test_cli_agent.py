@@ -14,13 +14,15 @@ from unittest.mock import MagicMock
 import pytest
 import structlog
 
-from agentshore.agents.cli_agent import (
-    _PARSERS,
-    _classify_error,
+from agentshore.agents.cli.parsing import (
     _extract_session_id_from_jsonl,
     _extract_text_from_codex_jsonl,
     _extract_text_from_grok_jsonl,
     _extract_text_from_stream_json,
+)
+from agentshore.agents.cli_agent import (
+    _PARSERS,
+    _classify_error,
     _is_terminal_event,
     _process_error_detail,
     _read_output,
@@ -3321,3 +3323,36 @@ async def test_kill_process_announces_every_agentshore_initiated_sigterm(
     assert announced[0]["pid"] == 5150
     # Announced *before* the signal actually went out.
     assert signal.SIGTERM in signals
+
+
+def test_all_reexports_satellite_imports_are_declared() -> None:
+    """``cli_agent.__all__`` must list every name it imports from ``cli/*.py``.
+
+    ``cli_agent.py`` re-exports a curated subset of its ``agents/cli/`` satellite
+    modules' names — only what its own internal logic or an external caller
+    (tests patching/importing via ``agentshore.agents.cli_agent``) actually
+    needs, not every public symbol those satellites define. Nothing previously
+    forced the import block and ``__all__`` to stay in sync: this parses
+    ``cli_agent.py``'s own source and fails if a satellite import is ever added
+    (or renamed) without a matching ``__all__`` update, or vice versa.
+    """
+    import ast
+    import inspect
+
+    from agentshore.agents import cli_agent
+
+    tree = ast.parse(inspect.getsource(cli_agent))
+    satellite_names: set[str] = set()
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.ImportFrom)
+            and node.module
+            and node.module.startswith("agentshore.agents.cli.")
+        ):
+            satellite_names.update(alias.asname or alias.name for alias in node.names)
+
+    assert satellite_names, "expected cli_agent.py to import from its cli/ satellites"
+    missing_from_all = satellite_names - set(cli_agent.__all__)
+    assert not missing_from_all, (
+        f"imported from a cli/ satellite but missing from __all__: {missing_from_all}"
+    )

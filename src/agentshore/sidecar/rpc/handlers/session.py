@@ -177,6 +177,10 @@ async def _build_session_stop_response(
     if orch is not None:
         # Track store teardown (#283) so a racing session.start waits for
         # agentshore.db's close (snapshot + os.replace under the writer lock).
+        # Null orchestrator/orchestrator_task here, ahead of the shared
+        # _clear_session_state call below, so a concurrent RPC arriving
+        # during the (possibly slow) timelapse-render wait never dials an
+        # orchestrator whose store is already closed.
         with contextlib.suppress(Exception):
             await stop_orchestrator_tracked(state, orch)
         state.orchestrator = None
@@ -185,15 +189,10 @@ async def _build_session_stop_response(
         payload["log_path"] = context.log_path
     # Stop timelapse capture (triggers render) before bridge teardown; attach
     # the rendered MP4 path for the desktop to open.
-    from agentshore.sidecar.session_lifecycle import stop_timelapse_capture
+    from agentshore.sidecar.session_lifecycle import _clear_session_state, stop_timelapse_capture
 
     payload["timelapse_output_path"] = await stop_timelapse_capture(state)
-    state.session_active = False
-    state.session_id = None
-    state.started_at = None
-    state.session_context = None
-    state.esr_ready_report_path = None
-    state.esr_ready_log_path = None
+    _clear_session_state(state)
     if state.bridge is not None:
         await state.bridge.stop()
         state.bridge = None

@@ -12,15 +12,11 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from agentshore.beads import BdError, bd
+from agentshore.beads.lock import BD_TIMEOUT_SECONDS as _PUSH_TIMEOUT_SECONDS
 from agentshore.logging import get_logger
 
 if TYPE_CHECKING:
     from pathlib import Path
-
-try:
-    from agentshore.beads import _BD_TIMEOUT_SECONDS as _PUSH_TIMEOUT_SECONDS
-except ImportError:  # pragma: no cover - defensive against internal refactor
-    _PUSH_TIMEOUT_SECONDS = 120.0
 
 _logger = get_logger(__name__)
 

@@ -169,8 +169,15 @@ def test_windows_tauri_entrypoint_uses_gui_subsystem_for_release_builds() -> Non
     assert '#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]' in main_rs
 
 
+def _read_sidecar_module() -> str:
+    """Concatenate the sidecar/ module sources (sidecar.rs was split in TNQA wave 2)."""
+    return "\n".join(
+        p.read_text() for p in sorted((REPO_ROOT / "desktop/src-tauri/src/sidecar").glob("*.rs"))
+    )
+
+
 def test_windows_sidecar_runtime_uses_programdata_venv_and_bd_bin() -> None:
-    sidecar_rs = (REPO_ROOT / "desktop/src-tauri/src/sidecar.rs").read_text()
+    sidecar_rs = _read_sidecar_module()
     runtime_rs = (REPO_ROOT / "desktop/src-tauri/src/sidecar_runtime.rs").read_text()
     layout_rs = (REPO_ROOT / "desktop/src-tauri/src/install_layout.rs").read_text()
 
@@ -214,7 +221,7 @@ def test_windows_sidecar_keeps_legacy_and_user_path_overlays() -> None:
 
 
 def test_windows_sidecar_records_pid_for_installer_cleanup() -> None:
-    sidecar_rs = (REPO_ROOT / "desktop/src-tauri/src/sidecar.rs").read_text()
+    sidecar_rs = _read_sidecar_module()
     layout_rs = (REPO_ROOT / "desktop/src-tauri/src/install_layout.rs").read_text()
 
     assert "write_sidecar_pid_file(child.id())" in sidecar_rs
