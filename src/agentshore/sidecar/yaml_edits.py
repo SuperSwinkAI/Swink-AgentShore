@@ -12,14 +12,23 @@ import io
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from agentshore.config.models import BudgetConfig, TimelapseConfig
 
 
-def write_target_branch(yaml_text: str, branch: str) -> str:
-    """Round-trip *yaml_text* and set ``project.target_branch`` to *branch*.
+def _patch_yaml_key(
+    yaml_text: str,
+    key: str,
+    mutate: Callable[[dict[str, object]], None],
+) -> str:
+    """Round-trip *yaml_text*, get-or-create the mapping at top-level *key*,
+    apply *mutate* in place, and return the dumped text.
 
-    Preserves comments and key ordering via ruamel.yaml. If the document is
-    empty or has no ``project`` key, a minimal one is created.
+    Shared by the ``write_*`` helpers below: they differ only in which key
+    they touch and how they mutate the nested mapping. Preserves comments
+    and key ordering via ruamel.yaml's round-trip representer. If the
+    document is empty or has no mapping at *key*, a minimal one is created.
     """
     from ruamel.yaml import YAML
 
@@ -28,37 +37,32 @@ def write_target_branch(yaml_text: str, branch: str) -> str:
     data = rt.load(yaml_text) if yaml_text.strip() else None
     if data is None:
         data = {}
-    project = data.get("project")
-    if not isinstance(project, dict):
-        project = {}
-        data["project"] = project
-    project["target_branch"] = branch
+    block = data.get(key)
+    if not isinstance(block, dict):
+        block = {}
+        data[key] = block
+    mutate(block)
     buf = io.StringIO()
     rt.dump(data, buf)
     return buf.getvalue()
+
+
+def write_target_branch(yaml_text: str, branch: str) -> str:
+    """Round-trip *yaml_text* and set ``project.target_branch`` to *branch*."""
+
+    def _mutate(project: dict[str, object]) -> None:
+        project["target_branch"] = branch
+
+    return _patch_yaml_key(yaml_text, "project", _mutate)
 
 
 def write_seed_paths(yaml_text: str, seed_paths: list[str]) -> str:
-    """Round-trip *yaml_text* and set ``intake.seed_paths`` to *seed_paths*.
+    """Round-trip *yaml_text* and set ``intake.seed_paths`` to *seed_paths*."""
 
-    Preserves comments and key ordering via ruamel.yaml. Mirrors
-    :func:`write_target_branch`; creates the ``intake`` mapping if absent.
-    """
-    from ruamel.yaml import YAML
+    def _mutate(intake: dict[str, object]) -> None:
+        intake["seed_paths"] = list(seed_paths)
 
-    rt = YAML()
-    rt.preserve_quotes = True
-    data = rt.load(yaml_text) if yaml_text.strip() else None
-    if data is None:
-        data = {}
-    intake = data.get("intake")
-    if not isinstance(intake, dict):
-        intake = {}
-        data["intake"] = intake
-    intake["seed_paths"] = list(seed_paths)
-    buf = io.StringIO()
-    rt.dump(data, buf)
-    return buf.getvalue()
+    return _patch_yaml_key(yaml_text, "intake", _mutate)
 
 
 def write_budget(yaml_text: str, budget: BudgetConfig) -> str:
@@ -74,46 +78,23 @@ def write_budget(yaml_text: str, budget: BudgetConfig) -> str:
 
 
 def write_trusted_issue_enforcement(yaml_text: str, enabled: bool) -> str:
-    """Round-trip *yaml_text* and set ``trusted_ids.restrict_issues_to_trusted_authors``.
+    """Round-trip *yaml_text* and set ``trusted_ids.restrict_issues_to_trusted_authors``."""
 
-    Preserves comments and key ordering on every other section via
-    ruamel.yaml. Get-or-creates the ``trusted_ids`` mapping if absent.
-    """
-    from ruamel.yaml import YAML
+    def _mutate(trusted_ids: dict[str, object]) -> None:
+        trusted_ids["restrict_issues_to_trusted_authors"] = bool(enabled)
 
-    rt = YAML()
-    rt.preserve_quotes = True
-    data = rt.load(yaml_text) if yaml_text.strip() else None
-    if data is None:
-        data = {}
-    trusted_ids = data.get("trusted_ids")
-    if not isinstance(trusted_ids, dict):
-        trusted_ids = {}
-        data["trusted_ids"] = trusted_ids
-    trusted_ids["restrict_issues_to_trusted_authors"] = bool(enabled)
-    buf = io.StringIO()
-    rt.dump(data, buf)
-    return buf.getvalue()
+    return _patch_yaml_key(yaml_text, "trusted_ids", _mutate)
 
 
 def write_timelapse(yaml_text: str, timelapse: TimelapseConfig) -> str:
     """Round-trip *yaml_text* and set the top-level ``timelapse`` mapping.
 
-    Preserves comments / key ordering on every other section via ruamel.yaml,
-    matching :func:`write_budget`.
+    Matches :func:`write_budget`'s comment/key-ordering preservation on every
+    other section.
     """
-    from ruamel.yaml import YAML
 
-    rt = YAML()
-    rt.preserve_quotes = True
-    data = rt.load(yaml_text) if yaml_text.strip() else None
-    if data is None:
-        data = {}
-    existing = data.get("timelapse")
-    block: dict[str, object] = existing if isinstance(existing, dict) else {}
-    block["enabled"] = bool(timelapse.enabled)
-    block["installed"] = bool(timelapse.installed)
-    data["timelapse"] = block
-    buf = io.StringIO()
-    rt.dump(data, buf)
-    return buf.getvalue()
+    def _mutate(block: dict[str, object]) -> None:
+        block["enabled"] = bool(timelapse.enabled)
+        block["installed"] = bool(timelapse.installed)
+
+    return _patch_yaml_key(yaml_text, "timelapse", _mutate)
