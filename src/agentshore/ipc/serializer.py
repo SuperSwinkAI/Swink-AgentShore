@@ -511,9 +511,7 @@ _WIRE_OMITTED_ACTIVE_PLAY_FIELDS: frozenset[str] = frozenset()  # nothing omitte
 _assert_field_parity(
     ActivePlay,
     set(
-        _serialize_active_play(
-            ActivePlay(play_type=PlayType.RUN_QA, agent_id=None, started_at="t")
-        )
+        _serialize_active_play(ActivePlay(play_type=PlayType.RUN_QA, agent_id=None, started_at="t"))
     ),
     omitted=_WIRE_OMITTED_ACTIVE_PLAY_FIELDS,
     label="_serialize_active_play",

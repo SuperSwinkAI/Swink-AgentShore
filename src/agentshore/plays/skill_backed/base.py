@@ -919,9 +919,7 @@ class SkillBackedPlay(Play, ABC):
 
         # Play-specific post-hoc validation (e.g. PRUNE's protected-worktree-
         # removal backstop, #311). Identity for every other play.
-        skill_result, post_process_failure_kind = await self._post_process_result(
-            ctx, skill_result
-        )
+        skill_result, post_process_failure_kind = await self._post_process_result(ctx, skill_result)
         self._last_skill_result = skill_result
 
         # Reclaim untracked root files this trunk-scoped play introduced and left

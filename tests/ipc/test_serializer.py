@@ -753,9 +753,7 @@ def test_assert_field_parity_passes_when_keys_match() -> None:
         a: int
         b: str
 
-    serializer_module._assert_field_parity(
-        _Probe, {"a", "b"}, omitted=frozenset(), label="test"
-    )
+    serializer_module._assert_field_parity(_Probe, {"a", "b"}, omitted=frozenset(), label="test")
 
 
 def test_assert_field_parity_raises_on_missing_field() -> None:
@@ -765,9 +763,7 @@ def test_assert_field_parity_raises_on_missing_field() -> None:
         b: str
 
     with pytest.raises(ValueError, match="test"):
-        serializer_module._assert_field_parity(
-            _Probe, {"a"}, omitted=frozenset(), label="test"
-        )
+        serializer_module._assert_field_parity(_Probe, {"a"}, omitted=frozenset(), label="test")
 
 
 def test_assert_field_parity_raises_on_extra_field() -> None:
