@@ -23,6 +23,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -737,12 +738,14 @@ async def test_natural_exit_emits_session_completed_notification(tmp_path: Path)
     class _NaturalOrch:
         """Fake orchestrator that exits naturally after registering the hook."""
 
-        _natural_exit_reason: str | None = None
         _natural_exit_callback: object = None
         _esr_ready_callback: object = None
         _session_draining_callback: object = None
         _store = store
-        _log_path = Path(generated_log_path)
+        # TNQA wave-2 (Task 1): the real Orchestrator no longer exposes
+        # _natural_exit_reason/_log_path property shims — session_lifecycle.py
+        # reads them off ``orch._runtime`` directly, so this fake mirrors that.
+        _runtime = SimpleNamespace(natural_exit_reason=None, log_path=Path(generated_log_path))
 
         def on_natural_exit(self, cb: object) -> None:
             self._natural_exit_callback = cb
@@ -760,11 +763,11 @@ async def test_natural_exit_emits_session_completed_notification(tmp_path: Path)
             pass
 
         async def run_until_idle(self) -> None:
-            self._natural_exit_reason = "max_plays"
+            self._runtime.natural_exit_reason = "max_plays"
             if callable(self._session_draining_callback):
                 self._session_draining_callback(session_id, "max_plays")  # type: ignore[misc]
             if callable(self._natural_exit_callback):
-                await self._natural_exit_callback(self._natural_exit_reason)  # type: ignore[misc]
+                await self._natural_exit_callback(self._runtime.natural_exit_reason)  # type: ignore[misc]
 
         async def stop(self) -> None:
             if callable(self._esr_ready_callback):
@@ -847,10 +850,9 @@ class _NoopOrch:
     """Minimal orchestrator stub for the seed_path forwarding tests (#5)."""
 
     _natural_exit_callback: object = None
-    _natural_exit_reason: str | None = None
     _esr_ready_callback: object = None
     _store = None
-    _log_path = None
+    _runtime = SimpleNamespace(natural_exit_reason=None, log_path=None)
 
     def on_natural_exit(self, cb: object) -> None:
         self._natural_exit_callback = cb
@@ -970,12 +972,11 @@ async def test_natural_exit_emits_session_completed_when_context_nulled_during_b
         build function, not here, so that ctx captures a valid object.
         """
 
-        _natural_exit_reason: str | None = None
         _natural_exit_callback: object = None
         _esr_ready_callback: object = None
         _session_draining_callback: object = None
         _store = store
-        _log_path = Path(generated_log_path)
+        _runtime = SimpleNamespace(natural_exit_reason=None, log_path=Path(generated_log_path))
 
         def on_natural_exit(self, cb: object) -> None:
             self._natural_exit_callback = cb
@@ -991,9 +992,9 @@ async def test_natural_exit_emits_session_completed_when_context_nulled_during_b
 
         async def run_until_idle(self) -> None:
             # Natural exit — session_context remains valid when we return.
-            self._natural_exit_reason = "drain_complete"
+            self._runtime.natural_exit_reason = "drain_complete"
             if callable(self._natural_exit_callback):
-                await self._natural_exit_callback(self._natural_exit_reason)  # type: ignore[misc]
+                await self._natural_exit_callback(self._runtime.natural_exit_reason)  # type: ignore[misc]
 
         async def stop(self) -> None:
             if callable(self._esr_ready_callback):

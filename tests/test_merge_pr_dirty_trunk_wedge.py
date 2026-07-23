@@ -64,8 +64,11 @@ def _outcome(*, success: bool, error: str | None = None) -> PlayOutcome:
 
 
 def _patch_dirty_paths(entries: list[DirtyTrunkEntry]):
+    # TNQA wave-2 Task 3: the dirty-trunk wedge logic moved from
+    # CompletionProcessor into TrunkWedgeEscalator (core/trunk_wedge_escalator.py);
+    # the real call site to patch moved with it.
     return patch(
-        "agentshore.core.mixins.completion.collect_dirty_trunk_paths",
+        "agentshore.core.trunk_wedge_escalator.collect_dirty_trunk_paths",
         return_value=entries,
     )
 
@@ -182,7 +185,7 @@ async def test_wedge_escalation_emits_needs_human_signal(tmp_path: Path) -> None
 
     with (
         _patch_dirty_paths(entries),
-        patch("agentshore.core.mixins.completion._logger") as mock_logger,
+        patch("agentshore.core.trunk_wedge_escalator._logger") as mock_logger,
     ):
         for _ in range(3):
             await h._handle_merge_pr_outcome(_outcome(success=False, error="dirty_trunk"))
@@ -211,7 +214,7 @@ async def test_wedge_escalation_still_reports_needs_human_when_quarantine_fails(
 
     with (
         _patch_dirty_paths(entries),
-        patch("agentshore.core.mixins.completion._logger") as mock_logger,
+        patch("agentshore.core.trunk_wedge_escalator._logger") as mock_logger,
     ):
         for _ in range(3):
             await h._handle_merge_pr_outcome(_outcome(success=False, error="dirty_trunk"))

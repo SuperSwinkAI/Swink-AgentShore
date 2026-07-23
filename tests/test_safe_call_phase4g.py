@@ -76,10 +76,10 @@ async def test_datastore_failure_loop_continues(tmp_path: Path) -> None:
         return mock_outcome
 
     orch._executor.execute = mock_execute
-    orch._selector.should_update = MagicMock(return_value=False)
-    orch._selector.should_checkpoint = MagicMock(return_value=False)
-    orch._selector.on_play_completed = AsyncMock()
-    orch._selector.consume_pending = MagicMock(return_value=None)
+    orch._runtime.selector.should_update = MagicMock(return_value=False)
+    orch._runtime.selector.should_checkpoint = MagicMock(return_value=False)
+    orch._runtime.selector.on_play_completed = AsyncMock()
+    orch._runtime.selector.consume_pending = MagicMock(return_value=None)
 
     call_count = 0
 
@@ -88,7 +88,7 @@ async def test_datastore_failure_loop_continues(tmp_path: Path) -> None:
         call_count += 1
         return (PlayType.ISSUE_PICKUP, PlayParams()) if call_count == 1 else None
 
-    orch._selector.select = mock_select
+    orch._runtime.selector.select = mock_select
 
     orch._store.get_play_history = AsyncMock(return_value=[])
     orch._store.get_open_issues = AsyncMock(return_value=[])
@@ -120,7 +120,7 @@ async def test_override_masked_falls_back_to_selector(tmp_path: Path) -> None:
         return False
 
     mock_registry.preconditions_met = preconditions_met
-    orch._registry = mock_registry
+    orch._runtime.registry = mock_registry
 
     selector_called = []
 
@@ -128,11 +128,11 @@ async def test_override_masked_falls_back_to_selector(tmp_path: Path) -> None:
         selector_called.append(True)
         return None
 
-    orch._selector.select = mock_select
-    orch._selector.should_update = MagicMock(return_value=False)
-    orch._selector.should_checkpoint = MagicMock(return_value=False)
-    orch._selector.on_play_completed = AsyncMock()
-    orch._selector.consume_pending = MagicMock(return_value=None)
+    orch._runtime.selector.select = mock_select
+    orch._runtime.selector.should_update = MagicMock(return_value=False)
+    orch._runtime.selector.should_checkpoint = MagicMock(return_value=False)
+    orch._runtime.selector.on_play_completed = AsyncMock()
+    orch._runtime.selector.consume_pending = MagicMock(return_value=None)
 
     orch._store.get_play_history = AsyncMock(return_value=[])
     orch._store.get_open_issues = AsyncMock(return_value=[])
@@ -167,7 +167,7 @@ async def test_masked_override_releases_claim_when_not_actionable(tmp_path: Path
     )
 
     orch = _make_orch(tmp_path)
-    orch._registry = build_default_registry(orch._cfg)
+    orch._runtime.registry = build_default_registry(orch._runtime.cfg)
     orch._store.release_work_claim_group = AsyncMock()
     params = PlayParams(
         pr_number=210,
@@ -218,7 +218,7 @@ async def test_masked_override_requeues_transient_staffing_gap(tmp_path: Path) -
     from agentshore.state import OrchestratorState, SessionState
 
     orch = _make_orch(tmp_path)
-    orch._registry = build_default_registry(orch._cfg)
+    orch._runtime.registry = build_default_registry(orch._runtime.cfg)
     orch._store.release_work_claim_group = AsyncMock()
     params = PlayParams(
         pr_number=210,
@@ -367,7 +367,7 @@ async def test_override_confirm_reuses_selector_live_loader(
     sentinel_loader = AsyncMock()
     ppo_selector = MagicMock()
     ppo_selector._build_live_graph_loader = MagicMock(return_value=sentinel_loader)
-    orch._selector = ppo_selector
+    orch._runtime.selector = ppo_selector
     monkeypatch.setattr(
         "agentshore.core.mixins.dispatch._ppo_selector_cls",
         lambda: type(ppo_selector),

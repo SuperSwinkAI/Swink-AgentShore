@@ -33,13 +33,13 @@ def _make_orch() -> Orchestrator:
 
     orch = make_test_orchestrator(Path("."))
     orch._session_id = "sess-test"
-    orch._state_provider = MagicMock()
-    orch._state_provider.on_session_draining = AsyncMock()
+    orch._runtime.state_provider = MagicMock()
+    orch._runtime.state_provider.on_session_draining = AsyncMock()
     orch._store.update_session_state = AsyncMock()
     # Drain tests assert on the pause event's .set(); MagicMock records the call.
-    orch._pause_event = MagicMock()
-    orch._pause_event.set = MagicMock()
-    orch._pause_event.is_set = MagicMock(return_value=True)
+    orch._runtime.pause_event = MagicMock()
+    orch._runtime.pause_event.set = MagicMock()
+    orch._runtime.pause_event.is_set = MagicMock(return_value=True)
     # Rebuild drain/lifecycle to capture "sess-test" (factory baked in "test-session").
     orch._lifecycle = LifecycleController(
         host=orch,
@@ -100,11 +100,11 @@ async def test_begin_drain_sets_draining_flag() -> None:
     """begin_drain() sets _draining and _drain_initialized."""
     orch = _make_orch()
     await orch.begin_drain("test_reason")
-    assert orch._draining is True
-    assert orch._drain_initialized is True
-    assert orch._drain_reason == "test_reason"
-    assert orch._end_session_report_requested is True
-    assert orch._end_session_report_open_browser is True
+    assert orch._runtime.draining is True
+    assert orch._runtime.drain_initialized is True
+    assert orch._runtime.drain_reason == "test_reason"
+    assert orch._runtime.end_session_report_requested is True
+    assert orch._runtime.end_session_report_open_browser is True
 
 
 @pytest.mark.asyncio
@@ -113,7 +113,7 @@ async def test_begin_drain_is_idempotent() -> None:
     orch = _make_orch()
     await orch.begin_drain("first")
     await orch.begin_drain("second")
-    orch._state_provider.on_session_draining.assert_awaited_once()
+    orch._runtime.state_provider.on_session_draining.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -121,7 +121,7 @@ async def test_begin_drain_broadcasts_on_session_draining() -> None:
     """begin_drain() calls on_session_draining with the reason."""
     orch = _make_orch()
     await orch.begin_drain("budget_exhausted")
-    orch._state_provider.on_session_draining.assert_awaited_once_with("budget_exhausted")
+    orch._runtime.state_provider.on_session_draining.assert_awaited_once_with("budget_exhausted")
 
 
 @pytest.mark.asyncio
@@ -137,17 +137,17 @@ async def test_begin_drain_wakes_pause_event() -> None:
     """begin_drain() sets the pause event so a paused loop unblocks."""
     orch = _make_orch()
     await orch.begin_drain("goals_complete")
-    orch._pause_event.set.assert_called()
+    orch._runtime.pause_event.set.assert_called()
 
 
 @pytest.mark.asyncio
 async def test_begin_drain_skipped_when_stop_requested() -> None:
     """begin_drain() is a no-op when _stop_requested is already True."""
     orch = _make_orch()
-    orch._stop_requested = True
+    orch._runtime.stop_requested = True
     await orch.begin_drain("user_request")
-    orch._state_provider.on_session_draining.assert_not_awaited()
-    assert orch._end_session_report_requested is False
+    orch._runtime.state_provider.on_session_draining.assert_not_awaited()
+    assert orch._runtime.end_session_report_requested is False
 
 
 @pytest.mark.asyncio
@@ -167,7 +167,7 @@ async def test_begin_drain_without_session_draining_callback_is_no_op() -> None:
     """No callback registered → begin_drain() still completes cleanly."""
     orch = _make_orch()
     await orch.begin_drain("user_request")
-    assert orch._draining is True
+    assert orch._runtime.draining is True
 
 
 @pytest.mark.asyncio
@@ -180,7 +180,7 @@ async def test_begin_drain_session_draining_callback_exception_does_not_fail_dra
 
     orch.register_session_draining_callback(_boom)
     await orch.begin_drain("user_request")
-    assert orch._draining is True
+    assert orch._runtime.draining is True
 
 
 # ---------------------------------------------------------------------------
@@ -192,15 +192,15 @@ def test_request_drain_sets_flag() -> None:
     """request_drain() sets _draining without blocking."""
     orch = _make_orch()
     orch.request_drain("signal_sigterm")
-    assert orch._draining is True
-    assert orch._drain_reason == "signal_sigterm"
+    assert orch._runtime.draining is True
+    assert orch._runtime.drain_reason == "signal_sigterm"
 
 
 def test_request_drain_wakes_pause_event() -> None:
     """request_drain() sets the pause event to unblock the loop."""
     orch = _make_orch()
     orch.request_drain("signal_sigterm")
-    orch._pause_event.set.assert_called()
+    orch._runtime.pause_event.set.assert_called()
 
 
 # ---------------------------------------------------------------------------
@@ -211,7 +211,7 @@ def test_request_drain_wakes_pause_event() -> None:
 def test_should_terminate_drain_with_in_flight_returns_false() -> None:
     """_should_terminate returns False while plays are still in flight."""
     orch = _make_orch()
-    orch._in_flight = {"play-1": MagicMock()}
+    orch._runtime.in_flight = {"play-1": MagicMock()}
     state = _state(SessionState.DRAINING, agents=[_snap("a1", AgentStatus.BUSY)])
     result, reason = orch._lifecycle.should_terminate(state)
     assert result is False
@@ -221,7 +221,7 @@ def test_should_terminate_drain_with_in_flight_returns_false() -> None:
 def test_should_terminate_drain_with_live_agents_returns_false() -> None:
     """_should_terminate returns False while non-terminated agents remain."""
     orch = _make_orch()
-    orch._in_flight = {}
+    orch._runtime.in_flight = {}
     state = _state(SessionState.DRAINING, agents=[_snap("a1", AgentStatus.IDLE)])
     result, reason = orch._lifecycle.should_terminate(state)
     assert result is False
@@ -230,7 +230,7 @@ def test_should_terminate_drain_with_live_agents_returns_false() -> None:
 def test_should_terminate_drain_complete_when_all_terminated() -> None:
     """_should_terminate returns (True, 'drain_complete') when all agents terminated and no in-flight."""
     orch = _make_orch()
-    orch._in_flight = {}
+    orch._runtime.in_flight = {}
     state = _state(
         SessionState.DRAINING,
         agents=[
@@ -246,7 +246,7 @@ def test_should_terminate_drain_complete_when_all_terminated() -> None:
 def test_should_terminate_drain_complete_with_no_agents() -> None:
     """_should_terminate returns (True, 'drain_complete') when agents list is empty and no in-flight."""
     orch = _make_orch()
-    orch._in_flight = {}
+    orch._runtime.in_flight = {}
     state = _state(SessionState.DRAINING, agents=[])
     result, reason = orch._lifecycle.should_terminate(state)
     assert result is True
@@ -262,7 +262,7 @@ def test_should_terminate_drain_blocked_by_errored_agent() -> None:
     test_take_break_escalation). Documents the precondition this fix relies on.
     """
     orch = _make_orch()
-    orch._in_flight = {}
+    orch._runtime.in_flight = {}
     state = _state(SessionState.DRAINING, agents=[_snap("err1", AgentStatus.ERROR)])
     result, reason = orch._lifecycle.should_terminate(state)
     assert result is False
@@ -279,8 +279,8 @@ def test_should_terminate_drain_blocked_by_errored_agent() -> None:
 def test_should_terminate_stop_requested_overrides_drain() -> None:
     """When _stop_requested is True, terminate immediately regardless of drain state."""
     orch = _make_orch()
-    orch._stop_requested = True
-    orch._in_flight = {"x": MagicMock()}
+    orch._runtime.stop_requested = True
+    orch._runtime.in_flight = {"x": MagicMock()}
     state = _state(SessionState.DRAINING, agents=[_snap("a1", AgentStatus.BUSY)])
     result, reason = orch._lifecycle.should_terminate(state)
     assert result is True
@@ -291,7 +291,7 @@ def test_should_terminate_stop_requested_overrides_drain() -> None:
 async def test_consume_override_drops_non_end_agent_after_drain_even_with_bypass() -> None:
     """Drain mode drops queued bootstrap/override plays except end_agent."""
     orch = _make_orch()
-    orch._draining = True
+    orch._runtime.draining = True
     orch._overrides = OverrideQueue()
     from agentshore.plays.override import OverrideEntry, OverrideKind
 
@@ -325,9 +325,9 @@ def test_request_drain_twice_keeps_first_reason() -> None:
     """Second request_drain() is a no-op once _drain_initialized is True."""
     orch = _make_orch()
     orch.request_drain("first_reason")
-    orch._drain_initialized = True  # simulate begin_drain having run
+    orch._runtime.drain_initialized = True  # simulate begin_drain having run
     orch.request_drain("second_reason")
-    assert orch._drain_reason == "first_reason"
+    assert orch._runtime.drain_reason == "first_reason"
 
 
 @pytest.mark.asyncio
@@ -355,12 +355,12 @@ async def test_stop_inner_generates_esr_before_close_and_opens_last(tmp_path: Pa
         events.append("ended")
 
     orch._session_id = "sess-test"
-    orch._stop_reason = "ppo_selected"
+    orch._runtime.stop_reason = "ppo_selected"
     orch._manager = MagicMock()
     orch._manager.handles = {}
     orch._loop = MagicMock()
-    orch._end_session_report_requested = True
-    orch._end_session_report_open_browser = True
+    orch._runtime.end_session_report_requested = True
+    orch._runtime.end_session_report_open_browser = True
     orch._state_builder = MagicMock()
     orch._state_builder.build_state = AsyncMock(
         return_value=_state(SessionState.DRAINING, agents=[])
@@ -370,8 +370,8 @@ async def test_stop_inner_generates_esr_before_close_and_opens_last(tmp_path: Pa
     orch._store = AsyncMock()
     orch._store.complete_session = AsyncMock(side_effect=_complete)
     orch._store.close = AsyncMock(side_effect=_close)
-    orch._state_provider = MagicMock()
-    orch._state_provider.on_session_ended = AsyncMock(side_effect=_ended)
+    orch._runtime.state_provider = MagicMock()
+    orch._runtime.state_provider.on_session_ended = AsyncMock(side_effect=_ended)
     orch._drain = DrainController(
         host=orch,
         runtime=orch._runtime,
@@ -404,21 +404,21 @@ async def test_stop_inner_clears_agents_with_force(tmp_path: Path) -> None:
 
     orch = make_test_orchestrator(tmp_path)
     orch._session_id = "sess-test"
-    orch._stop_reason = "stop_requested"
+    orch._runtime.stop_reason = "stop_requested"
     orch._manager = MagicMock()
     orch._manager.handles = {"agent-1": MagicMock(), "agent-2": MagicMock()}
     orch._manager.clear = AsyncMock()
     orch._loop = MagicMock()
-    orch._end_session_report_requested = False
-    orch._end_session_report_open_browser = False
+    orch._runtime.end_session_report_requested = False
+    orch._runtime.end_session_report_open_browser = False
     orch._state_builder = MagicMock()
     orch._state_builder.build_state = AsyncMock(
         return_value=_state(SessionState.DRAINING, agents=[])
     )
     orch._completion = MagicMock()
     orch._store = AsyncMock()
-    orch._state_provider = MagicMock()
-    orch._state_provider.on_session_ended = AsyncMock()
+    orch._runtime.state_provider = MagicMock()
+    orch._runtime.state_provider.on_session_ended = AsyncMock()
     orch._drain = DrainController(
         host=orch,
         runtime=orch._runtime,

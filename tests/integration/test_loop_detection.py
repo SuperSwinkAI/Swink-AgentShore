@@ -83,17 +83,17 @@ async def test_loop_detection_escalates_after_threshold(tmp_path: Path) -> None:
         async with orch:
             task = asyncio.create_task(orch.run_until_idle())
             for _ in range(40):
-                if not orch._pause_event.is_set():
+                if not orch._runtime.pause_event.is_set():
                     break
                 await asyncio.sleep(0.1)
 
-            assert not orch._pause_event.is_set(), (
+            assert not orch._runtime.pause_event.is_set(), (
                 "Loop should pause after escalate_after consecutive failures"
             )
             assert call_count >= 1
 
-            orch._stop_requested = True
-            orch._pause_event.set()
+            orch._runtime.stop_requested = True
+            orch._runtime.pause_event.set()
             await asyncio.wait_for(task, timeout=5.0)
 
 
@@ -158,4 +158,4 @@ async def test_loop_detection_does_not_trigger_on_mixed_types(tmp_path: Path) ->
 
     assert call_count == 5
     # pause_event still set (from resume) means the loop detector never fired.
-    assert orch._pause_event.is_set()
+    assert orch._runtime.pause_event.is_set()

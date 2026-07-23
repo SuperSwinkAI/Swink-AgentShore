@@ -53,6 +53,7 @@ if TYPE_CHECKING:
     from typing import Protocol
 
     from agentshore.config import RuntimeConfig
+    from agentshore.core.session_runtime import SessionRuntime
     from agentshore.data.store import DataStore
     from agentshore.sidecar.server import JsonRpcNotification, ServerState
     from agentshore.state import AgentType
@@ -70,10 +71,10 @@ if TYPE_CHECKING:
         ``# type: ignore[attr-defined]`` duck-typing comments while keeping the
         engine import lazy.
 
-        The underscored members (``_store``, ``_log_path``,
-        ``_natural_exit_reason``) mirror the orchestrator's own internal
-        accessors; they are declared here so the sidecar's reach-ins are typed
-        rather than silently ``object``-typed.
+        The underscored members (``_store``, ``_runtime`` — the latter for its
+        ``log_path``/``natural_exit_reason`` fields) mirror the orchestrator's
+        own internals; they are declared here so the sidecar's reach-ins are
+        typed rather than silently ``object``-typed.
         """
 
         def request_drain(self, reason: str = ...) -> None: ...
@@ -112,10 +113,7 @@ if TYPE_CHECKING:
         def _store(self) -> DataStore: ...
 
         @property
-        def _log_path(self) -> Path | None: ...
-
-        @property
-        def _natural_exit_reason(self) -> str | None: ...
+        def _runtime(self) -> SessionRuntime: ...
 
 
 _logger = structlog.get_logger(__name__)
@@ -963,7 +961,7 @@ async def _start_orchestrator(
     # callback; until then report_path stays empty rather than inventing a
     # placeholder path.
     archive_dir = project_path / ".agentshore" / "archives" / session_id
-    log_path = orch._log_path
+    log_path = orch._runtime.log_path
     state.session_context = SessionContext(
         session_id=session_id,
         store=orch._store,
@@ -999,7 +997,7 @@ async def _start_orchestrator(
             raise
         # Only the natural-exit path proceeds to ESR emission; explicit
         # session.stop callers own their own ESR build in the stop path.
-        if orch._natural_exit_reason is None:
+        if orch._runtime.natural_exit_reason is None:
             return
         # Snapshot both locals immediately — a concurrent _clear_session_state
         # (or the explicit-stop path) can null state.session_context during the
@@ -1008,7 +1006,7 @@ async def _start_orchestrator(
         # leaves only a bare $/esr_ready on natural exit. Mirror the robust
         # explicit-stop snapshot in rpc/handlers/session.py:117.
         ctx = state.session_context
-        reason = orch._natural_exit_reason
+        reason = orch._runtime.natural_exit_reason
         # Build the ESR payload BEFORE ``orch.stop()`` — ``stop()`` closes
         # the underlying DataStore as part of shutdown_step:store_close
         # (DESIGN §5.2), and ``ReportDataCollector.collect_end_session_report``

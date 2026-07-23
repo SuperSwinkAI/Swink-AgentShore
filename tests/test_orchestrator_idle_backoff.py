@@ -77,13 +77,13 @@ def test_idle_backoff_advances_through_fibonacci() -> None:
     observed = []
     for _ in _IDLE_BACKOFF_SECONDS:
         observed.append(orch._loop.idle_backoff())
-        orch._idle_streak += 1
+        orch._runtime.idle_streak += 1
     assert tuple(observed) == _IDLE_BACKOFF_SECONDS
 
 
 def test_idle_backoff_clamps_at_ceiling() -> None:
     orch = _orch()
-    orch._idle_streak = 999
+    orch._runtime.idle_streak = 999
     assert orch._loop.idle_backoff() == _IDLE_BACKOFF_SECONDS[-1]
 
 
@@ -123,7 +123,7 @@ def test_digest_changes_when_in_flight_count_changes() -> None:
     orch = _orch()
     state = _state(agents=(_agent("a"),), action_mask=(True,))
     d_empty = orch._loop.selection_state_digest(state, list(state.agents))
-    orch._in_flight["d1"] = object()  # type: ignore[assignment]
+    orch._runtime.in_flight["d1"] = object()  # type: ignore[assignment]
     d_one = orch._loop.selection_state_digest(state, list(state.agents))
     assert d_empty != d_one
 

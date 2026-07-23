@@ -25,12 +25,12 @@ def _make_orch(tmp_path: Path) -> Orchestrator:
 
     orch = make_test_orchestrator(tmp_path)
     orch._session_id = "sess-test"
-    orch._state_provider = MagicMock()
-    orch._state_provider.on_session_draining = AsyncMock()
+    orch._runtime.state_provider = MagicMock()
+    orch._runtime.state_provider.on_session_draining = AsyncMock()
     orch._store.update_session_state = AsyncMock()
-    orch._pause_event = MagicMock()
-    orch._pause_event.set = MagicMock()
-    orch._pause_event.is_set = MagicMock(return_value=True)
+    orch._runtime.pause_event = MagicMock()
+    orch._runtime.pause_event.set = MagicMock()
+    orch._runtime.pause_event.is_set = MagicMock(return_value=True)
     return orch
 
 
@@ -39,14 +39,14 @@ def test_on_natural_exit_registers_callback(tmp_path: Path) -> None:
     orch = _make_orch(tmp_path)
     cb = AsyncMock()
     orch.on_natural_exit(cb)
-    assert orch._natural_exit_callback is cb
+    assert orch._runtime.natural_exit_callback is cb
 
 
 @pytest.mark.asyncio
 async def test_natural_exit_reason_starts_none(tmp_path: Path) -> None:
     """A fresh orchestrator has no natural-exit reason recorded."""
     orch = _make_orch(tmp_path)
-    assert orch._natural_exit_reason is None
+    assert orch._runtime.natural_exit_reason is None
 
 
 @pytest.mark.asyncio
@@ -67,10 +67,10 @@ async def test_natural_exit_callback_fires_with_recorded_reason(tmp_path: Path) 
         called.append(reason)
 
     orch.on_natural_exit(_cb)
-    orch._natural_exit_reason = "drain_complete"
+    orch._runtime.natural_exit_reason = "drain_complete"
 
-    assert orch._natural_exit_callback is not None
-    await orch._natural_exit_callback(orch._natural_exit_reason)
+    assert orch._runtime.natural_exit_callback is not None
+    await orch._runtime.natural_exit_callback(orch._runtime.natural_exit_reason)
 
     assert called == ["drain_complete"]
 
@@ -88,7 +88,7 @@ def test_natural_exit_reason_skipped_for_explicit_stop(tmp_path: Path) -> None:
     # run_until_idle skips setting _natural_exit_reason for that reason.
     # See src/agentshore/core.py:run_until_idle exit branch.
     orch = _make_orch(tmp_path)
-    orch._stop_requested = True
+    orch._runtime.stop_requested = True
     # We can't run the loop here without full bootstrap; the inline gate
     # in core.py is the contract under test.
-    assert orch._natural_exit_reason is None
+    assert orch._runtime.natural_exit_reason is None

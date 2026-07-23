@@ -64,7 +64,7 @@ async def test_bootstrap_default_state_provider_is_null(tmp_path: Path) -> None:
 
     from agentshore.state import NullStateProvider
 
-    assert isinstance(orch._state_provider, NullStateProvider)
+    assert isinstance(orch._runtime.state_provider, NullStateProvider)
 
 
 @pytest.mark.asyncio

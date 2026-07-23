@@ -16,7 +16,7 @@ import json
 import time
 from contextlib import asynccontextmanager, suppress
 from contextvars import ContextVar
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 
 import structlog
 
@@ -49,6 +49,18 @@ MIN_DURATION_SECONDS = 1.0
 # on long streaks instead of one emission per increment. With warn_after=3:
 # streak ∈ {3, 6, 15, 30, 60, 150, 300}, deduped by the `_last_warned_*` memo.
 _LOOP_DETECTED_MULTIPLIERS: tuple[int, ...] = (1, 2, 5, 10, 20, 50, 100)
+
+
+class _SafeCallHost(Protocol):
+    """Shared behaviour seam every per-component Host Protocol extends.
+
+    ``_safe_call`` is the one method ``_DispatcherHost``, ``_LifecycleHost``,
+    ``_DrainHost``, ``_CompletionHost``, and ``_LoopHost`` each re-declared
+    identically. Factored out here so each of those Protocols extends this one
+    and declares only the methods/attributes it adds beyond ``_safe_call``.
+    """
+
+    async def _safe_call(self, coro: Awaitable[object], label: str) -> None: ...
 
 
 def _is_loop_bucket(streak: int, threshold: int) -> bool:

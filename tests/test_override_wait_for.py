@@ -29,7 +29,7 @@ def _make_orch(tmp_path: Path) -> Any:
     from tests.orchestrator_factory import make_test_orchestrator
 
     orch = make_test_orchestrator(tmp_path)
-    orch._registry = None
+    orch._runtime.registry = None
     return orch
 
 

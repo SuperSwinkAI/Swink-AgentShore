@@ -37,7 +37,7 @@ def _make_orch(tmp_path: Path, cfg: RuntimeConfig | None = None) -> Any:
     )
     orch._executor.inflight_issues = set()
     orch._executor.planned_issues = frozenset()
-    orch._registry = None
+    orch._runtime.registry = None
     orch._loop._last_loop_iteration_at = 0.0
     return orch
 
@@ -64,7 +64,7 @@ def _make_outcome(play_type: PlayType = PlayType.TAKE_BREAK) -> PlayOutcome:
 
 def test_pause_event_initially_set(tmp_path: Path) -> None:
     orch = _make_orch(tmp_path)
-    assert orch._pause_event.is_set(), "_pause_event must start set (running)"
+    assert orch._runtime.pause_event.is_set(), "_pause_event must start set (running)"
 
 
 # ---------------------------------------------------------------------------
@@ -76,8 +76,8 @@ def test_pause_event_initially_set(tmp_path: Path) -> None:
 async def test_pause_clears_event(tmp_path: Path) -> None:
     orch = _make_orch(tmp_path)
     await orch.pause("test_reason")
-    assert not orch._pause_event.is_set()
-    assert orch._pause_reason == "test_reason"
+    assert not orch._runtime.pause_event.is_set()
+    assert orch._runtime.pause_reason == "test_reason"
 
 
 def test_assemble_state_reports_paused_when_pause_event_cleared(tmp_path: Path) -> None:
@@ -86,7 +86,7 @@ def test_assemble_state_reports_paused_when_pause_event_cleared(tmp_path: Path) 
 
     orch = _make_orch(tmp_path)
     orch._manager.handles = {}
-    orch._pause_event.clear()
+    orch._runtime.pause_event.clear()
 
     state = orch._state_builder.assemble_state(
         _StateData(
@@ -105,7 +105,7 @@ def test_assemble_state_reports_paused_when_pause_event_cleared(tmp_path: Path) 
 @pytest.mark.asyncio
 async def test_pause_fires_provider_hooks(tmp_path: Path) -> None:
     orch = _make_orch(tmp_path)
-    orch._last_play_id = 7
+    orch._runtime.last_play_id = 7
     paused_reasons: list[str] = []
     feedback_reasons: list[str] = []
 
@@ -116,7 +116,7 @@ async def test_pause_fires_provider_hooks(tmp_path: Path) -> None:
         async def on_feedback_requested(self, reason: str) -> None:
             feedback_reasons.append(reason)
 
-    orch._state_provider = TrackingProvider()
+    orch._runtime.state_provider = TrackingProvider()
     await orch.pause("budget_exhausted")
 
     assert paused_reasons == ["budget_exhausted"]
@@ -154,7 +154,7 @@ async def test_pause_respects_feedback_trigger_flags(
         async def on_feedback_requested(self, feedback_reason: str) -> None:
             feedback_reasons.append(feedback_reason)
 
-    orch._state_provider = TrackingProvider()
+    orch._runtime.state_provider = TrackingProvider()
     await orch.pause(reason)
 
     assert paused_reasons == [reason]
@@ -172,7 +172,7 @@ async def test_user_initiated_pause_always_requests_feedback(tmp_path: Path, rea
         async def on_feedback_requested(self, feedback_reason: str) -> None:
             feedback_reasons.append(feedback_reason)
 
-    orch._state_provider = TrackingProvider()
+    orch._runtime.state_provider = TrackingProvider()
     await orch.pause(reason)
 
     assert feedback_reasons == [reason]
@@ -182,10 +182,10 @@ async def test_user_initiated_pause_always_requests_feedback(tmp_path: Path, rea
 async def test_resume_sets_event(tmp_path: Path) -> None:
     orch = _make_orch(tmp_path)
     await orch.pause("loop_detected")
-    assert not orch._pause_event.is_set()
+    assert not orch._runtime.pause_event.is_set()
     await orch.resume()
-    assert orch._pause_event.is_set()
-    assert orch._pause_reason is None
+    assert orch._runtime.pause_event.is_set()
+    assert orch._runtime.pause_reason is None
 
 
 @pytest.mark.asyncio
@@ -215,7 +215,7 @@ async def test_loop_awaits_pause_event(tmp_path: Path) -> None:
             return None
         return (PlayType.ISSUE_PICKUP, PlayParams())
 
-    orch._selector.select = mock_select
+    orch._runtime.selector.select = mock_select
 
     async def mock_execute(play_type: PlayType, state: Any, override: Any = None) -> Any:
         nonlocal play_count
@@ -230,7 +230,7 @@ async def test_loop_awaits_pause_event(tmp_path: Path) -> None:
     task = asyncio.create_task(orch.run_until_idle())
     await asyncio.wait_for(pause_triggered.wait(), timeout=2.0)
 
-    assert not orch._pause_event.is_set()
+    assert not orch._runtime.pause_event.is_set()
     count_at_pause = play_count
 
     await orch.resume()
@@ -255,7 +255,7 @@ async def test_paused_loop_harvests_completed_in_flight_without_dispatching(
             return (PlayType.TAKE_BREAK, PlayParams())
         return None
 
-    orch._selector.select = mock_select
+    orch._runtime.selector.select = mock_select
 
     async def mock_execute(play_type: PlayType, state: Any, override: Any = None) -> Any:
         nonlocal execute_count
@@ -281,9 +281,9 @@ async def test_paused_loop_harvests_completed_in_flight_without_dispatching(
     first_can_finish.set()
 
     await asyncio.wait_for(first_harvested.wait(), timeout=2.0)
-    assert not orch._pause_event.is_set()
+    assert not orch._runtime.pause_event.is_set()
     assert execute_count == 1
-    assert orch._in_flight == {}
+    assert orch._runtime.in_flight == {}
 
     await asyncio.sleep(0.05)
     assert execute_count == 1, "Paused loop must not dispatch more work"
@@ -307,7 +307,7 @@ async def test_pause_with_reason_does_not_exit_loop(tmp_path: Path) -> None:
             return (PlayType.ISSUE_PICKUP, PlayParams())
         return None
 
-    orch._selector.select = mock_select
+    orch._runtime.selector.select = mock_select
 
     async def mock_execute(play_type: PlayType, state: Any, override: Any = None) -> Any:
         nonlocal called
@@ -322,7 +322,7 @@ async def test_pause_with_reason_does_not_exit_loop(tmp_path: Path) -> None:
     # Poll until paused (don't resume yet); _pause_with_reason blocks.
     for _ in range(20):
         await asyncio.sleep(0.01)
-        if not orch._pause_event.is_set():
+        if not orch._runtime.pause_event.is_set():
             break
     assert not task.done(), "_pause_with_reason must not exit the loop"
 
@@ -348,11 +348,11 @@ async def test_dispatch_ctx_set_during_execute(tmp_path: Path) -> None:
             return (PlayType.ISSUE_PICKUP, PlayParams())
         return None
 
-    orch._selector.select = mock_select
+    orch._runtime.selector.select = mock_select
 
     async def mock_execute(play_type: PlayType, state: Any, override: Any = None) -> Any:
         execute_started.set()
-        captured_in_flight.append(len(orch._in_flight))
+        captured_in_flight.append(len(orch._runtime.in_flight))
         play_done.set()
         return _make_outcome()
 
@@ -362,7 +362,7 @@ async def test_dispatch_ctx_set_during_execute(tmp_path: Path) -> None:
     await asyncio.wait_for(execute_started.wait(), timeout=2.0)
     assert captured_in_flight[0] >= 1, "_in_flight must have entries while executing"
     await asyncio.wait_for(task, timeout=2.0)
-    assert len(orch._in_flight) == 0, "_in_flight must be empty after loop exits"
+    assert len(orch._runtime.in_flight) == 0, "_in_flight must be empty after loop exits"
 
 
 # ---------------------------------------------------------------------------
@@ -379,7 +379,7 @@ async def test_on_agent_changed_called_on_crash(tmp_path: Path) -> None:
         async def on_agent_changed(self, agent_id: str, status: AgentStatus) -> None:
             changed_events.append((agent_id, status))
 
-    orch._state_provider = TrackingProvider()
+    orch._runtime.state_provider = TrackingProvider()
     await orch._completion.on_crash("agent-99", return_code=1)
 
     assert len(changed_events) == 1
@@ -395,12 +395,12 @@ async def test_on_agent_changed_called_on_context_pressure(tmp_path: Path) -> No
         async def on_agent_changed(self, agent_id: str, status: AgentStatus) -> None:
             changed_events.append((agent_id, status))
 
-    orch._state_provider = TrackingProvider()
+    orch._runtime.state_provider = TrackingProvider()
     await orch._completion.on_context_pressure("agent-42", ratio=0.95)
 
     assert len(changed_events) == 1
     assert changed_events[0][0] == "agent-42"
-    assert orch.context_pressure_hints["agent-42"] == pytest.approx(0.95)
+    assert orch._runtime.context_pressure_hints["agent-42"] == pytest.approx(0.95)
 
 
 # ---------------------------------------------------------------------------
@@ -414,7 +414,7 @@ async def test_feedback_cadence_plays_pauses_after_configured_completed_plays(
 ) -> None:
     cfg = RuntimeConfig(feedback=FeedbackConfig(cadence_plays=2))
     orch = _make_orch(tmp_path, cfg=cfg)
-    orch._feedback_cadence_plays_since_ack = 2
+    orch._runtime.feedback_cadence_plays_since_ack = 2
 
     paused_reasons: list[str] = []
     feedback_reasons: list[str] = []
@@ -426,7 +426,7 @@ async def test_feedback_cadence_plays_pauses_after_configured_completed_plays(
         async def on_feedback_requested(self, reason: str) -> None:
             feedback_reasons.append(reason)
 
-    orch._state_provider = TrackingProvider()
+    orch._runtime.state_provider = TrackingProvider()
     paused = await orch._lifecycle.pause_for_feedback_cadence_if_due()
 
     assert paused
@@ -444,7 +444,7 @@ async def test_feedback_cadence_minutes_pauses_after_configured_elapsed_time(
     orch = _make_orch(tmp_path, cfg=cfg)
     # Anchor the ack far in the past: CLOCK_MONOTONIC can read < 300 on a freshly
     # booted CI runner, so an absolute 0.0 baseline wouldn't make the cadence due.
-    orch._feedback_cadence_last_ack_monotonic = time.monotonic() - 10_000.0
+    orch._runtime.feedback_cadence_last_ack_monotonic = time.monotonic() - 10_000.0
 
     paused_reasons: list[str] = []
     feedback_reasons: list[str] = []
@@ -456,7 +456,7 @@ async def test_feedback_cadence_minutes_pauses_after_configured_elapsed_time(
         async def on_feedback_requested(self, reason: str) -> None:
             feedback_reasons.append(reason)
 
-    orch._state_provider = TrackingProvider()
+    orch._runtime.state_provider = TrackingProvider()
     paused = await orch._lifecycle.pause_for_feedback_cadence_if_due()
 
     assert paused
@@ -467,7 +467,7 @@ async def test_feedback_cadence_minutes_pauses_after_configured_elapsed_time(
 @pytest.mark.asyncio
 async def test_feedback_cadence_disabled_does_not_pause(tmp_path: Path) -> None:
     orch = _make_orch(tmp_path)  # default config: cadence_plays=None, cadence_minutes=None
-    orch._feedback_cadence_plays_since_ack = 100
+    orch._runtime.feedback_cadence_plays_since_ack = 100
 
     paused_reasons: list[str] = []
 
@@ -475,19 +475,19 @@ async def test_feedback_cadence_disabled_does_not_pause(tmp_path: Path) -> None:
         async def on_session_paused(self, reason: str) -> None:
             paused_reasons.append(reason)
 
-    orch._state_provider = TrackingProvider()
+    orch._runtime.state_provider = TrackingProvider()
     paused = await orch._lifecycle.pause_for_feedback_cadence_if_due()
 
     assert not paused
     assert paused_reasons == []
-    assert orch._pause_event.is_set()
+    assert orch._runtime.pause_event.is_set()
 
 
 @pytest.mark.asyncio
 async def test_feedback_cadence_resets_after_resume(tmp_path: Path) -> None:
     cfg = RuntimeConfig(feedback=FeedbackConfig(cadence_plays=2))
     orch = _make_orch(tmp_path, cfg=cfg)
-    orch._feedback_cadence_plays_since_ack = 2
+    orch._runtime.feedback_cadence_plays_since_ack = 2
 
     paused_reasons: list[str] = []
 
@@ -498,15 +498,15 @@ async def test_feedback_cadence_resets_after_resume(tmp_path: Path) -> None:
         async def on_feedback_requested(self, reason: str) -> None:
             pass
 
-    orch._state_provider = TrackingProvider()
+    orch._runtime.state_provider = TrackingProvider()
 
     await orch._lifecycle.pause_for_feedback_cadence_if_due()
     assert paused_reasons == ["feedback_cadence_plays"]
-    assert not orch._pause_event.is_set()
+    assert not orch._runtime.pause_event.is_set()
 
     # resume() resets the play-count baseline
     await orch.resume()
-    assert orch._feedback_cadence_plays_since_ack == 0
+    assert orch._runtime.feedback_cadence_plays_since_ack == 0
 
     # Same play count (0 < 2) must not immediately re-trigger
     paused_reasons.clear()
