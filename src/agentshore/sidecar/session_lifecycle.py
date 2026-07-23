@@ -7,7 +7,7 @@ Screen 8 checklist mirrors:
 2. ``check_agent_auth`` — identity preconditions, then probe each configured
    CLI agent's backend auth and each identity's git-remote auth (shared
    sequencing with the CLI's ``agentshore start`` preflight via
-   :func:`agentshore.session.bootstrap.run_session_preflight`, gh-151/178/179).
+   :func:`agentshore.session.preflight.run_session_preflight`, gh-151/178/179).
 3. ``install_skills`` — ensure project-level skill templates are current.
 4. ``init_beads`` — ensure the beads graph is initialised.
 5. ``bind_ipc`` — reserve a TCP loopback endpoint for the orchestrator.
@@ -290,7 +290,7 @@ def _check_agent_auth(cfg: RuntimeConfig, project_path: Path) -> None:
     desktop starts.
 
     Runs the same three gates as the CLI's ``agentshore start`` preflight, in
-    the same order, via the shared :func:`agentshore.session.bootstrap.
+    the same order, via the shared :func:`agentshore.session.preflight.
     run_session_preflight` sequencer (gh-151/178/179 — the desktop path used
     to skip the git-remote probe entirely, so a broken git credential slipped
     past launch and wedged mid-session instead of failing fast here):
@@ -323,7 +323,7 @@ def _check_agent_auth(cfg: RuntimeConfig, project_path: Path) -> None:
         require_two_distinct_gh_identities,
     )
     from agentshore.errors import ConfigError
-    from agentshore.session.bootstrap import run_session_preflight
+    from agentshore.session.preflight import run_session_preflight
 
     def _identities() -> None:
         try:

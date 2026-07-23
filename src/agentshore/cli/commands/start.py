@@ -32,9 +32,9 @@ from agentshore.session.bootstrap import (
     preflight_cli_agent_auth,
     preflight_git_auth,
     preflight_identities,
-    run_session_preflight,
     validate_budget_flag,
 )
+from agentshore.session.preflight import run_session_preflight
 
 
 @click.command()
