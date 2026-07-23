@@ -149,22 +149,25 @@ The desktop app runs the same probe as the `check_agent_auth` startup phase and
 exposes it live on the agents/identities setup screen as a per-agent backend-auth
 badge, so a green badge there provably means the launch gate will pass.
 
-### Runtime suppression backstop
+### Runtime recovery backstop
 
 A backend session can also expire *mid-run*, after a clean preflight. When a
 CLI agent's dispatch emits a backend-auth signature on stderr, the error
-classifier recognises it immediately, aborts that dispatch with `ErrorClass.AUTH`
-rather than waiting out the full stream-idle timeout, and adds the agent type to
-a session-level suppression set. The play-candidate analyzer then masks all
-further dispatch to that agent type — including spawning a fresh agent of it —
-for the remainder of the session, since a new backend token would require a new
-session to pick up. This prevents a single expired token from burning every
-subsequent play to the timeout.
+classifier recognises it immediately and aborts that dispatch with
+`ErrorClass.AUTH` rather than waiting out the full stream-idle timeout. The
+agent lands in `ERROR` and routes through the standard `TAKE_BREAK` recovery —
+the same break-then-resume path as a quota/rate-limit hold. A genuinely dead
+token fails its breaks and the agent graduates to `END_AGENT` after a bounded
+number of failures; the agent *type* is never suppressed — other same-type
+agents keep working and a fresh agent of the type can still be spawned. (The
+former session-wide type-suppression set was removed: with no re-probe or
+decay, one transient blip disabled an entire harness until restart.)
 
 Grok has one additional runtime backstop: if the CLI process starts but never
 emits a first stdout byte before the launch-wedge watchdog fires, AgentShore
-keeps the dispatch classified as `timeout_stream_idle` but suppresses the Grok
-agent type for the rest of the session through the same candidate-mask path.
+keeps the dispatch classified as `timeout_stream_idle` and records a bounded,
+decaying cooldown for the Grok type (#202) so the fleet routes around it and it
+auto-recovers — not a for-the-session suppression.
 The first-byte deadline is **600s for all streaming agents** (#213): direct
 measurement of the Grok CLI (0.2.32) put `grok-build` time-to-first-byte at
 30–70s — far slower than the other CLIs, and dominated by model/relay latency
