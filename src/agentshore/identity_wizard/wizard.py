@@ -68,6 +68,32 @@ class _WizardAbortError(Exception):
     """Raised when input retries are exhausted; converts to a clean skip."""
 
 
+def _canonicalize_bindings(bindings: dict[str, IdentityBinding]) -> dict[str, IdentityBinding]:
+    """Re-key *bindings* by canonical login and canonicalize each binding's
+    own ``name``/``gh_token_keychain`` fields.
+
+    Shared by ``IdentityWizard.__init__`` (canonicalizing prior-run
+    ``existing_identities``) and ``IdentityWizard.run`` (canonicalizing the
+    freshly-collected result) — both need the exact same case-insensitive
+    normalization before the bindings are used as a lookup keyed by login.
+    """
+    return {
+        canonical_identity_name(login): IdentityBinding(
+            name=canonical_identity_name(binding.name),
+            git_user_name=binding.git_user_name,
+            git_user_email=binding.git_user_email,
+            gh_token_login=binding.gh_token_login,
+            gh_token_env=binding.gh_token_env,
+            gh_token_keychain=(
+                canonical_keychain_service(binding.gh_token_keychain)
+                if binding.gh_token_keychain
+                else None
+            ),
+        )
+        for login, binding in bindings.items()
+    }
+
+
 # Sentinel prefix for an extra-key choice from _prompt_choice; the trailing
 # key (e.g. "n" for new account) identifies which extra option was picked.
 _EXTRA_PREFIX = "__extra__:"
@@ -110,21 +136,9 @@ class IdentityWizard:
         self._defaults = defaults or {}
         self._repo_name_with_owner = repo_name_with_owner
 
-        self._existing_identities: dict[str, IdentityBinding] = {
-            canonical_identity_name(login): IdentityBinding(
-                name=canonical_identity_name(binding.name),
-                git_user_name=binding.git_user_name,
-                git_user_email=binding.git_user_email,
-                gh_token_login=binding.gh_token_login,
-                gh_token_env=binding.gh_token_env,
-                gh_token_keychain=(
-                    canonical_keychain_service(binding.gh_token_keychain)
-                    if binding.gh_token_keychain
-                    else None
-                ),
-            )
-            for login, binding in (existing_identities or {}).items()
-        }
+        self._existing_identities: dict[str, IdentityBinding] = _canonicalize_bindings(
+            existing_identities or {}
+        )
 
         self._gh_login_keys: set[str] = {canonical_identity_name(a.login) for a in self._accounts}
         self._configured_only: list[str] = [
@@ -252,21 +266,7 @@ class IdentityWizard:
             click.echo(f"\n  ({exc}; skipping identity setup.)")
             return WizardResult(identities={}, agent_to_identity={})
 
-        canonical_bindings = {
-            canonical_identity_name(name): IdentityBinding(
-                name=canonical_identity_name(binding.name),
-                git_user_name=binding.git_user_name,
-                git_user_email=binding.git_user_email,
-                gh_token_login=binding.gh_token_login,
-                gh_token_env=binding.gh_token_env,
-                gh_token_keychain=(
-                    canonical_keychain_service(binding.gh_token_keychain)
-                    if binding.gh_token_keychain
-                    else None
-                ),
-            )
-            for name, binding in bindings.items()
-        }
+        canonical_bindings = _canonicalize_bindings(bindings)
         canonical_agent_to_identity = {
             agent_key: canonical_identity_name(login) for agent_key, login in agent_to_login.items()
         }

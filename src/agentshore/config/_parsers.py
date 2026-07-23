@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import warnings
 from pathlib import Path
 from typing import TYPE_CHECKING, TypedDict, cast, overload
@@ -9,6 +10,8 @@ from typing import TYPE_CHECKING, TypedDict, cast, overload
 if TYPE_CHECKING:
     # Annotation-only (deferred by `from __future__`); runtime import stays
     # function-local to break the config→state→config.models cycle.
+    from collections.abc import Mapping
+
     from agentshore.state import AgentType
 
 from agentshore.config.models import (
@@ -363,6 +366,29 @@ def _agent_default(name: str, key: str, fallback: float | int | None) -> float |
     return fallback if value is None else value
 
 
+def _defaults_only[ParsedT](cls: type[ParsedT], raw: Mapping[str, object]) -> ParsedT:
+    """Build a config dataclass purely from ``raw.get(field, default)`` — no
+    validation, no cross-field logic.
+
+    For parsers whose entire job is per-field defaulting. Numeric/bool
+    fields are coerced through their own dataclass default's type (mirrors
+    the per-field ``int()``/``float()``/``bool()`` casts these parsers used
+    explicitly, since some YAML values arrive as strings); fields whose
+    default is ``None`` are passed through verbatim. Any parser with real
+    validation, cross-key aliasing, or fields the raw TypedDict doesn't
+    cover must stay hand-written — this only fits the pure-boilerplate shape.
+    """
+    kwargs: dict[str, object] = {}
+    for f in dataclasses.fields(cls):  # type: ignore[arg-type]
+        default = f.default
+        value = raw.get(f.name, default)
+        default_type = type(default)
+        if value is not None and default_type in (bool, int, float):
+            value = default_type(value)
+        kwargs[f.name] = value
+    return cls(**kwargs)
+
+
 def _parse_project(raw: _RawProject) -> ProjectConfig:
     target_branch = raw.get("target_branch")
     # Whitespace-only → None so callers can rely on ``target_branch or <fallback>``;
@@ -377,12 +403,7 @@ def _parse_project(raw: _RawProject) -> ProjectConfig:
 
 
 def _parse_auto(raw: _RawAuto) -> AutoDetectConfig:
-    return AutoDetectConfig(
-        detect_agents=raw.get("detect_agents", True),
-        detect_github=raw.get("detect_github", True),
-        detect_api_keys=raw.get("detect_api_keys", True),
-        generate_config=raw.get("generate_config", True),
-    )
+    return _defaults_only(AutoDetectConfig, raw)
 
 
 def _parse_intake(raw: _RawIntake) -> IntakeConfig:
@@ -803,28 +824,15 @@ def _apply_legacy_default_tiers(
 
 
 def _parse_circuit_breaker(raw: _RawCircuitBreaker) -> CircuitBreakerConfig:
-    return CircuitBreakerConfig(
-        failures=int(raw.get("failures", 3)),
-        window_seconds=int(raw.get("window_seconds", 300)),
-        cooldown_seconds=int(raw.get("cooldown_seconds", 60)),
-    )
+    return _defaults_only(CircuitBreakerConfig, raw)
 
 
 def _parse_health(raw: _RawHealth) -> HealthConfig:
-    return HealthConfig(
-        poll_interval_seconds=int(raw.get("poll_interval_seconds", 30)),
-        stale_context_play_threshold=int(raw.get("stale_context_play_threshold", 5)),
-    )
+    return _defaults_only(HealthConfig, raw)
 
 
 def _parse_data_integrity(raw: _RawDataIntegrity) -> DataIntegrityConfig:
-    return DataIntegrityConfig(
-        enabled=bool(raw.get("enabled", True)),
-        canary_interval_seconds=int(raw.get("canary_interval_seconds", 300)),
-        snapshot_interval_seconds=int(raw.get("snapshot_interval_seconds", 300)),
-        snapshot_ring_size=int(raw.get("snapshot_ring_size", 3)),
-        wal_checkpoint_interval_seconds=int(raw.get("wal_checkpoint_interval_seconds", 30)),
-    )
+    return _defaults_only(DataIntegrityConfig, raw)
 
 
 def _parse_agents(
@@ -864,6 +872,10 @@ def _parse_agents(
     return agents, fresh, prefs
 
 
+# NOTE: kept hand-written, NOT routed through `_defaults_only` —
+# `issue_inflation_penalty` falls back to the legacy `scope_creep_penalty` key
+# when unset, a cross-key aliasing rule the generic defaults-only shape can't
+# express.
 def _parse_reward(raw: _RawReward) -> RewardConfig:
     return RewardConfig(
         alignment_weight=float(raw.get("alignment_weight", 1.0)),
@@ -894,33 +906,15 @@ def _parse_reward(raw: _RawReward) -> RewardConfig:
 
 
 def _parse_ppo(raw: _RawPPO) -> PPOConfig:
-    return PPOConfig(
-        clip_epsilon=float(raw.get("clip_epsilon", 0.2)),
-        gae_lambda=float(raw.get("gae_lambda", 0.95)),
-        ppo_epochs=int(raw.get("ppo_epochs", 4)),
-        mini_batch_size=int(raw.get("mini_batch_size", 4)),
-        value_loss_coef=float(raw.get("value_loss_coef", 0.5)),
-        max_grad_norm=float(raw.get("max_grad_norm", 0.5)),
-        reward_clip_low=float(raw.get("reward_clip_low", -10.0)),
-        reward_clip_high=float(raw.get("reward_clip_high", 10.0)),
-    )
+    return _defaults_only(PPOConfig, raw)
 
 
 def _parse_stagnation(raw: _RawStagnation) -> StagnationConfig:
-    return StagnationConfig(
-        warn_after=raw.get("warn_after", 1),
-        alert_after=raw.get("alert_after", 3),
-        pause_after=raw.get("pause_after", 5),
-    )
+    return _defaults_only(StagnationConfig, raw)
 
 
 def _parse_loop_detection(raw: _RawLoopDetection) -> LoopDetectionConfig:
-    return LoopDetectionConfig(
-        warn_after=raw.get("warn_after", 3),
-        force_switch_after=raw.get("force_switch_after", 5),
-        escalate_after=raw.get("escalate_after", 7),
-        fleet_idle_threshold=raw.get("fleet_idle_threshold", 30),
-    )
+    return _defaults_only(LoopDetectionConfig, raw)
 
 
 def _parse_policy_mode(raw: _RawRL) -> PolicyMode:
@@ -998,27 +992,11 @@ def _parse_rl(raw: _RawRL) -> RLConfig:
 
 
 def _parse_session(raw: _RawSession) -> SessionConfig:
-    return SessionConfig(
-        max_plays=raw.get("max_plays"),
-        auto_alignment_check_every=raw.get("auto_alignment_check_every", 5),
-        auto_archive=raw.get("auto_archive", True),
-        archive_dir=raw.get("archive_dir", ".agentshore/archives"),
-        break_duration_minutes=raw.get("break_duration_minutes", 30),
-    )
+    return _defaults_only(SessionConfig, raw)
 
 
 def _parse_feedback(raw: _RawFeedback) -> FeedbackConfig:
-    return FeedbackConfig(
-        cadence_plays=raw.get("cadence_plays"),
-        cadence_minutes=raw.get("cadence_minutes"),
-        on_stagnation=raw.get("on_stagnation", True),
-        on_budget_exhaustion=raw.get("on_budget_exhaustion", True),
-        on_loop_escalation=raw.get("on_loop_escalation", True),
-        on_ambiguous_intake=raw.get("on_ambiguous_intake", True),
-        unanswered_timeout_seconds=raw.get("unanswered_timeout_seconds", 120.0),
-        loop_liveness_timeout_seconds=raw.get("loop_liveness_timeout_seconds", 600.0),
-        graceful_drain_timeout_seconds=raw.get("graceful_drain_timeout_seconds", None),
-    )
+    return _defaults_only(FeedbackConfig, raw)
 
 
 def _parse_scope(raw: _RawScope) -> ScopeConfig:
@@ -1058,12 +1036,14 @@ def _parse_logging(raw: _RawLogging) -> LoggingConfig:
 
 
 def _parse_timelapse(raw: _RawTimelapse) -> TimelapseConfig:
-    return TimelapseConfig(
-        enabled=bool(raw.get("enabled", False)),
-        installed=bool(raw.get("installed", False)),
-    )
+    return _defaults_only(TimelapseConfig, raw)
 
 
+# NOTE: kept hand-written, NOT routed through `_defaults_only` — `_RawLearnings`
+# deliberately omits `consolidate_overlap_threshold` and `redistill_in_groom`
+# (internal-only LearningsConfig knobs, never exposed to agentshore.yaml). A
+# fields()-driven helper would start honoring those keys from raw YAML, which
+# is a behavior change, not a dedup.
 def _parse_learnings(raw: _RawLearnings) -> LearningsConfig:
     return LearningsConfig(
         enabled=raw.get("enabled", True),
@@ -1077,11 +1057,7 @@ def _parse_learnings(raw: _RawLearnings) -> LearningsConfig:
 
 
 def _parse_skills(raw: _RawSkills) -> SkillsConfig:
-    return SkillsConfig(
-        install_on_start=raw.get("install_on_start", True),
-        path=raw.get("path", ".agents/skills/"),
-        context_file=raw.get("context_file", ".agentshore/context.json"),
-    )
+    return _defaults_only(SkillsConfig, raw)
 
 
 def _parse_worktrees(raw: _RawWorktrees) -> WorktreeConfig:
@@ -1120,11 +1096,7 @@ def _parse_worktrees(raw: _RawWorktrees) -> WorktreeConfig:
 
 
 def _parse_task_validation(raw: _RawTaskValidation) -> TaskValidationConfig:
-    return TaskValidationConfig(
-        max_files_per_task=raw.get("max_files_per_task", 5),
-        max_estimated_minutes=raw.get("max_estimated_minutes", 30),
-        enforce=raw.get("enforce", True),
-    )
+    return _defaults_only(TaskValidationConfig, raw)
 
 
 def _parse_play_pacing(raw: _RawPlayPacing) -> PlayPacingConfig:
