@@ -4,7 +4,10 @@ DESIGN §10.2 specifies seven canonical bringup phases that the desktop
 Screen 8 checklist mirrors:
 
 1. ``config_merge`` — load ``agentshore.yaml`` for the active project.
-2. ``check_agent_auth`` — probe each configured CLI agent's backend auth.
+2. ``check_agent_auth`` — identity preconditions, then probe each configured
+   CLI agent's backend auth and each identity's git-remote auth (shared
+   sequencing with the CLI's ``agentshore start`` preflight via
+   :func:`agentshore.session.bootstrap.run_session_preflight`, gh-151/178/179).
 3. ``install_skills`` — ensure project-level skill templates are current.
 4. ``init_beads`` — ensure the beads graph is initialised.
 5. ``bind_ipc`` — reserve a TCP loopback endpoint for the orchestrator.
@@ -282,58 +285,98 @@ def _check_config_merge(project_path: Path, *, require_tier_coverage: bool = Tru
     return cfg
 
 
-def _check_agent_auth(cfg: RuntimeConfig) -> None:
-    """Validate agent identity and backend auth before the desktop starts.
+def _check_agent_auth(cfg: RuntimeConfig, project_path: Path) -> None:
+    """Validate agent identity, backend auth, and git-remote auth before the
+    desktop starts.
 
-    This mirrors the CLI start path's identity guard: enabled CLI agents must
-    resolve to at least two distinct GitHub logins so review / merge can satisfy
-    anti-confirmation-bias constraints, and every identity must cover all model
-    tiers (small/medium/large) — code_review is large-tier-only, so concentrating
-    ``large`` on one identity deadlocks review (no distinct-identity reviewer).
-    After that, probe each configured CLI
-    agent's backend auth. The backend probe is blocking in nature
-    (``probe_configured_cli_auth`` shells out via ``subprocess.run``); call
-    from the async runner through ``asyncio.to_thread``.
+    Runs the same three gates as the CLI's ``agentshore start`` preflight, in
+    the same order, via the shared :func:`agentshore.session.bootstrap.
+    run_session_preflight` sequencer (gh-151/178/179 — the desktop path used
+    to skip the git-remote probe entirely, so a broken git credential slipped
+    past launch and wedged mid-session instead of failing fast here):
 
-    A definitively-expired backend session (e.g. the Codex CLI's cached
-    ``chatgpt.com`` token) raises a structured :class:`SessionStartError` so the
-    desktop blocks the launch and points at the failing agent type(s) —
-    otherwise that agent would hang every dispatch to the idle timeout mid-run.
-    Non-blocking non-ok statuses (timeout / probe error / unprobeable) are
-    logged and tolerated so a transient probe hiccup never strands an
-    otherwise-fine session.
+    1. Identities — enabled CLI agents must resolve to at least two distinct
+       GitHub logins so review/merge can satisfy anti-confirmation-bias, and
+       every identity must cover all model tiers (small/medium/large) —
+       code_review is large-tier-only, so concentrating ``large`` on one
+       identity deadlocks review (no distinct-identity reviewer).
+    2. CLI-agent backend auth — probe each configured CLI agent's
+       model-provider session (e.g. the Codex CLI's cached chatgpt.com
+       token). Blocking in nature (shells out via ``subprocess.run``); this
+       whole function runs off the event loop via ``asyncio.to_thread``.
+    3. Git-remote auth — probe each configured identity's ability to
+       authenticate to the repo's git remote non-interactively, the same
+       probe :func:`agentshore.session.bootstrap.preflight_git_auth` runs
+       for the CLI.
+
+    Any definitive failure (identity precondition, expired backend session,
+    or a git-auth rejection) raises a structured :class:`SessionStartError`
+    with step ``check_agent_auth`` so the desktop blocks the launch and shows
+    the failing detail. Non-blocking non-ok statuses (timeout / probe error /
+    unprobeable) are logged and tolerated so a transient probe hiccup never
+    strands an otherwise-fine session.
     """
     from agentshore.agents.auth_probe import probe_configured_cli_auth
+    from agentshore.agents.git_auth_probe import probe_all_identities
     from agentshore.agents.identity import (
         require_per_identity_model_tier_coverage,
         require_two_distinct_gh_identities,
     )
     from agentshore.errors import ConfigError
+    from agentshore.session.bootstrap import run_session_preflight
 
-    try:
-        require_two_distinct_gh_identities(cfg)
-        require_per_identity_model_tier_coverage(cfg)
-    except ConfigError as exc:
-        raise SessionStartError(STEP_CHECK_AGENT_AUTH, -32603, str(exc)) from exc
+    def _identities() -> None:
+        try:
+            require_two_distinct_gh_identities(cfg)
+            require_per_identity_model_tier_coverage(cfg)
+        except ConfigError as exc:
+            raise SessionStartError(STEP_CHECK_AGENT_AUTH, -32603, str(exc)) from exc
 
-    results = probe_configured_cli_auth(cfg)
-    blocking = [r for r in results if r.blocks_launch]
-    if blocking:
-        names = ", ".join(sorted(r.agent_type.value for r in blocking))
-        details = "; ".join(f"{r.agent_type.value}: {r.detail}" for r in blocking)
-        msg = (
-            f"backend auth expired for: {names}. Re-authenticate the agent CLI "
-            f"(e.g. run `codex login`) and retry. Details: {details}"
-        )
-        raise SessionStartError(STEP_CHECK_AGENT_AUTH, -32603, msg)
-    for result in results:
-        if not result.ok:
-            _logger.warning(
-                "agent_auth_probe_non_blocking",
-                agent_type=result.agent_type.value,
-                status=result.status,
-                detail=result.detail,
+    def _cli_agent_auth() -> None:
+        results = probe_configured_cli_auth(cfg)
+        blocking = [r for r in results if r.blocks_launch]
+        if blocking:
+            names = ", ".join(sorted(r.agent_type.value for r in blocking))
+            details = "; ".join(f"{r.agent_type.value}: {r.detail}" for r in blocking)
+            msg = (
+                f"backend auth expired for: {names}. Re-authenticate the agent CLI "
+                f"(e.g. run `codex login`) and retry. Details: {details}"
             )
+            raise SessionStartError(STEP_CHECK_AGENT_AUTH, -32603, msg)
+        for result in results:
+            if not result.ok:
+                _logger.warning(
+                    "agent_auth_probe_non_blocking",
+                    agent_type=result.agent_type.value,
+                    status=result.status,
+                    detail=result.detail,
+                )
+
+    def _git_auth() -> None:
+        results = probe_all_identities(cfg, project_path=project_path)
+        blocking = [r for r in results if r.blocks_launch]
+        if blocking:
+            remote = blocking[0].remote or "the git remote"
+            names = ", ".join(r.identity_name for r in blocking)
+            msg = (
+                f"git-remote auth failed for identity {names}; cannot authenticate to "
+                f"{remote}. Re-provision the identity's token/SSH key (see docs/identity.md)."
+            )
+            raise SessionStartError(STEP_CHECK_AGENT_AUTH, -32603, msg)
+        for result in results:
+            if not result.ok:
+                _logger.warning(
+                    "git_auth_probe_non_blocking",
+                    identity=result.identity_name,
+                    status=result.status,
+                    detail=result.detail,
+                )
+
+    run_session_preflight(
+        identities=_identities,
+        cli_agent_auth=_cli_agent_auth,
+        git_auth=_git_auth,
+    )
 
 
 def _run_install_skills(project_path: Path) -> None:
@@ -549,16 +592,16 @@ async def run_session_start(
 
         attach_session_file_handler(project_path / cfg.logging.log_dir, session_id)
 
-    # Phase 2: check_agent_auth — probe each configured CLI agent's backend
-    # auth (e.g. the Codex CLI's cached chatgpt.com session) now that cfg is
-    # resolved but before anything expensive boots. A definitively-expired
-    # session blocks the launch with a remediation message; transient probe
-    # failures are logged and tolerated. Skipped in legacy stub mode (no
-    # active project / cfg).
+    # Phase 2: check_agent_auth — identities, then CLI-agent backend auth
+    # (e.g. the Codex CLI's cached chatgpt.com session), then git-remote auth,
+    # now that cfg is resolved but before anything expensive boots. A
+    # definitive failure in any of the three blocks the launch with a
+    # remediation message; transient probe failures are logged and tolerated.
+    # Skipped in legacy stub mode (no active project / cfg).
     _emit(notify, progress_token, STEP_CHECK_AGENT_AUTH, "running")
     if project_path is not None and cfg is not None:
         try:
-            await asyncio.to_thread(_check_agent_auth, cfg)
+            await asyncio.to_thread(_check_agent_auth, cfg, project_path)
         except SessionStartError as exc:
             _emit(notify, progress_token, exc.step, "failed", error=str(exc))
             raise
