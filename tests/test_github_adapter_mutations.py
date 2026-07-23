@@ -43,6 +43,29 @@ async def test_probe_handles_unexpected_exception(tmp_path: Path) -> None:
         run_gh.side_effect = OSError("permission denied")
         await adapter.probe()
     assert adapter.available is False
+    assert adapter.probe_failure_reason == "probe error: permission denied"
+
+
+@pytest.mark.asyncio
+async def test_probe_nonzero_exit_captures_stderr(tmp_path: Path) -> None:
+    """#369: a non-zero `gh auth status` must preserve the stderr tail so a
+    github.com 503 is distinguishable from a real credential problem."""
+    adapter, _ = _make_adapter(tmp_path)
+    with patch("agentshore.github.adapter._run_gh", new_callable=AsyncMock) as run_gh:
+        run_gh.return_value = (1, "", "HTTP 503: Service Unavailable\n")
+        await adapter.probe()
+    assert adapter.available is False
+    assert adapter.probe_failure_reason == "gh auth status exited 1: HTTP 503: Service Unavailable"
+
+
+@pytest.mark.asyncio
+async def test_probe_success_leaves_no_failure_reason(tmp_path: Path) -> None:
+    adapter, _ = _make_adapter(tmp_path)
+    with patch("agentshore.github.adapter._run_gh", new_callable=AsyncMock) as run_gh:
+        run_gh.return_value = (0, "Logged in to github.com", "")
+        await adapter.probe()
+    assert adapter.available is True
+    assert adapter.probe_failure_reason is None
 
 
 @pytest.mark.asyncio

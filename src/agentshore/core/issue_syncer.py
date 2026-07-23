@@ -207,6 +207,17 @@ class IssueSyncer:
                 await self._mark_worktrees_stale_for_closed_prs(refetched)
                 await self._sweep_closed_pr_worktrees()
                 await self._sweep_disk_pressure_worktrees()
+            else:
+                # #369: a failed probe silently dropped the whole tick — issue
+                # sync, PR sync/resync, absence reconciliation, review-queue
+                # reaper/sweep, and the worktree sweeps — with only the probe's
+                # own warning as evidence. Make the skip explicit and carry the
+                # probe's diagnosis so a github.com blip is distinguishable
+                # from a real credential problem in the log.
+                _logger.error(
+                    "github_refresh_skipped",
+                    reason=gh.probe_failure_reason,
+                )
         except (FileNotFoundError, TimeoutError, OSError, aiosqlite.Error) as exc:
             _logger.warning("github_refresh_failed", error=str(exc))
         finally:
