@@ -8,7 +8,6 @@ from typing import TYPE_CHECKING, Final
 import numpy as np
 
 from agentshore.agents._selection import allowed_tiers_for
-from agentshore.agents.capabilities import AGENT_CAPABILITIES
 from agentshore.agents.model_tiers import DEFAULT_MODEL_TIER
 from agentshore.play_rules import (
     CANDIDATE_REQUIRED_PLAY_TYPES,
@@ -140,11 +139,10 @@ def compute_terminal_no_work_config_mask(
         if not config_mask[i] or tier != "large" or agent_type in excluded:
             continue
         try:
-            agent_type_enum = AgentType(agent_type)
+            AgentType(agent_type)
         except ValueError:
             continue
-        if bool(AGENT_CAPABILITIES.get(agent_type_enum, {}).get("can_test", False)):
-            filtered[i] = True
+        filtered[i] = True
     return filtered
 
 
@@ -164,14 +162,12 @@ def _has_terminal_qa_agent(
         play = registry.get(PlayType.RUN_QA)
     except KeyError:
         return False
-    cap_key = play.capability
-    if cap_key is None:
+    if play.capability is None:
         return False
     allowed_tiers = allowed_tiers_for(PlayType.RUN_QA)
     return any(
         agent.status == AgentStatus.IDLE
         and (allowed_tiers is None or (agent.model_tier or DEFAULT_MODEL_TIER) in allowed_tiers)
-        and bool(AGENT_CAPABILITIES.get(agent.agent_type, {}).get(cap_key, False))
         for agent in state.agents
     )
 
@@ -431,6 +427,7 @@ class ActionMaskBuilder:
         self._mask = np.zeros(NUM_ACTIONS, dtype=bool)
         self._report: EligibilityReport | None = None
         self._user_disabled: frozenset[PlayType] | None = None
+        self._reasons: dict[PlayType, MaskReason] | None = None
 
     @property
     def candidate_plan(self) -> PlayCandidatePlan:
@@ -561,14 +558,24 @@ class ActionMaskBuilder:
             ).eligibility()
         return self._report
 
-    def build(self, *, apply_reverse_failsafe: bool = False) -> NDArray[np.bool_]:
+    def build(
+        self, *, apply_reverse_failsafe: bool = False, include_reasons: bool = False
+    ) -> NDArray[np.bool_]:
         """Run the mask pipeline and return the result.
 
         The base mask is the eligibility authority's verdict (every A-type
         validity gate). The remaining stages are policy overlays the authority
         deliberately does not own.
+
+        ``include_reasons`` computes the per-play mask reason in the same pass
+        (cached on ``self._reasons``, read by :meth:`build_reasons`) instead of
+        requiring a second traversal that re-evaluates the same overlay
+        predicates independently. It defaults to False so the mask-only hot
+        path (``compute_action_mask``, called every selector tick) doesn't pay
+        for reason derivation nobody asked for.
         """
         self._mask = self._eligibility_report().mask()
+        self._reasons = None
 
         self._stage_consecutive_failure_breaker()
         self._stage_lifecycle_churn_breaker()
@@ -581,8 +588,12 @@ class ActionMaskBuilder:
         # main-repo pause (mirrors dispatch: a draining session winds down even
         # with a paused trunk).
         if self._stage_drain_mode():
+            if include_reasons:
+                self._reasons = self._compute_reasons()
             return self._mask
         if self._stage_main_repo_paused():
+            if include_reasons:
+                self._reasons = self._compute_reasons()
             return self._mask
 
         if (
@@ -600,36 +611,39 @@ class ActionMaskBuilder:
             # user-disabled mask as the final, authoritative word.
             self._stage_user_disabled()
 
+        if include_reasons:
+            self._reasons = self._compute_reasons()
         return self._mask
 
-    def build_reasons(self, *, apply_reverse_failsafe: bool = False) -> dict[PlayType, MaskReason]:
-        """Return a reason for every masked play type.
+    def _compute_reasons(self) -> dict[PlayType, MaskReason]:
+        """Derive the reason for every currently-masked play, in priority order.
 
-        Mask and reasons come from the one authority computation: ``build`` runs
-        the full pipeline (authority base + B-type overlays) and caches the
-        report, then A-type reasons are read from
-        ``EligibilityReport.verdicts[pt].reason`` while the B-type overlays
-        (drain short-circuit, circuit breaker, reserved slots) supply their own.
+        Every predicate here (breaker, lifecycle-churn, reserved-slot/
+        main-repo-pause/end-session-in-flight membership, user-disabled) is a
+        pure function of ``self._state`` / ``self._candidate_plan`` — not of
+        mask-mutation history — so evaluating them once here, against the
+        final mask (post drain/main-repo-pause short-circuit and post
+        reverse-failsafe), gives the identical attribution the old two-pass
+        ``build`` + ``build_reasons`` produced, without re-deriving the mask
+        itself. Priority order (first match wins) mirrors the pre-split
+        behavior exactly: user-disabled > circuit breaker > lifecycle churn >
+        reserved slot > main-repo-pause > end-session-in-flight > A-type
+        authority verdict.
         """
-        mask = self.build(apply_reverse_failsafe=apply_reverse_failsafe)
         state = self._state
+
+        # Drain short-circuit: every play but END_AGENT is masked with the
+        # SESSION_DRAINING reason, overriding any other B-type reason.
+        if state.session_state == SessionState.DRAINING:
+            return {pt: SESSION_DRAINING for pt in V1_ACTION_ORDER if pt != PlayType.END_AGENT}
+
         availability = self._candidate_plan.work_availability
         verdicts = self._eligibility_report().verdicts
-
-        reasons: dict[PlayType, MaskReason] = {}
-
-        # Drain short-circuit (B-type overlay): every play but END_AGENT is
-        # masked with the SESSION_DRAINING reason.
-        if state.session_state == SessionState.DRAINING:
-            for pt in V1_ACTION_ORDER:
-                if pt != PlayType.END_AGENT:
-                    reasons[pt] = SESSION_DRAINING
-            return reasons
-
         user_disabled = self._user_disabled_plays()
 
+        reasons: dict[PlayType, MaskReason] = {}
         for i, pt in enumerate(V1_ACTION_ORDER):
-            if mask[i]:
+            if self._mask[i]:
                 continue
 
             # User preference (B-type overlay) is authoritative: an explicit
@@ -695,6 +709,16 @@ class ActionMaskBuilder:
                 reasons[pt] = NOT_AVAILABLE
 
         return reasons
+
+    def build_reasons(self, *, apply_reverse_failsafe: bool = False) -> dict[PlayType, MaskReason]:
+        """Return a reason for every masked play type.
+
+        Thin accessor: ``build`` computes the mask and (with
+        ``include_reasons=True``) the reason map together in one pass, so this
+        just triggers that combined build and returns the cached result.
+        """
+        self.build(apply_reverse_failsafe=apply_reverse_failsafe, include_reasons=True)
+        return self._reasons if self._reasons is not None else {}
 
 
 def compute_action_mask(

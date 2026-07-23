@@ -30,7 +30,6 @@ import numpy as np
 import structlog
 
 from agentshore.agents._selection import allowed_tiers_for
-from agentshore.agents.capabilities import AGENT_CAPABILITIES
 from agentshore.agents.model_tiers import (
     DEFAULT_MODEL_TIER,
     effective_model_tier_config,
@@ -357,7 +356,6 @@ class _AgentEligibilityContext:
 
     pt: PlayType
     state: OrchestratorState
-    cap_key: str
     allowed_tiers: frozenset[str] | None
     excluded_types: frozenset[str]
     rate_limited_types: frozenset[str]
@@ -442,22 +440,6 @@ def _stage_rate_limit_reason(ctx: _AgentEligibilityContext) -> MaskReason:
     )
 
 
-def _stage_capability_filter(
-    agents: list[AgentSnapshot], ctx: _AgentEligibilityContext
-) -> list[AgentSnapshot]:
-    return [
-        a for a in agents if bool(AGENT_CAPABILITIES.get(a.agent_type, {}).get(ctx.cap_key, False))
-    ]
-
-
-def _stage_capability_reason(ctx: _AgentEligibilityContext) -> MaskReason:
-    return MaskReason(
-        text=f"No IDLE agent with {ctx.cap_key!r} capability",
-        classification=MaskClassification.TRANSIENT,
-        source=MaskSource.ELIGIBILITY,
-    )
-
-
 def _stage_anti_confirmation_filter(
     agents: list[AgentSnapshot], ctx: _AgentEligibilityContext
 ) -> list[AgentSnapshot]:
@@ -505,7 +487,6 @@ _AGENT_ELIGIBILITY_STAGES: tuple[_EligibilityStage, ...] = (
     _EligibilityStage("tier", _stage_tier_filter, _stage_tier_reason),
     _EligibilityStage("exclude", _stage_exclude_filter, _stage_exclude_reason),
     _EligibilityStage("rate_limit", _stage_rate_limit_filter, _stage_rate_limit_reason),
-    _EligibilityStage("capability", _stage_capability_filter, _stage_capability_reason),
     _EligibilityStage(
         "anti_confirmation", _stage_anti_confirmation_filter, _stage_anti_confirmation_reason
     ),
@@ -516,20 +497,15 @@ def _agent_eligibility_candidates(
     pt: PlayType,
     state: OrchestratorState,
     cfg: RuntimeConfig,
-    cap_key: str,
 ) -> tuple[list[AgentSnapshot], MaskReason | None]:
     """Walk ``_AGENT_ELIGIBILITY_STAGES`` for one play type.
 
     Returns the surviving candidate agents and, when some stage emptied the
-    set, that stage's reason (``None`` when eligible). Callers resolve the
-    play's registry entry and ``capability`` themselves (the two callers mask
-    that lookup differently: silent skip vs. a typed reason), then hand this
-    function the already-known ``cap_key`` for the restricted case.
+    set, that stage's reason (``None`` when eligible).
     """
     ctx = _AgentEligibilityContext(
         pt=pt,
         state=state,
-        cap_key=cap_key,
         allowed_tiers=allowed_tiers_for(pt),
         excluded_types=frozenset(cfg.agent_preferences.exclude.get(pt.value, ())),
         rate_limited_types=frozenset(
@@ -661,7 +637,7 @@ class EligibilityAuthority:
         if precondition_reason is not None and not wedged_end_agent_reenable:
             return precondition_reason
 
-        # 2. Agent eligibility (tier / exclude / capability / anti-confirmation).
+        # 2. Agent eligibility (tier / exclude / anti-confirmation).
         if agent_mask is not None and not bool(agent_mask[idx]):
             return self._eligibility_reason(pt, state)
 
@@ -755,11 +731,10 @@ class EligibilityAuthority:
                 classification=MaskClassification.HARD,
                 source=MaskSource.ELIGIBILITY,
             )
-        cap_key = play.capability
-        if cap_key is None or self._cfg is None:
+        if play.capability is None or self._cfg is None:
             return NOT_AVAILABLE
 
-        _, reason = _agent_eligibility_candidates(pt, state, self._cfg, cap_key)
+        _, reason = _agent_eligibility_candidates(pt, state, self._cfg)
         return reason or MaskReason(
             text="No eligible agent (eligibility filter)",
             classification=MaskClassification.TRANSIENT,
@@ -1006,9 +981,7 @@ def compute_agent_eligibility_mask(
        ``allowed_tiers_for(play_type)``.
     2. Exclude list — agent's ``agent_type`` must not be in
        ``cfg.agent_preferences.exclude[play_type]``.
-    3. Capability — agent must have the play's required capability flag set
-       in ``AGENT_CAPABILITIES``.
-    4. Anti-confirmation (CODE_REVIEW only) — at least one (IDLE+eligible,
+    3. Anti-confirmation (CODE_REVIEW only) — at least one (IDLE+eligible,
        open-reviewable-PR) pair must exist where the agent's ``github_identity``
        differs from the PR's ``github_author``. Identity is the only
        deconfliction key (humans and agents may share a GH login; agents of
@@ -1016,10 +989,15 @@ def compute_agent_eligibility_mask(
        confirmation: it runs against the merged trunk.
 
     Internal plays (``capability is None``) are not restricted here; they
-    bypass agent selection entirely. The per-play filter chain itself lives in
-    ``_AGENT_ELIGIBILITY_STAGES`` (walked via ``_agent_eligibility_candidates``)
-    — the same chain ``EligibilityAuthority._eligibility_reason`` walks to
-    explain a False bit, so mask and reason cannot drift apart.
+    bypass agent selection entirely. (A per-type capability stage used to sit
+    here too, but every ``AGENT_CAPABILITIES`` ``can_*`` flag was ``True`` for
+    every agent type, so it never filtered anything — removed in the wave-2
+    TNQA cleanup; ``play.capability`` is still checked below purely to decide
+    whether the play needs an agent at all.) The per-play filter chain itself
+    lives in ``_AGENT_ELIGIBILITY_STAGES`` (walked via
+    ``_agent_eligibility_candidates``) — the same chain
+    ``EligibilityAuthority._eligibility_reason`` walks to explain a False bit,
+    so mask and reason cannot drift apart.
     """
     mask = np.ones(NUM_ACTIONS, dtype=bool)
     for i, pt in enumerate(V1_ACTION_ORDER):
@@ -1032,7 +1010,7 @@ def compute_agent_eligibility_mask(
         if play.capability is None:
             continue
 
-        candidates, _ = _agent_eligibility_candidates(pt, state, cfg, play.capability)
+        candidates, _ = _agent_eligibility_candidates(pt, state, cfg)
         if not candidates:
             mask[i] = False
 

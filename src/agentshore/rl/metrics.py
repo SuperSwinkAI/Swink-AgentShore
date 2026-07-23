@@ -18,7 +18,7 @@ from agentshore.rl.observation import _HIST_LEN, ObservationContext
 from agentshore.state import AgentPlaySpecializationSnapshot, AgentStatus, PlayType
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
+    from collections.abc import Awaitable, Callable, Sequence
     from pathlib import Path
 
     from agentshore.data.models import (
@@ -31,6 +31,28 @@ if TYPE_CHECKING:
     from agentshore.state import OrchestratorState
 
 _logger = structlog.get_logger(__name__)
+
+
+async def _safe_query[T](query: str, coro: Awaitable[T], default: T) -> T:
+    """Await *coro*, logging + falling back to *default* on a store I/O error.
+
+    Every ``MetricsEngine.snapshot`` sub-query hits the same failure modes
+    (a transient store/filesystem error must degrade to an empty result, not
+    blow up the <50ms observation build); this is the one place that logs
+    ``metrics_query_failed`` and applies the fallback so the per-query call
+    sites don't each repeat the try/except.
+    """
+    try:
+        return await coro
+    except (OSError, ValueError, RuntimeError) as exc:
+        _logger.warning(
+            "metrics_query_failed",
+            query=query,
+            exc_type=type(exc).__name__,
+            error=str(exc),
+        )
+        return default
+
 
 # _HIST_LEN imported from ``observation`` (single source) — the obs vector is
 # index-sensitive, so a divergent copy here would silently corrupt the encoding.
@@ -139,81 +161,35 @@ class MetricsEngine:
         # reconstructed from ``DataStore`` — it lives on the orchestrator.
         self._executor_skip_rate_provider = executor_skip_rate_provider
 
+    async def _fetch_learnings(self) -> list[Learning]:
+        """Load session learnings off-thread, or ``[]`` when no repo root is set."""
+        import asyncio as _asyncio
+
+        from agentshore.learnings import load as _load_learnings
+
+        if self._repo_root is None:
+            return []
+        _path = self._repo_root / self._learnings_file
+        return await _asyncio.to_thread(_load_learnings, _path)
+
     async def snapshot(self, state: OrchestratorState) -> ObservationContext:
         """Fetch history and compute ObservationContext.  <50ms; safe to call every play."""
-        try:
-            history = await self._store.get_play_history(self._session_id)
-        except (OSError, ValueError, RuntimeError) as exc:
-            _logger.warning(
-                "metrics_query_failed",
-                query="play_history",
-                exc_type=type(exc).__name__,
-                error=str(exc),
-            )
-            history = []
-
-        try:
-            prs_open = await self._store.list_open_pull_requests(self._session_id)
-        except (OSError, ValueError, RuntimeError) as exc:
-            _logger.warning(
-                "metrics_query_failed",
-                query="open_pull_requests",
-                exc_type=type(exc).__name__,
-                error=str(exc),
-            )
-            prs_open = []
-
-        try:
-            prs_approved = await self._store.list_approved_pull_requests(self._session_id)
-        except (OSError, ValueError, RuntimeError) as exc:
-            _logger.warning(
-                "metrics_query_failed",
-                query="approved_pull_requests",
-                exc_type=type(exc).__name__,
-                error=str(exc),
-            )
-            prs_approved = []
-
-        try:
-            import asyncio as _asyncio
-
-            from agentshore.learnings import load as _load_learnings
-
-            if self._repo_root is not None:
-                _path = self._repo_root / self._learnings_file
-                learnings: list[Learning] = await _asyncio.to_thread(_load_learnings, _path)
-            else:
-                learnings = []
-        except (OSError, ValueError, RuntimeError) as exc:
-            _logger.warning(
-                "metrics_query_failed",
-                query="learnings",
-                exc_type=type(exc).__name__,
-                error=str(exc),
-            )
-            learnings = []
-
-        try:
-            handoffs = await self._store.list_handoffs(self._session_id, limit=_ROLLING_WINDOW)
-        except (OSError, ValueError, RuntimeError) as exc:
-            _logger.warning(
-                "metrics_query_failed",
-                query="handoffs",
-                exc_type=type(exc).__name__,
-                error=str(exc),
-            )
-            handoffs = []
-
-        try:
-            issues = await self._store.list_all_issues(self._session_id)
-        except (OSError, ValueError, RuntimeError) as exc:
-            _logger.warning(
-                "metrics_query_failed",
-                query="all_issues",
-                exc_type=type(exc).__name__,
-                error=str(exc),
-            )
-            issues = []
+        history = await _safe_query(
+            "play_history", self._store.get_play_history(self._session_id), []
+        )
+        prs_open = await _safe_query(
+            "open_pull_requests", self._store.list_open_pull_requests(self._session_id), []
+        )
+        prs_approved = await _safe_query(
+            "approved_pull_requests",
+            self._store.list_approved_pull_requests(self._session_id),
+            [],
+        )
+        learnings = await _safe_query("learnings", self._fetch_learnings(), [])
+        handoffs = await _safe_query(
+            "handoffs", self._store.list_handoffs(self._session_id, limit=_ROLLING_WINDOW), []
+        )
+        issues = await _safe_query("all_issues", self._store.list_all_issues(self._session_id), [])
 
         velocity = (
             self._velocity_provider(state.total_plays)

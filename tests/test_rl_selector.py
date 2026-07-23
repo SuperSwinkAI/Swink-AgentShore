@@ -209,8 +209,10 @@ def test_select_all_masked_returns_none():
 
 
 def test_select_all_masked_logs_structured_diagnostics():
+    # _log_all_masked delegates to selector_diagnostics.log_all_masked, which
+    # owns the module-level logger those calls go through (rl/selector split).
     sel = _build_selector(all_preconds=False)
-    with patch("agentshore.rl.selector._logger") as logger:
+    with patch("agentshore.rl.selector_diagnostics._logger") as logger:
         result = asyncio.run(sel.select(_state()))
 
     assert result is None
@@ -373,10 +375,11 @@ def test_is_capacity_wait_eligibility_and_spawn():
 
 
 def test_select_logs_resolver_exhaustion_when_masked_actions_cannot_resolve():
+    # _log_resolver_exhausted delegates to selector_diagnostics (rl/selector split).
     sel = _build_selector()
     sel._resolver.resolve = AsyncMock(return_value=None)
 
-    with patch("agentshore.rl.selector._logger") as logger:
+    with patch("agentshore.rl.selector_diagnostics._logger") as logger:
         result = asyncio.run(sel.select(_state(open_issues=[_issue()])))
 
     assert result is None
@@ -409,7 +412,8 @@ def test_select_logs_terminal_no_work_diagnostic():
     graph.tasks_blocked = 0
     sel = _build_selector(all_preconds=False)
 
-    with patch("agentshore.rl.selector._logger") as logger:
+    # _log_terminal_no_work delegates to selector_diagnostics (rl/selector split).
+    with patch("agentshore.rl.selector_diagnostics._logger") as logger:
         asyncio.run(
             sel.select(_state(graph=graph, plays_since_last_play_type={PlayType.RUN_QA: 0}))
         )
@@ -1342,6 +1346,10 @@ def test_parallel_dispatch_drained_pool_clean_repick():
     with (
         patch("agentshore.rl.eligibility.EligibilityAuthority.confirm", new=_confirm_ok),
         patch("agentshore.rl.selector._logger") as logger,
+        # resolver_exhausted/all_masked now log via selector_diagnostics
+        # (rl/selector split); patch it too so the negative assertion below
+        # still covers both.
+        patch("agentshore.rl.selector_diagnostics._logger") as diag_logger,
     ):
         result = asyncio.run(sel.select(_parallel_state()))
 
@@ -1375,7 +1383,7 @@ def test_parallel_dispatch_drained_pool_clean_repick():
     # all_masked warning fired.)
     skip_warnings = [
         call.args[0]
-        for call in logger.warning.call_args_list
+        for call in [*logger.warning.call_args_list, *diag_logger.warning.call_args_list]
         if call.args
         and call.args[0] in ("ppo_selector.resolver_exhausted", "ppo_selector.all_masked")
     ]
