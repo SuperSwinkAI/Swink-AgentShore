@@ -6,7 +6,7 @@ AgentShore is an RL-based orchestrator that coordinates multiple LLM coding agen
 
 The RL agent does not write code. It decides *what to do next* and *which agent does it*. The PPO policy drives all direction; deterministic code only backstops invalid plays and never gates with human-in-the-loop.
 
-AgentShore spans three layers: **BEADS** is the canonical project graph (epics → stories → tasks); **GitHub** is the human conversation surface (each issue/PR mirrored via `external_ref="gh-N"`); **AgentShore SQLite** holds session-scoped RL state. The RL stack pins action-space version 13 (22-slot head), observation version 14 (250 features), policy version 5, and SQLite schema version 4.
+AgentShore spans three layers: **BEADS** is the canonical project graph (epics → stories → tasks); **GitHub** is the human conversation surface (each issue/PR mirrored via `external_ref="gh-N"`); **AgentShore SQLite** holds session-scoped RL state. The RL stack pins action-space version 13 (22-slot head), observation version 15 (252 features), policy version 5, and SQLite schema version 4.
 
 > **Design documentation**: [High-Level Design](design/HLD.md) — architecture overview, tech stack, data flow diagrams, and component map linking to all 13 component design docs.
 

@@ -128,14 +128,16 @@ def _budget(
 # ---------------------------------------------------------------------------
 
 
-def test_observation_dim_is_250():
+def test_observation_dim_is_252():
     # v0.15 Phase 5: action space grew 20 → 22 (spec block 60 → 66) and
     # added a new executor_skip_rate slot at index 177. 238 → 245.
     # desktop-8zzy: added pr_pressure_ratio at slot 178; spec block slid
     # one slot down. 245 → 246.
     # #91: PR-author block generalized from claude/codex (4 slots) to the 4
     # curated CLI providers (8 slots); everything after shifted +4. 246 → 250.
-    assert OBSERVATION_DIM == 250
+    # #325: swink_coding appended to the PR-author block (8 → 10 slots);
+    # everything after shifted +2. 250 → 252.
+    assert OBSERVATION_DIM == 252
 
 
 def test_encode_returns_correct_shape():
@@ -498,7 +500,7 @@ def test_since_alignment_check_slot():
 
 
 # ---------------------------------------------------------------------------
-# Per-config block (slots 72..167) and PR-author block (168..171)
+# Per-config block (slots 72..167) and PR-author block (168..177)
 # ---------------------------------------------------------------------------
 
 
@@ -588,7 +590,8 @@ def _author_pr(num: int, author: str | None, decision: str | None = None):
 
 def test_pr_author_slots_split_by_author_type():
     # #91: one (open, awaiting) pair per curated CLI provider, in order
-    # claude_code(168/169), codex(170/171), grok(172/173), antigravity(174/175).
+    # claude_code(168/169), codex(170/171), grok(172/173), antigravity(174/175),
+    # swink_coding(176/177) (#325).
     state = _state(
         pull_requests=[
             _author_pr(1, "claude_code"),
@@ -599,6 +602,8 @@ def test_pr_author_slots_split_by_author_type():
             _author_pr(6, "grok", decision="APPROVED"),
             _author_pr(7, "grok"),
             _author_pr(8, "antigravity"),
+            _author_pr(9, "swink_coding"),
+            _author_pr(10, "swink_coding", decision="APPROVED"),
         ]
     )
     obs = encode_observation(state, _NULL_CTX)
@@ -614,6 +619,9 @@ def test_pr_author_slots_split_by_author_type():
     # 1 antigravity open, 1 awaiting.
     assert obs[174] == pytest.approx(1 / 10.0, abs=1e-5)
     assert obs[175] == pytest.approx(1 / 10.0, abs=1e-5)
+    # 2 swink_coding open, 1 awaiting (#10 APPROVED).
+    assert obs[176] == pytest.approx(2 / 10.0, abs=1e-5)
+    assert obs[177] == pytest.approx(1 / 10.0, abs=1e-5)
 
 
 def test_pr_author_block_ignores_retired_and_unknown_authors():
@@ -627,7 +635,7 @@ def test_pr_author_block_ignores_retired_and_unknown_authors():
         ]
     )
     obs = encode_observation(state, _NULL_CTX)
-    assert np.all(obs[168:176] == 0.0)
+    assert np.all(obs[168:178] == 0.0)
 
 
 def test_pr_author_block_contract_is_pinned():
@@ -646,20 +654,23 @@ def test_pr_author_block_contract_is_pinned():
         "codex",
         "grok",
         "antigravity",
+        "swink_coding",
     ]
-    assert _PR_AUTHOR_FEATURES == 8
+    assert _PR_AUTHOR_FEATURES == 10
     assert _S_PR_AUTHOR_BLOCK_START == 168
-    assert _S_OBS_VERSION == 249
+    assert _S_OBS_VERSION == 251
 
 
-def test_observation_version_is_14():
+def test_observation_version_is_15():
     # desktop-rni0: bumped 10 → 11 when IDLE_TICK / RECOVER were demoted.
     # desktop-8zzy: bumped 11 → 12 when pr_pressure_ratio slot was added.
     # Beads dependency: bumped 12 → 13 when blocked/ready task ratios
     # repurposed retired cluster slots 0-1.
     # #91: bumped 13 → 14 when the PR-author block generalized from
     # claude/codex to the 4 curated CLI providers (4 → 8 slots).
-    assert OBSERVATION_VERSION == 14
+    # #325: bumped 14 → 15 when swink_coding was appended to the PR-author
+    # block (8 → 10 slots).
+    assert OBSERVATION_VERSION == 15
 
 
 # ---------------------------------------------------------------------------
@@ -858,12 +869,13 @@ def test_executor_skip_rate_clamps_above_one():
     assert obs[_S_EXECUTOR_SKIP_RATE] == pytest.approx(1.0)
 
 
-def test_executor_skip_rate_slot_index_is_181():
-    """Pin the slot index — post-#91 the skip-rate slot sits at 181 (was 177
-    before the PR-author block grew 4 → 8 slots)."""
+def test_executor_skip_rate_slot_index_is_183():
+    """Pin the slot index — post-#325 the skip-rate slot sits at 183 (181
+    before the PR-author block grew 8 → 10 slots; 177 before #91 grew it
+    4 → 8)."""
     from agentshore.rl.observation import _S_EXECUTOR_SKIP_RATE
 
-    assert _S_EXECUTOR_SKIP_RATE == 181
+    assert _S_EXECUTOR_SKIP_RATE == 183
 
 
 # ===========================================================================
@@ -871,13 +883,13 @@ def test_executor_skip_rate_slot_index_is_181():
 # ===========================================================================
 
 
-def test_pr_pressure_ratio_slot_index_is_182():
-    """desktop-8zzy contract (post-#91): pr_pressure_ratio sits at slot 182,
-    between the executor-skip-rate slot (181) and the specialization block
-    (183..248)."""
+def test_pr_pressure_ratio_slot_index_is_184():
+    """desktop-8zzy contract (post-#325): pr_pressure_ratio sits at slot 184,
+    between the executor-skip-rate slot (183) and the specialization block
+    (185..250)."""
     from agentshore.rl.observation import _S_PR_PRESSURE_RATIO
 
-    assert _S_PR_PRESSURE_RATIO == 182
+    assert _S_PR_PRESSURE_RATIO == 184
 
 
 def test_pr_pressure_ratio_default_zero():

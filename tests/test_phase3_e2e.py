@@ -465,7 +465,7 @@ def test_phase4_readiness_import_smoke() -> None:
         PLAY_TO_INDEX,
     )
 
-    assert OBSERVATION_DIM == 250
+    assert OBSERVATION_DIM == 252
     assert NUM_ACTIONS == 22
     assert len(PLAY_TO_INDEX) == 22
 
