@@ -1,4 +1,5 @@
-import React, { useEffect, useState } from "react";
+import React, { useState } from "react";
+import { createNotifyStore } from "../notifyStore";
 
 export type ViewMode = "office" | "kanban" | "stats";
 
@@ -14,12 +15,10 @@ const TAB_DEFS: TabDef[] = [
   { mode: "stats", label: "Stats", sub: "metrics" },
 ];
 
-const listeners = new Set<(mode: ViewMode) => void>();
-let latestMode: ViewMode | null = null;
+const store = createNotifyStore<ViewMode | null>(null);
 
 export function notifyStageTabsMode(mode: ViewMode): void {
-  latestMode = mode;
-  listeners.forEach((fn) => fn(mode));
+  store.notify(mode);
 }
 
 export interface StageTabsProps {
@@ -31,19 +30,13 @@ export default function StageTabs({
   initial = "office",
   onChange,
 }: StageTabsProps): React.ReactElement {
-  const [current, setCurrent] = useState<ViewMode>(latestMode ?? initial);
-
-  useEffect(() => {
-    listeners.add(setCurrent);
-    return () => {
-      listeners.delete(setCurrent);
-    };
-  }, []);
+  const storeMode = store.use();
+  const [localInitial] = useState(initial);
+  const current = storeMode ?? localInitial;
 
   function handleClick(mode: ViewMode): void {
     if (mode === current) return;
-    latestMode = mode;
-    setCurrent(mode);
+    store.notify(mode);
     onChange?.(mode);
   }
 

@@ -34,6 +34,7 @@ from agentshore.session.bootstrap import (
     preflight_identities,
     validate_budget_flag,
 )
+from agentshore.session.preflight import run_session_preflight
 
 
 @click.command()
@@ -258,13 +259,17 @@ def start(
         )
     )
 
-    # Summary + identity preflight (echoes, validates, exits 1 on failure).
+    # Summary + preflight gates (each echoes its own banner, validates, and
+    # exits 1 on failure). Sequencing is pinned by run_session_preflight so
+    # this can't drift from the desktop sidecar's equivalent phase.
     echo_bootstrap_summary(resolved)
-    preflight_identities(resolved.cfg, resolved.repo_root)
-    if not skip_auth_preflight:
-        preflight_cli_agent_auth(resolved.cfg)
-    if not skip_git_auth_preflight:
-        preflight_git_auth(resolved.cfg, resolved.project_path)
+    run_session_preflight(
+        identities=lambda: preflight_identities(resolved.cfg, resolved.repo_root),
+        cli_agent_auth=lambda: preflight_cli_agent_auth(resolved.cfg),
+        git_auth=lambda: preflight_git_auth(resolved.cfg, resolved.project_path),
+        skip_auth_preflight=skip_auth_preflight,
+        skip_git_auth_preflight=skip_git_auth_preflight,
+    )
 
     # -- Dispatch: run the orchestrator -----------------------------------------
     from agentshore.session_path import (

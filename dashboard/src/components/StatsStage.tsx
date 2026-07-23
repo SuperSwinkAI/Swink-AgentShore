@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect } from "react";
 import type {
   AgentSnapshot,
   EpicStatus,
@@ -16,6 +16,7 @@ import {
   formatPlayType,
   shortAgentName,
 } from "../format";
+import { createNotifyStore } from "../notifyStore";
 
 // React port of `dashboard/src/views/stats/index.ts`; the notify* functions
 // mirror the imperative module's inputs. Rendering reproduces its DOM exactly
@@ -91,29 +92,23 @@ export interface ConcurrencyChartModel {
   windowEndMs: number;
 }
 
-const listeners = new Set<(s: StatsStageState) => void>();
 let concurrencySessionId: string | null = null;
 let concurrencySessionStartedAtMs: number | null = null;
 let concurrencySamples: ConcurrencySample[] = [];
-let latestState: StatsStageState = {
+const store = createNotifyStore<StatsStageState>({
   state: null,
   visible: false,
   insets: null,
   concurrencySamples: [],
   concurrencySessionStartedAtMs: null,
   nowMs: Date.now(),
-};
-
-function broadcast(next: StatsStageState): void {
-  latestState = next;
-  listeners.forEach((fn) => fn(next));
-}
+});
 
 export function notifyStatsStageUpdate(state: StateUpdate): void {
   const nowMs = Date.now();
   const nextSamples = updateConcurrencyHistory(state, nowMs);
-  broadcast({
-    ...latestState,
+  store.notify({
+    ...store.get(),
     state,
     concurrencySamples: nextSamples,
     concurrencySessionStartedAtMs,
@@ -122,7 +117,7 @@ export function notifyStatsStageUpdate(state: StateUpdate): void {
 }
 
 export function notifyStatsStageVisible(visible: boolean): void {
-  broadcast({ ...latestState, visible });
+  store.notify({ ...store.get(), visible });
 }
 
 export function notifyStatsStageInsets(
@@ -131,18 +126,11 @@ export function notifyStatsStageInsets(
   right: number,
   bottom: number,
 ): void {
-  broadcast({ ...latestState, insets: { top, left, right, bottom } });
+  store.notify({ ...store.get(), insets: { top, left, right, bottom } });
 }
 
 function useStatsStageState(): StatsStageState {
-  const [state, setState] = useState<StatsStageState>(latestState);
-  useEffect(() => {
-    listeners.add(setState);
-    setState(latestState);
-    return () => {
-      listeners.delete(setState);
-    };
-  }, []);
+  const state = store.use();
   useEffect(() => {
     const handle = window.setInterval(() => {
       const nowMs = Date.now();
@@ -151,7 +139,7 @@ function useStatsStageState(): StatsStageState {
         nowMs,
         CONCURRENCY_MAX_WINDOW_MS,
       );
-      broadcast({ ...latestState, concurrencySamples, nowMs });
+      store.notify({ ...store.get(), concurrencySamples, nowMs });
     }, CONCURRENCY_RECALC_INTERVAL_MS);
     return () => window.clearInterval(handle);
   }, []);
@@ -366,15 +354,14 @@ export function resetStatsStageForTests(): void {
   concurrencySessionId = null;
   concurrencySessionStartedAtMs = null;
   concurrencySamples = [];
-  latestState = {
+  store.resetForTests({
     state: null,
     visible: false,
     insets: null,
     concurrencySamples: [],
     concurrencySessionStartedAtMs: null,
     nowMs: Date.now(),
-  };
-  listeners.clear();
+  });
 }
 
 function pct(value: number): string {

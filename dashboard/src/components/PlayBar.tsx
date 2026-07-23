@@ -7,6 +7,7 @@ import type {
 } from "../types";
 import { makeActivePlay } from "../types";
 import { formatPlayType } from "../format";
+import { createNotifyStore } from "../notifyStore";
 
 type DisplayMode =
   | { kind: "inactive" }
@@ -18,13 +19,7 @@ type DisplayMode =
       startMs: number;
     };
 
-const listeners = new Set<(mode: DisplayMode) => void>();
-let latestMode: DisplayMode = { kind: "inactive" };
-
-function broadcast(mode: DisplayMode): void {
-  latestMode = mode;
-  listeners.forEach((fn) => fn(mode));
-}
+const store = createNotifyStore<DisplayMode>({ kind: "inactive" });
 
 function parseStart(startedAt: string | null | undefined): number {
   const parsed = Date.parse(startedAt ?? new Date().toISOString());
@@ -56,7 +51,7 @@ function modeForActivePlay(activePlay: ActivePlay | null): DisplayMode {
 
 export function notifyPlayBarUpdate(state: StateUpdate): void {
   if (state.active_play) {
-    broadcast(modeForActivePlay(state.active_play));
+    store.notify(modeForActivePlay(state.active_play));
     return;
   }
 
@@ -67,13 +62,13 @@ export function notifyPlayBarUpdate(state: StateUpdate): void {
   }
 
   if (running.length === 0) {
-    broadcast({ kind: "inactive" });
+    store.notify({ kind: "inactive" });
     return;
   }
 
   if (running.length === 1) {
     const { agent, current } = running[0];
-    broadcast(
+    store.notify(
       modeForActivePlay(
         makeActivePlay({
           play_type: current.play_type,
@@ -96,7 +91,7 @@ export function notifyPlayBarUpdate(state: StateUpdate): void {
     .filter((time) => !Number.isNaN(time));
   const startMs = startedTimes.length > 0 ? Math.min(...startedTimes) : Date.now();
 
-  broadcast({
+  store.notify({
     kind: "summary",
     count: running.length,
     summary: summarizeRunningPlayTypes(running.map((entry) => entry.current)),
@@ -106,7 +101,7 @@ export function notifyPlayBarUpdate(state: StateUpdate): void {
 
 export function notifyPlayBarEvent(event: PlayEvent): void {
   if (event.status === "started") {
-    broadcast(
+    store.notify(
       modeForActivePlay(
         makeActivePlay({
           play_type: event.play_type,
@@ -123,16 +118,16 @@ export function notifyPlayBarEvent(event: PlayEvent): void {
       ),
     );
   } else {
-    broadcast({ kind: "inactive" });
+    store.notify({ kind: "inactive" });
   }
 }
 
 export function notifyPlayBarActivePlay(activePlay: ActivePlay | null): void {
-  broadcast(modeForActivePlay(activePlay));
+  store.notify(modeForActivePlay(activePlay));
 }
 
 export function notifyPlayBarClear(): void {
-  broadcast({ kind: "inactive" });
+  store.notify({ kind: "inactive" });
 }
 
 function formatElapsed(ms: number): string {
@@ -169,15 +164,7 @@ function formatLocalTimestamp(date: Date): string {
 }
 
 function useMode(): DisplayMode {
-  const [mode, setMode] = useState<DisplayMode>(latestMode);
-  useEffect(() => {
-    listeners.add(setMode);
-    setMode(latestMode);
-    return () => {
-      listeners.delete(setMode);
-    };
-  }, []);
-  return mode;
+  return store.use();
 }
 
 function useElapsed(startMs: number | null): string {

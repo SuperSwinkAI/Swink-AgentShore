@@ -1,5 +1,6 @@
-import React, { useEffect, useState } from "react";
+import React from "react";
 import type { PlayEvent } from "../types";
+import { createNotifyStore } from "../notifyStore";
 
 interface TypeBucket {
   ok: number;
@@ -28,11 +29,16 @@ const EMPTY_VIEW: AgentStatsView = { total: 0, ok: 0, failed: 0, byType: [] };
 
 // React-side store, intentionally independent from the imperative
 // dashboard/src/hud/agentPlayStats.ts (bridge SPA); this one is driven by Dashboard.tsx.
+//
+// Data lives in a plain Map keyed by agent id, queried on demand via
+// getAgentPlayStats() rather than subscribed to as a whole value — that
+// doesn't fit createNotifyStore's "one broadcast value" shape, so only the
+// revision counter (the actual subscribed signal) is a store; the Map stays
+// a bespoke module-level cache.
 const stats = new Map<string, AgentStats>();
 
 // Monotonic revision so the hook detects store changes without per-agent diffs.
-let revision = 0;
-const listeners = new Set<(rev: number) => void>();
+const revisionStore = createNotifyStore(0);
 
 function ensureAgent(agentId: string): AgentStats {
   let entry = stats.get(agentId);
@@ -62,8 +68,7 @@ function recordEvent(event: PlayEvent): void {
 }
 
 function bump(): void {
-  revision += 1;
-  listeners.forEach((fn) => fn(revision));
+  revisionStore.notify(revisionStore.get() + 1);
 }
 
 export function notifyAgentPlayStatsEvent(event: PlayEvent): void {
@@ -106,13 +111,7 @@ export function getAgentPlayStats(agentId: string): AgentStatsView {
 }
 
 export function useAgentPlayStats(agentId: string | null): AgentStatsView {
-  const [, setRev] = useState(revision);
-  useEffect(() => {
-    listeners.add(setRev);
-    return () => {
-      listeners.delete(setRev);
-    };
-  }, []);
+  revisionStore.use();
   if (!agentId) return EMPTY_VIEW;
   return getAgentPlayStats(agentId);
 }

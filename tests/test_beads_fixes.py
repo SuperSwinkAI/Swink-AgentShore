@@ -138,8 +138,8 @@ async def _bd_gather_with_slow_subprocess(*calls: object) -> list[str]:
     """
     timeline: list[str] = []
     with (
-        patch("agentshore.beads.resolve_bd_binary", return_value="bd"),
-        patch("agentshore.beads.asyncio.create_subprocess_exec") as mock_exec,
+        patch("agentshore.beads.lock.resolve_bd_binary", return_value="bd"),
+        patch("agentshore.beads.lock.asyncio.create_subprocess_exec") as mock_exec,
     ):
         mock_proc = AsyncMock()
         mock_proc.returncode = 0

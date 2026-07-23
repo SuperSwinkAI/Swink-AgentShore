@@ -1,13 +1,14 @@
-/// Canonical Windows install-layout paths and process flags for AgentShore.
-///
-/// Single source of truth for `ProgramData\AgentShore\{venv,bin,runtime}`,
-/// `sidecar.pid`, and `CREATE_NO_WINDOW`. Shared by the Tauri library crate
-/// and the provisioner binary via `#[path]` include. Do NOT duplicate these
-/// literals in other files.
-///
-/// On non-Windows builds path functions compile to no-ops; callers gate
-/// Windows-specific logic on `#[cfg(target_os = "windows")]` or the `windows`
-/// cfg predicate as appropriate.
+//! Canonical Windows install-layout paths and process flags for AgentShore.
+//!
+//! Single source of truth for `ProgramData\AgentShore\{venv,bin,runtime}`,
+//! `sidecar.pid`, and `CREATE_NO_WINDOW`. Shared by the Tauri library crate
+//! and the provisioner binary via `#[path]` include. Do NOT duplicate these
+//! literals in other files.
+//!
+//! On non-Windows builds path functions compile to no-ops; callers gate
+//! Windows-specific logic on `#[cfg(target_os = "windows")]`.
+
+#[cfg(target_os = "windows")]
 use std::path::PathBuf;
 
 /// `CREATE_NO_WINDOW` suppresses the console-window flash and avoids AV

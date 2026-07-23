@@ -33,6 +33,7 @@ from agentshore.agents.auth_probe import (
     AUTH_TIMEOUT,
     AuthProbeResult,
 )
+from agentshore.agents.git_auth_probe import GIT_AUTH_FAILED, GitAuthProbeResult
 from agentshore.sidecar.server import ServerState, SessionContext, handle_request
 from agentshore.sidecar.session_lifecycle import (
     STEP_CHECK_AGENT_AUTH,
@@ -425,6 +426,85 @@ agents:
         STEP_CHECK_AGENT_AUTH,
     ]
     assert STEP_INSTALL_SKILLS not in steps
+
+
+@pytest.mark.asyncio
+async def test_check_agent_auth_invokes_git_auth_probe_and_blocks_on_failure(
+    tmp_path: Path,
+) -> None:
+    """Desktop session.start must run the git-remote auth probe too (gh-151/178/
+    179 class): the sidecar historically ran only identity + CLI-agent backend
+    auth and silently skipped git-remote auth, so a broken git credential slid
+    past launch and wedged mid-session instead of failing fast here. Both gates
+    now share sequencing via ``run_session_preflight``."""
+    project = _write_valid_project(
+        tmp_path / "git-auth-broken", agentshore_yaml=VALID_TIERED_CONFIG
+    )
+    state = ServerState(active_project_path=str(project))
+    notifications: list[dict[str, object]] = []
+
+    clean_backend_auth = [AuthProbeResult(AgentType.CODEX, AUTH_OK, "authenticated")]
+    broken_git_auth = [
+        GitAuthProbeResult(
+            "beta", GIT_AUTH_FAILED, "authentication failed", "https://github.com/owner/repo.git"
+        )
+    ]
+    with (
+        patch(
+            "agentshore.agents.auth_probe.probe_configured_cli_auth",
+            return_value=clean_backend_auth,
+        ),
+        patch(
+            "agentshore.agents.git_auth_probe.probe_all_identities",
+            return_value=broken_git_auth,
+        ) as git_auth_probe,
+        pytest.raises(SessionStartError) as excinfo,
+    ):
+        await run_session_start(
+            state,
+            progress_token="tok-git-auth",
+            notify=notifications.append,
+            start_bridge=False,
+            start_orchestrator=False,
+        )
+
+    git_auth_probe.assert_called_once()
+    assert excinfo.value.step == STEP_CHECK_AGENT_AUTH
+    assert excinfo.value.code == -32603
+    assert "beta" in str(excinfo.value)
+    steps = [n["params"]["step"] for n in notifications]  # type: ignore[index]
+    # Same phase-failure shape as the other check_agent_auth sub-gates: running
+    # then failed, nothing after.
+    assert steps == [
+        STEP_CONFIG_MERGE,
+        STEP_CONFIG_MERGE,
+        STEP_CHECK_AGENT_AUTH,
+        STEP_CHECK_AGENT_AUTH,
+    ]
+
+
+@pytest.mark.asyncio
+async def test_check_agent_auth_clean_git_auth_probe_proceeds(tmp_path: Path) -> None:
+    """A clean git-auth probe (no configured identities, or all ok) never blocks
+    — session.start proceeds past check_agent_auth as before."""
+    project = _write_valid_project(tmp_path / "git-auth-clean", agentshore_yaml=VALID_TIERED_CONFIG)
+    state = ServerState(active_project_path=str(project))
+
+    clean_backend_auth = [AuthProbeResult(AgentType.CODEX, AUTH_OK, "authenticated")]
+    with (
+        patch(
+            "agentshore.agents.auth_probe.probe_configured_cli_auth",
+            return_value=clean_backend_auth,
+        ),
+        patch(
+            "agentshore.agents.git_auth_probe.probe_all_identities",
+            return_value=[],
+        ) as git_auth_probe,
+    ):
+        outcome = await run_session_start(state, start_bridge=False, start_orchestrator=False)
+
+    git_auth_probe.assert_called_once()
+    assert outcome.session_id == state.session_id
 
 
 # ---------------------------------------------------------------------------

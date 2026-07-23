@@ -1,4 +1,4 @@
-import React, { useEffect, useReducer } from "react";
+import React, { useEffect } from "react";
 import type {
   AgentSnapshot,
   BudgetSnapshot,
@@ -15,6 +15,7 @@ import {
   ZONE_ACCENTS,
 } from "../office/zones";
 import { ZoneId } from "../office/layout";
+import { createActionStore } from "../notifyStore";
 
 const LS_KEY = "agentshore.playsPanel.collapsed";
 const DEFAULT_ZONE = ZoneId.FRONT_DESK;
@@ -60,37 +61,26 @@ function reducer(panel: PanelState, action: PanelAction): PanelState {
 }
 
 type Dispatch = (action: PanelAction) => void;
-const dispatchers = new Set<Dispatch>();
-
-function broadcast(action: PanelAction): void {
-  dispatchers.forEach((d) => d(action));
-}
+const store = createActionStore<PanelState, PanelAction>(reducer, {
+  latestState: null,
+  collapsed: localStorage.getItem(LS_KEY) === "true",
+});
 
 export function notifyPlaysPanelUpdate(state: StateUpdate): void {
-  broadcast({ type: "state_update", state });
+  store.dispatch({ type: "state_update", state });
 }
 
 /** Budget-only heartbeat — advances the remaining-time countdown only. */
 export function notifyPlaysPanelBudget(msg: BudgetUpdate): void {
-  broadcast({ type: "budget_update", budget: msg.budget });
+  store.dispatch({ type: "budget_update", budget: msg.budget });
 }
 
 export function notifyPlaysPanelEvent(event: PlayEvent): void {
-  broadcast({ type: "play_event", event });
+  store.dispatch({ type: "play_event", event });
 }
 
 function usePanelState(): [PanelState, Dispatch] {
-  const [state, dispatch] = useReducer(reducer, {
-    latestState: null,
-    collapsed: localStorage.getItem(LS_KEY) === "true",
-  });
-  useEffect(() => {
-    dispatchers.add(dispatch);
-    return () => {
-      dispatchers.delete(dispatch);
-    };
-  }, []);
-  return [state, dispatch];
+  return [store.use(), store.dispatch];
 }
 
 function agentsForPlay(

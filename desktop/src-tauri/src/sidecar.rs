@@ -120,8 +120,8 @@ fn response_timeout_for_method(method: &str) -> Duration {
         // side gives them their own generous caps rather than sharing the
         // setup/default budgets.
         match method {
-            "session.start" => SESSION_START_RESPONSE_TIMEOUT,
-            "session.stop" => SESSION_STOP_RESPONSE_TIMEOUT,
+            crate::methods::SESSION_START => SESSION_START_RESPONSE_TIMEOUT,
+            crate::methods::SESSION_STOP => SESSION_STOP_RESPONSE_TIMEOUT,
             "project.install_timelapse" => INSTALL_RESPONSE_TIMEOUT,
             _ => RESPONSE_TIMEOUT,
         }
@@ -631,7 +631,7 @@ fn dispatch_line(
         // watchdog to protect, so stand it down here rather than waiting for
         // session.completed (fixes false "Dashboard not responding" trips
         // during that trailing window).
-        if method == "$/esr_ready" {
+        if method == crate::methods::ESR_READY {
             app.state::<crate::WebviewHeartbeat>()
                 .esr_ready
                 .store(true, Ordering::Relaxed);
@@ -641,7 +641,7 @@ fn dispatch_line(
         // This closes the silent gap where a real, busy shutdown can legitimately
         // pause the React render loop for >10s before esr_ready would otherwise
         // suppress the watchdog.
-        if method == "session.draining" {
+        if method == crate::methods::SESSION_DRAINING {
             app.state::<crate::WebviewHeartbeat>()
                 .draining
                 .store(true, Ordering::Relaxed);
@@ -649,7 +649,7 @@ fn dispatch_line(
         // desktop-bzr2: release the activity assertion on natural session exit.
         // session.completed is the fallback for exits where session.stop never
         // fires (drain_complete, max_plays, timeout, shutting_down).
-        if method == "session.completed" {
+        if method == crate::methods::SESSION_COMPLETED {
             let holder = app.state::<crate::activity::ActivityHolder>();
             holder.release();
             // Clear cached session info (#274 reattach) and disarm the heartbeat
@@ -946,12 +946,12 @@ mod tests {
             "dependency installers are allowed to outlive quick setup probes"
         );
         assert_eq!(
-            response_timeout_for_method("session.start"),
+            response_timeout_for_method(crate::methods::SESSION_START),
             SESSION_START_RESPONSE_TIMEOUT,
             "session.start may need first-run Windows setup and bootstrap time"
         );
         assert_eq!(
-            response_timeout_for_method("session.stop"),
+            response_timeout_for_method(crate::methods::SESSION_STOP),
             SESSION_STOP_RESPONSE_TIMEOUT,
             "session.stop drain can wait for active agents and ESR/timelapse cleanup"
         );

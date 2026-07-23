@@ -108,29 +108,6 @@ _JSON_RETRY_ASYNC_HANDOFF_PROMPT = (
     "JSON block is emitted."
 )
 
-# #242: agy auto-backgrounds long commands and ends the ``-p`` turn narrating it is "waiting
-# for the background task" (prose, no JSON). Appended to the INITIAL dispatch so the handoff
-# is prevented, not just retried (verified Gemini 3.5 Flash + 3.1 Pro: ~0/4 without → ~7/8
-# with; residual leak caught by ``cli_antigravity.is_async_handoff``). agy-only — other CLIs
-# don't auto-background.
-_ANTIGRAVITY_SYNCHRONOUS_DIRECTIVE = (
-    "\n\n## Antigravity: run every command synchronously\n\n"
-    "Run every shell command in the FOREGROUND and BLOCK until it returns, no matter how "
-    "long it takes. Do NOT send commands to the background, do NOT use a task or "
-    "manage_task tool, and do NOT pause to 'wait for a background task to finish' or "
-    "'wait for a notification' — there is no scheduler that will wake you up. Do NOT end "
-    "your turn until every command has returned and you have emitted the fenced JSON "
-    "result block."
-)
-
-
-def _with_antigravity_sync_directive(prompt: str, agent_type: AgentType | None) -> str:
-    """Append the agy synchronous-execution directive for ANTIGRAVITY dispatches only."""
-    if agent_type == AgentType.ANTIGRAVITY:
-        return prompt + _ANTIGRAVITY_SYNCHRONOUS_DIRECTIVE
-    return prompt
-
-
 # First-byte deadline for the no-JSON resume-retry (#232). A re-emission should stream in
 # seconds; without this it inherits agy's 1800s default (cli_agent._FIRST_BYTE_DEADLINE_BY_TYPE),
 # turning a silent resume hang into 30 min of dead slot. Short budget fast-fails (recoverable
@@ -506,6 +483,30 @@ class SkillBackedPlay(Play, ABC):
         combined_error = f"{skill_result.error}; {message}" if skill_result.error else message
         return replace(skill_result, success=False, error=combined_error), True
 
+    async def _extra_context(
+        self,
+        extra_context: dict[str, object],
+        ctx: PlayExecutionContext,
+        state: OrchestratorState,
+    ) -> None:
+        """Hook: inject play-specific keys into the skill's ``extra`` context.
+
+        No-op by default. RECONCILE_STATE and PRUNE override this to inject the
+        shared worktree-protection guards (and, for RECONCILE_STATE, wedge
+        diagnostics) — see their overrides.
+        """
+        return None
+
+    async def _post_process_result(
+        self, ctx: PlayExecutionContext, skill_result: SkillResult
+    ) -> tuple[SkillResult, FailureKind | None]:
+        """Hook: validate/amend the parsed ``SkillResult`` after dispatch.
+
+        Identity by default (result unchanged, no failure_kind override). PRUNE
+        overrides this to run the post-hoc protected-worktree-removal guard.
+        """
+        return skill_result, None
+
     def estimated_cost(self, state: OrchestratorState) -> float:
         return 0.10
 
@@ -571,36 +572,7 @@ class SkillBackedPlay(Play, ABC):
         context_relative_path = play_context_relative_path(ctx.play_id, session_id=ctx.session_id)
 
         extra_context: dict[str, object] = {"review_patterns": review_patterns}
-        if self.play_type == PlayType.RECONCILE_STATE:
-            # Pre-write structured diagnostic signals so the skill can
-            # diagnose wedge pathologies (dirty trunk, orphan worktrees,
-            # recent failed plays) without re-deriving them from the
-            # log/DB inside the agent prompt. See ``agentshore/core/wedge_signals.py``.
-            from agentshore.core.wedge_signals import build_recent_wedge_signals
-
-            try:
-                extra_context["recent_wedge_signals"] = build_recent_wedge_signals(
-                    state,
-                    ctx.project_path,
-                    session_id=ctx.session_id,
-                )
-            except Exception as exc:  # noqa: BLE001 — diagnostic is best-effort
-                _logger.warning(
-                    "reconcile_state_wedge_signals_failed",
-                    error=str(exc),
-                    play_id=ctx.play_id,
-                )
-            # RECONCILE_STATE also removes worktrees (orphan + #214 divergent-
-            # stale paths), so it needs the same active-claim + age guards prune
-            # uses — without them its diagnose-then-remediate-later flow can delete
-            # a worktree allocated mid-run to a freshly dispatched agent (#218).
-            await self._inject_worktree_guards(extra_context, ctx)
-        elif self.play_type == PlayType.PRUNE:
-            # Inject the set of currently-claimed / too-young worktrees so the
-            # skill skips them, even when they have no pushed branch yet. Without
-            # this, active pickup worktrees look like orphans (no open PR, no
-            # commits beyond target) and get deleted mid-play.
-            await self._inject_worktree_guards(extra_context, ctx)
+        await self._extra_context(extra_context, ctx, state)
 
         # Write isolated context so concurrent plays cannot read each other's state.
         payload = serialize_state_for_skill(
@@ -642,9 +614,9 @@ class SkillBackedPlay(Play, ABC):
                 context_path=context_relative_path,
                 dispatch_cwd=dispatch_cwd,
             )
-            # agy auto-backgrounds long commands and ends the turn waiting (#242);
-            # append the synchronous-execution directive to its INITIAL prompt.
-            prompt = _with_antigravity_sync_directive(prompt, dispatch_agent_type)
+            # Vendor-specific initial-prompt decoration (currently only agy's
+            # synchronous-execution directive, #242); no-op for other agent types.
+            prompt = cli_antigravity.decorate_initial_prompt(prompt, dispatch_agent_type)
 
         claim_group_id_raw = params.extras.get("claim_group_id")
         if isinstance(claim_group_id_raw, str) and claim_group_id_raw:
@@ -945,18 +917,10 @@ class SkillBackedPlay(Play, ABC):
 
         self._last_skill_result = skill_result
 
-        # Hard backstop for the destructive-sweep skills (PRUNE): even though
-        # ``_inject_worktree_guards`` advised the skill which worktrees to keep,
-        # the LLM can still ignore it and remove one out from under a live
-        # dispatch (#311). Detect that post-hoc and refuse to let it read as a
-        # clean success.
-        worktree_guard_violated = False
-        if self.play_type == PlayType.PRUNE:
-            (
-                skill_result,
-                worktree_guard_violated,
-            ) = await self._guard_against_protected_worktree_removal(ctx, skill_result)
-            self._last_skill_result = skill_result
+        # Play-specific post-hoc validation (e.g. PRUNE's protected-worktree-
+        # removal backstop, #311). Identity for every other play.
+        skill_result, post_process_failure_kind = await self._post_process_result(ctx, skill_result)
+        self._last_skill_result = skill_result
 
         # Reclaim untracked root files this trunk-scoped play introduced and left
         # behind, so they don't wedge merge_pr / reconcile_state (#162/#164).
@@ -971,8 +935,8 @@ class SkillBackedPlay(Play, ABC):
                 "auth",
                 skill_result.error or "skill reported GitHub authentication failure",
             )
-        elif worktree_guard_violated:
-            failure_kind = FailureKind.AGENT_ERROR
+        elif post_process_failure_kind is not None:
+            failure_kind = post_process_failure_kind
 
         return PlayOutcome(
             play_type=self.play_type,
