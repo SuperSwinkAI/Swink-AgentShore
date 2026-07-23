@@ -28,11 +28,11 @@ def _clear_graph_cache() -> None:
     but clearing keeps intent explicit and avoids unbounded dict growth
     across the module's test session.
     """
-    beads_module._graph_cache.clear()
-    beads_module._graph_load_tasks.clear()
+    beads_module.graph._graph_cache.clear()
+    beads_module.graph._graph_load_tasks.clear()
     yield
-    beads_module._graph_cache.clear()
-    beads_module._graph_load_tasks.clear()
+    beads_module.graph._graph_cache.clear()
+    beads_module.graph._graph_load_tasks.clear()
 
 
 def _beads_json(*, title: str = "Task") -> str:
@@ -92,7 +92,7 @@ async def test_load_graph_refetches_after_ttl_expiry(tmp_path: Path) -> None:
 
     with (
         patch("agentshore.beads.bd", new=_fake_bd),
-        patch("agentshore.beads.time.monotonic", new=_fake_monotonic),
+        patch("agentshore.beads.graph.time.monotonic", new=_fake_monotonic),
     ):
         await load_graph(tmp_path)
         fake_clock[0] += beads_module._GRAPH_CACHE_TTL_SECONDS + 0.1
@@ -169,8 +169,8 @@ async def test_bd_mutation_invalidates_graph_cache(tmp_path: Path) -> None:
     assert read_call_count == 1
 
     with (
-        patch("agentshore.beads.resolve_bd_binary", return_value="bd"),
-        patch("agentshore.beads.run_command", new=_fake_run_command),
+        patch("agentshore.beads.lock.resolve_bd_binary", return_value="bd"),
+        patch("agentshore.beads.lock.run_command", new=_fake_run_command),
     ):
         await bd("update", "t-1", "--status", "closed", cwd=tmp_path)
 
@@ -199,8 +199,8 @@ async def test_bd_read_command_does_not_invalidate_graph_cache(tmp_path: Path) -
     assert read_call_count == 1
 
     with (
-        patch("agentshore.beads.resolve_bd_binary", return_value="bd"),
-        patch("agentshore.beads.run_command", new=_fake_run_command),
+        patch("agentshore.beads.lock.resolve_bd_binary", return_value="bd"),
+        patch("agentshore.beads.lock.run_command", new=_fake_run_command),
     ):
         await bd("query", "status=open", "--json", cwd=tmp_path)
 
