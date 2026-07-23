@@ -102,6 +102,12 @@ export interface AgentSnapshot {
   // the agents.dispatch_count column).
   dispatch_count?: number;
   dispatch_share?: number;
+  // TNQA critical: these were on AgentSnapshot server-side but missing from
+  // the wire payload until the serializer parity fix. Optional for
+  // back-compat with older servers.
+  timeout_count?: number;
+  consecutive_timeouts?: number;
+  github_identity?: string | null;
 }
 
 export interface PullRequestSnapshot {
@@ -120,6 +126,13 @@ export interface PullRequestSnapshot {
   github_author: string | null;
   author_agent_id: string | null;
   author_agent_type: AgentType | null;
+  // TNQA critical: on PullRequestSnapshot server-side but missing from the
+  // wire payload until the serializer parity fix. Optional for back-compat.
+  head_sha?: string | null;
+  mergeable?: string | null;
+  base_ref?: string | null;
+  last_reviewed_sha?: string | null;
+  last_review_status?: string | null;
 }
 
 export interface EpicStatus {
@@ -142,6 +155,10 @@ export interface GraphTask {
   ready: boolean;
   closed_at?: string | null;
   updated_at?: string | null;
+  // TNQA critical: were on GraphTask server-side but missing from the wire
+  // payload until the serializer parity fix. Optional for back-compat.
+  depends_on_ids?: string[];
+  blocked_by_ids?: string[];
 }
 
 export interface ProjectGraph {
@@ -150,6 +167,9 @@ export interface ProjectGraph {
   tasks_ready: number;
   tasks_total: number;
   global_closure_ratio: number;
+  // TNQA critical: was on ProjectGraph server-side but missing from the wire
+  // payload until the serializer parity fix. Optional for back-compat.
+  tasks_blocked?: number;
 }
 
 export interface BudgetSnapshot {
@@ -221,6 +241,9 @@ export interface IssueSnapshot {
   bead_status: string | null;
   bead_ready: boolean;
   bead_mirror_status: "mirrored" | "missing" | "unlinked" | string;
+  // TNQA critical: was on IssueSnapshot server-side but missing from the wire
+  // payload until the serializer parity fix. Optional for back-compat.
+  github_author?: string | null;
 }
 
 export interface WorkAvailability {

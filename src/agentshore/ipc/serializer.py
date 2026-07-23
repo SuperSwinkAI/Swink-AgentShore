@@ -12,19 +12,22 @@ Outbound message types:
 
 from __future__ import annotations
 
+import dataclasses
 import itertools
 import math
 import uuid
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Literal, TypedDict
+from typing import TYPE_CHECKING, Any, Literal, TypedDict
 
-from agentshore.beads import EpicStatus, GraphTask, ProjectGraph
+from agentshore.beads import BeadStatus, EpicStatus, GraphTask, ProjectGraph
 from agentshore.ipc.wire import frame as _frame
 from agentshore.plays.candidates import build_candidate_plan
 from agentshore.state import (
     ActivePlay,
     AgentPlaySpecializationSnapshot,
     AgentSnapshot,
+    AgentStatus,
+    AgentType,
     BudgetSnapshot,
     IssueSnapshot,
     OrchestratorState,
@@ -121,6 +124,12 @@ def _serialize_agent(agent: AgentSnapshot) -> dict[str, object]:
         "dispatch_count": agent.dispatch_count,
         "dispatch_share": agent.dispatch_share,
         "last_error_class": agent.last_error_class,
+        # TNQA critical: these three were silently dropped from the wire
+        # payload (state.py:342-379 has them, this dict didn't) — nothing
+        # asserted parity until the guard below.
+        "timeout_count": agent.timeout_count,
+        "consecutive_timeouts": agent.consecutive_timeouts,
+        "github_identity": agent.github_identity,
         "current_play": (
             {
                 "play_type": agent.current_play_type.value,
@@ -147,6 +156,7 @@ def _serialize_issue(issue: IssueSnapshot) -> dict[str, object]:
         "url": issue.url,
         "created_at": issue.created_at,
         "closed_at": issue.closed_at,
+        "github_author": issue.github_author,
         "bead_id": issue.bead_id,
         "bead_epic_id": issue.bead_epic_id,
         "bead_epic_title": issue.bead_epic_title,
@@ -174,6 +184,11 @@ def _serialize_pull_request(pr: PullRequestSnapshot) -> dict[str, object]:
         "github_author": pr.github_author,
         "author_agent_id": pr.author_agent_id,
         "author_agent_type": pr.author_agent_type,
+        "head_sha": pr.head_sha,
+        "mergeable": pr.mergeable,
+        "base_ref": pr.base_ref,
+        "last_reviewed_sha": pr.last_reviewed_sha,
+        "last_review_status": pr.last_review_status,
     }
 
 
@@ -232,6 +247,9 @@ def _serialize_graph_task(task: GraphTask) -> dict[str, object]:
         "external_ref": task.external_ref,
         "issue_number": task.issue_number,
         "ready": task.ready,
+        # Sorted for wire determinism — the source fields are frozensets.
+        "depends_on_ids": sorted(task.depends_on_ids),
+        "blocked_by_ids": sorted(task.blocked_by_ids),
         "closed_at": task.closed_at,
         "updated_at": task.updated_at,
     }
@@ -242,6 +260,7 @@ def _serialize_graph(graph: ProjectGraph) -> dict[str, object]:
         "epics": [_serialize_epic_status(e) for e in graph.epics],
         "tasks": [_serialize_graph_task(t) for t in graph.tasks],
         "tasks_ready": graph.tasks_ready,
+        "tasks_blocked": graph.tasks_blocked,
         "tasks_total": graph.tasks_total,
         "global_closure_ratio": graph.global_closure_ratio,
     }
@@ -315,6 +334,251 @@ def _serialize_session_stats(stats: SessionStatsSnapshot) -> dict[str, object]:
             _serialize_agent_specialization(cell) for cell in stats.agent_specialization
         ],
     }
+
+
+# Wire-field parity guards
+#
+# Every _serialize_* function above hand-enumerates a source dataclass's fields
+# instead of deriving them, so nothing stopped a new/renamed dataclass field
+# from silently never reaching the wire (TNQA critical: this is exactly how
+# AgentSnapshot.timeout_count/consecutive_timeouts/github_identity and five
+# PullRequestSnapshot review/merge fields went missing). Each guard below
+# builds a minimal probe instance, calls the real serializer, and diffs the
+# emitted key set against ``dataclasses.fields()`` minus an explicit
+# ``_WIRE_OMITTED_*`` allowlist — same pattern as
+# ``reports/_aggregations.py``'s ``_EXPECTED_PLAY_LOG_KEYS`` guard. A drifted
+# dataclass fails import instead of silently dropping data.
+
+
+def _assert_field_parity(
+    dataclass_type: type[Any],
+    emitted_keys: set[str],
+    *,
+    omitted: frozenset[str],
+    label: str,
+) -> None:
+    expected = {f.name for f in dataclasses.fields(dataclass_type)} - omitted
+    if emitted_keys != expected:
+        missing = sorted(expected - emitted_keys)
+        extra = sorted(emitted_keys - expected)
+        msg = (
+            f"{label} field coverage drifted from {dataclass_type.__name__}: "
+            f"missing={missing!r} extra={extra!r}. Update the serializer "
+            f"(or its _WIRE_OMITTED_* allowlist) to match."
+        )
+        raise ValueError(msg)
+
+
+# AgentSnapshot's current_play_* fields are folded into the nested
+# "current_play" sub-object rather than emitted as top-level keys.
+_AGENT_CURRENT_PLAY_FIELDS: frozenset[str] = frozenset(
+    {
+        "current_play_type",
+        "current_play_id",
+        "current_play_started_at",
+        "current_play_issue_number",
+        "current_play_pr_number",
+        "current_play_branch",
+    }
+)
+_WIRE_OMITTED_AGENT_FIELDS: frozenset[str] = frozenset()  # nothing omitted
+
+
+def _agent_parity_probe() -> AgentSnapshot:
+    return AgentSnapshot(
+        agent_id="probe",
+        agent_type=AgentType.CLAUDE_CODE,
+        status=AgentStatus.IDLE,
+        context_size=0,
+        total_cost=0.0,
+        total_tokens=0,
+        tasks_completed=0,
+        tasks_failed=0,
+        current_play_type=PlayType.RUN_QA,  # force the nested current_play branch
+        current_play_id=0,
+        current_play_started_at="t",
+        current_play_issue_number=0,
+        current_play_pr_number=0,
+        current_play_branch="b",
+    )
+
+
+_agent_probe_payload = _serialize_agent(_agent_parity_probe())
+_assert_field_parity(
+    AgentSnapshot,
+    (set(_agent_probe_payload) - {"current_play"}) | _AGENT_CURRENT_PLAY_FIELDS,
+    omitted=_WIRE_OMITTED_AGENT_FIELDS,
+    label="_serialize_agent",
+)
+
+_WIRE_OMITTED_ISSUE_FIELDS: frozenset[str] = frozenset()  # nothing omitted
+_assert_field_parity(
+    IssueSnapshot,
+    set(
+        _serialize_issue(
+            IssueSnapshot(
+                issue_number=0, title="t", state="open", priority=None, labels=[], source=None
+            )
+        )
+    ),
+    omitted=_WIRE_OMITTED_ISSUE_FIELDS,
+    label="_serialize_issue",
+)
+
+_WIRE_OMITTED_PR_FIELDS: frozenset[str] = frozenset()  # nothing omitted
+_assert_field_parity(
+    PullRequestSnapshot,
+    set(
+        _serialize_pull_request(
+            PullRequestSnapshot(
+                pr_number=0,
+                title="t",
+                state="open",
+                branch=None,
+                issue_number=None,
+                labels=[],
+                review_decision=None,
+                status_check_summary=None,
+                is_draft=False,
+                blocked=False,
+                blocked_reasons=[],
+            )
+        )
+    ),
+    omitted=_WIRE_OMITTED_PR_FIELDS,
+    label="_serialize_pull_request",
+)
+
+_WIRE_OMITTED_BUDGET_FIELDS: frozenset[str] = frozenset()  # nothing omitted
+_assert_field_parity(
+    BudgetSnapshot,
+    set(
+        _serialize_budget(
+            BudgetSnapshot(total_budget=0.0, spent=0.0, remaining=0.0, estimated_cost_per_play=0.0)
+        )
+    ),
+    omitted=_WIRE_OMITTED_BUDGET_FIELDS,
+    label="_serialize_budget",
+)
+
+_WIRE_OMITTED_EPIC_FIELDS: frozenset[str] = frozenset()  # nothing omitted
+_assert_field_parity(
+    EpicStatus,
+    set(
+        _serialize_epic_status(
+            EpicStatus(bead_id="b", title="t", total_tasks=0, closed_tasks=0, closure_ratio=0.0)
+        )
+    ),
+    omitted=_WIRE_OMITTED_EPIC_FIELDS,
+    label="_serialize_epic_status",
+)
+
+# depends_on_ids/blocked_by_ids default to empty frozensets, which is enough
+# for a key-existence check (the guard diffs keys, not values).
+_WIRE_OMITTED_GRAPH_TASK_FIELDS: frozenset[str] = frozenset()  # nothing omitted
+_assert_field_parity(
+    GraphTask,
+    set(_serialize_graph_task(GraphTask(bead_id="b", title="t", status=BeadStatus.OPEN))),
+    omitted=_WIRE_OMITTED_GRAPH_TASK_FIELDS,
+    label="_serialize_graph_task",
+)
+
+_WIRE_OMITTED_PROJECT_GRAPH_FIELDS: frozenset[str] = frozenset()  # nothing omitted
+_assert_field_parity(
+    ProjectGraph,
+    set(_serialize_graph(ProjectGraph())),
+    omitted=_WIRE_OMITTED_PROJECT_GRAPH_FIELDS,
+    label="_serialize_graph",
+)
+
+_WIRE_OMITTED_TRAJECTORY_FIELDS: frozenset[str] = frozenset()  # nothing omitted
+_assert_field_parity(
+    TrajectorySnapshot,
+    set(
+        _serialize_trajectory(
+            TrajectorySnapshot(
+                projected_alignment_at_budget_end=0.0,
+                estimated_remaining_plays=0,
+                estimated_remaining_cost=0.0,
+            )
+        )
+    ),
+    omitted=_WIRE_OMITTED_TRAJECTORY_FIELDS,
+    label="_serialize_trajectory",
+)
+
+_WIRE_OMITTED_ACTIVE_PLAY_FIELDS: frozenset[str] = frozenset()  # nothing omitted
+_assert_field_parity(
+    ActivePlay,
+    set(
+        _serialize_active_play(
+            ActivePlay(play_type=PlayType.RUN_QA, agent_id=None, started_at="t")
+        )
+    ),
+    omitted=_WIRE_OMITTED_ACTIVE_PLAY_FIELDS,
+    label="_serialize_active_play",
+)
+
+_WIRE_OMITTED_PLAY_TYPE_STATS_FIELDS: frozenset[str] = frozenset()  # nothing omitted
+_assert_field_parity(
+    PlayTypeStatsSnapshot,
+    set(
+        _serialize_play_type_stats(
+            PlayTypeStatsSnapshot(
+                play_type=PlayType.RUN_QA,
+                total=0,
+                successful=0,
+                failed=0,
+                success_rate=0.0,
+                total_cost=0.0,
+                avg_duration_seconds=0.0,
+            )
+        )
+    ),
+    omitted=_WIRE_OMITTED_PLAY_TYPE_STATS_FIELDS,
+    label="_serialize_play_type_stats",
+)
+
+_WIRE_OMITTED_AGENT_SPECIALIZATION_FIELDS: frozenset[str] = frozenset()  # nothing omitted
+_assert_field_parity(
+    AgentPlaySpecializationSnapshot,
+    set(
+        _serialize_agent_specialization(
+            AgentPlaySpecializationSnapshot(
+                agent_id="a",
+                play_type=PlayType.RUN_QA,
+                total=0,
+                successful=0,
+                failed=0,
+                success_rate=0.0,
+                rolling_success_rate=0.0,
+            )
+        )
+    ),
+    omitted=_WIRE_OMITTED_AGENT_SPECIALIZATION_FIELDS,
+    label="_serialize_agent_specialization",
+)
+
+_WIRE_OMITTED_SESSION_STATS_FIELDS: frozenset[str] = frozenset()  # nothing omitted
+_assert_field_parity(
+    SessionStatsSnapshot,
+    set(
+        _serialize_session_stats(
+            SessionStatsSnapshot(
+                total_plays=0,
+                successful_plays=0,
+                failed_plays=0,
+                success_rate=0.0,
+                total_cost=0.0,
+                avg_cost_per_play=0.0,
+                total_tokens=0,
+                avg_duration_seconds=0.0,
+            )
+        )
+    ),
+    omitted=_WIRE_OMITTED_SESSION_STATS_FIELDS,
+    label="_serialize_session_stats",
+)
 
 
 # Public serialization functions
