@@ -138,6 +138,7 @@ def build_argv(
     model: str | None,
     reasoning_effort: str | None,
     extra_flags: tuple[str, ...],
+    context_path: str | None = None,
     project_dir: str | None,
     prompt_on_stdin: bool,
     prompt_file: str | None = None,
@@ -147,9 +148,10 @@ def build_argv(
 
     Keyword signature mirrors ``cli_grok.build_argv``/``cli_antigravity.build_argv``
     so the ``cli_agent`` dispatch call site stays uniform across CLI agent types.
-    ``reasoning_effort`` is accepted only for signature parity and is intentionally
-    ignored: the installed binary registers no efforts for this agent type, so no
-    ``--effort`` flag is ever emitted. *extra_flags* carries ``--yolo`` via the
+    ``reasoning_effort`` and ``context_path`` are accepted only for signature
+    parity and are intentionally ignored: the installed binary registers no
+    efforts for this agent type (no ``--effort`` flag is ever emitted) and has
+    no system-prompt-file flag. *extra_flags* carries ``--yolo`` via the
     YOLO default. Prompt delivery has three mutually-exclusive modes: *prompt_file*
     (``--prompt-file <path>``, the Windows/large-prompt path) takes priority; else
     stdin (*prompt_on_stdin*, ``-p`` omitted entirely — the child reads the whole
