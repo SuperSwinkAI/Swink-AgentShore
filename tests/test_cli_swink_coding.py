@@ -406,6 +406,52 @@ def test_parse_result_event_empty_text_is_authoritative_not_overridden_by_deltas
     assert session_id == "sc_2"
 
 
+def test_parse_unflagged_empty_result_falls_back_to_streamed_deltas() -> None:
+    """#415: an empty ``text`` with no ``"empty"`` flag means the terminal text is
+    missing, not that the run was silent — the streamed deltas carry the real
+    output and must not be discarded (doing so scored the dispatch a no-op)."""
+    raw = "\n".join(
+        [
+            '{"type":"session.started","session_id":"sc_3"}',
+            '{"type":"text","data":"Pruned 4 branches. "}',
+            '{"type":"text","data":"```json\\n{\\"success\\": true}\\n```"}',
+            '{"type":"result","text":"","session_id":"sc_3"}',
+        ]
+    )
+    text, _usage, session_id = parse_swink_coding_jsonl(raw)
+    assert text == 'Pruned 4 branches. ```json\n{"success": true}\n```'
+    assert session_id == "sc_3"
+
+
+def test_parse_unflagged_empty_result_with_no_deltas_falls_back_to_error_message() -> None:
+    """#415: with no deltas to fall back to, an error event's message still beats
+    handing back an empty string."""
+    raw = "\n".join(
+        [
+            '{"type":"error","message":"backend refused the request"}',
+            '{"type":"result","text":"","session_id":"sc_4"}',
+        ]
+    )
+    text, _usage, session_id = parse_swink_coding_jsonl(raw)
+    assert text == "backend refused the request"
+    assert session_id == "sc_4"
+
+
+def test_parse_flagged_empty_result_still_wins_over_deltas_and_error() -> None:
+    """#415 must not weaken the flagged case: ``"empty":true`` remains authoritative
+    even when deltas and an error message are both present."""
+    raw = "\n".join(
+        [
+            '{"type":"text","data":"partial"}',
+            '{"type":"error","message":"ignored"}',
+            '{"type":"result","text":"","session_id":"sc_5","empty":true}',
+        ]
+    )
+    text, _usage, session_id = parse_swink_coding_jsonl(raw)
+    assert text == ""
+    assert session_id == "sc_5"
+
+
 def test_parse_result_event_reasoning_tokens_used_when_no_output_tokens() -> None:
     raw = (
         '{"type":"result","text":"x","usage":{"input_tokens":8,'
