@@ -156,6 +156,16 @@ def _classify_envelope_defect(raw_output: str, skill_result: SkillResult) -> str
 # (verified), so only a fresh turn recovers.
 _NOOP_STREAK_LIMIT = 3
 
+# Cumulative wall-clock a no-op streak may spend before retries stop, regardless of
+# how many of _NOOP_STREAK_LIMIT remain (#416). The streak retry exists because a
+# clean-exit empty no-op is presumed a *transient* backend flake — and a flake
+# returns fast. Once a streak has burned this much wall-clock the flake story is
+# already falsified: the agent genuinely ran and produced nothing, so re-running an
+# identical prompt just repeats a deterministic failure at full cost. Backend-agnostic
+# by construction: it keys on measured attempt duration, so any slow backend benefits
+# and no agent type is singled out.
+_NOOP_RETRY_TIME_BUDGET_MS = 15 * 60 * 1000
+
 
 def _worktree_cwd_override(params: PlayParams) -> Path | None:
     """Return the dispatch cwd from an AgentShore-managed worktree allocation.
@@ -731,11 +741,15 @@ class SkillBackedPlay(Play, ABC):
         # desktop no-op resilience: a clean-exit empty no-op (agy returns an empty
         # task envelope — exit 0, no output) is a transient agy/backend flake, not
         # real work. Re-dispatch FRESH (no --resume; an empty session resumes empty)
-        # up to _NOOP_STREAK_LIMIT times. Any attempt that produces output recovers
-        # the play; _NOOP_STREAK_LIMIT consecutive no-ops is treated like a quota
-        # limit — the agent takes a standard break and the play fails for re-pick.
+        # up to _NOOP_STREAK_LIMIT times, or until the streak's cumulative wall-clock
+        # crosses _NOOP_RETRY_TIME_BUDGET_MS — whichever comes first (#416), since a
+        # streak that has already burned real time is not the fast flake this retry
+        # is for. Any attempt that produces output recovers the play; exhausting
+        # either bound is treated like a quota limit — the agent takes a standard
+        # break and the play fails for re-pick.
         if is_noop_invocation(invocation):
             attempt = 1
+            noop_elapsed_ms = invocation.duration_ms
             _logger.info(
                 "agent_noop",
                 agent_id=agent_id,
@@ -743,7 +757,11 @@ class SkillBackedPlay(Play, ABC):
                 attempt=attempt,
                 duration_ms=invocation.duration_ms,
             )
-            while is_noop_invocation(invocation) and attempt < _NOOP_STREAK_LIMIT:
+            while (
+                is_noop_invocation(invocation)
+                and attempt < _NOOP_STREAK_LIMIT
+                and noop_elapsed_ms < _NOOP_RETRY_TIME_BUDGET_MS
+            ):
                 # Same worktree-reclaim TOCTOU window the json-retry guards below.
                 if dispatch_cwd is not None and not dispatch_cwd.exists():
                     return PlayOutcome.failed(
@@ -765,6 +783,7 @@ class SkillBackedPlay(Play, ABC):
                 )
                 invocation = _merge_invocation_costs(invocation, retry_invocation)
                 attempt += 1
+                noop_elapsed_ms += retry_invocation.duration_ms
                 if is_noop_invocation(invocation):
                     _logger.info(
                         "agent_noop",
@@ -774,26 +793,43 @@ class SkillBackedPlay(Play, ABC):
                         duration_ms=retry_invocation.duration_ms,
                     )
             recovered = not is_noop_invocation(invocation)
+            budget_exhausted = (
+                not recovered
+                and attempt < _NOOP_STREAK_LIMIT
+                and noop_elapsed_ms >= _NOOP_RETRY_TIME_BUDGET_MS
+            )
             _logger.info(
                 "agent_noop_retry_outcome",
                 agent_id=agent_id,
                 play_type=self.play_type.value,
                 recovered=recovered,
                 attempts=attempt,
+                elapsed_ms=noop_elapsed_ms,
+                budget_exhausted=budget_exhausted,
             )
             if not recovered:
-                # _NOOP_STREAK_LIMIT in a row: route the agent into the standard
-                # take_break via a recoverable NO_OP error, then fail for re-pick.
+                # Streak over: either _NOOP_STREAK_LIMIT dispatches in a row, or the
+                # streak's time budget went first (#416). Either way, route the agent
+                # into the standard take_break via a recoverable NO_OP error, then
+                # fail for re-pick.
+                stop_reason = (
+                    f" after {noop_elapsed_ms // 60000}m (retry time budget)"
+                    if budget_exhausted
+                    else ""
+                )
                 await ctx.manager.mark_agent_error(
                     agent_id,
                     ErrorClass.NO_OP,
-                    f"agent produced no output on {attempt} consecutive dispatches (no-op)",
+                    (
+                        f"agent produced no output on {attempt} consecutive dispatches "
+                        f"(no-op){stop_reason}"
+                    ),
                 )
                 return PlayOutcome.failed(
                     self.play_type,
                     error=(
                         "no valid result block found in agent output (agent produced no "
-                        f"output on {attempt} consecutive dispatches)"
+                        f"output on {attempt} consecutive dispatches{stop_reason})"
                     ),
                     agent_id=agent_id,
                     retry_requested=True,
