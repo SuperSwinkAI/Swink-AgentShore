@@ -18,13 +18,19 @@ from agentshore.state import (
 )
 
 
-def _invocation(*, raw_output: str, session_id: str | None = None, exit_code: int = 0):
+def _invocation(
+    *,
+    raw_output: str,
+    session_id: str | None = None,
+    exit_code: int = 0,
+    duration_ms: int = 1000,
+):
     return AgentInvocationResult(
         raw_output=raw_output,
         tokens_in=100,
         tokens_out=50,
         dollar_cost=0.01,
-        duration_ms=1000,
+        duration_ms=duration_ms,
         exit_code=exit_code,
         session_id=session_id,
     )
@@ -548,6 +554,76 @@ async def test_noop_retry_fails_after_three_and_triggers_break() -> None:
     # The agent is routed into the standard take_break via a recoverable NO_OP.
     ctx.manager.mark_agent_error.assert_awaited_once()
     assert ctx.manager.mark_agent_error.await_args.args[1] == ErrorClass.NO_OP
+
+
+@pytest.mark.asyncio
+async def test_noop_retry_stops_early_when_time_budget_is_spent() -> None:
+    """#416: a no-op that already burned the streak's whole time budget is not the
+    fast backend flake this retry is for — re-running an identical prompt just
+    repeats a deterministic failure at full cost, so no re-dispatch happens."""
+    from agentshore.plays.skill_backed.base import _NOOP_RETRY_TIME_BUDGET_MS
+
+    play = IssuePickupPlay()
+    ctx = _ctx()
+    state = _state()
+    params = PlayParams(issue_number=42, agent_id="claude-1")
+
+    slow_noop = _invocation(
+        raw_output=NOOP,
+        session_id=None,
+        exit_code=0,
+        duration_ms=_NOOP_RETRY_TIME_BUDGET_MS + 1,
+    )
+    ctx.manager.dispatch = AsyncMock(side_effect=[slow_noop, slow_noop, slow_noop])
+
+    with (
+        patch("agentshore.plays.skill_backed.base.render_skill_prompt", return_value="prompt"),
+        patch("agentshore.plays.skill_backed.base.write_play_context"),
+    ):
+        outcome = await play.execute(state, params, ctx=ctx)
+
+    from agentshore.errors import ErrorClass, FailureKind
+
+    # The single expensive attempt spends the budget: no re-dispatch at all,
+    # versus 3 dispatches (~2h in #386) under the pure count-based bound.
+    assert ctx.manager.dispatch.await_count == 1
+    assert outcome.success is False
+    assert outcome.failure_kind == FailureKind.AGENT_ERROR
+    assert outcome.retry_requested is True
+    assert "retry time budget" in (outcome.error or "")
+    # Still routed into the standard take_break, same as a count-exhausted streak.
+    ctx.manager.mark_agent_error.assert_awaited_once()
+    assert ctx.manager.mark_agent_error.await_args.args[1] == ErrorClass.NO_OP
+
+
+@pytest.mark.asyncio
+async def test_noop_retry_uses_full_streak_when_attempts_are_cheap() -> None:
+    """#416 must not shorten the streak for fast no-ops — the budget is a ceiling on
+    wasted wall-clock, not a replacement for the count-based bound."""
+    from agentshore.plays.skill_backed.base import _NOOP_RETRY_TIME_BUDGET_MS
+
+    play = IssuePickupPlay()
+    ctx = _ctx()
+    state = _state()
+    params = PlayParams(issue_number=42, agent_id="claude-1")
+
+    # Three cheap no-ops together stay well inside the budget.
+    cheap = _invocation(
+        raw_output=NOOP,
+        session_id=None,
+        exit_code=0,
+        duration_ms=_NOOP_RETRY_TIME_BUDGET_MS // 10,
+    )
+    ctx.manager.dispatch = AsyncMock(side_effect=[cheap, cheap, cheap])
+
+    with (
+        patch("agentshore.plays.skill_backed.base.render_skill_prompt", return_value="prompt"),
+        patch("agentshore.plays.skill_backed.base.write_play_context"),
+    ):
+        outcome = await play.execute(state, params, ctx=ctx)
+
+    assert ctx.manager.dispatch.await_count == 3
+    assert "retry time budget" not in (outcome.error or "")
 
 
 @pytest.mark.asyncio

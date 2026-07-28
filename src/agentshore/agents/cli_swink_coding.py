@@ -227,9 +227,14 @@ def _swink_coding_session_id(event: dict[str, object]) -> str | None:
 def parse_swink_coding_jsonl(raw: str) -> tuple[str, _UsageTotals, str | None]:
     """Parse swink-coding CLI NDJSON output into (text, usage_totals, session_id).
 
-    - ``type:"result"`` is the terminal event: its ``text`` field (even when
-      empty — the CLI flags a legitimately empty result via ``"empty":true``)
-      is authoritative and is never overridden by concatenated deltas.
+    - ``type:"result"`` is the terminal event: a nonempty ``text`` field is
+      authoritative and is never overridden by concatenated deltas. An *empty*
+      ``text`` is authoritative only when the CLI also set ``"empty":true``,
+      which is how it marks a run that legitimately produced nothing (#415).
+      An empty ``text`` with no such flag means the terminal text is missing,
+      not that the run was silent — the accumulated ``text`` deltas are used
+      instead, so a run that streamed a complete result block is not reported
+      as a no-op.
     - ``type:"error"`` is used as a fallback terminal only when no ``result``
       event ever arrived (the run failed before producing one); its ``message``
       is surfaced as the dispatch text.
@@ -243,6 +248,7 @@ def parse_swink_coding_jsonl(raw: str) -> tuple[str, _UsageTotals, str | None]:
     usage_totals = _UsageTotals()
     text_chunks: list[str] = []
     result_seen = False
+    result_flagged_empty = False
     terminal_text: str | None = None
     error_text: str | None = None
 
@@ -259,6 +265,7 @@ def parse_swink_coding_jsonl(raw: str) -> tuple[str, _UsageTotals, str | None]:
 
         if event_type == "result":
             result_seen = True
+            result_flagged_empty = event.get("empty") is True
             text_value = event.get("text")
             if isinstance(text_value, str):
                 terminal_text = text_value
@@ -278,8 +285,17 @@ def parse_swink_coding_jsonl(raw: str) -> tuple[str, _UsageTotals, str | None]:
         # session.started / tool_use / tool_result: session id (if any) is
         # already captured above; these carry no text or usage of their own.
 
-    if result_seen:
+    if result_seen and (terminal_text or result_flagged_empty):
+        # Nonempty terminal text wins outright; an empty one wins only when the
+        # CLI explicitly flagged the run as empty.
         text_out = terminal_text if terminal_text is not None else ""
+    elif result_seen:
+        # Unflagged empty terminal text (#415): the terminal event is missing
+        # its text rather than reporting a silent run, so the streamed deltas
+        # are the best evidence of what the run produced. Without this a run
+        # that streamed a complete result block is handed back as "" and scored
+        # a no-op, which then burns the whole no-op retry budget re-running it.
+        text_out = "".join(text_chunks) or error_text or raw
     elif error_text is not None:
         text_out = error_text
     else:
