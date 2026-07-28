@@ -866,6 +866,91 @@ async def test_dispatch_cli_resume_injects_grok_dash_r(
     assert "--no-memory" in captured[0]
 
 
+async def test_dispatch_cli_swink_coding_pins_session_id_and_falls_back_to_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """SuperSwink-Coding#300: a new swink-coding run is pinned with --session-id, and
+    that id backstops a run whose output is too broken to parse one out of — which
+    is exactly the dispatch that needs the JSON-retry resume."""
+    captured: list[list[str]] = []
+
+    async def fake_create_subprocess_exec(*argv: str, **kwargs: Any) -> _FakeProcess:
+        captured.append(list(argv))
+        # Unparseable garbage: no session.started, no result event, no id.
+        return _FakeProcess([b"the model rambled and never emitted an event\n"])
+
+    monkeypatch.setattr(
+        "agentshore.agents.cli_agent.asyncio.create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+    monkeypatch.setattr("agentshore.agents.cli_agent.conpty.should_use_conpty", lambda _at: False)
+    cfg = AgentConfig(enabled=True, binary="swink-coding", timeout=10)
+    handle = _make_handle(agent_type=AgentType.SWINK_CODING)
+    handle.dispatches = 1
+
+    result = await dispatch_cli(handle, "prompt", cfg=cfg)
+
+    assert "--session-id" in captured[0]
+    pinned = captured[0][captured[0].index("--session-id") + 1]
+    # No id was observable on stdout, so the pin is what makes the run resumable.
+    assert result.session_id == pinned
+
+
+async def test_dispatch_cli_swink_coding_prefers_observed_session_id_over_pin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When the CLI does echo an id, that is what the run actually used — the pin
+    is a fallback, not an override."""
+
+    async def fake_create_subprocess_exec(*argv: str, **kwargs: Any) -> _FakeProcess:
+        return _FakeProcess(
+            [
+                b'{"type":"session.started","session_id":"sc_echoed"}\n',
+                b'{"type":"result","text":"```json\\n{\\"success\\": true}\\n```",'
+                b'"session_id":"sc_echoed"}\n',
+            ]
+        )
+
+    monkeypatch.setattr(
+        "agentshore.agents.cli_agent.asyncio.create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+    monkeypatch.setattr("agentshore.agents.cli_agent.conpty.should_use_conpty", lambda _at: False)
+    cfg = AgentConfig(enabled=True, binary="swink-coding", timeout=10)
+    handle = _make_handle(agent_type=AgentType.SWINK_CODING)
+    handle.dispatches = 1
+
+    result = await dispatch_cli(handle, "prompt", cfg=cfg)
+
+    assert result.session_id == "sc_echoed"
+
+
+async def test_dispatch_cli_swink_coding_resume_does_not_pin_session_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """--session-id conflicts with --resume at the CLI boundary; pinning a resume
+    dispatch would make it exit non-zero before doing any work."""
+    captured: list[list[str]] = []
+
+    async def fake_create_subprocess_exec(*argv: str, **kwargs: Any) -> _FakeProcess:
+        captured.append(list(argv))
+        return _FakeProcess([b'{"type":"result","text":"ok","session_id":"sc_prior"}\n'])
+
+    monkeypatch.setattr(
+        "agentshore.agents.cli_agent.asyncio.create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+    monkeypatch.setattr("agentshore.agents.cli_agent.conpty.should_use_conpty", lambda _at: False)
+    cfg = AgentConfig(enabled=True, binary="swink-coding", timeout=10)
+    handle = _make_handle(agent_type=AgentType.SWINK_CODING)
+    handle.dispatches = 1
+
+    await dispatch_cli(handle, "emit the block", cfg=cfg, resume_session_id="sc_prior")
+
+    assert "--resume" in captured[0]
+    assert "--session-id" not in captured[0]
+
+
 async def test_dispatch_cli_antigravity_resolves_session_id_from_cache(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

@@ -16,6 +16,10 @@ with no translation. There is no supported reasoning-effort flag for this CLI
 type), so *reasoning_effort* is accepted only for signature parity with the
 other CLI adapters and is otherwise ignored.
 
+Minimum supported binary is **v0.2.3**: ``--session-id`` (below) is emitted on
+every new dispatch, and an older binary rejects the unknown flag at startup
+before doing any work. ``--tier-map`` already required v0.2.1.
+
 A per-dispatch tier backend override is supported via ``--tier-map
 <tier>=<provider>:<model>[@endpoint]`` (SuperSwink-Coding#282, shipped in
 swink-coding v0.2.1). ``model`` here may therefore be either a plain tier
@@ -34,6 +38,10 @@ Output is newline-delimited JSON on stdout::
      "duration_ms":N,"time_to_first_byte_ms":N|null,"empty":true?}
     {"type":"error","message":"..."}
 
+Each new dispatch pins its own durable session id via ``--session-id``
+(SuperSwink-Coding#300) so the id is known before spawn — see
+:func:`new_pinned_session_id`. The flag is mutually exclusive with ``--resume``.
+
 ``result`` is the terminal event and carries the authoritative final text,
 usage, and session id — it is preferred over concatenating ``text`` deltas.
 ``error`` is emitted (with a non-zero process exit) when the run fails before
@@ -49,6 +57,7 @@ swink-coding-specific usage mapper is needed (unlike Grok's aliased keys).
 
 from __future__ import annotations
 
+import uuid
 from typing import Literal
 
 from agentshore.agents._jsonl import (
@@ -110,6 +119,23 @@ def classify_swink_model(value: str) -> Literal["alias", "tier_map"]:
     return "tier_map"
 
 
+def new_pinned_session_id() -> str:
+    """Return a fresh session id to pin a NEW swink-coding run to.
+
+    ``--session-id`` (SuperSwink-Coding#300, shipped in swink-coding v0.2.3)
+    pins the durable session id of a new run instead of letting the CLI mint an
+    ``sc_*`` one, so AgentShore knows the id — and therefore the transcript path
+    ``~/.swink-coding/sessions/<id>.json`` — *before* the process is spawned.
+
+    Ids must match ``[A-Za-z0-9._-]+`` and must not name an already-saved
+    session (the CLI rejects a collision at startup, pointing at ``--resume``),
+    so this mints a fresh uuid4 per dispatch. The ``as-`` prefix marks the
+    session on disk as AgentShore-pinned; ``latest`` is reserved by the CLI and
+    is unreachable from this shape.
+    """
+    return f"as-{uuid.uuid4().hex}"
+
+
 def _model_flags(model: str | None, model_tier: str | None) -> list[str]:
     """Return the ``--model``/``--tier-map`` argv slice for *model*.
 
@@ -143,6 +169,7 @@ def build_argv(
     prompt_on_stdin: bool,
     prompt_file: str | None = None,
     model_tier: str | None = None,
+    session_id: str | None = None,
 ) -> list[str]:
     """Return argv for one non-interactive swink-coding CLI invocation.
 
@@ -163,10 +190,17 @@ def build_argv(
     tier alias being overridden) is required and both ``--model <model_tier>``
     and ``--tier-map <model_tier>=<value>`` are emitted. See
     :func:`classify_swink_model`.
+
+    *session_id*, when set, pins this new run's durable session id via
+    ``--session-id`` (SuperSwink-Coding#300) — see
+    :func:`new_pinned_session_id`. It is mutually exclusive with ``--resume``
+    at the CLI boundary, so :func:`build_resume_argv` never forwards it.
     """
     resolved_binary = binary or "swink-coding"
     args = [resolved_binary]
     args += _model_flags(model, model_tier)
+    if session_id:
+        args += ["--session-id", session_id]
     args.extend(extra_flags)
     args += ["--output-format", "stream-json"]
     if project_dir:
@@ -190,6 +224,7 @@ def build_resume_argv(
     prompt_on_stdin: bool,
     prompt_file: str | None = None,
     model_tier: str | None = None,
+    session_id: str | None = None,
 ) -> list[str]:
     """Return argv for a swink-coding JSON-retry RESUME dispatch (``--resume <id>``).
 
@@ -198,6 +233,11 @@ def build_resume_argv(
     omitted. Narrow single-shot use only (desktop-dy2j), matching the other CLI
     adapters' resume shape. Always uses the explicit session id, never the
     ``latest`` sentinel the binary also accepts.
+
+    *session_id* (the ``--session-id`` pin for a *new* run) is accepted for
+    signature parity and deliberately **not** forwarded: the CLI rejects
+    ``--session-id`` alongside ``--resume`` at the argument boundary, and a
+    resumed run already has an id. Pinning is a new-run concern only.
     """
     argv = build_argv(
         prompt=prompt,

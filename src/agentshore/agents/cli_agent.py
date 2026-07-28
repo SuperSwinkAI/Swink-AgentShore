@@ -22,9 +22,10 @@ import time
 from typing import TYPE_CHECKING, cast
 
 from agentshore import subprocess_env
-from agentshore.agents import cli_antigravity
+from agentshore.agents import cli_antigravity, cli_swink_coding
 from agentshore.agents.cli import conpty
 from agentshore.agents.cli.argv import (
+    _PINNABLE_SESSION_AGENT_TYPES,
     _RESUMABLE_AGENT_TYPES,
     _prompt_on_stdin,
     _resolve_executable,
@@ -122,6 +123,7 @@ def _build_dispatch_argv(
     resume_session_id: str | None,
     effective_cwd: Path,
     prompt_file: str | None = None,
+    pinned_session_id: str | None = None,
 ) -> _DispatchArgv:
     """Build the subprocess argv list and log-preview fields for a single dispatch.
 
@@ -129,6 +131,9 @@ def _build_dispatch_argv(
     ``build_argv`` path, and the narrow JSON-retry ``--resume`` override
     (desktop-dy2j). *prompt_file*, when set, routes a Grok dispatch's prompt
     through ``--prompt-file`` instead of an argv element (issue #160).
+    *pinned_session_id*, when set, pins the new run's durable session id for the
+    CLIs that support it (see ``_PINNABLE_SESSION_AGENT_TYPES``); it is never
+    forwarded on the resume path, which already has an id.
     """
     prompt_on_stdin = _prompt_on_stdin(python_executable)
     if python_executable is not None:
@@ -177,6 +182,7 @@ def _build_dispatch_argv(
             prompt_on_stdin=prompt_on_stdin,
             prompt_file=prompt_file,
             model_tier=handle.model_tier,
+            session_id=pinned_session_id,
         )
 
     prompt_bytes = len(prompt.encode("utf-8"))
@@ -817,6 +823,20 @@ async def dispatch_cli(
     if handle.agent_type == AgentType.GROK and _prompt_on_stdin(python_executable):
         grok_prompt_file = _write_grok_prompt_file(prompt)
 
+    # SuperSwink-Coding#300: pin the new run's session id up front for the CLIs
+    # that support it, so the id is known before spawn rather than recovered from
+    # the child's output. A run that dies without emitting a parseable id then
+    # still has a resumable one, which is the only prerequisite for the narrow
+    # JSON-retry re-entry. Never pinned on the resume path — that run has an id
+    # already, and the flags are mutually exclusive at the CLI boundary.
+    pinned_session_id: str | None = None
+    if (
+        resume_session_id is None
+        and python_executable is None
+        and handle.agent_type in _PINNABLE_SESSION_AGENT_TYPES
+    ):
+        pinned_session_id = cli_swink_coding.new_pinned_session_id()
+
     _argv = _build_dispatch_argv(
         handle,
         prompt,
@@ -825,6 +845,7 @@ async def dispatch_cli(
         resume_session_id=resume_session_id,
         effective_cwd=effective_cwd,
         prompt_file=str(grok_prompt_file) if grok_prompt_file is not None else None,
+        pinned_session_id=pinned_session_id,
     )
     argv, prompt_bytes, argv_str = _argv.argv, _argv.prompt_bytes, _argv.argv_str
 
@@ -1037,6 +1058,15 @@ async def dispatch_cli(
                 effective_cwd, home=env.get("HOME")
             )
 
+    # A pinned id is authoritative for this run whether or not the child got far
+    # enough to echo it back: the CLI either started under it or never started at
+    # all. Falling back to it keeps the JSON-retry resume reachable for exactly
+    # the dispatches that need it most — the ones whose output was too broken to
+    # parse an id out of. Same shape as agy's on-disk conversation-id recovery
+    # above, but known up front instead of resolved after the fact.
+    if _observed_session_id is None and pinned_session_id is not None:
+        _observed_session_id = pinned_session_id
+
     rc = proc.returncode
     if rc != 0 and not post_response_killed:
         recovered = await _finalize_nonzero_exit(
@@ -1117,6 +1147,7 @@ __all__ = [
     # argv.py
     "_prompt_on_stdin",
     "_resolve_executable",
+    "_PINNABLE_SESSION_AGENT_TYPES",
     "_RESUMABLE_AGENT_TYPES",
     "_write_grok_prompt_file",
     "build_argv",
