@@ -101,6 +101,15 @@ _RESUMABLE_AGENT_TYPES: frozenset[AgentType] = frozenset(
 )
 
 
+# Agent types whose CLI lets the caller pin a NEW run's durable session id
+# (swink-coding's ``--session-id``, SuperSwink-Coding#300, v0.2.3+). Pinning
+# means AgentShore knows the id before spawn instead of having to recover it
+# from the child's output, so the narrow JSON-retry resume stays reachable even
+# when a dispatch produces nothing parseable. This is a capability set, not a
+# policy one: any CLI that grows the same flag belongs here.
+_PINNABLE_SESSION_AGENT_TYPES: frozenset[AgentType] = frozenset({AgentType.SWINK_CODING})
+
+
 def _apply_yolo_default(agent_type: AgentType, extra_flags: tuple[str, ...]) -> tuple[str, ...]:
     """Return YOLO defaults for *agent_type* when the user provided no flags."""
     if extra_flags:
@@ -137,6 +146,7 @@ class _ArgvBuilder(Protocol):
         prompt_on_stdin: bool,
         prompt_file: str | None,
         model_tier: str | None,
+        session_id: str | None,
     ) -> list[str]: ...
 
 
@@ -156,6 +166,7 @@ class _ResumeArgvBuilder(Protocol):
         prompt_on_stdin: bool,
         prompt_file: str | None,
         model_tier: str | None,
+        session_id: str | None,
     ) -> list[str]: ...
 
 
@@ -171,6 +182,7 @@ def _build_argv_claude_code(
     prompt_on_stdin: bool,
     prompt_file: str | None,
     model_tier: str | None,
+    session_id: str | None,
 ) -> list[str]:
     """Claude Code argv. ``project_dir``, ``prompt_file``, and ``model_tier``
     are accepted only for ``_ArgvBuilder`` signature parity and ignored:
@@ -203,6 +215,7 @@ def _build_argv_codex(
     prompt_on_stdin: bool,
     prompt_file: str | None,
     model_tier: str | None,
+    session_id: str | None,
 ) -> list[str]:
     """Codex argv. ``context_path``, ``prompt_file``, and ``model_tier`` are
     accepted only for ``_ArgvBuilder`` signature parity and ignored: Codex has
@@ -241,6 +254,7 @@ def _build_resume_argv_claude_code(
     prompt_on_stdin: bool,
     prompt_file: str | None,
     model_tier: str | None,
+    session_id: str | None,
 ) -> list[str]:
     """Claude Code resume argv. ``model``, ``reasoning_effort``, ``extra_flags``,
     ``project_dir``, ``prompt_file``, and ``model_tier`` are accepted only for
@@ -274,6 +288,7 @@ def _build_resume_argv_codex(
     prompt_on_stdin: bool,
     prompt_file: str | None,
     model_tier: str | None,
+    session_id: str | None,
 ) -> list[str]:
     """Codex resume argv — splices ``exec resume <id>`` into the base
     :func:`_build_argv_codex` argv (issue #329, see the ``-C`` strip below)."""
@@ -288,6 +303,7 @@ def _build_resume_argv_codex(
         prompt_on_stdin=prompt_on_stdin,
         prompt_file=prompt_file,
         model_tier=model_tier,
+        session_id=None,
     )
     # Splice "resume <id>" into base [binary, "exec", "--json", ...].
     # `codex exec resume` (unlike `codex exec`) does not accept the `-C
@@ -331,6 +347,7 @@ def build_argv(
     prompt_on_stdin: bool = False,
     prompt_file: str | None = None,
     model_tier: str | None = None,
+    session_id: str | None = None,
 ) -> list[str]:
     """Return the argv list for invoking *agent_type* with *prompt*.
 
@@ -355,6 +372,10 @@ def build_argv(
     when *model* is a ``provider:model[@endpoint]`` tier_map override rather
     than a plain tier alias, to say which tier's backend is being overridden
     for this dispatch. Ignored by every other agent type.
+
+    *session_id* is likewise swink-coding-specific (SuperSwink-Coding#300): it
+    pins the new run's durable session id so the caller knows it before spawn
+    (:data:`_PINNABLE_SESSION_AGENT_TYPES`). Ignored by every other agent type.
 
     Exported so tests can assert command shape without spawning a subprocess.
     """
@@ -383,6 +404,7 @@ def build_argv(
         prompt_on_stdin=prompt_on_stdin,
         prompt_file=prompt_file,
         model_tier=model_tier,
+        session_id=session_id,
     )
 
 
@@ -439,4 +461,7 @@ def build_resume_argv(
         prompt_on_stdin=prompt_on_stdin,
         prompt_file=prompt_file,
         model_tier=model_tier,
+        # A resumed run already has an id; pinning is a new-run concern and the
+        # CLIs that support it reject the two flags together.
+        session_id=None,
     )

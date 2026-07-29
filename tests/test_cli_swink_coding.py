@@ -4,6 +4,8 @@ yolo, --cwd, resume), NDJSON result/error parsing, and terminal-event detection.
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from agentshore.agents.cli_swink_coding import (
@@ -11,6 +13,7 @@ from agentshore.agents.cli_swink_coding import (
     build_argv,
     build_resume_argv,
     classify_swink_model,
+    new_pinned_session_id,
     parse_swink_coding_jsonl,
 )
 
@@ -343,6 +346,71 @@ def test_build_resume_argv_tier_map_model_emits_model_and_tier_map_flags() -> No
     assert "--model" in argv and argv[argv.index("--model") + 1] == "small"
     assert "--tier-map" in argv
     assert argv[argv.index("--tier-map") + 1] == "small=ollama:qwen2.5-coder:7b"
+
+
+# ---------------------------------------------------------------------------
+# --session-id pinning (SuperSwink-Coding#300)
+# ---------------------------------------------------------------------------
+
+
+def test_new_pinned_session_id_matches_cli_id_grammar() -> None:
+    """The CLI validates ids against [A-Za-z0-9._-]+ and reserves ``latest``."""
+    ident = new_pinned_session_id()
+    assert re.fullmatch(r"[A-Za-z0-9._-]+", ident)
+    assert ident != "latest"
+    assert ident.startswith("as-")
+
+
+def test_new_pinned_session_id_is_fresh_each_call() -> None:
+    """An id naming an already-saved session is rejected at startup, so every
+    dispatch must mint its own."""
+    assert len({new_pinned_session_id() for _ in range(100)}) == 100
+
+
+def test_build_argv_emits_session_id_flag_when_pinned() -> None:
+    argv = build_argv(
+        prompt="do the thing",
+        binary="swink-coding",
+        model="small",
+        reasoning_effort=None,
+        extra_flags=("--yolo",),
+        project_dir="/worktree",
+        prompt_on_stdin=False,
+        session_id="as-deadbeef",
+    )
+    assert "--session-id" in argv
+    assert argv[argv.index("--session-id") + 1] == "as-deadbeef"
+
+
+def test_build_argv_omits_session_id_flag_when_unpinned() -> None:
+    argv = build_argv(
+        prompt="do the thing",
+        binary="swink-coding",
+        model="small",
+        reasoning_effort=None,
+        extra_flags=("--yolo",),
+        project_dir="/worktree",
+        prompt_on_stdin=False,
+    )
+    assert "--session-id" not in argv
+
+
+def test_build_resume_argv_never_forwards_session_id() -> None:
+    """``--session-id`` and ``--resume`` are mutually exclusive at the CLI
+    boundary — forwarding the pin would make every resume dispatch exit non-zero."""
+    argv = build_resume_argv(
+        resume_session_id="sc_abc123",
+        prompt="emit the block",
+        binary="swink-coding",
+        model="small",
+        reasoning_effort=None,
+        extra_flags=("--yolo",),
+        project_dir="/wt",
+        prompt_on_stdin=False,
+        session_id="as-deadbeef",
+    )
+    assert "--session-id" not in argv
+    assert argv[:3] == ["swink-coding", "--resume", "sc_abc123"]
 
 
 # ---------------------------------------------------------------------------
