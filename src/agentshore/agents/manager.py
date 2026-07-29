@@ -359,6 +359,7 @@ class AgentManager:
         cwd_override: Path | None = None,
         resume_session_id: str | None = None,
         first_byte_timeout_override: float | None = None,
+        disallowed_tools: tuple[str, ...] = (),
     ) -> AgentInvocationResult:
         """Route *prompt* to the agent's adapter and return the raw result.
 
@@ -375,6 +376,12 @@ class AgentManager:
         never mutated — concurrent dispatches on the same handle can each
         target a different worktree. ``AGENTSHORE_PROJECT_PATH`` continues to
         point at the main repo regardless of the override.
+
+        ``disallowed_tools`` carries the executing play's tool-denial policy
+        (``Play.disallowed_tools``) down to the CLI adapter, which denies those
+        tools at the child's own permission layer if it can express that. The
+        manager only forwards it: which tools a play may reach is the play's
+        call, not the manager's.
         """
         handle = self._get_handle(agent_id)
         cb = self._circuit_breakers[agent_id]
@@ -456,6 +463,7 @@ class AgentManager:
                 cwd_override=cwd_override,
                 resume_session_id=resume_session_id,
                 first_byte_timeout_override=first_byte_timeout_override,
+                disallowed_tools=disallowed_tools,
             )
         except (OrchestratorError, OSError, RuntimeError) as exc:
             cb.record_failure()

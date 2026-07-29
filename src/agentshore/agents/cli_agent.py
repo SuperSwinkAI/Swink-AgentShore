@@ -27,6 +27,7 @@ from agentshore.agents.cli import conpty
 from agentshore.agents.cli.argv import (
     _PINNABLE_SESSION_AGENT_TYPES,
     _RESUMABLE_AGENT_TYPES,
+    _TOOL_DENIAL_CAPABLE_AGENT_TYPES,
     _prompt_on_stdin,
     _resolve_executable,
     _write_grok_prompt_file,
@@ -124,6 +125,7 @@ def _build_dispatch_argv(
     effective_cwd: Path,
     prompt_file: str | None = None,
     pinned_session_id: str | None = None,
+    disallowed_tools: tuple[str, ...] = (),
 ) -> _DispatchArgv:
     """Build the subprocess argv list and log-preview fields for a single dispatch.
 
@@ -134,6 +136,10 @@ def _build_dispatch_argv(
     *pinned_session_id*, when set, pins the new run's durable session id for the
     CLIs that support it (see ``_PINNABLE_SESSION_AGENT_TYPES``); it is never
     forwarded on the resume path, which already has an id.
+    *disallowed_tools* carries the executing play's tool denials and — unlike
+    the pin — IS forwarded on the resume path, since the retry continues the
+    same play. The test-shim path ignores it: the shim is a Python mock with no
+    tool surface to deny.
     """
     prompt_on_stdin = _prompt_on_stdin(python_executable)
     if python_executable is not None:
@@ -169,6 +175,7 @@ def _build_dispatch_argv(
             prompt_on_stdin=prompt_on_stdin,
             prompt_file=prompt_file,
             model_tier=handle.model_tier,
+            disallowed_tools=disallowed_tools,
         )
     else:
         argv = build_argv(
@@ -183,6 +190,7 @@ def _build_dispatch_argv(
             prompt_file=prompt_file,
             model_tier=handle.model_tier,
             session_id=pinned_session_id,
+            disallowed_tools=disallowed_tools,
         )
 
     prompt_bytes = len(prompt.encode("utf-8"))
@@ -762,6 +770,7 @@ async def dispatch_cli(
     cwd_override: Path | None = None,
     resume_session_id: str | None = None,
     first_byte_timeout_override: float | None = None,
+    disallowed_tools: tuple[str, ...] = (),
 ) -> AgentInvocationResult:
     """Invoke the agent CLI and return raw output + metadata.
 
@@ -797,6 +806,12 @@ async def dispatch_cli(
         the per-agent/per-type defaults (still clamped to the wall-clock timeout).
         Set on the no-JSON resume-retry (#232) so a re-emission can't inherit
         agy's 1800s fresh-task deadline and hang. ``None`` = default resolution.
+    disallowed_tools:
+        The executing play's tool-denial policy (``Play.disallowed_tools``),
+        passed to the CLI so the named tools are denied at its own permission
+        layer. Honoured by the agent types in
+        ``_TOOL_DENIAL_CAPABLE_AGENT_TYPES`` and accepted-but-ignored by the
+        rest. Empty (the default) leaves the agent's full tool surface intact.
 
     Each call spawns a fresh CLI session, except the narrow single-shot
     JSON-retry path: when *resume_session_id* is set, the prior session is
@@ -846,6 +861,7 @@ async def dispatch_cli(
         effective_cwd=effective_cwd,
         prompt_file=str(grok_prompt_file) if grok_prompt_file is not None else None,
         pinned_session_id=pinned_session_id,
+        disallowed_tools=disallowed_tools,
     )
     argv, prompt_bytes, argv_str = _argv.argv, _argv.prompt_bytes, _argv.argv_str
 
@@ -1149,6 +1165,7 @@ __all__ = [
     "_resolve_executable",
     "_PINNABLE_SESSION_AGENT_TYPES",
     "_RESUMABLE_AGENT_TYPES",
+    "_TOOL_DENIAL_CAPABLE_AGENT_TYPES",
     "_write_grok_prompt_file",
     "build_argv",
     "build_resume_argv",
