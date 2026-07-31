@@ -239,6 +239,11 @@ class SkillBackedPlay(Play, ABC):
     is_observation: bool = False
     requeue_on_anti_confirmation: bool = False
 
+    # Tool names this play must not be able to reach (see ``Play``). Empty by
+    # default: a play gets the agent's full tool surface unless it says
+    # otherwise, so adding a denial is always a deliberate narrowing.
+    disallowed_tools: tuple[str, ...] = ()
+
     # Artifact ``type`` strings this play's result validator requires, if any. Purely
     # advisory: restated verbatim in the missing-envelope retry nudge so a re-emission
     # uses the exact spelling the validator matches on (#313). Plays with no artifact
@@ -736,6 +741,7 @@ class SkillBackedPlay(Play, ABC):
             capability=self.capability,
             play_type=self.play_type.value,
             cwd_override=dispatch_cwd,
+            disallowed_tools=self.disallowed_tools,
         )
 
         # desktop no-op resilience: a clean-exit empty no-op (agy returns an empty
@@ -780,6 +786,7 @@ class SkillBackedPlay(Play, ABC):
                     capability=self.capability,
                     play_type=self.play_type.value,
                     cwd_override=dispatch_cwd,
+                    disallowed_tools=self.disallowed_tools,
                 )
                 invocation = _merge_invocation_costs(invocation, retry_invocation)
                 attempt += 1
@@ -937,6 +944,10 @@ class SkillBackedPlay(Play, ABC):
                 first_byte_timeout_override=(
                     None if is_async_handoff else _JSON_RETRY_FIRST_BYTE_S
                 ),
+                # The retry finishes the same unit of work, so the play's tool
+                # denials must hold across it — otherwise omitting a result
+                # block once would be enough to shed them.
+                disallowed_tools=self.disallowed_tools,
             )
             retry_result = parse_skill_result(retry_invocation.raw_output)
             _logger.info(

@@ -44,6 +44,7 @@ def _make_minimal_play() -> object:
         is_handoff = False
         is_observation = False
         requeue_on_anti_confirmation = False
+        disallowed_tools = ()
 
         def preconditions(self, state: OrchestratorState) -> list[str]:
             return []

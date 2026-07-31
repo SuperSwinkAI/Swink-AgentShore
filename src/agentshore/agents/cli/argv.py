@@ -110,6 +110,16 @@ _RESUMABLE_AGENT_TYPES: frozenset[AgentType] = frozenset(
 _PINNABLE_SESSION_AGENT_TYPES: frozenset[AgentType] = frozenset({AgentType.SWINK_CODING})
 
 
+# Agent types whose CLI accepts an ephemeral per-dispatch tool deny list
+# (swink-coding's ``--disallowed-tools``). Deny rules layer on top of the
+# child's own config and win in every mode, including its YOLO mode, so this is
+# the one lever that survives AgentShore's permissive dispatch posture. A play
+# declares WHAT it must not touch (``Play.disallowed_tools``); each adapter
+# decides how — or whether — its CLI can express that. This is a capability
+# set, not a policy one: any CLI that grows the same flag belongs here.
+_TOOL_DENIAL_CAPABLE_AGENT_TYPES: frozenset[AgentType] = frozenset({AgentType.SWINK_CODING})
+
+
 def _apply_yolo_default(agent_type: AgentType, extra_flags: tuple[str, ...]) -> tuple[str, ...]:
     """Return YOLO defaults for *agent_type* when the user provided no flags."""
     if extra_flags:
@@ -147,6 +157,7 @@ class _ArgvBuilder(Protocol):
         prompt_file: str | None,
         model_tier: str | None,
         session_id: str | None,
+        disallowed_tools: tuple[str, ...],
     ) -> list[str]: ...
 
 
@@ -167,6 +178,7 @@ class _ResumeArgvBuilder(Protocol):
         prompt_file: str | None,
         model_tier: str | None,
         session_id: str | None,
+        disallowed_tools: tuple[str, ...],
     ) -> list[str]: ...
 
 
@@ -183,11 +195,13 @@ def _build_argv_claude_code(
     prompt_file: str | None,
     model_tier: str | None,
     session_id: str | None,
+    disallowed_tools: tuple[str, ...],
 ) -> list[str]:
-    """Claude Code argv. ``project_dir``, ``prompt_file``, and ``model_tier``
-    are accepted only for ``_ArgvBuilder`` signature parity and ignored:
-    Claude has no working-directory flag, no prompt-file mode, and no
-    tier_map concept.
+    """Claude Code argv. ``project_dir``, ``prompt_file``, ``model_tier``,
+    ``session_id``, and ``disallowed_tools`` are accepted only for
+    ``_ArgvBuilder`` signature parity and ignored: Claude has no
+    working-directory flag, no prompt-file mode, no tier_map concept, no
+    caller-pinned session id, and no per-dispatch tool deny flag.
     """
     binary = binary or "claude"
     args = [binary, "-p", "--verbose", "--output-format", "stream-json"]
@@ -216,10 +230,13 @@ def _build_argv_codex(
     prompt_file: str | None,
     model_tier: str | None,
     session_id: str | None,
+    disallowed_tools: tuple[str, ...],
 ) -> list[str]:
-    """Codex argv. ``context_path``, ``prompt_file``, and ``model_tier`` are
-    accepted only for ``_ArgvBuilder`` signature parity and ignored: Codex has
-    no system-prompt-file flag, no prompt-file mode, and no tier_map concept.
+    """Codex argv. ``context_path``, ``prompt_file``, ``model_tier``,
+    ``session_id``, and ``disallowed_tools`` are accepted only for
+    ``_ArgvBuilder`` signature parity and ignored: Codex has no
+    system-prompt-file flag, no prompt-file mode, no tier_map concept, no
+    caller-pinned session id, and no per-dispatch tool deny flag.
     """
     binary = binary or "codex"
     yolo = "--dangerously-bypass-approvals-and-sandbox" in extra_flags
@@ -255,11 +272,13 @@ def _build_resume_argv_claude_code(
     prompt_file: str | None,
     model_tier: str | None,
     session_id: str | None,
+    disallowed_tools: tuple[str, ...],
 ) -> list[str]:
     """Claude Code resume argv. ``model``, ``reasoning_effort``, ``extra_flags``,
-    ``project_dir``, ``prompt_file``, and ``model_tier`` are accepted only for
-    ``_ResumeArgvBuilder`` signature parity and ignored: ``--resume`` re-enters
-    the prior session verbatim with no per-dispatch flags.
+    ``project_dir``, ``prompt_file``, ``model_tier``, ``session_id``, and
+    ``disallowed_tools`` are accepted only for ``_ResumeArgvBuilder`` signature
+    parity and ignored: ``--resume`` re-enters the prior session verbatim with
+    no per-dispatch flags.
     """
     binary = binary or "claude"
     argv = [
@@ -289,6 +308,7 @@ def _build_resume_argv_codex(
     prompt_file: str | None,
     model_tier: str | None,
     session_id: str | None,
+    disallowed_tools: tuple[str, ...],
 ) -> list[str]:
     """Codex resume argv — splices ``exec resume <id>`` into the base
     :func:`_build_argv_codex` argv (issue #329, see the ``-C`` strip below)."""
@@ -304,6 +324,7 @@ def _build_resume_argv_codex(
         prompt_file=prompt_file,
         model_tier=model_tier,
         session_id=None,
+        disallowed_tools=disallowed_tools,
     )
     # Splice "resume <id>" into base [binary, "exec", "--json", ...].
     # `codex exec resume` (unlike `codex exec`) does not accept the `-C
@@ -348,6 +369,7 @@ def build_argv(
     prompt_file: str | None = None,
     model_tier: str | None = None,
     session_id: str | None = None,
+    disallowed_tools: tuple[str, ...] = (),
 ) -> list[str]:
     """Return the argv list for invoking *agent_type* with *prompt*.
 
@@ -377,6 +399,14 @@ def build_argv(
     pins the new run's durable session id so the caller knows it before spawn
     (:data:`_PINNABLE_SESSION_AGENT_TYPES`). Ignored by every other agent type.
 
+    *disallowed_tools* is the executing play's tool-denial policy
+    (``Play.disallowed_tools``) — tool names the play must not be able to reach,
+    denied at the CLI's own permission layer rather than merely discouraged in
+    the prompt. Honoured by the agent types in
+    :data:`_TOOL_DENIAL_CAPABLE_AGENT_TYPES` and ignored by the rest, which is
+    a capability gap, not a policy exemption: a play's declared denials are
+    advisory on any CLI that cannot express them.
+
     Exported so tests can assert command shape without spawning a subprocess.
     """
     from agentshore.agents import cli_antigravity, cli_grok, cli_swink_coding
@@ -405,6 +435,7 @@ def build_argv(
         prompt_file=prompt_file,
         model_tier=model_tier,
         session_id=session_id,
+        disallowed_tools=disallowed_tools,
     )
 
 
@@ -421,6 +452,7 @@ def build_resume_argv(
     prompt_on_stdin: bool = False,
     prompt_file: str | None = None,
     model_tier: str | None = None,
+    disallowed_tools: tuple[str, ...] = (),
 ) -> list[str]:
     """Return argv for a single JSON-retry RESUME dispatch (desktop-dy2j).
 
@@ -433,6 +465,12 @@ def build_resume_argv(
 
     *model_tier* is swink-coding-specific (SuperSwink-Coding#282) — see
     :func:`build_argv`. Ignored by every other agent type.
+
+    *disallowed_tools* IS forwarded here, unlike *session_id* below: the retry
+    re-enters the same play's session to finish the same unit of work, so the
+    play's denials must hold across it. A resume that quietly restored a tool
+    the play had denied would make the policy trivially escapable — omit the
+    result block once and the deny is gone.
 
     Exported so tests can assert command shape without spawning a subprocess.
     """
@@ -464,4 +502,5 @@ def build_resume_argv(
         # A resumed run already has an id; pinning is a new-run concern and the
         # CLIs that support it reject the two flags together.
         session_id=None,
+        disallowed_tools=disallowed_tools,
     )

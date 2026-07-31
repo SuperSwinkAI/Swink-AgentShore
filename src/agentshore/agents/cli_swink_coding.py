@@ -170,6 +170,7 @@ def build_argv(
     prompt_file: str | None = None,
     model_tier: str | None = None,
     session_id: str | None = None,
+    disallowed_tools: tuple[str, ...] = (),
 ) -> list[str]:
     """Return argv for one non-interactive swink-coding CLI invocation.
 
@@ -195,6 +196,15 @@ def build_argv(
     ``--session-id`` (SuperSwink-Coding#300) — see
     :func:`new_pinned_session_id`. It is mutually exclusive with ``--resume``
     at the CLI boundary, so :func:`build_resume_argv` never forwards it.
+
+    *disallowed_tools* emits one repeated ``--disallowed-tools <spec>`` per
+    entry, the executing play's tool-denial policy pushed down to the CLI's own
+    permission layer. Deny rules layer on top of the child's config and win in
+    every mode **including ``--yolo``**, which is why this is the only lever
+    that survives the YOLO default in *extra_flags*. Specs use the CLI's
+    ``tool`` / ``tool(glob)`` grammar; unknown tool names fail fast at startup,
+    so an entry that does not name a real tool wedges the dispatch rather than
+    silently doing nothing (see ``_CODE_REVIEW_DENIED_TOOLS``).
     """
     resolved_binary = binary or "swink-coding"
     args = [resolved_binary]
@@ -202,6 +212,8 @@ def build_argv(
     if session_id:
         args += ["--session-id", session_id]
     args.extend(extra_flags)
+    for spec in disallowed_tools:
+        args += ["--disallowed-tools", spec]
     args += ["--output-format", "stream-json"]
     if project_dir:
         args += ["--cwd", project_dir]
@@ -225,6 +237,7 @@ def build_resume_argv(
     prompt_file: str | None = None,
     model_tier: str | None = None,
     session_id: str | None = None,
+    disallowed_tools: tuple[str, ...] = (),
 ) -> list[str]:
     """Return argv for a swink-coding JSON-retry RESUME dispatch (``--resume <id>``).
 
@@ -238,6 +251,11 @@ def build_resume_argv(
     signature parity and deliberately **not** forwarded: the CLI rejects
     ``--session-id`` alongside ``--resume`` at the argument boundary, and a
     resumed run already has an id. Pinning is a new-run concern only.
+
+    *disallowed_tools*, unlike *session_id*, **is** forwarded: the retry
+    re-enters the same play's session to finish the same work, so its denials
+    still apply. ``--disallowed-tools`` is ephemeral per-invocation state, not
+    session state, so it has to be re-passed on the resume to hold.
     """
     argv = build_argv(
         prompt=prompt,
@@ -249,6 +267,7 @@ def build_resume_argv(
         prompt_on_stdin=prompt_on_stdin,
         prompt_file=prompt_file,
         model_tier=model_tier,
+        disallowed_tools=disallowed_tools,
     )
     # argv[0] is the binary; inject --resume <id> directly after it.
     return [argv[0], "--resume", resume_session_id, *argv[1:]]

@@ -414,6 +414,85 @@ def test_build_resume_argv_never_forwards_session_id() -> None:
 
 
 # ---------------------------------------------------------------------------
+# --disallowed-tools (per-play tool denial)
+# ---------------------------------------------------------------------------
+
+
+def test_build_argv_emits_one_disallowed_tools_flag_per_spec() -> None:
+    """The CLI flag is repeatable, not comma-joined — a single
+    ``--disallowed-tools a,b`` would be parsed as one tool named ``a,b`` and
+    rejected at startup as unknown."""
+    argv = build_argv(
+        prompt="review it",
+        binary="swink-coding",
+        model="small",
+        reasoning_effort=None,
+        extra_flags=("--yolo",),
+        project_dir="/worktree",
+        prompt_on_stdin=False,
+        disallowed_tools=("write_file", "edit_file"),
+    )
+    pairs = [(argv[i], argv[i + 1]) for i, tok in enumerate(argv) if tok == "--disallowed-tools"]
+    assert pairs == [
+        ("--disallowed-tools", "write_file"),
+        ("--disallowed-tools", "edit_file"),
+    ]
+
+
+def test_build_argv_omits_disallowed_tools_when_play_denies_nothing() -> None:
+    """The default is the agent's full tool surface; denial is opt-in."""
+    argv = build_argv(
+        prompt="do the thing",
+        binary="swink-coding",
+        model="small",
+        reasoning_effort=None,
+        extra_flags=("--yolo",),
+        project_dir="/worktree",
+        prompt_on_stdin=False,
+    )
+    assert "--disallowed-tools" not in argv
+
+
+def test_disallowed_tools_survives_the_yolo_default() -> None:
+    """Deny rules win over the CLI's permissive mode — that property is the
+    whole reason this lever is worth having, since every AgentShore dispatch
+    carries ``--yolo``."""
+    argv = build_argv(
+        prompt="review it",
+        binary="swink-coding",
+        model="small",
+        reasoning_effort=None,
+        extra_flags=("--yolo",),
+        project_dir="/worktree",
+        prompt_on_stdin=False,
+        disallowed_tools=("write_file",),
+    )
+    assert "--yolo" in argv
+    assert "--disallowed-tools" in argv
+
+
+def test_build_resume_argv_forwards_disallowed_tools() -> None:
+    """Unlike the session-id pin, denials MUST cross the JSON-retry resume: the
+    flag is per-invocation, not session state, so a resume that dropped it would
+    hand back the very tools the play denied."""
+    argv = build_resume_argv(
+        resume_session_id="sc_abc123",
+        prompt="emit the block",
+        binary="swink-coding",
+        model="small",
+        reasoning_effort=None,
+        extra_flags=("--yolo",),
+        project_dir="/wt",
+        prompt_on_stdin=False,
+        disallowed_tools=("write_file", "edit_file"),
+    )
+    assert argv[:3] == ["swink-coding", "--resume", "sc_abc123"]
+    assert argv.count("--disallowed-tools") == 2
+    assert "write_file" in argv
+    assert "edit_file" in argv
+
+
+# ---------------------------------------------------------------------------
 # parse_swink_coding_jsonl — result event (primary path)
 # ---------------------------------------------------------------------------
 

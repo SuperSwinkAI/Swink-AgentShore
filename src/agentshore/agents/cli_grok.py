@@ -87,6 +87,7 @@ def build_argv(
     prompt_file: str | None = None,
     model_tier: str | None = None,
     session_id: str | None = None,
+    disallowed_tools: tuple[str, ...] = (),
 ) -> list[str]:
     """Return argv for one non-interactive Grok CLI invocation.
 
@@ -99,10 +100,11 @@ def build_argv(
     its path as *prompt_file*; Grok reads it via ``--prompt-file``. Otherwise
     the prompt is passed directly via ``-p`` — never as an empty string.
 
-    *context_path*, *model_tier* and *session_id* are accepted only for
-    signature parity with the shared ``cli.argv._ArgvBuilder`` registry and are
-    ignored: the Grok CLI has no system-prompt-file flag, no tier_map concept,
-    and no way to pin a new session's id.
+    *context_path*, *model_tier*, *session_id* and *disallowed_tools* are
+    accepted only for signature parity with the shared ``cli.argv._ArgvBuilder``
+    registry and are ignored: the Grok CLI has no system-prompt-file flag, no
+    tier_map concept, no way to pin a new session's id, and no per-dispatch
+    tool-permission flag.
     """
     resolved_binary = binary or default_binary()
     # Hard-pinned to grok-4.5; cli_model warns + collapses any other value.
@@ -146,6 +148,7 @@ def build_resume_argv(
     prompt_file: str | None = None,
     model_tier: str | None = None,
     session_id: str | None = None,
+    disallowed_tools: tuple[str, ...] = (),
 ) -> list[str]:
     """Return argv for a Grok JSON-retry RESUME dispatch (``-r <id>``).
 
@@ -153,9 +156,10 @@ def build_resume_argv(
     the prior session and emits the result block it omitted. ``--no-memory`` is
     retained from :func:`build_argv`: session resume re-enters a persisted
     transcript and is independent of Grok's cross-session *memory* feature.
-    Narrow single-shot use only (desktop-dy2j). *model_tier* and *session_id*
-    are accepted only for signature parity with the shared registry and are
-    ignored.
+    Narrow single-shot use only (desktop-dy2j). *model_tier*, *session_id* and
+    *disallowed_tools* are accepted only for signature parity with the shared
+    registry and are ignored — the Grok CLI has no per-dispatch tool-permission
+    flag, so a play's declared denials cannot be expressed here.
     """
     argv = build_argv(
         prompt=prompt,

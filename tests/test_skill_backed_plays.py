@@ -2230,3 +2230,69 @@ async def test_merge_pr_execute_does_not_mark_merged_on_skill_failure() -> None:
 
     assert outcome.success is False
     ctx.store.mark_pr_merged.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_execute_forwards_play_tool_denials_to_the_manager() -> None:
+    """The play's declared denials must reach ``AgentManager.dispatch``. Without
+    this hop the policy is inert no matter how correct the argv builders are.
+    """
+    from unittest.mock import patch
+
+    from agentshore.state import SkillResult
+
+    ctx = _ctx_for_execute()
+    ctx.manager.dispatch = AsyncMock(return_value=_canned_invocation(success=True))
+    play = RunQAPlay()
+    play.disallowed_tools = ("write_file", "edit_file")
+
+    with (
+        patch(
+            "agentshore.plays.skill_backed.base.asyncio.to_thread",
+            new=AsyncMock(return_value=None),
+        ),
+        patch(
+            "agentshore.plays.skill_backed.base.parse_skill_result",
+            return_value=SkillResult(success=True, artifacts=["done"]),
+        ),
+        patch(
+            "agentshore.plays.skill_backed.base.render_skill_prompt",
+            return_value="<prompt>",
+        ),
+    ):
+        await play.execute(_state(), PlayParams(agent_id="a1"), ctx=ctx)
+
+    assert ctx.manager.dispatch.await_args.kwargs["disallowed_tools"] == (
+        "write_file",
+        "edit_file",
+    )
+
+
+@pytest.mark.asyncio
+async def test_execute_forwards_empty_denials_for_plays_with_no_policy() -> None:
+    """The common case: a play that denies nothing sends an empty tuple, leaving
+    the agent's full tool surface intact."""
+    from unittest.mock import patch
+
+    from agentshore.state import SkillResult
+
+    ctx = _ctx_for_execute()
+    ctx.manager.dispatch = AsyncMock(return_value=_canned_invocation(success=True))
+
+    with (
+        patch(
+            "agentshore.plays.skill_backed.base.asyncio.to_thread",
+            new=AsyncMock(return_value=None),
+        ),
+        patch(
+            "agentshore.plays.skill_backed.base.parse_skill_result",
+            return_value=SkillResult(success=True, artifacts=["done"]),
+        ),
+        patch(
+            "agentshore.plays.skill_backed.base.render_skill_prompt",
+            return_value="<prompt>",
+        ),
+    ):
+        await RunQAPlay().execute(_state(), PlayParams(agent_id="a1"), ctx=ctx)
+
+    assert ctx.manager.dispatch.await_args.kwargs["disallowed_tools"] == ()

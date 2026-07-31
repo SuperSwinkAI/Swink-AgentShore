@@ -951,6 +951,93 @@ async def test_dispatch_cli_swink_coding_resume_does_not_pin_session_id(
     assert "--session-id" not in captured[0]
 
 
+async def test_dispatch_cli_forwards_play_tool_denials_to_the_cli(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A play's ``disallowed_tools`` must reach the child's argv — that is the
+    only thing separating the policy from a comment."""
+    captured: list[list[str]] = []
+
+    async def fake_create_subprocess_exec(*argv: str, **kwargs: Any) -> _FakeProcess:
+        captured.append(list(argv))
+        return _FakeProcess([b'{"type":"result","text":"ok","session_id":"sc_1"}\n'])
+
+    monkeypatch.setattr(
+        "agentshore.agents.cli_agent.asyncio.create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+    monkeypatch.setattr("agentshore.agents.cli_agent.conpty.should_use_conpty", lambda _at: False)
+    cfg = AgentConfig(enabled=True, binary="swink-coding", timeout=10)
+    handle = _make_handle(agent_type=AgentType.SWINK_CODING)
+    handle.dispatches = 1
+
+    await dispatch_cli(handle, "review it", cfg=cfg, disallowed_tools=("write_file", "edit_file"))
+
+    assert captured[0].count("--disallowed-tools") == 2
+    assert "write_file" in captured[0]
+    assert "edit_file" in captured[0]
+
+
+async def test_dispatch_cli_forwards_tool_denials_across_the_json_retry_resume(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Unlike the session-id pin, denials cross the resume: the retry finishes the
+    same play's work, so dropping them would make the policy shakeable by simply
+    omitting a result block once."""
+    captured: list[list[str]] = []
+
+    async def fake_create_subprocess_exec(*argv: str, **kwargs: Any) -> _FakeProcess:
+        captured.append(list(argv))
+        return _FakeProcess([b'{"type":"result","text":"ok","session_id":"sc_prior"}\n'])
+
+    monkeypatch.setattr(
+        "agentshore.agents.cli_agent.asyncio.create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+    monkeypatch.setattr("agentshore.agents.cli_agent.conpty.should_use_conpty", lambda _at: False)
+    cfg = AgentConfig(enabled=True, binary="swink-coding", timeout=10)
+    handle = _make_handle(agent_type=AgentType.SWINK_CODING)
+    handle.dispatches = 1
+
+    await dispatch_cli(
+        handle,
+        "emit the block",
+        cfg=cfg,
+        resume_session_id="sc_prior",
+        disallowed_tools=("write_file",),
+    )
+
+    assert "--resume" in captured[0]
+    assert captured[0].count("--disallowed-tools") == 1
+    assert "write_file" in captured[0]
+
+
+async def test_dispatch_cli_omits_deny_flag_for_agents_that_cannot_express_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Claude has no per-dispatch deny flag. The denial is dropped rather than
+    passed as an unknown argument that would fail the dispatch at startup."""
+    captured: list[list[str]] = []
+
+    async def fake_create_subprocess_exec(*argv: str, **kwargs: Any) -> _FakeProcess:
+        captured.append(list(argv))
+        return _FakeProcess([b'{"type":"result","result":"ok","session_id":"c1"}\n'])
+
+    monkeypatch.setattr(
+        "agentshore.agents.cli_agent.asyncio.create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+    monkeypatch.setattr("agentshore.agents.cli_agent.conpty.should_use_conpty", lambda _at: False)
+    cfg = AgentConfig(enabled=True, binary="claude", timeout=10)
+    handle = _make_handle(agent_type=AgentType.CLAUDE_CODE)
+    handle.dispatches = 1
+
+    await dispatch_cli(handle, "review it", cfg=cfg, disallowed_tools=("write_file",))
+
+    assert "--disallowed-tools" not in captured[0]
+    assert "write_file" not in captured[0]
+
+
 async def test_dispatch_cli_antigravity_resolves_session_id_from_cache(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

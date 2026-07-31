@@ -46,6 +46,12 @@ class InternalPlay(ABC):
     is_observation: bool = False
     requeue_on_anti_confirmation: bool = False
 
+    # Tool-denial policy (see ``Play``). Always empty here and not overridable
+    # in practice: internal plays wrap AgentManager operations directly and
+    # never dispatch to a CLI, so there is no tool surface to deny. Declared
+    # only to keep the structural ``Play`` match intact.
+    disallowed_tools: tuple[str, ...] = ()
+
     def estimated_cost(self, state: OrchestratorState) -> float:
         return 0.0
 
