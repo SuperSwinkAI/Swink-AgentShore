@@ -6,6 +6,13 @@ updates:
       interval: weekly
       day: monday
     open-pull-requests-limit: 5
+    groups:
+      all-minor-patch:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
 
   # Python — uv-managed (pyproject.toml + uv.lock)
   - package-ecosystem: uv
@@ -14,6 +21,13 @@ updates:
       interval: weekly
       day: monday
     open-pull-requests-limit: 5
+    groups:
+      all-minor-patch:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
 
   # Node — npm workspace root (dashboard + desktop via single root lockfile)
   - package-ecosystem: npm
@@ -22,6 +36,13 @@ updates:
       interval: weekly
       day: monday
     open-pull-requests-limit: 5
+    groups:
+      all-minor-patch:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
 
   # Rust — Tauri desktop shell
   - package-ecosystem: cargo
@@ -30,6 +51,13 @@ updates:
       interval: weekly
       day: monday
     open-pull-requests-limit: 5
+    groups:
+      all-minor-patch:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
     # Tauri's Linux (gtk3) webview backend. AgentShore ships macOS + Windows
     # only, neither of which compiles this stack (`cargo tree -i glib` is empty
     # on the host graph). The gtk3-rs bindings are frozen at the glib 0.18
