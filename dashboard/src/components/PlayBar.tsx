@@ -1,4 +1,7 @@
 import React, { useEffect, useState } from "react";
+
+import "./PlayBar.css";
+
 import type {
   ActivePlay,
   AgentSnapshot,

@@ -57,6 +57,16 @@ The client offers three views, switched via the Stage Tabs surface (`Office` / `
 - **Kanban** — issue/PR cards derived from the beads graph mirror, showing bead status, mirror linkage, PR review/check state, and the reviewer agent. Surfaces the GitHub conversation layer against the canonical beads layer.
 - **Stats** — session metrics (plays, success rate, cost, tokens, average duration, failure streak) plus per-epic alignment and closure ratios.
 
+### Style ownership
+
+`dashboard/src/styles/theme.css` is the single theme-token contract shared by the
+standalone dashboard and desktop package. The dashboard library build publishes
+it through `dist/index.css`; desktop imports that built stylesheet and keeps only
+desktop layout/component rules in `desktop/src/styles.css`. Dashboard feature
+styles are co-located with and imported by their owning React component. Only
+the viewport reset, HUD shell, and responsive application layout remain in
+`components/Dashboard.css`.
+
 ## Zone-to-Play Mapping
 
 Each play maps to an office zone (`dashboard/src/office/zones.ts`, `PLAY_TO_ZONE`). When a play starts, the assigned agent walks to that zone's workstation. Healthy idle agents return to the Zen Garden; `take_break` is a cooldown/recovery play and routes to Recovery Bay.

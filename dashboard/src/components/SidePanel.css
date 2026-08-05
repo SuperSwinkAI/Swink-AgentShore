@@ -1,0 +1,208 @@
+#side-panel {
+  position: absolute;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  width: var(--dashboard-side-panel-width);
+  background: var(--fm-panel);
+  border-left: 1px solid var(--fm-border);
+  color: var(--fm-text-body);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  box-shadow: var(--fm-shadow);
+}
+.side-panel-content {
+  height: 100%;
+  overflow-y: auto;
+  padding: 8px;
+}
+.side-section-title {
+  font-size: 10px;
+  text-transform: uppercase;
+  color: var(--color-fm-text-dim);
+  margin-bottom: 7px;
+  letter-spacing: 1px;
+}
+.agent-provider-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+.agent-provider-filter {
+  border: 1px solid var(--fm-border-subtle);
+  background: var(--fm-bar);
+  color: var(--fm-text-body);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 10px;
+  padding: 3px 6px;
+}
+.agent-provider-filter:hover {
+  color: var(--color-fm-text);
+  background: var(--fm-hover);
+}
+.agent-provider-filter[aria-pressed="true"] {
+  color: var(--fm-text-strong);
+  border-color: var(--color-fm-ok);
+  background: var(--fm-selected);
+}
+.side-section {
+  border-top: 1px solid var(--fm-border-subtle);
+  margin-top: 10px;
+  padding-top: 8px;
+}
+.agent-entry {
+  border-bottom: 1px solid var(--fm-border-subtle);
+}
+.agent-entry.selected {
+  margin-bottom: 4px;
+}
+.agent-item {
+  display: block;
+  width: 100%;
+  padding: 7px 6px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+  font-family: inherit;
+  font-size: inherit;
+}
+.agent-item:hover {
+  background: var(--fm-hover);
+}
+.agent-item.selected {
+  background: var(--fm-selected);
+  border-color: var(--fm-selected-border);
+}
+.agent-detail-drawer {
+  border: 1px solid var(--fm-selected-border);
+  border-top: 0;
+  background: color-mix(in srgb, var(--fm-selected) 72%, transparent);
+  color: var(--fm-text-body);
+  padding: 8px 7px 10px;
+}
+.agent-heading {
+  /* desktop-31h2: 4 columns — status dot, name (flex), agent type,
+           dispatch_share badge. The badge is tabular-numeric so per-row
+           widths stay aligned across the agent list. */
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+.agent-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-status {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+}
+.agent-status.idle {
+  background: var(--color-fm-idle);
+}
+.agent-status.busy {
+  background: var(--color-fm-busy);
+}
+.agent-status.error {
+  background: var(--color-fm-hot);
+}
+.agent-status.terminated {
+  background: var(--color-fm-off);
+}
+.agent-type {
+  color: var(--color-fm-text-dim);
+  font-size: 10px;
+  justify-self: end;
+  min-width: max-content;
+  white-space: nowrap;
+}
+/* desktop-31h2: per-agent dispatch_share badge. Renders to the right
+         of the agent type in the agent list — small, dim, monospace digits
+         so the percentage doesn't visually compete with the agent name. */
+.agent-dispatch-share {
+  color: var(--color-fm-text-dim);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  margin-left: 6px;
+  min-width: 3ch;
+  text-align: right;
+  white-space: nowrap;
+}
+.agent-cost {
+  color: var(--color-fm-mute);
+  font-size: 10px;
+  margin-top: 1px;
+}
+#agent-detail {
+  color: var(--fm-text-body);
+}
+.agent-detail-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 5px 0;
+}
+.agent-detail-row span {
+  color: var(--color-fm-text-dim);
+}
+.agent-detail-row strong {
+  color: var(--color-fm-text);
+  font-weight: normal;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+.plays-section {
+  margin-top: 14px;
+}
+.plays-section-title {
+  color: var(--color-fm-text-dim);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  margin-bottom: 6px;
+}
+.plays-empty {
+  color: var(--color-fm-mute);
+  font-size: 11px;
+}
+.plays-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 60px auto;
+  gap: 8px;
+  align-items: center;
+  margin: 4px 0;
+  font-size: 11px;
+}
+.plays-row-label {
+  color: var(--color-fm-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.plays-row-bar {
+  height: 5px;
+  background: var(--fm-track);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.plays-row-bar-fill {
+  display: block;
+  height: 100%;
+  background: var(--color-fm-ok);
+  border-radius: 2px;
+}
+.plays-row-count {
+  color: var(--color-fm-text-dim);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  min-width: 32px;
+}

@@ -1,0 +1,258 @@
+/* ── Kanban board (HTML layout) ─────────────────────────────── */
+.km-card:focus-visible {
+  outline: 2px solid var(--color-fm-idle);
+  outline-offset: 2px;
+}
+
+.km-board {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  font-family: var(--font-sans);
+}
+.km-hdr {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 9px 14px 7px;
+  flex-shrink: 0;
+  gap: 12px;
+  min-width: 0;
+  overflow: hidden;
+}
+.km-hdr-label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  color: var(--fm-text-muted);
+  flex-shrink: 0;
+}
+/* Piece C: "(N hidden)" PR badge — open PRs filtered out because their
+         base branch differs from the session target branch. Muted so it reads
+         as accounting metadata, not active work. */
+.km-hdr-hidden {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  color: var(--fm-text-muted);
+  opacity: 0.75;
+  flex-shrink: 0;
+  margin-right: auto;
+}
+.km-legend {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  min-width: 0;
+  overflow: hidden;
+}
+.km-legend-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  color: var(--fm-text-muted);
+  white-space: nowrap;
+}
+.km-legend-swatch {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.km-cols {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+.km-col {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid var(--fm-border-subtle);
+}
+.km-col:last-child {
+  border-right: 0;
+}
+
+.km-col-hdr {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 10px 5px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--fm-border-subtle);
+}
+.km-bullet {
+  font-size: 7px;
+  flex-shrink: 0;
+  line-height: 1;
+}
+.km-col-name {
+  flex: 1;
+  color: var(--fm-text-label);
+  font-weight: 500;
+  min-width: 0;
+}
+.km-col-count {
+  color: var(--fm-text-muted);
+  font-size: 10px;
+  flex-shrink: 0;
+}
+
+.km-col-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px 5px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--fm-border) transparent;
+}
+.km-col-body::-webkit-scrollbar {
+  width: 3px;
+}
+.km-col-body::-webkit-scrollbar-thumb {
+  background: var(--fm-border);
+  border-radius: 2px;
+}
+.km-col-body::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* Two-line card */
+.km-card {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 1px;
+  width: 100%;
+  padding: 4px 8px;
+  margin: 0 0 3px;
+  font-size: 11px;
+  border: 1px solid transparent;
+  border-radius: 2px;
+  cursor: pointer;
+  min-height: 38px;
+  position: relative;
+  background: oklch(var(--c-tint-l) var(--c-tint-c) var(--c-hue, 210));
+  border-color: oklch(var(--c-mark-l) var(--c-mark-c) var(--c-hue, 210) / 0.22);
+  transition:
+    opacity 0.12s ease,
+    border-color 0.08s ease;
+  overflow: hidden;
+  user-select: none;
+  text-align: left;
+  font-family: var(--font-sans);
+  line-height: 1.15;
+  color: inherit;
+}
+.km-card:hover {
+  border-color: oklch(var(--c-mark-l) var(--c-mark-c) var(--c-hue, 210) / 0.48);
+}
+.km-card-main {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  line-height: 1.2;
+}
+.km-card-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fm-text-strong);
+  font-weight: 500;
+  letter-spacing: 0;
+}
+.km-card-tags {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fm-text-muted);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  line-height: 1.2;
+  letter-spacing: 0.02em;
+}
+.km-badge {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-mono);
+  font-size: 7px;
+  font-weight: 600;
+  flex-shrink: 0;
+  background: var(--fm-card);
+  color: var(--fm-text-label);
+  border: 1px solid var(--fm-border);
+  line-height: 1;
+}
+.km-progress-line {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 1px;
+  background: var(--color-fm-busy);
+  pointer-events: none;
+}
+
+/* In-progress: stronger border + amber underline */
+.km-col[data-phase="in_progress"] .km-card {
+  border-color: oklch(var(--c-mark-l) var(--c-mark-c) var(--c-hue, 210) / 0.38);
+}
+.km-col[data-phase="in_progress"] .km-card:hover {
+  border-color: oklch(var(--c-mark-l) var(--c-mark-c) var(--c-hue, 210) / 0.62);
+}
+
+/* Done: no tint, muted strikethrough */
+.km-col[data-phase="done"] .km-card {
+  background: transparent;
+  border-color: var(--fm-border-subtle);
+}
+.km-col[data-phase="done"] .km-card:hover {
+  border-color: var(--fm-border);
+}
+.km-col[data-phase="done"] .km-card .km-card-title {
+  color: var(--fm-text-muted);
+  text-decoration: line-through;
+  text-decoration-color: var(--fm-text-muted);
+}
+.km-col[data-phase="done"] .km-card .km-badge {
+  opacity: 0.45;
+}
+
+/* Agent focus */
+.km-board[data-focused-agent] .km-card {
+  opacity: 0.3;
+}
+.km-board[data-focused-agent] .km-card.km-focused {
+  opacity: 1;
+  box-shadow: inset 0 0 0 1.5px var(--color-fm-idle);
+}
+
+/* Empty state */
+.km-empty {
+  padding: 24px 10px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  color: var(--fm-text-muted);
+  text-align: center;
+}

@@ -1,4 +1,7 @@
 import React from "react";
+
+import "./SidePanel.css";
+
 import type {
   ActivePlay,
   AgentSnapshot,

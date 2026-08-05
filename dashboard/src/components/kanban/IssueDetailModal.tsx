@@ -1,5 +1,8 @@
 import React from "react";
 import { createPortal } from "react-dom";
+
+import "./IssueDetailModal.css";
+
 import type { AgentSnapshot, PullRequestSnapshot } from "../../types";
 import type { KanbanCard, Phase } from "../../views/kanban/phase";
 import { titleCase } from "../../format";

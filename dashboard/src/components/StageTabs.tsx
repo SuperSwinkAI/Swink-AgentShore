@@ -1,4 +1,8 @@
 import React, { useState } from "react";
+
+import "./StageLayout.css";
+import "./StageTabs.css";
+
 import { createNotifyStore } from "../notifyStore";
 
 export type ViewMode = "office" | "kanban" | "stats";

@@ -1,0 +1,67 @@
+/* ── Epic closure panel ─────────────────────────────────────── */
+.epic-global {
+  margin-bottom: 8px;
+}
+.epic-global-label {
+  color: var(--fm-text-strong);
+  font-size: 11px;
+  margin-bottom: 4px;
+}
+.epic-tasks-ready {
+  color: var(--fm-text-muted);
+  font-size: 10px;
+  margin-top: 3px;
+}
+.epic-track {
+  height: 5px;
+  background: var(--fm-track);
+  overflow: hidden;
+  margin: 2px 0;
+}
+.epic-fill {
+  height: 100%;
+  transition:
+    width 0.3s,
+    background-color 0.3s;
+}
+.epic-fill.closure-high {
+  background: var(--color-fm-ok);
+}
+.epic-fill.closure-mid {
+  background: var(--color-fm-busy);
+}
+.epic-fill.closure-low {
+  background: var(--color-fm-hot);
+}
+.epic-list {
+  display: grid;
+  gap: 5px;
+}
+.epic-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 52px 36px;
+  align-items: center;
+  gap: 6px;
+}
+.epic-name {
+  color: var(--fm-text-body);
+  font-size: 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.epic-score {
+  color: var(--color-fm-mute);
+  font-size: 10px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.epic-empty {
+  color: var(--color-fm-mute);
+  font-size: 10px;
+}
+.epic-more {
+  color: var(--fm-text-muted);
+  font-size: 10px;
+  margin-top: 2px;
+}

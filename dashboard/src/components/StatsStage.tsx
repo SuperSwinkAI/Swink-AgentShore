@@ -1,4 +1,7 @@
 import React, { useEffect } from "react";
+
+import "./StatsStage.css";
+
 import type {
   AgentSnapshot,
   EpicStatus,
@@ -32,7 +35,7 @@ import {
 
 // React port of `dashboard/src/views/stats/index.ts`; the notify* functions
 // mirror the imperative module's inputs. Rendering reproduces its DOM exactly
-// so the existing `.stats-*` rules in dashboard.css style this tree identically.
+// so the co-located `.stats-*` rules style this tree identically.
 
 export interface StatsStageInsets {
   top: number;

@@ -1,4 +1,7 @@
 import React, { useEffect } from "react";
+
+import "./PlaysPanel.css";
+
 import type {
   AgentSnapshot,
   BudgetSnapshot,

@@ -1,0 +1,77 @@
+/* ── Stage tabs (Office / Kanban) — live inside #top-bar ─────── */
+.top-bar-left {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  overflow: hidden;
+}
+#top-bar #stage-tabs {
+  display: flex;
+  gap: 0;
+  flex: 0 0 auto;
+  justify-self: center;
+  background: transparent;
+  border: 0;
+}
+@media (max-width: 900px) {
+  #top-bar #stage-tabs {
+    display: flex;
+  }
+  .stage-tab {
+    padding: 4px 8px;
+  }
+  .stage-tab .stage-tab-sub {
+    font-size: 8px;
+  }
+}
+.stage-tab {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  padding: 6px 28px;
+  background: transparent;
+  border: 0;
+  border-left: 1px solid var(--fm-border-subtle);
+  color: var(--fm-text-muted);
+  cursor: pointer;
+  font-family: var(--font-mono);
+  text-align: center;
+  line-height: 1.05;
+}
+.stage-tab:first-child {
+  border-left: 1px solid var(--fm-border-subtle);
+}
+.stage-tab:last-child {
+  border-right: 1px solid var(--fm-border-subtle);
+}
+.stage-tab:hover {
+  color: var(--fm-text-label);
+  background: var(--fm-hover);
+}
+.stage-tab .stage-tab-label {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: inherit;
+}
+.stage-tab .stage-tab-sub {
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: lowercase;
+  color: var(--fm-text-muted);
+}
+.stage-tab.active {
+  color: var(--fm-text-strong);
+  background: var(--fm-selected);
+  box-shadow: inset 0 -2px 0 var(--color-fm-busy);
+}
+.stage-tab.active .stage-tab-sub {
+  color: var(--fm-text-body);
+}
+.stage-tab:focus-visible {
+  outline: 2px solid var(--color-fm-idle);
+  outline-offset: -2px;
+}
