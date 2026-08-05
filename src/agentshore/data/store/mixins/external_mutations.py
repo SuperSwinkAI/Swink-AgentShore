@@ -15,7 +15,9 @@ class _ExternalMutationsMixin(_DataStoreBase):
     """Methods that operate on the ``external_mutations`` table."""
 
     @_serialized
-    async def record_external_mutation(self, mutation: ExternalMutationRecord) -> None:
+    async def record_external_mutation(
+        self, mutation: ExternalMutationRecord, *, commit: bool = True
+    ) -> None:
         """Insert a GitHub-mutation audit record (idempotency_key must be unique)."""
         await self._conn.execute(
             """
@@ -36,7 +38,8 @@ class _ExternalMutationsMixin(_DataStoreBase):
                 mutation.created_at,
             ),
         )
-        await self._conn.commit()
+        if commit:
+            await self._conn.commit()
 
     @_serialized
     async def get_external_mutation(

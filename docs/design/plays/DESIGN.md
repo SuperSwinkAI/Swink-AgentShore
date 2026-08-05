@@ -43,6 +43,17 @@ Skill-backed plays dispatch a project-local skill from `.agents/skills/<skill-na
 
 The result parser extracts the last valid result-shaped JSON object from raw agent output. The parsed `SkillResult` is mapped to `PlayOutcome`, persisted, and scored by the reward function.
 
+### Completion transaction and external effects
+
+Dispatch inserts a placeholder `plays` row before the agent runs so related
+records can reference its `play_id`. On completion, the executor commits the
+final `PlayRecord` (including structured artifacts), the work-claim transition,
+and normalized `external_mutations` intents in one SQLite transaction. A
+failure in any of those writes rolls the whole finalization back, preventing a
+completed play from retaining a live claim or an external effect from lacking a
+durable intent. GitHub/beads effects run only after that transaction commits;
+their ledger rows then move from `pending` to the concrete result status.
+
 ## Action Space And Gates
 
 `ACTION_SPACE_VERSION = 13`. The canonical slot order is `PlayType` in

@@ -57,6 +57,134 @@ async def test_play_artifacts_preserve_structured_objects(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_finalize_play_commits_claim_and_mutation_intents_atomically(tmp_path) -> None:
+    store = DataStore(tmp_path / "agentshore.db")
+    await store.initialize()
+    try:
+        await _setup_session(store, tmp_path)
+        play_id = await store.record_play(
+            PlayRecord(
+                session_id="s1",
+                play_type="issue_pickup",
+                started_at="2026-08-04T00:00:00+00:00",
+                success=False,
+            )
+        )
+        claim_group = await store.acquire_work_claims(
+            "s1", "issue_pickup", ["issue:17"], claim_group_id="claim-finalize"
+        )
+        assert claim_group == "claim-finalize"
+        assert await store.start_work_claim_group(
+            "s1", claim_group, play_id=play_id, agent_id="agent-1"
+        )
+        intent = ExternalMutationRecord(
+            session_id="s1",
+            play_id=play_id,
+            idempotency_key="intent-17",
+            mutation_type="label_issue",
+            target="17",
+            status="pending",
+            created_at="2026-08-04T00:00:01+00:00",
+            request_json='{"type":"label_issue"}',
+        )
+
+        await store.finalize_play(
+            play_id,
+            PlayRecord(
+                session_id="s1",
+                play_type="issue_pickup",
+                started_at="2026-08-04T00:00:00+00:00",
+                ended_at="2026-08-04T00:00:01+00:00",
+                success=True,
+                agent_id="agent-1",
+                artifacts=[{"type": "commit", "sha": "abc123"}],
+            ),
+            claim_group_id=claim_group,
+            claim_status="completed",
+            mutation_intents=[intent],
+        )
+
+        history = await store.get_play_history("s1")
+        completed = next(row for row in history if row.play_id == play_id)
+        assert completed.success is True
+        assert completed.ended_at == "2026-08-04T00:00:01+00:00"
+        assert completed.artifacts == [{"type": "commit", "sha": "abc123"}]
+        claims = await store.get_work_claim_group("s1", claim_group)
+        assert {claim.status for claim in claims} == {"completed"}
+        assert await store.get_external_mutation("s1", "intent-17") == intent
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_finalize_play_rolls_back_all_rows_when_claim_finish_fails(tmp_path) -> None:
+    store = DataStore(tmp_path / "agentshore.db")
+    await store.initialize()
+    try:
+        await _setup_session(store, tmp_path)
+        play_id = await store.record_play(
+            PlayRecord(
+                session_id="s1",
+                play_type="issue_pickup",
+                started_at="2026-08-04T00:00:00+00:00",
+                success=False,
+            )
+        )
+        claim_group = await store.acquire_work_claims(
+            "s1", "issue_pickup", ["issue:18"], claim_group_id="claim-rollback"
+        )
+        assert claim_group == "claim-rollback"
+        assert await store.start_work_claim_group(
+            "s1", claim_group, play_id=play_id, agent_id="agent-1"
+        )
+        await store._conn.execute(
+            """
+            CREATE TEMP TRIGGER reject_claim_completion
+            BEFORE UPDATE OF status ON work_claims
+            WHEN NEW.status = 'completed'
+            BEGIN
+                SELECT RAISE(ABORT, 'injected claim failure');
+            END
+            """
+        )
+        await store._conn.commit()
+
+        with pytest.raises(sqlite3.IntegrityError, match="injected claim failure"):
+            await store.finalize_play(
+                play_id,
+                PlayRecord(
+                    session_id="s1",
+                    play_type="issue_pickup",
+                    started_at="2026-08-04T00:00:00+00:00",
+                    ended_at="2026-08-04T00:00:01+00:00",
+                    success=True,
+                ),
+                claim_group_id=claim_group,
+                claim_status="completed",
+                mutation_intents=[
+                    ExternalMutationRecord(
+                        session_id="s1",
+                        play_id=play_id,
+                        idempotency_key="rolled-back-intent",
+                        mutation_type="label_issue",
+                        target="18",
+                        status="pending",
+                        created_at="2026-08-04T00:00:01+00:00",
+                    )
+                ],
+            )
+
+        history = await store.get_play_history("s1")
+        unfinished = next(row for row in history if row.play_id == play_id)
+        assert unfinished.ended_at is None
+        claims = await store.get_work_claim_group("s1", claim_group)
+        assert {claim.status for claim in claims} == {"running"}
+        assert await store.get_external_mutation("s1", "rolled-back-intent") is None
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
 async def test_abandon_unfinished_plays_closes_open_rows(tmp_path) -> None:
     store = DataStore(tmp_path / "agentshore.db")
     await store.initialize()

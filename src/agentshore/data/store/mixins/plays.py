@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 from agentshore.data.store.base import (
@@ -17,12 +18,27 @@ from agentshore.utils import now_iso
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from agentshore.data.models import PlayRecord
+    from agentshore.data.models import ExternalMutationRecord, PlayRecord
     from agentshore.state import JsonArtifact
 
 
 class _PlaysMixin(_DataStoreBase):
     """Methods that operate on the ``plays`` table."""
+
+    if TYPE_CHECKING:
+        # Sibling-mixin calls resolved by the concrete DataStore MRO.
+        async def finish_work_claim_group(
+            self,
+            session_id: str,
+            claim_group_id: str,
+            *,
+            status: str,
+            commit: bool = True,
+        ) -> None: ...
+
+        async def record_external_mutation(
+            self, mutation: ExternalMutationRecord, *, commit: bool = True
+        ) -> None: ...
 
     @_serialized
     async def record_play(self, play: PlayRecord) -> int:
@@ -67,6 +83,7 @@ class _PlaysMixin(_DataStoreBase):
         error: str | None = None,
         artifacts: list[JsonArtifact] | None = None,
         agent_id: str | None = None,
+        commit: bool = True,
     ) -> None:
         """Update the outcome fields of an already-inserted play row."""
         await self._conn.execute(
@@ -97,7 +114,71 @@ class _PlaysMixin(_DataStoreBase):
                 play_id,
             ),
         )
-        await self._conn.commit()
+        if commit:
+            await self._conn.commit()
+
+    @_serialized
+    async def finalize_play(
+        self,
+        play_id: int,
+        play: PlayRecord,
+        *,
+        claim_group_id: str | None,
+        claim_status: str,
+        mutation_intents: Sequence[ExternalMutationRecord] = (),
+    ) -> None:
+        """Commit one completed play, its claim, and mutation intents atomically.
+
+        The play row is inserted before dispatch so foreign-key children can
+        reference it. Completion must update that placeholder and release (or
+        retain for retry) its work claim in one transaction; otherwise a crash
+        can leave a completed play holding a live claim. Requested external
+        mutations are staged in the same transaction so effects run only from
+        a durable intent.
+        """
+        if play.ended_at is None:
+            raise ValueError("finalized play must have ended_at")
+        normalized_intents: list[ExternalMutationRecord] = []
+        for intent in mutation_intents:
+            if intent.session_id != play.session_id:
+                raise ValueError("mutation intent session must match finalized play")
+            if intent.play_id not in (None, play_id):
+                raise ValueError("mutation intent play_id must match finalized play")
+            normalized_intents.append(replace(intent, play_id=play_id))
+
+        try:
+            await self._conn.execute("BEGIN IMMEDIATE")
+            await self.update_play(
+                play_id,
+                success=play.success,
+                ended_at=play.ended_at,
+                duration_ms=play.duration_ms,
+                partial=play.partial,
+                token_cost=play.token_cost,
+                dollar_cost=play.dollar_cost,
+                alignment_before=play.alignment_before,
+                alignment_after=play.alignment_after,
+                alignment_delta=play.alignment_delta,
+                reward=play.reward,
+                failure_category=play.failure_category,
+                error=play.error,
+                artifacts=play.artifacts,
+                agent_id=play.agent_id,
+                commit=False,
+            )
+            if claim_group_id is not None:
+                await self.finish_work_claim_group(
+                    play.session_id,
+                    claim_group_id,
+                    status=claim_status,
+                    commit=False,
+                )
+            for intent in normalized_intents:
+                await self.record_external_mutation(intent, commit=False)
+            await self._conn.commit()
+        except BaseException:
+            await self._conn.rollback()
+            raise
 
     @_serialized
     async def abandon_unfinished_plays(

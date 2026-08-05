@@ -132,6 +132,7 @@ def _make_store() -> AsyncMock:
     store = AsyncMock()
     store.record_play = AsyncMock(return_value=42)
     store.update_play = AsyncMock()
+    store.finalize_play = AsyncMock()
     store.get_pr_author = AsyncMock(return_value=None)
     store.get_pr_author_type = AsyncMock(return_value=None)
     store.get_pr_github_author = AsyncMock(return_value=None)
@@ -140,11 +141,48 @@ def _make_store() -> AsyncMock:
     store.record_pull_request = AsyncMock()
     store.update_branch_activity = AsyncMock()
     store.record_external_mutation = AsyncMock()
+    store.update_external_mutation_status = AsyncMock()
     store.add_issue_labels = AsyncMock()
     store.log_scope_drift = AsyncMock()
     store.start_work_claim_group = AsyncMock(return_value=True)
     store.finish_work_claim_group = AsyncMock()
     return store
+
+
+@pytest.mark.asyncio
+async def test_executor_commits_finalization_before_applying_external_mutations() -> None:
+    call_order: list[str] = []
+    store = _make_store()
+    store.finalize_play = AsyncMock(side_effect=lambda *_args, **_kwargs: call_order.append("finalize"))
+    github = MagicMock()
+
+    async def _label_issue(*_args: object, **_kwargs: object) -> bool:
+        call_order.append("external")
+        return True
+
+    github.label_issue = AsyncMock(side_effect=_label_issue)
+    github.fetch_pull_request_by_number = AsyncMock(return_value=None)
+    play = _make_play(outcome=_make_outcome())
+    play._last_skill_result = SkillResult(
+        success=True,
+        requested_mutations=[{"type": "label_issue", "issue": 17, "labels": ["bug"]}],
+    )
+    executor = _make_executor(
+        play=play,
+        params=PlayParams(issue_number=17, extras={"claim_group_id": "claim-17"}),
+        store=store,
+        github=github,
+    )
+
+    with patch("agentshore.plays.executor.validate_scope", new_callable=AsyncMock):
+        await executor.execute(PlayType.ISSUE_PICKUP, _make_state(agents=[_agent()]))
+
+    assert call_order == ["finalize", "external"]
+    finalization = store.finalize_play.await_args
+    assert finalization is not None
+    [intent] = finalization.kwargs["mutation_intents"]
+    assert intent.mutation_type == "label_issue"
+    assert intent.status == "pending"
 
 
 def _confirmed_pr_view(number: int, branch: str = "feature/foo") -> PullRequestRecord:
@@ -244,8 +282,10 @@ async def test_failed_play_persists_dispatched_agent_id() -> None:
 
     await executor.execute(PlayType.ISSUE_PICKUP, _make_state(agents=[_agent()]))
 
-    assert store.update_play.await_args is not None
-    assert store.update_play.await_args.kwargs["agent_id"] == "agent-1"
+    finalization = store.finalize_play.await_args
+    assert finalization is not None
+    completed = finalization.args[1]
+    assert completed.agent_id == "agent-1"
 
 
 @pytest.mark.asyncio
@@ -261,7 +301,10 @@ async def test_executor_starts_and_completes_work_claim() -> None:
     store.start_work_claim_group.assert_awaited_once_with(
         "sess-test", "claim-1", play_id=42, agent_id="agent-1"
     )
-    store.finish_work_claim_group.assert_awaited_with("sess-test", "claim-1", status="completed")
+    finalization = store.finalize_play.await_args
+    assert finalization is not None
+    assert finalization.kwargs["claim_group_id"] == "claim-1"
+    assert finalization.kwargs["claim_status"] == "completed"
 
 
 @pytest.mark.asyncio
@@ -535,7 +578,10 @@ async def test_executor_marks_retrying_on_agent_timeout() -> None:
     assert outcome.success is False
     assert outcome.partial is True
     assert outcome.retry_requested is True
-    store.finish_work_claim_group.assert_awaited_with("sess-test", "claim-1", status="retrying")
+    finalization = store.finalize_play.await_args
+    assert finalization is not None
+    assert finalization.kwargs["claim_group_id"] == "claim-1"
+    assert finalization.kwargs["claim_status"] == "retrying"
 
 
 @pytest.mark.asyncio
@@ -1121,10 +1167,12 @@ async def test_alignment_delta_persisted_from_post_play_graph() -> None:
     assert outcome.alignment_delta == pytest.approx(0.25)
     record = store.record_play.await_args.args[0]
     assert record.alignment_before == pytest.approx(0.0)
-    update_kwargs = store.update_play.await_args.kwargs
-    assert update_kwargs["alignment_before"] == pytest.approx(0.0)
-    assert update_kwargs["alignment_after"] == pytest.approx(0.25)
-    assert update_kwargs["alignment_delta"] == pytest.approx(0.25)
+    finalization = store.finalize_play.await_args
+    assert finalization is not None
+    completed = finalization.args[1]
+    assert completed.alignment_before == pytest.approx(0.0)
+    assert completed.alignment_after == pytest.approx(0.25)
+    assert completed.alignment_delta == pytest.approx(0.25)
 
 
 # ---------------------------------------------------------------------------
@@ -1920,11 +1968,11 @@ async def test_block_issue_on_adds_beads_edge() -> None:
 
     mock_add.assert_awaited_once_with(Path("/tmp/project"), "bead-17", "bead-12")
     github.label_issue.assert_not_awaited()
-    store.record_external_mutation.assert_awaited_once()
-    rec = store.record_external_mutation.await_args.args[0]
-    assert rec.mutation_type == "block_issue_on"
-    assert rec.status == "beads_edge"
-    assert rec.target == "17"
+    [intent] = store.finalize_play.await_args.kwargs["mutation_intents"]
+    assert intent.mutation_type == "block_issue_on"
+    assert intent.status == "pending"
+    assert intent.target == "17"
+    assert store.update_external_mutation_status.await_args.args[2] == "beads_edge"
 
 
 @pytest.mark.asyncio
@@ -1953,8 +2001,9 @@ async def test_block_issue_on_falls_back_to_label_without_bead_mirror() -> None:
     github.comment_issue.assert_awaited_once()
     assert github.comment_issue.await_args.args[0] == 17
     assert github.comment_issue.await_args.args[1] == "<!-- agentshore:blocked-by #12 -->"
-    rec = store.record_external_mutation.await_args.args[0]
-    assert rec.status == "label_fallback"
+    [intent] = store.finalize_play.await_args.kwargs["mutation_intents"]
+    assert intent.status == "pending"
+    assert store.update_external_mutation_status.await_args.args[2] == "label_fallback"
 
 
 @pytest.mark.asyncio
@@ -1975,8 +2024,9 @@ async def test_block_issue_on_skips_when_edge_already_present() -> None:
 
     mock_add.assert_not_awaited()
     github.label_issue.assert_not_awaited()
-    rec = store.record_external_mutation.await_args.args[0]
-    assert rec.status == "already_linked"
+    [intent] = store.finalize_play.await_args.kwargs["mutation_intents"]
+    assert intent.status == "pending"
+    assert store.update_external_mutation_status.await_args.args[2] == "already_linked"
 
 
 @pytest.mark.asyncio
@@ -2018,5 +2068,6 @@ async def test_block_issue_on_escalates_to_needs_human_on_cycle_conflict() -> No
     comment_body = github.comment_issue.await_args.args[1]
     assert "<!-- agentshore:blocked-by #12 -->" in comment_body
     assert "cycle" in comment_body
-    rec = store.record_external_mutation.await_args.args[0]
-    assert rec.status == "cycle_conflict"
+    [intent] = store.finalize_play.await_args.kwargs["mutation_intents"]
+    assert intent.status == "pending"
+    assert store.update_external_mutation_status.await_args.args[2] == "cycle_conflict"
