@@ -69,6 +69,12 @@ Default operation is autonomous; the PPO policy drives all direction. Human feed
 
 Graceful stop uses **drain mode**: new work stops, running agents finish, and `END_AGENT` handles cleanup until shutdown can complete. **Hard stop** bypasses drain, cancels in-flight plays, and kills agents immediately. A shutdown-time **end-of-session report** can be requested; in embedded/desktop mode the report is surfaced in-app via a ready callback instead of opening a browser.
 
+Lifecycle is represented by one explicit `SessionLifecycle` phase (`running`,
+`draining`, `stop_requested`, `stopping`, or `stopped`) plus its associated
+drain/stop reason. Transition methods own phase changes, so combinations such as
+simultaneously running, draining, and stopped cannot be constructed by core
+components.
+
 An independent **loop-liveness watchdog** force-drains the session if the core-loop heartbeat goes stale — a hard freeze the idle/unanswered-pause backstops cannot catch. It is a no-op when `feedback.loop_liveness_timeout_seconds` is unset.
 
 An **optional graceful-drain watchdog** (#180) escalates a graceful drain to the hard stop once `feedback.graceful_drain_timeout_seconds` elapses with plays still in flight, so a stuck play can no longer hang `stop` for hours. It is **opt-in and defaults to `None` (unbounded)**: the design intent is that a drain always lets agents complete their work, and a wall-clock cap cannot distinguish a wedged drain from a healthy-but-slow one (e.g. a large fleet draining serially via `end_agent`), so a non-`None` default would hard-kill in-flight agent work mid-task. Set it only when a deployment specifically needs the backstop. The escalation calls `stop()` from inside the watchdog task; `stop()` must therefore **not** cancel its own running task (`_stop_graceful_drain_watchdog` is a no-op on the self-call path), and the teardown invariant is that **once `stop()` commits `stopped=True`, `do_stop()` always runs** — it is the only path that cancels in-flight agents, checkpoints the WAL, marks the session `stopped`, and sets `stop_done`.

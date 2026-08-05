@@ -35,6 +35,7 @@ import asyncio
 import collections
 import time
 from dataclasses import dataclass, field
+from enum import StrEnum
 from typing import TYPE_CHECKING
 
 from agentshore.config import RuntimeConfig
@@ -73,6 +74,74 @@ def _new_pause_event() -> asyncio.Event:
     return event
 
 
+class LifecyclePhase(StrEnum):
+    """Mutually exclusive phases of one orchestrator session."""
+
+    RUNNING = "running"
+    DRAINING = "draining"
+    STOP_REQUESTED = "stop_requested"
+    STOPPING = "stopping"
+    STOPPED = "stopped"
+
+
+@dataclass
+class SessionLifecycle:
+    """Validated lifecycle transitions and their associated reasons."""
+
+    phase: LifecyclePhase = LifecyclePhase.RUNNING
+    stop_reason: str = "unknown"
+    drain_reason: str | None = None
+    drain_initialized: bool = False
+
+    def request_drain(self, reason: str | None = None) -> bool:
+        if self.phase in {
+            LifecyclePhase.STOP_REQUESTED,
+            LifecyclePhase.STOPPING,
+            LifecyclePhase.STOPPED,
+        }:
+            return False
+        if self.phase is LifecyclePhase.RUNNING:
+            self.phase = LifecyclePhase.DRAINING
+        if reason is not None:
+            self.drain_reason = reason
+        return True
+
+    def begin_drain(self, reason: str) -> bool:
+        if self.drain_initialized or not self.request_drain(reason):
+            return False
+        self.drain_initialized = True
+        self.stop_reason = reason
+        return True
+
+    def request_stop(self, reason: str | None = None) -> bool:
+        if self.phase in {LifecyclePhase.STOPPING, LifecyclePhase.STOPPED}:
+            return False
+        self.phase = LifecyclePhase.STOP_REQUESTED
+        if reason is not None:
+            self.stop_reason = reason
+        return True
+
+    def begin_stop(self, default_reason: str = "stop_requested") -> bool:
+        if self.phase in {LifecyclePhase.STOPPING, LifecyclePhase.STOPPED}:
+            return False
+        self.phase = LifecyclePhase.STOPPING
+        if not self.drain_initialized:
+            self.stop_reason = default_reason
+        return True
+
+    def mark_stopped(self) -> None:
+        self.phase = LifecyclePhase.STOPPED
+
+    def resume_from_drain(self) -> bool:
+        if self.phase is not LifecyclePhase.DRAINING:
+            return False
+        self.phase = LifecyclePhase.RUNNING
+        self.drain_initialized = False
+        self.drain_reason = None
+        self.stop_reason = ""
+        return True
+
+
 @dataclass
 class SessionRuntime:
     """All orchestrator state read or written live by the composed components.
@@ -105,14 +174,9 @@ class SessionRuntime:
     session_draining_callback: Callable[[str, str], None] | None = None
     natural_exit_callback: NaturalExitCallback | None = None
 
-    # --- stop / drain / pause latches ----------------------------------------
-    stop_requested: bool = False
-    stopped: bool = False
-    stop_reason: str = "unknown"
+    # --- stop / drain / pause state ------------------------------------------
+    lifecycle: SessionLifecycle = field(default_factory=SessionLifecycle)
     stop_done: asyncio.Event = field(default_factory=asyncio.Event)
-    draining: bool = False
-    drain_reason: str | None = None
-    drain_initialized: bool = False
     pause_event: asyncio.Event = field(default_factory=_new_pause_event)
     pause_reason: str | None = None
     pause_deadline: float | None = None
@@ -167,3 +231,73 @@ class SessionRuntime:
     # drops expired ones each snapshot, so a wedged type auto-recovers (#202).
     # last_play_id is the tick reference.
     wedge_cooldown_until: dict[str, int] = field(default_factory=dict)
+
+    # Compatibility accessors keep component reads and test fixtures stable
+    # while all production transitions route through ``lifecycle`` methods.
+    @property
+    def stop_requested(self) -> bool:
+        return self.lifecycle.phase in {
+            LifecyclePhase.STOP_REQUESTED,
+            LifecyclePhase.STOPPING,
+            LifecyclePhase.STOPPED,
+        }
+
+    @stop_requested.setter
+    def stop_requested(self, value: bool) -> None:
+        if value:
+            self.lifecycle.request_stop()
+        elif self.lifecycle.phase is LifecyclePhase.STOP_REQUESTED:
+            self.lifecycle.phase = (
+                LifecyclePhase.DRAINING
+                if self.lifecycle.drain_initialized
+                else LifecyclePhase.RUNNING
+            )
+
+    @property
+    def stopped(self) -> bool:
+        # Historical callers use ``stopped`` as the stop-body ownership latch.
+        return self.lifecycle.phase in {LifecyclePhase.STOPPING, LifecyclePhase.STOPPED}
+
+    @stopped.setter
+    def stopped(self, value: bool) -> None:
+        if value:
+            self.lifecycle.begin_stop()
+        elif self.stopped:
+            self.lifecycle.phase = LifecyclePhase.RUNNING
+
+    @property
+    def draining(self) -> bool:
+        return self.lifecycle.phase is LifecyclePhase.DRAINING
+
+    @draining.setter
+    def draining(self, value: bool) -> None:
+        if value:
+            self.lifecycle.request_drain(self.lifecycle.drain_reason)
+        elif self.lifecycle.phase is LifecyclePhase.DRAINING:
+            self.lifecycle.resume_from_drain()
+
+    @property
+    def drain_initialized(self) -> bool:
+        return self.lifecycle.drain_initialized
+
+    @drain_initialized.setter
+    def drain_initialized(self, value: bool) -> None:
+        if value and self.lifecycle.phase is LifecyclePhase.RUNNING:
+            self.lifecycle.phase = LifecyclePhase.DRAINING
+        self.lifecycle.drain_initialized = value
+
+    @property
+    def stop_reason(self) -> str:
+        return self.lifecycle.stop_reason
+
+    @stop_reason.setter
+    def stop_reason(self, value: str) -> None:
+        self.lifecycle.stop_reason = value
+
+    @property
+    def drain_reason(self) -> str | None:
+        return self.lifecycle.drain_reason
+
+    @drain_reason.setter
+    def drain_reason(self, value: str | None) -> None:
+        self.lifecycle.drain_reason = value
