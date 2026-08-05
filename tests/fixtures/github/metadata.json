@@ -1,0 +1,39 @@
+{
+  "captured_at": "2026-08-05T02:54:29.331773+00:00",
+  "fixtures": {
+    "issues-rest.json": [
+      [
+        "api",
+        "repos/SuperSwinkAI/Swink-AgentShore/issues/416"
+      ],
+      [
+        "api",
+        "repos/SuperSwinkAI/Swink-AgentShore/issues/417"
+      ]
+    ],
+    "pr-list.json": [
+      "pr",
+      "list",
+      "--repo",
+      "SuperSwinkAI/Swink-AgentShore",
+      "--state",
+      "all",
+      "--json",
+      "number,title,url,state,headRefName,baseRefName,headRefOid,labels,reviewDecision,statusCheckRollup,isDraft,author,createdAt,mergeable,body,closingIssuesReferences",
+      "--limit",
+      "1"
+    ],
+    "pr-view.json": [
+      "pr",
+      "view",
+      "417",
+      "--repo",
+      "SuperSwinkAI/Swink-AgentShore",
+      "--json",
+      "number,title,url,state,headRefName,baseRefName,headRefOid,labels,reviewDecision,statusCheckRollup,isDraft,author,createdAt,mergeable,body,closingIssuesReferences"
+    ]
+  },
+  "gh_version": "gh version 2.96.0 (2026-07-02)",
+  "sanitization": "Bodies, titles, repository URLs, user names, and logins are replaced; field names, types, enums, nulls, opaque IDs, and nested shapes are retained.",
+  "source_repository": "SuperSwinkAI/Swink-AgentShore"
+}

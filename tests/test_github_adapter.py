@@ -1,4 +1,9 @@
-"""Phase 4B: GitHubAdapter unit tests — all subprocess calls are mocked."""
+"""GitHubAdapter command, filtering, pagination, and persistence tests.
+
+Wire-schema mapping is pinned by sanitized captures in
+``test_github_contract_fixtures.py``; subprocess mocks here isolate command and
+adapter behavior without inventing the primary GitHub response contract.
+"""
 
 from __future__ import annotations
 
@@ -11,6 +16,12 @@ import pytest
 
 from agentshore.config import RuntimeConfig
 from agentshore.github import GitHubAdapter
+
+GITHUB_FIXTURES = Path(__file__).parent / "fixtures" / "github"
+
+
+def _captured(name: str) -> object:
+    return json.loads((GITHUB_FIXTURES / name).read_text(encoding="utf-8"))
 
 
 def _make_adapter(
@@ -59,31 +70,18 @@ async def test_probe_sets_available_false_when_gh_missing(tmp_path: Path) -> Non
 @pytest.mark.asyncio
 async def test_list_issues_returns_records(tmp_path: Path) -> None:
     adapter, _ = _make_adapter(tmp_path)
-    # REST /issues shape: snake_case keys, lowercase state, html_url.
-    payload = json.dumps(
-        [
-            {
-                "number": 1,
-                "title": "Fix login bug",
-                "html_url": "https://github.com/example/repo/issues/1",
-                "state": "open",
-                "labels": [{"name": "bug"}],
-                "created_at": "2024-01-01T00:00:00Z",
-                "closed_at": None,
-            }
-        ]
-    )
+    payload = json.dumps(_captured("issues-rest.json"))
     with patch("agentshore.github.adapter._run_gh", new_callable=AsyncMock) as run_gh:
         run_gh.return_value = (0, payload, "")
         records = await adapter.list_issues()
 
     assert records is not None
     assert len(records) == 1
-    assert records[0].issue_number == 1
-    assert records[0].title == "Fix login bug"
-    assert records[0].url == "https://github.com/example/repo/issues/1"
-    assert records[0].labels == ["bug"]
-    assert records[0].priority is None  # no priority/* label
+    assert records[0].issue_number == 416
+    assert records[0].title == "Captured contract issue"
+    assert records[0].url == "https://github.com/example/contract-fixture/issues/416"
+    assert records[0].labels == ["bug", "priority:medium"]
+    assert records[0].priority is None  # live label uses priority:medium, not priority/medium
 
 
 def _issue_json(
@@ -263,42 +261,24 @@ async def test_list_issues_passes_since_in_query(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_list_pull_requests_returns_metadata_records(tmp_path: Path) -> None:
     adapter, _ = _make_adapter(tmp_path)
-    payload = json.dumps(
-        [
-            {
-                "number": 42,
-                "title": "Fix blocked flow",
-                "url": "https://github.com/acme/repo/pull/42",
-                "state": "OPEN",
-                "headRefName": "agentshore/109-fix-blocked-flow",
-                "labels": [{"name": "changes-requested"}],
-                "reviewDecision": "CHANGES_REQUESTED",
-                "statusCheckRollup": [{"status": "COMPLETED", "conclusion": "FAILURE"}],
-                "isDraft": False,
-                "author": {"login": "octocat"},
-                "createdAt": "2026-01-01T00:00:00Z",
-                "body": "Closes #109, #110",
-                "closingIssuesReferences": [{"number": 109}],
-            }
-        ]
-    )
+    payload = json.dumps(_captured("pr-list.json"))
     with patch("agentshore.github.adapter._run_gh", new_callable=AsyncMock) as run_gh:
         run_gh.return_value = (0, payload, "")
         records = await adapter.list_pull_requests()
 
     assert len(records) == 1
     pr = records[0]
-    assert pr.pr_number == 42
-    assert pr.title == "Fix blocked flow"
-    assert pr.url == "https://github.com/acme/repo/pull/42"
-    assert pr.state == "open"
-    assert pr.branch == "agentshore/109-fix-blocked-flow"
-    assert pr.issue_number == 109
-    assert pr.linked_issue_numbers == (109, 110)
-    assert pr.labels == ["changes-requested"]
-    assert pr.review_decision == "CHANGES_REQUESTED"
-    assert pr.status_check_summary == "failed"
-    assert pr.github_author == "octocat"
+    assert pr.pr_number == 433
+    assert pr.title == "Captured dependency update"
+    assert pr.url == "https://github.com/example/contract-fixture/pull/433"
+    assert pr.state == "merged"
+    assert pr.branch == "dependabot/uv/cryptography-50.0.0"
+    assert pr.issue_number is None
+    assert pr.linked_issue_numbers == ()
+    assert pr.labels == ["dependencies", "python:uv"]
+    assert pr.review_decision is None
+    assert pr.status_check_summary == "passed"
+    assert pr.github_author == "fixture-bot"
 
 
 @pytest.mark.asyncio

@@ -1,8 +1,7 @@
-"""Tests for GitHubAdapter mutating methods (create_issue, label_issue,
-close_issue, create_pr) and probe() error branches.
+"""Command and idempotency tests for GitHubAdapter mutations and probe errors.
 
-Companion to ``tests/test_github_adapter.py`` which focuses on read paths.
-All `gh` invocations are mocked — no subprocess is ever spawned.
+External writes are intentionally mocked; read-response schema coverage lives
+in the captured GitHub contract fixtures.
 """
 
 from __future__ import annotations

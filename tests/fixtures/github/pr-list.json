@@ -1,0 +1,107 @@
+[
+  {
+    "author": {
+      "is_bot": true,
+      "login": "fixture-bot"
+    },
+    "baseRefName": "integration",
+    "body": "Sanitized dependency update body.",
+    "closingIssuesReferences": [],
+    "createdAt": "2026-08-04T18:29:30Z",
+    "headRefName": "dependabot/uv/cryptography-50.0.0",
+    "headRefOid": "0b1f4935442ec0fa59ad7201b424b9b612a21df9",
+    "isDraft": false,
+    "labels": [
+      {
+        "color": "0366d6",
+        "description": "Pull requests that update a dependency file",
+        "id": "LA_kwDOSi_TqM8AAAACkxYxuA",
+        "name": "dependencies"
+      },
+      {
+        "color": "2b67c6",
+        "description": "Pull requests that update python:uv code",
+        "id": "LA_kwDOSi_TqM8AAAACmFjzgg",
+        "name": "python:uv"
+      }
+    ],
+    "mergeable": "UNKNOWN",
+    "number": 433,
+    "reviewDecision": "",
+    "state": "MERGED",
+    "statusCheckRollup": [
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-08-04T18:33:12Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/example/contract-fixture/actions/runs/30938861805/job/92091820089",
+        "name": "Python (ruff \u00b7 mypy \u00b7 pytest)",
+        "startedAt": "2026-08-04T18:29:39Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-08-04T18:29:54Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/example/contract-fixture/actions/runs/30938859054/job/92091810947",
+        "name": "gate",
+        "startedAt": "2026-08-04T18:29:36Z",
+        "status": "COMPLETED",
+        "workflowName": "PR Gate"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-08-04T18:30:00Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/example/contract-fixture/actions/runs/30938861805/job/92091820157",
+        "name": "Dashboard (vitest)",
+        "startedAt": "2026-08-04T18:29:39Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-08-04T18:30:19Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/example/contract-fixture/actions/runs/30938861805/job/92091820012",
+        "name": "Desktop (vitest)",
+        "startedAt": "2026-08-04T18:29:45Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-08-04T18:30:28Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/example/contract-fixture/actions/runs/30938861805/job/92091820152",
+        "name": "Desktop crate (cargo check \u00b7 macos-latest)",
+        "startedAt": "2026-08-04T18:29:40Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-08-04T18:31:01Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/example/contract-fixture/actions/runs/30938861805/job/92091820085",
+        "name": "Desktop crate (cargo check \u00b7 windows-latest)",
+        "startedAt": "2026-08-04T18:29:39Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-08-04T18:30:55Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/example/contract-fixture/actions/runs/30938861805/job/92091820212",
+        "name": "Windows spine (import \u00b7 parse \u00b7 ps1 syntax)",
+        "startedAt": "2026-08-04T18:29:42Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      }
+    ],
+    "title": "Captured dependency update",
+    "url": "https://github.com/example/contract-fixture/pull/433"
+  }
+]

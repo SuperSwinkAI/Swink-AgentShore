@@ -165,6 +165,7 @@ ignore_missing_imports = true
 testpaths = ["tests"]
 markers = [
     "real_resolve_executable: exercise the genuine cli_agent._resolve_executable (opt out of the test_cli_agent autouse identity stub)",
+    "github_contract: opt-in read-only contract checks against the current GitHub repository",
 ]
 # -n auto + --dist=worksteal cuts wall-time ~4-5x on an 8-core box; combined
 # with branch coverage the full suite finishes in ~90s instead of ~20 min.
