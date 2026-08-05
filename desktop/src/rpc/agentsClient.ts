@@ -20,6 +20,12 @@ export interface AgentConfigurePatch {
   tier_models?: Record<string, TierModel>;
 }
 
+export interface AgentAuthRow {
+  agent_type: string;
+  status: string;
+  detail: string;
+}
+
 export async function listAgents(): Promise<AgentRow[]> {
   const result = await callJsonRpc<AgentRow[] | null>("agents.list");
   return result ?? [];
@@ -35,6 +41,12 @@ export async function configureAgent(
   patch: AgentConfigurePatch,
 ): Promise<void> {
   await callJsonRpc<unknown>("agents.configure", { type, ...patch });
+}
+
+/** Probe each configured CLI agent's model-provider authentication state. */
+export async function checkAgentAuth(): Promise<AgentAuthRow[]> {
+  const result = await callJsonRpc<AgentAuthRow[] | null>("agents.check_auth");
+  return result ?? [];
 }
 
 export interface CatalogTierDefault {
@@ -101,4 +113,3 @@ export async function refreshModels(
     dry_run: params.dryRun ?? false,
   });
 }
-

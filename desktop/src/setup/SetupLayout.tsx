@@ -17,7 +17,7 @@ import {
   removeTrustedSource,
   updateIdentity,
 } from "../rpc/identitiesClient";
-import { type AgentRow } from "../rpc/agentsClient";
+import { checkAgentAuth, type AgentRow } from "../rpc/agentsClient";
 import {
   budgetSelectionToConfig,
   setBudget,
@@ -82,6 +82,7 @@ export function SetupLayout({
       remove: removeIdentity,
       checkKeychain: checkKeychainToken,
       checkAccess: checkIdentityAccess,
+      checkAgentAuth,
     }),
     [],
   );

@@ -10,6 +10,7 @@
     "preferences.get",
     "preferences.set",
     "agents.catalog",
+    "agents.check_auth",
     "identities.list_trusted",
     "identities.check_keychain",
     "identities.check_access"
