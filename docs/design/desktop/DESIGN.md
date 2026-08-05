@@ -193,8 +193,8 @@ both sides report the `dev` sentinel and match by construction; the frozen-bundl
 
 Lifecycle (`app.handshake`), recents, project (select / inspect / branches /
 set-target-branch / deselect), identities, agents (list / configure /
-`agents.check_auth`), config, session (start / status / stop), and archive (list
-/ fetch report / fetch logs). Sidecar-to-shell notifications cover progress,
+`agents.check_auth`), session (start / stop), and archive (list / fetch report /
+fetch logs). Sidecar-to-shell notifications cover progress,
 session completion, sidecar health, and agent subprocess spawn/exit;
 shell-to-sidecar covers cancellation.
 

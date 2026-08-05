@@ -74,7 +74,6 @@ def test_capabilities_advertises_handshake() -> None:
     assert "app.handshake" in capabilities()
     assert "$/cancelRequest" in capabilities()
     assert "session.start" in capabilities()
-    assert "session.status" in capabilities()
     assert "session.stop" in capabilities()
 
 
@@ -88,6 +87,16 @@ def test_capabilities_advertises_agents_methods() -> None:
 def test_capabilities_advertises_session_lifecycle() -> None:
     assert "session.start" in capabilities()
     assert "session.stop" in capabilities()
+
+
+@pytest.mark.parametrize("method", ["config.read", "config.write", "session.status"])
+def test_speculative_methods_are_not_advertised_or_routable(method: str) -> None:
+    assert method not in capabilities()
+
+    response = handle_request({"jsonrpc": "2.0", "id": 17, "method": method})
+
+    assert response is not None
+    assert response["error"]["code"] == METHOD_NOT_FOUND
 
 
 def test_capabilities_advertises_notification_methods() -> None:

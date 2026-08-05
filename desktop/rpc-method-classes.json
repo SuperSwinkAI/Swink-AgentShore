@@ -6,7 +6,6 @@
     "recents.list",
     "recents.touch",
     "recents.remove",
-    "config.read",
     "preferences.get",
     "preferences.set",
     "agents.catalog",

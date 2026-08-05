@@ -1,6 +1,6 @@
 """Handler for the ``session.*`` method family.
 
-Covers ``session.start``, ``session.stop``, ``session.status``.
+Covers ``session.start`` and ``session.stop``.
 The ``session.{get,set}_budget`` sub-family lives in :mod:`.session_budget`
 because it operates against the live orchestrator instance rather than
 lifecycle state.
@@ -63,18 +63,6 @@ def _lifecycle_result(method: str) -> dict[str, object]:
     if method == "session.start":
         return {"status": "started"}
     return {"status": "stopped"}
-
-
-def _session_state_name(state: ServerState) -> str:
-    return "running" if state.session_active else "idle"
-
-
-def _session_status_result(state: ServerState) -> dict[str, object]:
-    return {
-        "state": _session_state_name(state),
-        "session_id": state.session_id,
-        "started_at": state.started_at,
-    }
 
 
 def _emit_session_start_progress(
@@ -263,8 +251,6 @@ def _dispatch_session(
 
     if is_notification:
         return None
-    if method == "session.status":
-        return _result(req_id, _session_status_result(state))
     if method == "session.stop" and state.session_context is not None:
         return _build_session_stop_response(req_id, raw_params, state, mode=stop_mode)
 

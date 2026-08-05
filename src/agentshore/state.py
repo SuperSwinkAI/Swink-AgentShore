@@ -759,7 +759,7 @@ class OrchestratorState:
     work_availability: WorkAvailability | None = None
     drain_reason: str | None = None
     # V1 contract fields (V1_CONTRACT.md §"AgentShore State Snapshot"). These let
-    # IPC consumers (TUI status bar, dashboard HUD, desktop session.status)
+    # IPC consumers (TUI status bar and dashboard HUD)
     # render the contract surface.
     run_mode: RunMode = RunMode.SOLO
     action_space_version: int = 0

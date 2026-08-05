@@ -7,7 +7,7 @@ torch should not transitively load before ``Orchestrator.start`` runs.
 
 This test runs a fresh Python subprocess, imports the modules an
 unfrozen sidecar boot would touch (server, handshake, recents, project,
-identities, agents, archive_rpc, esr, config, embedded_bridge, build_id),
+identities, agents, archive_rpc, esr, embedded_bridge, build_id),
 and asserts ``'torch' not in sys.modules``. The subprocess isolation is
 load-bearing — the pytest process itself already has torch imported
 because the RL test fixtures use it.
@@ -27,7 +27,6 @@ _SIDECAR_BOOT_MODULES = (
     "agentshore.sidecar.agents",
     "agentshore.sidecar.archive_rpc",
     "agentshore.sidecar.esr",
-    "agentshore.sidecar.config",
     "agentshore.sidecar.embedded_bridge",
     "agentshore.sidecar.build_id",
 )
