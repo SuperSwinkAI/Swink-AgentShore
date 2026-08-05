@@ -4,9 +4,11 @@ Public surface lives at :mod:`agentshore.sidecar.server`; this package
 contains the internal implementation split across:
 
 - :mod:`.protocol` — wire types, error codes, factory helpers, session state
-- :mod:`.serve` — stdio serve loop and entry points
 - :mod:`.router` — dispatch table and request routing
 - :mod:`.handlers` — per-family dispatcher functions
+
+The single stdio serve loop and process entry points live in
+:mod:`agentshore.sidecar.server`.
 """
 
 from __future__ import annotations
