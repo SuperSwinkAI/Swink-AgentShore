@@ -1,8 +1,8 @@
-"""Equivalence tests for the `_defaults_only`-driven config parsers (TNQA wave-2).
+"""Equivalence tests for generated wire-schema config parsers (TNQA wave-2).
 
 Covers every parser that was converted from hand-written
 ``FooConfig(field=raw.get(...))`` boilerplate to the shared
-``agentshore.config._parsers._defaults_only`` helper: `_parse_auto`,
+the shared Pydantic wire-schema adapter: `_parse_auto`,
 `_parse_circuit_breaker`, `_parse_health`, `_parse_data_integrity`,
 `_parse_ppo`, `_parse_stagnation`, `_parse_loop_detection`, `_parse_session`,
 `_parse_feedback`, `_parse_timelapse`, `_parse_skills`,

@@ -205,8 +205,6 @@ def _generate_default_config(
         "project:\n"
         "  path: .\n"
         "  goals: null\n"
-        "github:\n"
-        f"  repo: {name_with_owner}\n"
         f"{agents_section}"
         "budget:\n"
         f"  enabled: {'true' if budget_enabled else 'false'}\n"

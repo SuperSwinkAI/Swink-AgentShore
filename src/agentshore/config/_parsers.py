@@ -1,17 +1,14 @@
-"""Raw TypedDicts and YAML→dataclass parsing logic for agentshore.yaml."""
+"""YAML migrations and domain validation for agentshore.yaml."""
 
 from __future__ import annotations
 
 import dataclasses
 import warnings
+from collections.abc import Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING, TypedDict, cast, overload
+from typing import TYPE_CHECKING, Any, overload
 
 if TYPE_CHECKING:
-    # Annotation-only (deferred by `from __future__`); runtime import stays
-    # function-local to break the config→state→config.models cycle.
-    from collections.abc import Mapping
-
     from agentshore.state import AgentType
 
 from agentshore.config.models import (
@@ -49,298 +46,12 @@ from agentshore.config.models import (
     UIConfig,
     WorktreeConfig,
 )
+from agentshore.config.wire import mapping, reject_unknown_fields, structure
 from agentshore.errors import ConfigError
 from agentshore.identity_names import canonical_identity_name, is_valid_github_login
 from agentshore.play_pacing import STANDARD_PLAY_COOLDOWN_PLAYS
 
-_RawNumber = int | float | str
-_RawStrictNumber = int | float
-
-
-class _RawProject(TypedDict, total=False):
-    path: str
-    goals: str | None
-    target_branch: str | None
-
-
-class _RawAuto(TypedDict, total=False):
-    detect_agents: bool
-    detect_github: bool
-    detect_api_keys: bool
-    generate_config: bool
-
-
-class _RawIntake(TypedDict, total=False):
-    seed_paths: list[str]
-    issue_labels_include: list[str]
-    issue_labels_exclude: list[str]
-    label_prefix: str
-
-
-class _RawBudget(TypedDict, total=False):
-    enabled: bool
-    total: _RawStrictNumber
-    warning_threshold: _RawStrictNumber
-    time_enabled: bool
-    time_total_minutes: int
-
-
-class _RawTrustedIds(TypedDict, total=False):
-    github_logins: list[object]
-    pr_allow_list: list[object]
-    restrict_issues_to_trusted_authors: object
-
-
-class _RawModelTier(TypedDict, total=False):
-    enabled: bool
-    model: str | None
-    reasoning_effort: str | None
-    max: int
-
-
-_RawModelTiers = dict[str, str | _RawModelTier]
-
-
-class _RawAgent(TypedDict, total=False):
-    enabled: bool
-    binary: str | None
-    model: str | None
-    reasoning_effort: str | None
-    approved_models: list[object]
-    model_tiers: _RawModelTiers
-    max_context: _RawNumber
-    timeout: _RawNumber | None
-    stream_idle_timeout: _RawNumber
-    first_byte_timeout_seconds: _RawNumber | None
-    max_output_size: _RawNumber
-    line_limit_bytes: _RawNumber
-    extra_flags: list[object]
-    identity: str | None
-
-
-class _RawIdentity(TypedDict, total=False):
-    git_user_name: str
-    git_user_email: str
-    gh_token_env: str | None
-    gh_token_login: str | None
-    gh_token_keychain: str | None
-    gh_config_dir: str | None
-    ssh_key_path: str | None
-
-
-_RawIdentities = dict[str, object]
-
-
-class _RawFreshStart(TypedDict, total=False):
-    max_plays_before_reset: int
-    context_threshold: _RawNumber
-    auto_trigger: bool
-
-
-class _RawAgentPreferences(TypedDict, total=False):
-    affinity: dict[str, str]
-    exclude: dict[str, list[str]]
-
-
-_RawAgents = dict[str, object]
-
-
-class _RawPlayPacing(TypedDict, total=False):
-    standard_cooldown_plays: int
-
-
-class _RawBootstrap(TypedDict, total=False):
-    cleanup_threshold: int
-
-
-class _RawCircuitBreaker(TypedDict, total=False):
-    failures: _RawNumber
-    window_seconds: _RawNumber
-    cooldown_seconds: _RawNumber
-
-
-class _RawHealth(TypedDict, total=False):
-    poll_interval_seconds: _RawNumber
-    stale_context_play_threshold: _RawNumber
-
-
-class _RawDataIntegrity(TypedDict, total=False):
-    enabled: bool
-    canary_interval_seconds: _RawNumber
-    snapshot_interval_seconds: _RawNumber
-    snapshot_ring_size: _RawNumber
-    wal_checkpoint_interval_seconds: _RawNumber
-
-
-class _RawTaskValidation(TypedDict, total=False):
-    max_files_per_task: int
-    max_estimated_minutes: int
-    enforce: bool
-
-
-class _RawReward(TypedDict, total=False):
-    alignment_weight: _RawNumber
-    issue_throughput_weight: _RawNumber
-    cost_weight: _RawNumber
-    time_weight: _RawNumber
-    completion_bonus: _RawNumber
-    stagnation_penalty: _RawNumber
-    failure_penalty: _RawNumber
-    issue_inflation_penalty: _RawNumber
-    scope_creep_penalty: _RawNumber
-    anti_confirmation_bonus: _RawNumber
-    loop_penalty: _RawNumber
-    progress_play_bonus: _RawNumber
-    qa_success_bonus: _RawNumber
-    merge_pr_bonus: _RawNumber
-    concurrent_agent_bonus: _RawNumber
-    type_diversity_bonus: _RawNumber
-    velocity_bonus: _RawNumber
-    velocity_bonus_threshold: _RawNumber
-    inflation_window_size: _RawNumber
-    inflation_window_min_plays: _RawNumber
-    stagnation_threshold: _RawNumber
-    cost_clip_ratio: _RawNumber
-    time_clip_ratio: _RawNumber
-
-
-class _RawPPO(TypedDict, total=False):
-    clip_epsilon: _RawNumber
-    gae_lambda: _RawNumber
-    ppo_epochs: _RawNumber
-    mini_batch_size: _RawNumber
-    value_loss_coef: _RawNumber
-    max_grad_norm: _RawNumber
-    reward_clip_low: _RawNumber
-    reward_clip_high: _RawNumber
-
-
-class _RawStagnation(TypedDict, total=False):
-    warn_after: int
-    alert_after: int
-    pause_after: int
-
-
-class _RawLoopDetection(TypedDict, total=False):
-    warn_after: int
-    force_switch_after: int
-    escalate_after: int
-    fleet_idle_threshold: int
-
-
-class _RawRL(TypedDict, total=False):
-    policy_mode: str
-    deterministic: bool
-    policy_path: str | None
-    reverse_failsafe_enabled: bool
-    reverse_failsafe_after_idle_ticks: int
-    stale_idle_claim_release_ticks: int
-    learning_rate: _RawStrictNumber
-    gamma: _RawStrictNumber
-    entropy_coef: _RawStrictNumber
-    update_every: int
-    checkpoint_every: int
-    reward: _RawReward
-    ppo: _RawPPO
-    stagnation: _RawStagnation
-    loop_detection: _RawLoopDetection
-
-
-class _RawSession(TypedDict, total=False):
-    max_plays: int | None
-    auto_alignment_check_every: int
-    auto_archive: bool
-    archive_dir: str
-    break_duration_minutes: int
-
-
-class _RawFeedback(TypedDict, total=False):
-    cadence_plays: int | None
-    cadence_minutes: int | None
-    on_stagnation: bool
-    on_budget_exhaustion: bool
-    on_loop_escalation: bool
-    on_ambiguous_intake: bool
-    unanswered_timeout_seconds: float | None
-    loop_liveness_timeout_seconds: float | None
-    graceful_drain_timeout_seconds: float | None
-
-
-class _RawScope(TypedDict, total=False):
-    strict_mode: bool
-    issue_inflation_threshold: _RawNumber
-    seed_project_mid_session_issue_ceiling: int
-
-
-class _RawUI(TypedDict, total=False):
-    theme: str
-    refresh_rate: _RawNumber
-
-
-class _RawLogging(TypedDict, total=False):
-    level: str
-    file: bool
-    log_dir: str
-
-
-class _RawTimelapse(TypedDict, total=False):
-    enabled: bool
-    installed: bool
-
-
-class _RawLearnings(TypedDict, total=False):
-    enabled: bool
-    file: str
-    max_entries: int
-    min_confidence: _RawNumber
-    decay_after_sessions: int
-    inject_into_prompts: bool
-    max_prompt_entries: int
-
-
-class _RawSkills(TypedDict, total=False):
-    install_on_start: bool
-    path: str
-    context_file: str
-
-
-class _RawWorktrees(TypedDict, total=False):
-    reap_ttl_seconds: int
-    root: str | None
-    min_free_disk_mb: int
-    disk_high_water_mb: int
-    reap_failed_pr_after_n: int
-    max_active_worktrees: int | None
-
-
-class _RawConfig(TypedDict, total=False):
-    project: _RawProject
-    auto: _RawAuto
-    intake: _RawIntake
-    budget: _RawBudget
-    trusted_ids: _RawTrustedIds
-    identities: _RawIdentities
-    agents: _RawAgents
-    play_pacing: _RawPlayPacing
-    bootstrap: _RawBootstrap
-    circuit_breaker: _RawCircuitBreaker
-    health: _RawHealth
-    data_integrity: _RawDataIntegrity
-    task_validation: _RawTaskValidation
-    rl: _RawRL
-    session: _RawSession
-    feedback: _RawFeedback
-    scope: _RawScope
-    ui: _RawUI
-    logging: _RawLogging
-    timelapse: _RawTimelapse
-    learnings: _RawLearnings
-    skills: _RawSkills
-    worktrees: _RawWorktrees
-    agent_timeout: _RawNumber
-    play_timeouts: dict[str, _RawNumber]
-    mode: str
-    socket: str | None
+WireMapping = Mapping[str, Any]
 
 
 @overload
@@ -366,73 +77,46 @@ def _agent_default(name: str, key: str, fallback: float | int | None) -> float |
     return fallback if value is None else value
 
 
-def _defaults_only[ParsedT](cls: type[ParsedT], raw: Mapping[str, object]) -> ParsedT:
-    """Build a config dataclass purely from ``raw.get(field, default)`` — no
-    validation, no cross-field logic.
-
-    For parsers whose entire job is per-field defaulting. Numeric/bool
-    fields are coerced through their own dataclass default's type (mirrors
-    the per-field ``int()``/``float()``/``bool()`` casts these parsers used
-    explicitly, since some YAML values arrive as strings); fields whose
-    default is ``None`` are passed through verbatim. Any parser with real
-    validation, cross-key aliasing, or fields the raw TypedDict doesn't
-    cover must stay hand-written — this only fits the pure-boilerplate shape.
-    """
-    kwargs: dict[str, object] = {}
-    for f in dataclasses.fields(cls):  # type: ignore[arg-type]
-        default = f.default
-        value = raw.get(f.name, default)
-        default_type = type(default)
-        if value is not None and default_type in (bool, int, float):
-            value = default_type(value)
-        kwargs[f.name] = value
-    return cls(**kwargs)
-
-
-def _parse_project(raw: _RawProject) -> ProjectConfig:
-    target_branch = raw.get("target_branch")
+def _parse_project(raw: WireMapping) -> ProjectConfig:
+    parsed = structure(ProjectConfig, raw, "project")
+    target_branch = parsed.target_branch
     # Whitespace-only → None so callers can rely on ``target_branch or <fallback>``;
     # an explicit empty string in YAML means "unset".
     if isinstance(target_branch, str):
         target_branch = target_branch.strip() or None
-    return ProjectConfig(
-        path=raw.get("path", "."),
-        goals=raw.get("goals"),
-        target_branch=target_branch,
-    )
+    return dataclasses.replace(parsed, target_branch=target_branch)
 
 
-def _parse_auto(raw: _RawAuto) -> AutoDetectConfig:
-    return _defaults_only(AutoDetectConfig, raw)
+def _parse_auto(raw: WireMapping) -> AutoDetectConfig:
+    return structure(AutoDetectConfig, raw, "auto")
 
 
-def _parse_intake(raw: _RawIntake) -> IntakeConfig:
-    return IntakeConfig(
-        seed_paths=tuple(raw.get("seed_paths", [])),
-        issue_labels_include=tuple(raw.get("issue_labels_include", [])),
-        issue_labels_exclude=tuple(raw.get("issue_labels_exclude", ["wontfix", "duplicate"])),
-        label_prefix=raw.get("label_prefix", "agentshore/"),
-    )
+def _parse_intake(raw: WireMapping) -> IntakeConfig:
+    return structure(IntakeConfig, raw, "intake")
 
 
-def _parse_budget(raw: _RawBudget) -> BudgetConfig:
+def _parse_budget(raw: WireMapping) -> BudgetConfig:
     from agentshore.budget import parse_budget_raw
 
+    reject_unknown_fields(BudgetConfig, raw, "budget")
     return parse_budget_raw(dict(raw))
 
 
 def _parse_agent(
-    name: str, raw: _RawAgent, *, legacy_max_default: int | None = None
+    name: str, raw: WireMapping, *, legacy_max_default: int | None = None
 ) -> AgentConfig:
+    path = f"agents.{name}"
+    reject_unknown_fields(AgentConfig, raw, path)
     timeout_raw = raw.get("timeout")
     first_byte_raw = raw.get("first_byte_timeout_seconds")
     flags_raw = raw.get("extra_flags", ())
     extra_flags = tuple(str(f) for f in flags_raw) if isinstance(flags_raw, list) else ()
     models_raw = raw.get("approved_models", ())
     approved_models = tuple(str(m) for m in models_raw) if isinstance(models_raw, list) else ()
-    model_tiers_raw = raw.get("model_tiers", {}) or {}
+    model_tiers_raw = mapping(raw.get("model_tiers"), f"{path}.model_tiers")
     model_tiers = _parse_model_tiers(
-        model_tiers_raw if isinstance(model_tiers_raw, dict) else {},
+        model_tiers_raw,
+        path=f"{path}.model_tiers",
         legacy_max_default=legacy_max_default,
     )
     if legacy_max_default is not None:
@@ -495,7 +179,7 @@ def _validate_ssh_key_path(name: str, value: str) -> str:
     return value
 
 
-def _parse_identities(raw: _RawIdentities) -> dict[str, GitHubIdentity]:
+def _parse_identities(raw: WireMapping) -> dict[str, GitHubIdentity]:
     """Parse the top-level ``identities:`` block.
 
     Each entry must supply ``git_user_name`` and ``git_user_email``. Identity
@@ -518,7 +202,8 @@ def _parse_identities(raw: _RawIdentities) -> dict[str, GitHubIdentity]:
             raise ConfigError(f"identities contains duplicate case-insensitive key {raw_name!r}")
         if not isinstance(body, dict):
             raise ConfigError(f"identities.{name} must be a mapping, got {type(body).__name__}")
-        body_raw = cast("_RawIdentity", body)
+        body_raw = body
+        reject_unknown_fields(GitHubIdentity, body_raw, f"identities.{name}")
         git_user_name = body_raw.get("git_user_name")
         git_user_email = body_raw.get("git_user_email")
         if not isinstance(git_user_name, str) or not git_user_name.strip():
@@ -561,12 +246,13 @@ def _parse_identities(raw: _RawIdentities) -> dict[str, GitHubIdentity]:
     return out
 
 
-def _parse_trusted_ids(raw: _RawTrustedIds) -> TrustedIdsConfig:
+def _parse_trusted_ids(raw: WireMapping) -> TrustedIdsConfig:
     if raw is None:
         return TrustedIdsConfig()
     if not isinstance(raw, dict):
         raise ConfigError(f"trusted_ids must be a mapping, got {type(raw).__name__}")
 
+    reject_unknown_fields(TrustedIdsConfig, raw, "trusted_ids")
     raw_logins = raw.get("github_logins", [])
     if not isinstance(raw_logins, list):
         raise ConfigError(
@@ -766,8 +452,9 @@ def _clamp_tier_max(value: object) -> int:
 
 
 def _parse_model_tiers(
-    raw: _RawModelTiers,
+    raw: WireMapping,
     *,
+    path: str,
     legacy_max_default: int | None = None,
 ) -> dict[str, ModelTierConfig]:
     tiers: dict[str, ModelTierConfig] = {}
@@ -778,6 +465,7 @@ def _parse_model_tiers(
         if isinstance(value, str):
             tiers[str(tier)] = ModelTierConfig(model=value, max=default_max)
         elif isinstance(value, dict):
+            reject_unknown_fields(ModelTierConfig, value, f"{path}.{tier}")
             raw_max = value.get("max")
             tier_max = _clamp_tier_max(raw_max) if raw_max is not None else default_max
             tiers[str(tier)] = ModelTierConfig(
@@ -823,20 +511,20 @@ def _apply_legacy_default_tiers(
     return merged
 
 
-def _parse_circuit_breaker(raw: _RawCircuitBreaker) -> CircuitBreakerConfig:
-    return _defaults_only(CircuitBreakerConfig, raw)
+def _parse_circuit_breaker(raw: WireMapping) -> CircuitBreakerConfig:
+    return structure(CircuitBreakerConfig, raw, "circuit_breaker")
 
 
-def _parse_health(raw: _RawHealth) -> HealthConfig:
-    return _defaults_only(HealthConfig, raw)
+def _parse_health(raw: WireMapping) -> HealthConfig:
+    return structure(HealthConfig, raw, "health")
 
 
-def _parse_data_integrity(raw: _RawDataIntegrity) -> DataIntegrityConfig:
-    return _defaults_only(DataIntegrityConfig, raw)
+def _parse_data_integrity(raw: WireMapping) -> DataIntegrityConfig:
+    return structure(DataIntegrityConfig, raw, "data_integrity")
 
 
 def _parse_agents(
-    raw: _RawAgents,
+    raw: WireMapping,
     *,
     legacy_max_default: int | None = None,
 ) -> tuple[
@@ -844,39 +532,50 @@ def _parse_agents(
     FreshStartConfig,
     AgentPreferencesConfig,
 ]:
-    fresh_raw = cast("_RawFreshStart", raw.get("fresh_start", {}) or {})
-    prefs_raw = cast("_RawAgentPreferences", raw.get("preferences", {}) or {})
+    fresh_raw = mapping(raw.get("fresh_start"), "agents.fresh_start")
+    prefs_raw = mapping(raw.get("preferences"), "agents.preferences")
 
     agents: dict[str, AgentConfig] = {}
     for name, agent_raw in raw.items():
         if name in {"fresh_start", "preferences"}:
             continue
-        if isinstance(agent_raw, dict):
+        if isinstance(agent_raw, Mapping):
             agents[name] = _parse_agent(
-                name, cast("_RawAgent", agent_raw), legacy_max_default=legacy_max_default
+                name, agent_raw, legacy_max_default=legacy_max_default
             )
+        else:
+            raise ConfigError(f"agents.{name} must be a mapping, got {type(agent_raw).__name__}")
 
-    fresh = FreshStartConfig(
-        max_plays_before_reset=fresh_raw.get("max_plays_before_reset", 20),
-        context_threshold=float(fresh_raw.get("context_threshold", 0.80)),
-        auto_trigger=fresh_raw.get("auto_trigger", False),
-    )
+    fresh = structure(FreshStartConfig, fresh_raw, "agents.fresh_start")
 
+    reject_unknown_fields(AgentPreferencesConfig, prefs_raw, "agents.preferences")
     exclude_raw = prefs_raw.get("exclude", {})
+    if not isinstance(exclude_raw, Mapping):
+        raise ConfigError(
+            f"agents.preferences.exclude must be a mapping, got {type(exclude_raw).__name__}"
+        )
     exclude = {
         key: tuple(value) if isinstance(value, list | tuple) else ()
         for key, value in exclude_raw.items()
     }
-    prefs = AgentPreferencesConfig(affinity=prefs_raw.get("affinity", {}), exclude=exclude)
+    affinity_raw = prefs_raw.get("affinity", {})
+    if not isinstance(affinity_raw, Mapping):
+        raise ConfigError(
+            f"agents.preferences.affinity must be a mapping, got {type(affinity_raw).__name__}"
+        )
+    prefs = AgentPreferencesConfig(affinity=affinity_raw, exclude=exclude)
 
     return agents, fresh, prefs
 
 
-# NOTE: kept hand-written, NOT routed through `_defaults_only` —
+# NOTE: kept hand-written, rather than directly structured —
 # `issue_inflation_penalty` falls back to the legacy `scope_creep_penalty` key
 # when unset, a cross-key aliasing rule the generic defaults-only shape can't
 # express.
-def _parse_reward(raw: _RawReward) -> RewardConfig:
+def _parse_reward(raw: WireMapping) -> RewardConfig:
+    reject_unknown_fields(
+        RewardConfig, raw, "rl.reward", allow=frozenset({"scope_creep_penalty"})
+    )
     return RewardConfig(
         alignment_weight=float(raw.get("alignment_weight", 1.0)),
         issue_throughput_weight=float(raw.get("issue_throughput_weight", 2.0)),
@@ -905,19 +604,19 @@ def _parse_reward(raw: _RawReward) -> RewardConfig:
     )
 
 
-def _parse_ppo(raw: _RawPPO) -> PPOConfig:
-    return _defaults_only(PPOConfig, raw)
+def _parse_ppo(raw: WireMapping) -> PPOConfig:
+    return structure(PPOConfig, raw, "rl.ppo")
 
 
-def _parse_stagnation(raw: _RawStagnation) -> StagnationConfig:
-    return _defaults_only(StagnationConfig, raw)
+def _parse_stagnation(raw: WireMapping) -> StagnationConfig:
+    return structure(StagnationConfig, raw, "rl.stagnation")
 
 
-def _parse_loop_detection(raw: _RawLoopDetection) -> LoopDetectionConfig:
-    return _defaults_only(LoopDetectionConfig, raw)
+def _parse_loop_detection(raw: WireMapping) -> LoopDetectionConfig:
+    return structure(LoopDetectionConfig, raw, "rl.loop_detection")
 
 
-def _parse_policy_mode(raw: _RawRL) -> PolicyMode:
+def _parse_policy_mode(raw: WireMapping) -> PolicyMode:
     has_policy_mode = "policy_mode" in raw
     has_legacy_deterministic = "deterministic" in raw
 
@@ -950,7 +649,8 @@ def _parse_policy_mode(raw: _RawRL) -> PolicyMode:
     return legacy_mode
 
 
-def _parse_rl(raw: _RawRL) -> RLConfig:
+def _parse_rl(raw: WireMapping) -> RLConfig:
+    reject_unknown_fields(RLConfig, raw, "rl", allow=frozenset({"deterministic"}))
     lr = raw.get("learning_rate", 0.0003)
     gamma = raw.get("gamma", 0.99)
     entropy = raw.get("entropy_coef", 0.05)
@@ -984,22 +684,28 @@ def _parse_rl(raw: _RawRL) -> RLConfig:
         entropy_coef=float(entropy),
         update_every=raw.get("update_every", 16),
         checkpoint_every=raw.get("checkpoint_every", 16),
-        reward=_parse_reward(raw.get("reward", {}) or {}),
-        ppo=_parse_ppo(raw.get("ppo", {}) or {}),
-        stagnation=_parse_stagnation(raw.get("stagnation", {}) or {}),
-        loop_detection=_parse_loop_detection(raw.get("loop_detection", {}) or {}),
+        config_policy_coef=float(raw.get("config_policy_coef", 1.0)),
+        config_entropy_coef=float(raw.get("config_entropy_coef", 0.05)),
+        velocity_window_size=int(raw.get("velocity_window_size", 20)),
+        reward=_parse_reward(mapping(raw.get("reward"), "rl.reward")),
+        ppo=_parse_ppo(mapping(raw.get("ppo"), "rl.ppo")),
+        stagnation=_parse_stagnation(mapping(raw.get("stagnation"), "rl.stagnation")),
+        loop_detection=_parse_loop_detection(
+            mapping(raw.get("loop_detection"), "rl.loop_detection")
+        ),
     )
 
 
-def _parse_session(raw: _RawSession) -> SessionConfig:
-    return _defaults_only(SessionConfig, raw)
+def _parse_session(raw: WireMapping) -> SessionConfig:
+    return structure(SessionConfig, raw, "session")
 
 
-def _parse_feedback(raw: _RawFeedback) -> FeedbackConfig:
-    return _defaults_only(FeedbackConfig, raw)
+def _parse_feedback(raw: WireMapping) -> FeedbackConfig:
+    return structure(FeedbackConfig, raw, "feedback")
 
 
-def _parse_scope(raw: _RawScope) -> ScopeConfig:
+def _parse_scope(raw: WireMapping) -> ScopeConfig:
+    reject_unknown_fields(ScopeConfig, raw, "scope")
     ceiling_raw = raw.get("seed_project_mid_session_issue_ceiling", 10)
     if isinstance(ceiling_raw, bool) or not isinstance(ceiling_raw, int) or ceiling_raw < 0:
         raise ConfigError(
@@ -1013,7 +719,8 @@ def _parse_scope(raw: _RawScope) -> ScopeConfig:
     )
 
 
-def _parse_ui(raw: _RawUI) -> UIConfig:
+def _parse_ui(raw: WireMapping) -> UIConfig:
+    reject_unknown_fields(UIConfig, raw, "ui")
     theme = raw.get("theme", "dark")
     if theme not in ("dark", "light"):
         raise ConfigError(f"ui.theme must be 'dark' or 'light', got {theme!r}")
@@ -1023,7 +730,8 @@ def _parse_ui(raw: _RawUI) -> UIConfig:
     )
 
 
-def _parse_logging(raw: _RawLogging) -> LoggingConfig:
+def _parse_logging(raw: WireMapping) -> LoggingConfig:
+    reject_unknown_fields(LoggingConfig, raw, "logging")
     level = raw.get("level", "info")
     valid_levels = ("debug", "info", "warning", "error")
     if level not in valid_levels:
@@ -1035,16 +743,22 @@ def _parse_logging(raw: _RawLogging) -> LoggingConfig:
     )
 
 
-def _parse_timelapse(raw: _RawTimelapse) -> TimelapseConfig:
-    return _defaults_only(TimelapseConfig, raw)
+def _parse_timelapse(raw: WireMapping) -> TimelapseConfig:
+    return structure(TimelapseConfig, raw, "timelapse")
 
 
-# NOTE: kept hand-written, NOT routed through `_defaults_only` — `_RawLearnings`
+# NOTE: kept hand-written, rather than directly structured — the wire schema
 # deliberately omits `consolidate_overlap_threshold` and `redistill_in_groom`
 # (internal-only LearningsConfig knobs, never exposed to agentshore.yaml). A
 # fields()-driven helper would start honoring those keys from raw YAML, which
 # is a behavior change, not a dedup.
-def _parse_learnings(raw: _RawLearnings) -> LearningsConfig:
+def _parse_learnings(raw: WireMapping) -> LearningsConfig:
+    reject_unknown_fields(
+        LearningsConfig,
+        raw,
+        "learnings",
+        exclude=frozenset({"consolidate_overlap_threshold", "redistill_in_groom"}),
+    )
     return LearningsConfig(
         enabled=raw.get("enabled", True),
         file=raw.get("file", ".agentshore/learnings.json"),
@@ -1056,11 +770,17 @@ def _parse_learnings(raw: _RawLearnings) -> LearningsConfig:
     )
 
 
-def _parse_skills(raw: _RawSkills) -> SkillsConfig:
-    return _defaults_only(SkillsConfig, raw)
+def _parse_skills(raw: WireMapping) -> SkillsConfig:
+    return structure(SkillsConfig, raw, "skills")
 
 
-def _parse_worktrees(raw: _RawWorktrees) -> WorktreeConfig:
+def _parse_worktrees(raw: WireMapping) -> WorktreeConfig:
+    reject_unknown_fields(
+        WorktreeConfig,
+        raw,
+        "worktrees",
+        allow=frozenset({"orphan_retention_seconds"}),
+    )
     ttl = raw.get("reap_ttl_seconds", 10800)
     if not isinstance(ttl, int) or isinstance(ttl, bool) or ttl < 0:
         raise ConfigError(f"worktrees.reap_ttl_seconds must be a non-negative integer, got {ttl!r}")
@@ -1095,11 +815,12 @@ def _parse_worktrees(raw: _RawWorktrees) -> WorktreeConfig:
     )
 
 
-def _parse_task_validation(raw: _RawTaskValidation) -> TaskValidationConfig:
-    return _defaults_only(TaskValidationConfig, raw)
+def _parse_task_validation(raw: WireMapping) -> TaskValidationConfig:
+    return structure(TaskValidationConfig, raw, "task_validation")
 
 
-def _parse_play_pacing(raw: _RawPlayPacing) -> PlayPacingConfig:
+def _parse_play_pacing(raw: WireMapping) -> PlayPacingConfig:
+    reject_unknown_fields(PlayPacingConfig, raw, "play_pacing")
     cooldown = raw.get("standard_cooldown_plays", STANDARD_PLAY_COOLDOWN_PLAYS)
     if not isinstance(cooldown, int) or isinstance(cooldown, bool) or cooldown < 0:
         raise ConfigError(
@@ -1108,7 +829,8 @@ def _parse_play_pacing(raw: _RawPlayPacing) -> PlayPacingConfig:
     return PlayPacingConfig(standard_cooldown_plays=cooldown)
 
 
-def _parse_bootstrap(raw: _RawBootstrap) -> BootstrapConfig:
+def _parse_bootstrap(raw: WireMapping) -> BootstrapConfig:
+    reject_unknown_fields(BootstrapConfig, raw, "bootstrap")
     threshold = raw.get("cleanup_threshold", 50)
     if not isinstance(threshold, int) or isinstance(threshold, bool) or threshold < 0:
         raise ConfigError(
@@ -1151,8 +873,18 @@ def _parse_play_timeouts(raw: object) -> dict[str, int]:
 # ---------------------------------------------------------------------------
 
 
-def _build_config(data: _RawConfig) -> RuntimeConfig:
+def _build_config(data: WireMapping) -> RuntimeConfig:
     from agentshore.agents.pricing import load_pricebook
+
+    reject_unknown_fields(
+        RuntimeConfig,
+        data,
+        "config",
+        allow=frozenset({"agent_spawn"}),
+        exclude=frozenset(
+            {"budget_absent", "pricebook", "fresh_start", "agent_preferences", "preferences"}
+        ),
+    )
 
     # Migration: legacy agent_spawn block → per-tier max
     legacy_max_default: int | None = None
@@ -1169,11 +901,11 @@ def _build_config(data: _RawConfig) -> RuntimeConfig:
             stacklevel=2,
         )
 
-    agents_raw = cast("_RawAgents", dict(data.get("agents", {}) or {}))
+    agents_raw = mapping(data.get("agents"), "agents")
     agents, fresh_start, prefs = _parse_agents(agents_raw, legacy_max_default=legacy_max_default)
     agents = _strip_unsupported_agents(agents)
-    identities = _parse_identities(cast("_RawIdentities", data.get("identities", {}) or {}))
-    trusted_ids_raw = data.get("trusted_ids", {})
+    identities = _parse_identities(mapping(data.get("identities"), "identities"))
+    trusted_ids_raw = mapping(data.get("trusted_ids"), "trusted_ids")
     _validate_agent_identities(agents, identities)
     _validate_agent_reasoning_efforts(agents)
     _validate_swink_coding_models(agents)
@@ -1186,33 +918,43 @@ def _build_config(data: _RawConfig) -> RuntimeConfig:
         raise ConfigError(f"mode must be one of {valid}, got {mode_raw!r}") from exc
 
     return RuntimeConfig(
-        project=_parse_project(data.get("project", {}) or {}),
-        auto=_parse_auto(data.get("auto", {}) or {}),
-        intake=_parse_intake(data.get("intake", {}) or {}),
-        budget=_parse_budget(data["budget"]) if "budget" in data else BudgetConfig(),
+        project=_parse_project(mapping(data.get("project"), "project")),
+        auto=_parse_auto(mapping(data.get("auto"), "auto")),
+        intake=_parse_intake(mapping(data.get("intake"), "intake")),
+        budget=(
+            _parse_budget(mapping(data["budget"], "budget"))
+            if "budget" in data
+            else BudgetConfig()
+        ),
         budget_absent="budget" not in data,
-        trusted_ids=_parse_trusted_ids(trusted_ids_raw if trusted_ids_raw is not None else {}),
+        trusted_ids=_parse_trusted_ids(trusted_ids_raw),
         identities=identities,
         agents=agents,
         pricebook=load_pricebook(),
-        play_pacing=_parse_play_pacing(data.get("play_pacing", {}) or {}),
-        bootstrap=_parse_bootstrap(data.get("bootstrap", {}) or {}),
+        play_pacing=_parse_play_pacing(mapping(data.get("play_pacing"), "play_pacing")),
+        bootstrap=_parse_bootstrap(mapping(data.get("bootstrap"), "bootstrap")),
         fresh_start=fresh_start,
         agent_preferences=prefs,
-        circuit_breaker=_parse_circuit_breaker(data.get("circuit_breaker", {}) or {}),
-        health=_parse_health(data.get("health", {}) or {}),
-        data_integrity=_parse_data_integrity(data.get("data_integrity", {}) or {}),
-        task_validation=_parse_task_validation(data.get("task_validation", {}) or {}),
-        rl=_parse_rl(data.get("rl", {}) or {}),
-        session=_parse_session(data.get("session", {}) or {}),
-        feedback=_parse_feedback(data.get("feedback", {}) or {}),
-        scope=_parse_scope(data.get("scope", {}) or {}),
-        ui=_parse_ui(data.get("ui", {}) or {}),
-        logging=_parse_logging(data.get("logging", {}) or {}),
-        timelapse=_parse_timelapse(data.get("timelapse", {}) or {}),
-        learnings=_parse_learnings(data.get("learnings", {}) or {}),
-        skills=_parse_skills(data.get("skills", {}) or {}),
-        worktrees=_parse_worktrees(data.get("worktrees", {}) or {}),
+        circuit_breaker=_parse_circuit_breaker(
+            mapping(data.get("circuit_breaker"), "circuit_breaker")
+        ),
+        health=_parse_health(mapping(data.get("health"), "health")),
+        data_integrity=_parse_data_integrity(
+            mapping(data.get("data_integrity"), "data_integrity")
+        ),
+        task_validation=_parse_task_validation(
+            mapping(data.get("task_validation"), "task_validation")
+        ),
+        rl=_parse_rl(mapping(data.get("rl"), "rl")),
+        session=_parse_session(mapping(data.get("session"), "session")),
+        feedback=_parse_feedback(mapping(data.get("feedback"), "feedback")),
+        scope=_parse_scope(mapping(data.get("scope"), "scope")),
+        ui=_parse_ui(mapping(data.get("ui"), "ui")),
+        logging=_parse_logging(mapping(data.get("logging"), "logging")),
+        timelapse=_parse_timelapse(mapping(data.get("timelapse"), "timelapse")),
+        learnings=_parse_learnings(mapping(data.get("learnings"), "learnings")),
+        skills=_parse_skills(mapping(data.get("skills"), "skills")),
+        worktrees=_parse_worktrees(mapping(data.get("worktrees"), "worktrees")),
         agent_timeout=int(data.get("agent_timeout", 10800)),
         play_timeouts=_parse_play_timeouts(data.get("play_timeouts")),
         mode=mode,

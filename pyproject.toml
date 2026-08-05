@@ -47,6 +47,7 @@ dependencies = [
     # (``agy``), which blocks on a terminal Device-Attributes query over plain
     # pipes. See ``agents/cli/conpty.py``.
     "pywinpty>=2.0.0; sys_platform == 'win32'",
+    "pydantic>=2.12.5",
 ]
 
 [dependency-groups]
