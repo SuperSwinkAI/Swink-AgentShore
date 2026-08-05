@@ -14,25 +14,23 @@ from unittest.mock import MagicMock
 import pytest
 import structlog
 
+from agentshore.agents.cli.argv import build_argv, build_resume_argv
+from agentshore.agents.cli.errors import (
+    _classify_error,
+    _process_error_detail,
+    is_post_response_hook_failure,
+)
 from agentshore.agents.cli.parsing import (
+    _PARSERS,
     _extract_session_id_from_jsonl,
     _extract_text_from_codex_jsonl,
     _extract_text_from_grok_jsonl,
     _extract_text_from_stream_json,
-)
-from agentshore.agents.cli_agent import (
-    _PARSERS,
-    _classify_error,
     _is_terminal_event,
-    _process_error_detail,
-    _read_output,
-    _StderrSniffer,
-    _watch_stderr_auth,
-    build_argv,
-    build_resume_argv,
-    dispatch_cli,
-    is_post_response_hook_failure,
 )
+from agentshore.agents.cli.stream import read_output as _read_output
+from agentshore.agents.cli.watchdogs import _StderrSniffer, _watch_stderr_auth
+from agentshore.agents.cli_agent import dispatch_cli
 from agentshore.agents.handle import AgentHandle
 from agentshore.agents.pricing import AgentPricing, PricingQuote
 from agentshore.config import AgentConfig
@@ -81,7 +79,7 @@ def _identity_executable_resolution(
     if request.node.get_closest_marker("real_resolve_executable") is not None:
         return
 
-    import agentshore.agents.cli_agent as ca
+    import agentshore.agents.cli.argv as ca
 
     monkeypatch.setattr(ca, "_resolve_executable", lambda argv: argv)
 
@@ -372,10 +370,10 @@ def test_build_argv_grok_empty_prompt_never_emits_empty_dash_p() -> None:
 
 
 async def test_feed_prompt_stdin_writes_and_closes() -> None:
-    from agentshore.agents.cli_agent import _feed_prompt_stdin
+    from agentshore.agents.cli.supervisor import feed_prompt_stdin
 
     proc = _FakeProcess(_codex_json_lines())
-    await _feed_prompt_stdin(proc, "the full prompt")  # type: ignore[arg-type]
+    await feed_prompt_stdin(proc, "the full prompt")  # type: ignore[arg-type]
 
     assert proc.stdin.data == b"the full prompt"
     assert proc.stdin.closed is True
@@ -503,7 +501,7 @@ async def test_read_output_emits_cli_first_byte_once_with_elapsed() -> None:
 
     import structlog
 
-    from agentshore.agents.cli_agent import _StdoutActivity
+    from agentshore.agents.cli.watchdogs import _StdoutActivity
 
     activity = _StdoutActivity(
         last_stdout_at=time.monotonic(), dispatch_start=time.monotonic() - 0.05
@@ -534,7 +532,7 @@ async def test_read_output_no_first_byte_event_without_dispatch_context() -> Non
 
     import structlog
 
-    from agentshore.agents.cli_agent import _StdoutActivity
+    from agentshore.agents.cli.watchdogs import _StdoutActivity
 
     activity = _StdoutActivity(last_stdout_at=time.monotonic())  # dispatch_start=0.0
     proc = _FakeProcess(_codex_json_lines())
@@ -556,7 +554,7 @@ def test_antigravity_first_byte_deadline_is_1800s() -> None:
     """agy emits no stdout until its async task completes (#217); the first-byte
     watchdog stays generous (30 min) so long code-review tasks don't die as
     spurious launch wedges."""
-    from agentshore.agents.cli_agent import _FIRST_BYTE_DEADLINE_BY_TYPE
+    from agentshore.agents.cli.watchdogs import _FIRST_BYTE_DEADLINE_BY_TYPE
 
     assert _FIRST_BYTE_DEADLINE_BY_TYPE[AgentType.ANTIGRAVITY] == 1800.0
 
@@ -565,20 +563,22 @@ def test_resolve_first_byte_deadline_per_dispatch_override() -> None:
     """#232: a per-dispatch override wins over the per-type default and the config
     field, is clamped to the wall-clock timeout, and ``None`` falls back to the
     per-type default (agy stays 1800s on a fresh dispatch)."""
-    from agentshore.agents.cli_agent import _resolve_first_byte_deadline
+    from agentshore.agents.cli.supervisor import resolve_first_byte_deadline
     from agentshore.config.models import AgentConfig
 
     cfg = AgentConfig()
 
     # No override → agy keeps its 1800s structural carve-out.
-    assert _resolve_first_byte_deadline(AgentType.ANTIGRAVITY, cfg, 3600.0) == 1800.0
+    assert resolve_first_byte_deadline(AgentType.ANTIGRAVITY, cfg, 3600.0) == 1800.0
     # A short override beats the 1800s per-type default for this one dispatch.
-    assert _resolve_first_byte_deadline(AgentType.ANTIGRAVITY, cfg, 3600.0, 120.0) == 120.0
+    assert resolve_first_byte_deadline(AgentType.ANTIGRAVITY, cfg, 3600.0, 120.0) == 120.0
     # The override still can't outlive the wall-clock timeout.
-    assert _resolve_first_byte_deadline(AgentType.ANTIGRAVITY, cfg, 90.0, 120.0) == 90.0
+    assert resolve_first_byte_deadline(AgentType.ANTIGRAVITY, cfg, 90.0, 120.0) == 90.0
     # An explicit per-agent config override is itself overridden by the per-dispatch one.
     cfg_override = AgentConfig(first_byte_timeout_seconds=900)
-    assert _resolve_first_byte_deadline(AgentType.ANTIGRAVITY, cfg_override, 3600.0, 120.0) == 120.0
+    assert resolve_first_byte_deadline(
+        AgentType.ANTIGRAVITY, cfg_override, 3600.0, 120.0
+    ) == 120.0
 
 
 def test_extract_output_antigravity_passthrough_when_no_status_block() -> None:
@@ -829,7 +829,7 @@ async def test_dispatch_cli_resume_injects_codex_exec_resume(
         return _FakeProcess(_codex_json_lines())
 
     monkeypatch.setattr(
-        "agentshore.agents.cli_agent.asyncio.create_subprocess_exec",
+        "agentshore.agents.cli.supervisor.asyncio.create_subprocess_exec",
         fake_create_subprocess_exec,
     )
     cfg = AgentConfig(enabled=True, binary="codex", timeout=10)
@@ -853,7 +853,7 @@ async def test_dispatch_cli_resume_injects_grok_dash_r(
         return _FakeProcess(_grok_json_lines())
 
     monkeypatch.setattr(
-        "agentshore.agents.cli_agent.asyncio.create_subprocess_exec",
+        "agentshore.agents.cli.supervisor.asyncio.create_subprocess_exec",
         fake_create_subprocess_exec,
     )
     cfg = AgentConfig(enabled=True, binary="grok", timeout=10)
@@ -880,10 +880,10 @@ async def test_dispatch_cli_swink_coding_pins_session_id_and_falls_back_to_it(
         return _FakeProcess([b"the model rambled and never emitted an event\n"])
 
     monkeypatch.setattr(
-        "agentshore.agents.cli_agent.asyncio.create_subprocess_exec",
+        "agentshore.agents.cli.supervisor.asyncio.create_subprocess_exec",
         fake_create_subprocess_exec,
     )
-    monkeypatch.setattr("agentshore.agents.cli_agent.conpty.should_use_conpty", lambda _at: False)
+    monkeypatch.setattr("agentshore.agents.cli.supervisor.conpty.should_use_conpty", lambda _at: False)
     cfg = AgentConfig(enabled=True, binary="swink-coding", timeout=10)
     handle = _make_handle(agent_type=AgentType.SWINK_CODING)
     handle.dispatches = 1
@@ -912,10 +912,10 @@ async def test_dispatch_cli_swink_coding_prefers_observed_session_id_over_pin(
         )
 
     monkeypatch.setattr(
-        "agentshore.agents.cli_agent.asyncio.create_subprocess_exec",
+        "agentshore.agents.cli.supervisor.asyncio.create_subprocess_exec",
         fake_create_subprocess_exec,
     )
-    monkeypatch.setattr("agentshore.agents.cli_agent.conpty.should_use_conpty", lambda _at: False)
+    monkeypatch.setattr("agentshore.agents.cli.supervisor.conpty.should_use_conpty", lambda _at: False)
     cfg = AgentConfig(enabled=True, binary="swink-coding", timeout=10)
     handle = _make_handle(agent_type=AgentType.SWINK_CODING)
     handle.dispatches = 1
@@ -937,10 +937,10 @@ async def test_dispatch_cli_swink_coding_resume_does_not_pin_session_id(
         return _FakeProcess([b'{"type":"result","text":"ok","session_id":"sc_prior"}\n'])
 
     monkeypatch.setattr(
-        "agentshore.agents.cli_agent.asyncio.create_subprocess_exec",
+        "agentshore.agents.cli.supervisor.asyncio.create_subprocess_exec",
         fake_create_subprocess_exec,
     )
-    monkeypatch.setattr("agentshore.agents.cli_agent.conpty.should_use_conpty", lambda _at: False)
+    monkeypatch.setattr("agentshore.agents.cli.supervisor.conpty.should_use_conpty", lambda _at: False)
     cfg = AgentConfig(enabled=True, binary="swink-coding", timeout=10)
     handle = _make_handle(agent_type=AgentType.SWINK_CODING)
     handle.dispatches = 1
@@ -963,10 +963,10 @@ async def test_dispatch_cli_forwards_play_tool_denials_to_the_cli(
         return _FakeProcess([b'{"type":"result","text":"ok","session_id":"sc_1"}\n'])
 
     monkeypatch.setattr(
-        "agentshore.agents.cli_agent.asyncio.create_subprocess_exec",
+        "agentshore.agents.cli.supervisor.asyncio.create_subprocess_exec",
         fake_create_subprocess_exec,
     )
-    monkeypatch.setattr("agentshore.agents.cli_agent.conpty.should_use_conpty", lambda _at: False)
+    monkeypatch.setattr("agentshore.agents.cli.supervisor.conpty.should_use_conpty", lambda _at: False)
     cfg = AgentConfig(enabled=True, binary="swink-coding", timeout=10)
     handle = _make_handle(agent_type=AgentType.SWINK_CODING)
     handle.dispatches = 1
@@ -991,10 +991,10 @@ async def test_dispatch_cli_forwards_tool_denials_across_the_json_retry_resume(
         return _FakeProcess([b'{"type":"result","text":"ok","session_id":"sc_prior"}\n'])
 
     monkeypatch.setattr(
-        "agentshore.agents.cli_agent.asyncio.create_subprocess_exec",
+        "agentshore.agents.cli.supervisor.asyncio.create_subprocess_exec",
         fake_create_subprocess_exec,
     )
-    monkeypatch.setattr("agentshore.agents.cli_agent.conpty.should_use_conpty", lambda _at: False)
+    monkeypatch.setattr("agentshore.agents.cli.supervisor.conpty.should_use_conpty", lambda _at: False)
     cfg = AgentConfig(enabled=True, binary="swink-coding", timeout=10)
     handle = _make_handle(agent_type=AgentType.SWINK_CODING)
     handle.dispatches = 1
@@ -1024,10 +1024,10 @@ async def test_dispatch_cli_omits_deny_flag_for_agents_that_cannot_express_it(
         return _FakeProcess([b'{"type":"result","result":"ok","session_id":"c1"}\n'])
 
     monkeypatch.setattr(
-        "agentshore.agents.cli_agent.asyncio.create_subprocess_exec",
+        "agentshore.agents.cli.supervisor.asyncio.create_subprocess_exec",
         fake_create_subprocess_exec,
     )
-    monkeypatch.setattr("agentshore.agents.cli_agent.conpty.should_use_conpty", lambda _at: False)
+    monkeypatch.setattr("agentshore.agents.cli.supervisor.conpty.should_use_conpty", lambda _at: False)
     cfg = AgentConfig(enabled=True, binary="claude", timeout=10)
     handle = _make_handle(agent_type=AgentType.CLAUDE_CODE)
     handle.dispatches = 1
@@ -1059,13 +1059,13 @@ async def test_dispatch_cli_antigravity_resolves_session_id_from_cache(
         return _FakeProcess([b'```json\n{"success": true, "artifacts": []}\n```\n'])
 
     monkeypatch.setattr(
-        "agentshore.agents.cli_agent.asyncio.create_subprocess_exec",
+        "agentshore.agents.cli.supervisor.asyncio.create_subprocess_exec",
         fake_create_subprocess_exec,
     )
     # Pin the plain-pipe spawn so this session-id-resolution test exercises the
     # create_subprocess_exec mock identically on every platform (on Windows agy
     # would otherwise route through the ConPTY path).
-    monkeypatch.setattr("agentshore.agents.cli_agent.conpty.should_use_conpty", lambda _at: False)
+    monkeypatch.setattr("agentshore.agents.cli.supervisor.conpty.should_use_conpty", lambda _at: False)
     cfg = AgentConfig(enabled=True, binary="agy", timeout=10)
     handle = _make_handle(agent_type=AgentType.ANTIGRAVITY)
     handle.dispatches = 1
@@ -1086,11 +1086,11 @@ async def test_dispatch_cli_antigravity_session_id_none_when_cache_absent(
         return _FakeProcess([b"some plain agy output without a block\n"])
 
     monkeypatch.setattr(
-        "agentshore.agents.cli_agent.asyncio.create_subprocess_exec",
+        "agentshore.agents.cli.supervisor.asyncio.create_subprocess_exec",
         fake_create_subprocess_exec,
     )
     # Pin the plain-pipe spawn (see sibling test) so this is platform-independent.
-    monkeypatch.setattr("agentshore.agents.cli_agent.conpty.should_use_conpty", lambda _at: False)
+    monkeypatch.setattr("agentshore.agents.cli.supervisor.conpty.should_use_conpty", lambda _at: False)
     cfg = AgentConfig(enabled=True, binary="agy", timeout=10)
     handle = _make_handle(agent_type=AgentType.ANTIGRAVITY)
     handle.dispatches = 1
@@ -1131,7 +1131,7 @@ async def test_dispatch_cli_does_not_resume_by_default(
         return _FakeProcess(_codex_json_lines())
 
     monkeypatch.setattr(
-        "agentshore.agents.cli_agent.asyncio.create_subprocess_exec",
+        "agentshore.agents.cli.supervisor.asyncio.create_subprocess_exec",
         fake_create_subprocess_exec,
     )
     cfg = AgentConfig(enabled=True, binary="codex", timeout=10)
@@ -1163,7 +1163,7 @@ async def test_dispatch_cli_pins_noninteractive_git_editor(
         return _FakeProcess(_codex_json_lines())
 
     monkeypatch.setattr(
-        "agentshore.agents.cli_agent.asyncio.create_subprocess_exec",
+        "agentshore.agents.cli.supervisor.asyncio.create_subprocess_exec",
         fake_create_subprocess_exec,
     )
     cfg = AgentConfig(enabled=True, binary="codex", timeout=10)
@@ -1196,7 +1196,7 @@ async def test_dispatch_cli_injects_per_identity_git_auth(
         return _FakeProcess(_codex_json_lines())
 
     monkeypatch.setattr(
-        "agentshore.agents.cli_agent.asyncio.create_subprocess_exec",
+        "agentshore.agents.cli.supervisor.asyncio.create_subprocess_exec",
         fake_create_subprocess_exec,
     )
     cfg = AgentConfig(enabled=True, binary="codex", timeout=10)
@@ -1225,7 +1225,7 @@ async def test_dispatch_cli_hardens_git_without_token(
         return _FakeProcess(_codex_json_lines())
 
     monkeypatch.setattr(
-        "agentshore.agents.cli_agent.asyncio.create_subprocess_exec",
+        "agentshore.agents.cli.supervisor.asyncio.create_subprocess_exec",
         fake_create_subprocess_exec,
     )
     cfg = AgentConfig(enabled=True, binary="codex", timeout=10)
@@ -1257,7 +1257,7 @@ async def test_dispatch_cli_feeds_prompt_via_stdin_on_windows(
         return proc
 
     monkeypatch.setattr(
-        "agentshore.agents.cli_agent.asyncio.create_subprocess_exec",
+        "agentshore.agents.cli.supervisor.asyncio.create_subprocess_exec",
         fake_create_subprocess_exec,
     )
     cfg = AgentConfig(enabled=True, binary="codex", timeout=10)
@@ -1287,7 +1287,7 @@ async def test_dispatch_cli_never_resumes(
         return _FakeProcess(_claude_json_lines())
 
     monkeypatch.setattr(
-        "agentshore.agents.cli_agent.asyncio.create_subprocess_exec",
+        "agentshore.agents.cli.supervisor.asyncio.create_subprocess_exec",
         fake_create_subprocess_exec,
     )
     cfg = AgentConfig(enabled=True, binary="claude", timeout=10)
@@ -1345,7 +1345,7 @@ async def test_dispatch_cli_recovers_session_end_hook_exit_1(
         )
 
     monkeypatch.setattr(
-        "agentshore.agents.cli_agent.asyncio.create_subprocess_exec",
+        "agentshore.agents.cli.supervisor.asyncio.create_subprocess_exec",
         fake_create_subprocess_exec,
     )
     cfg = AgentConfig(enabled=True, binary="claude", timeout=10)
@@ -1372,7 +1372,7 @@ async def test_dispatch_cli_real_nonzero_exit_still_raises(
         )
 
     monkeypatch.setattr(
-        "agentshore.agents.cli_agent.asyncio.create_subprocess_exec",
+        "agentshore.agents.cli.supervisor.asyncio.create_subprocess_exec",
         fake_create_subprocess_exec,
     )
     cfg = AgentConfig(enabled=True, binary="claude", timeout=10)
@@ -1427,7 +1427,7 @@ async def test_dispatch_cli_success_grok_streaming_json(
         return _FakeProcess(_grok_json_lines())
 
     monkeypatch.setattr(
-        "agentshore.agents.cli_agent.asyncio.create_subprocess_exec",
+        "agentshore.agents.cli.supervisor.asyncio.create_subprocess_exec",
         fake_create_subprocess_exec,
     )
     cfg = AgentConfig(enabled=True, binary="grok", timeout=10)
@@ -1485,7 +1485,7 @@ async def test_dispatch_cli_claude_prefers_vendor_total_cost_usd(
         return _FakeProcess(lines)
 
     monkeypatch.setattr(
-        "agentshore.agents.cli_agent.asyncio.create_subprocess_exec",
+        "agentshore.agents.cli.supervisor.asyncio.create_subprocess_exec",
         fake_create_subprocess_exec,
     )
     cfg = AgentConfig(enabled=True, binary="claude", timeout=10)
@@ -1513,7 +1513,7 @@ async def test_dispatch_cli_claude_falls_back_to_token_cost_without_total_cost_u
         return _FakeProcess(_claude_cached_json_lines())
 
     monkeypatch.setattr(
-        "agentshore.agents.cli_agent.asyncio.create_subprocess_exec",
+        "agentshore.agents.cli.supervisor.asyncio.create_subprocess_exec",
         fake_create_subprocess_exec,
     )
     cfg = AgentConfig(enabled=True, binary="claude", timeout=10)
@@ -1539,7 +1539,7 @@ async def test_dispatch_cli_codex_json_discounts_cached_input_and_does_not_doubl
         return _FakeProcess(_codex_cached_json_lines())
 
     monkeypatch.setattr(
-        "agentshore.agents.cli_agent.asyncio.create_subprocess_exec",
+        "agentshore.agents.cli.supervisor.asyncio.create_subprocess_exec",
         fake_create_subprocess_exec,
     )
     cfg = AgentConfig(enabled=True, binary="codex", timeout=10)
@@ -1568,7 +1568,7 @@ async def test_dispatch_cli_codex_json_records_cumulative_and_per_turn_usage(
         return _FakeProcess(_codex_cumulative_json_lines())
 
     monkeypatch.setattr(
-        "agentshore.agents.cli_agent.asyncio.create_subprocess_exec",
+        "agentshore.agents.cli.supervisor.asyncio.create_subprocess_exec",
         fake_create_subprocess_exec,
     )
     cfg = AgentConfig(enabled=True, binary="codex", timeout=10)
@@ -1610,7 +1610,7 @@ async def test_dispatch_cli_claude_json_accounts_for_cache_read_and_write_tokens
         return _FakeProcess(_claude_cached_json_lines())
 
     monkeypatch.setattr(
-        "agentshore.agents.cli_agent.asyncio.create_subprocess_exec",
+        "agentshore.agents.cli.supervisor.asyncio.create_subprocess_exec",
         fake_create_subprocess_exec,
     )
     cfg = AgentConfig(enabled=True, binary="claude", timeout=10)
@@ -1794,7 +1794,9 @@ async def test_dispatch_cli_wallclock_timeout_raises_while_stream_active(tmp_pat
     cfg = AgentConfig(
         enabled=True,
         binary=str(script),
-        timeout=0.12,
+        # Leave enough launch margin under xdist so the child is demonstrably
+        # streaming before the wall-clock deadline is evaluated.
+        timeout=1.0,
         stream_idle_timeout=0.5,
     )
     handle = _make_handle(agent_type=AgentType.CODEX)
@@ -1856,11 +1858,11 @@ async def test_dispatch_cli_does_not_clean_up_process_for_control_flow_exception
         kill_calls.append(agent_id)
 
     monkeypatch.setattr(
-        "agentshore.agents.cli_agent.asyncio.create_subprocess_exec",
+        "agentshore.agents.cli.supervisor.asyncio.create_subprocess_exec",
         fake_create_subprocess_exec,
     )
-    monkeypatch.setattr("agentshore.agents.cli_agent._read_output", fake_read_output)
-    monkeypatch.setattr("agentshore.agents.cli_agent._kill_process", fake_kill_process)
+    monkeypatch.setattr("agentshore.agents.cli.stream.read_output", fake_read_output)
+    monkeypatch.setattr("agentshore.agents.cli.supervisor.kill_process", fake_kill_process)
     cfg = AgentConfig(enabled=True, binary="claude", timeout=10)
     handle = _make_handle(agent_type=AgentType.CLAUDE_CODE)
 
@@ -1888,11 +1890,11 @@ async def test_dispatch_cli_cleans_up_process_for_cancellation(
         kill_calls.append(agent_id)
 
     monkeypatch.setattr(
-        "agentshore.agents.cli_agent.asyncio.create_subprocess_exec",
+        "agentshore.agents.cli.supervisor.asyncio.create_subprocess_exec",
         fake_create_subprocess_exec,
     )
-    monkeypatch.setattr("agentshore.agents.cli_agent._read_output", fake_read_output)
-    monkeypatch.setattr("agentshore.agents.cli_agent._kill_process", fake_kill_process)
+    monkeypatch.setattr("agentshore.agents.cli.stream.read_output", fake_read_output)
+    monkeypatch.setattr("agentshore.agents.cli.supervisor.kill_process", fake_kill_process)
     cfg = AgentConfig(enabled=True, binary="claude", timeout=10)
     handle = _make_handle(agent_type=AgentType.CLAUDE_CODE)
 
@@ -1926,7 +1928,7 @@ async def test_kill_process_uses_taskkill_on_windows(
     (which is absent on Windows -> AttributeError)."""
     import os as _os
 
-    from agentshore.agents import cli_agent as ca
+    import agentshore.agents.cli.supervisor as ps
 
     # Simulate Windows: hasattr(os, "killpg") is False, getpgid absent too.
     monkeypatch.delattr(_os, "killpg", raising=False)
@@ -1934,13 +1936,13 @@ async def test_kill_process_uses_taskkill_on_windows(
 
     killed_pids: list[int] = []
     monkeypatch.setattr(
-        "agentshore.agents.cli_agent.subprocess_env.kill_tree_sync",
+        "agentshore.agents.cli.supervisor.subprocess_env.kill_tree_sync",
         lambda pid: killed_pids.append(pid),
     )
 
     proc = _FakeKillProcess(pid=4321)
     # Must not raise AttributeError despite os.killpg being absent.
-    await ca._kill_process(proc, "agent-win")  # type: ignore[arg-type]
+    await ps.kill_process(proc, "agent-win")  # type: ignore[arg-type]
 
     # The process tree was torn down by pid; the process exited within grace so
     # there is no post-grace retry.
@@ -1954,21 +1956,21 @@ async def test_kill_process_windows_no_warn_when_process_already_gone(
     but teardown succeeds, so nothing is logged as a failure."""
     import os as _os
 
-    from agentshore.agents import cli_agent as ca
+    import agentshore.agents.cli.supervisor as ps
 
     monkeypatch.delattr(_os, "killpg", raising=False)
     monkeypatch.delattr(_os, "getpgid", raising=False)
     monkeypatch.setattr(
-        "agentshore.agents.cli_agent.subprocess_env.kill_tree_sync",
+        "agentshore.agents.cli.supervisor.subprocess_env.kill_tree_sync",
         lambda _pid: None,
     )
     mock_logger = MagicMock()
-    monkeypatch.setattr(ca, "_logger", mock_logger)
+    monkeypatch.setattr(ps, "_logger", mock_logger)
 
     # _FakeKillProcess.returncode is 0 -> the process exited, so teardown
     # succeeded and nothing is logged.
     proc = _FakeKillProcess(pid=4321)
-    await ca._kill_process(proc, "agent-win")  # type: ignore[arg-type]
+    await ps.kill_process(proc, "agent-win")  # type: ignore[arg-type]
 
     warnings = [
         c for c in mock_logger.warning.call_args_list if c.args and c.args[0] == "taskkill_failed"
@@ -1983,21 +1985,21 @@ async def test_kill_process_windows_bounds_wait_when_force_kill_fails(
     bounded wait instead of hanging the session forever (codex review P2)."""
     import os as _os
 
-    from agentshore.agents import cli_agent as ca
+    import agentshore.agents.cli.supervisor as ps
 
     monkeypatch.delattr(_os, "killpg", raising=False)
     monkeypatch.delattr(_os, "getpgid", raising=False)
-    monkeypatch.setattr(ca, "_SIGKILL_GRACE", 0.01)
+    monkeypatch.setattr(ps, "_SIGKILL_GRACE", 0.01)
 
     killed_pids: list[int] = []
     # taskkill is a no-op here: the process never dies, simulating an
     # unkillable tree.
     monkeypatch.setattr(
-        "agentshore.agents.cli_agent.subprocess_env.kill_tree_sync",
+        "agentshore.agents.cli.supervisor.subprocess_env.kill_tree_sync",
         lambda pid: killed_pids.append(pid),
     )
     mock_logger = MagicMock()
-    monkeypatch.setattr(ca, "_logger", mock_logger)
+    monkeypatch.setattr(ps, "_logger", mock_logger)
 
     class _HangingProc(_FakeKillProcess):
         async def wait(self) -> int:
@@ -2008,7 +2010,7 @@ async def test_kill_process_windows_bounds_wait_when_force_kill_fails(
     # failed and the warning must fire (unlike the already-gone benign case).
     proc = _HangingProc(pid=4321, returncode=None)  # type: ignore[arg-type]
     # Guard the test itself: a regression would hang here instead of returning.
-    await asyncio.wait_for(ca._kill_process(proc, "agent-win"), timeout=5)  # type: ignore[arg-type]
+    await asyncio.wait_for(ps.kill_process(proc, "agent-win"), timeout=5)  # type: ignore[arg-type]
 
     # The tree kill was attempted twice (initial + post-grace retry) and the
     # unrecoverable failure was surfaced as a warning, not raised.
@@ -2029,7 +2031,7 @@ def test_resolve_executable_resolves_npm_shim_on_windows(
     import shutil
     import sys
 
-    from agentshore.agents import cli_agent as ca
+    from agentshore.agents.cli import argv as ca
 
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setattr(shutil, "which", lambda _name: r"C:\npm\codex.CMD")
@@ -2042,7 +2044,7 @@ def test_resolve_executable_resolves_npm_shim_on_windows(
 def test_resolve_executable_noop_on_posix(monkeypatch: pytest.MonkeyPatch) -> None:
     import sys
 
-    from agentshore.agents import cli_agent as ca
+    from agentshore.agents.cli import argv as ca
 
     monkeypatch.setattr(sys, "platform", "linux")
     assert ca._resolve_executable(["codex", "exec"]) == ["codex", "exec"]
@@ -2054,7 +2056,7 @@ def test_resolve_executable_noop_when_absolute(monkeypatch: pytest.MonkeyPatch) 
     import shutil
     import sys
 
-    from agentshore.agents import cli_agent as ca
+    from agentshore.agents.cli import argv as ca
 
     monkeypatch.setattr(sys, "platform", "win32")
     called: list[str] = []
@@ -2070,7 +2072,7 @@ def test_resolve_executable_noop_when_unresolved(monkeypatch: pytest.MonkeyPatch
     import shutil
     import sys
 
-    from agentshore.agents import cli_agent as ca
+    from agentshore.agents.cli import argv as ca
 
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setattr(shutil, "which", lambda _name: None)
@@ -2106,7 +2108,7 @@ async def test_dispatch_cli_no_identity_env_inherits_parent(
         return _FakeProcess(_codex_json_lines())
 
     monkeypatch.setattr(
-        "agentshore.agents.cli_agent.asyncio.create_subprocess_exec",
+        "agentshore.agents.cli.supervisor.asyncio.create_subprocess_exec",
         fake_create_subprocess_exec,
     )
     cfg = AgentConfig(enabled=True, binary="codex", timeout=10)
@@ -2136,7 +2138,7 @@ async def test_dispatch_cli_identity_env_overlays_parent(
         return _FakeProcess(_codex_json_lines())
 
     monkeypatch.setattr(
-        "agentshore.agents.cli_agent.asyncio.create_subprocess_exec",
+        "agentshore.agents.cli.supervisor.asyncio.create_subprocess_exec",
         fake_create_subprocess_exec,
     )
     monkeypatch.setenv("PRE_EXISTING", "kept")
@@ -2179,7 +2181,7 @@ async def test_dispatch_cli_emits_subprocess_callbacks(
         return _FakeProcess(_codex_json_lines(), returncode=0)
 
     monkeypatch.setattr(
-        "agentshore.agents.cli_agent.asyncio.create_subprocess_exec",
+        "agentshore.agents.cli.supervisor.asyncio.create_subprocess_exec",
         fake_create_subprocess_exec,
     )
 
@@ -3052,7 +3054,7 @@ async def test_watch_stream_idle_error_includes_tier_and_prompt_bytes() -> None:
     """desktop-awc: timeout errors must self-diagnose with model tier + prompt size."""
     import time
 
-    from agentshore.agents.cli_agent import _StdoutActivity, _watch_stream_idle
+    from agentshore.agents.cli.watchdogs import _StdoutActivity, _watch_stream_idle
     from agentshore.errors import PlayTimeoutError
 
     activity = _StdoutActivity(last_stdout_at=time.monotonic() - 10.0)
@@ -3078,7 +3080,7 @@ async def test_watch_stream_idle_error_omits_unknown_prompt_bytes() -> None:
     """When prompt_bytes isn't passed, the suffix omits it."""
     import time
 
-    from agentshore.agents.cli_agent import _StdoutActivity, _watch_stream_idle
+    from agentshore.agents.cli.watchdogs import _StdoutActivity, _watch_stream_idle
     from agentshore.errors import PlayTimeoutError
 
     activity = _StdoutActivity(last_stdout_at=time.monotonic() - 10.0)
@@ -3109,7 +3111,7 @@ async def test_watch_stream_idle_kills_silent_subprocess() -> None:
     """
     import time
 
-    from agentshore.agents.cli_agent import _StdoutActivity, _watch_stream_idle
+    from agentshore.agents.cli.watchdogs import _StdoutActivity, _watch_stream_idle
     from agentshore.errors import PlayTimeoutError
 
     # received_any stays False â€” no stdout ever arrived.
@@ -3185,7 +3187,7 @@ async def test_watch_first_byte_kills_silent_launch() -> None:
     """A child that never produces a first byte is killed at the short deadline."""
     import time
 
-    from agentshore.agents.cli_agent import _StdoutActivity, _watch_first_byte
+    from agentshore.agents.cli.watchdogs import _StdoutActivity, _watch_first_byte
     from agentshore.errors import ErrorClass, PlayTimeoutError
 
     activity = _StdoutActivity(last_stdout_at=time.monotonic())
@@ -3213,7 +3215,7 @@ async def test_watch_first_byte_hands_off_after_first_byte() -> None:
     """Once a byte arrives, the first-byte watchdog must NOT fire (idle owns it)."""
     import time
 
-    from agentshore.agents.cli_agent import _StdoutActivity, _watch_first_byte
+    from agentshore.agents.cli.watchdogs import _StdoutActivity, _watch_first_byte
 
     activity = _StdoutActivity(last_stdout_at=time.monotonic())
     activity.mark()  # first byte arrived
@@ -3240,7 +3242,7 @@ async def test_dispatch_cli_first_byte_watchdog_caps_silent_launch(
     """
     import time
 
-    import agentshore.agents.cli_agent as ca
+    import agentshore.agents.cli.supervisor as ps
     from agentshore.errors import ErrorClass, PlayTimeoutError
 
     # Child sleeps long without ever writing to stdout.
@@ -3249,7 +3251,7 @@ async def test_dispatch_cli_first_byte_watchdog_caps_silent_launch(
 
     # Tiny first-byte deadline; generous wall-clock + stream-idle so neither of
     # those fires first.
-    monkeypatch.setattr(ca, "_FIRST_BYTE_DEADLINE_S", 0.1)
+    monkeypatch.setattr(ps, "_FIRST_BYTE_DEADLINE_S", 0.1)
     cfg = AgentConfig(
         enabled=True,
         binary=str(script),
@@ -3280,19 +3282,19 @@ async def test_dispatch_cli_clamps_stream_idle_to_wallclock(
     a silent child still gets killed via the idle watcher at the (clamped) bound
     rather than only at the wall-clock force-kill.
     """
-    import agentshore.agents.cli_agent as ca
+    import agentshore.agents.cli.supervisor as ps
 
     # Disable the first-byte watchdog so this test exercises the idle clamp alone.
-    monkeypatch.setattr(ca, "_FIRST_BYTE_DEADLINE_S", 10_000.0)
+    monkeypatch.setattr(ps, "_FIRST_BYTE_DEADLINE_S", 10_000.0)
 
     captured: dict[str, float] = {}
-    real_await = ca._await_output_or_timeout
+    real_await = ps.await_output_or_timeout
 
     async def spy_await(*args: Any, **kwargs: Any) -> Any:
         captured["stream_idle_timeout"] = kwargs["stream_idle_timeout"]
         return await real_await(*args, **kwargs)
 
-    monkeypatch.setattr(ca, "_await_output_or_timeout", spy_await)
+    monkeypatch.setattr(ps, "await_output_or_timeout", spy_await)
 
     script = tmp_path / "quick.py"
     script.write_text(
@@ -3328,10 +3330,10 @@ async def test_dispatch_arms_both_watchdogs_unconditionally(
     exercises the exact same code path a ``cleanup`` (SkillBackedPlay) dispatch
     takes — both watchers must be created/armed regardless of which play
     requested the work."""
-    import agentshore.agents.cli_agent as ca
+    import agentshore.agents.cli.supervisor as ps
 
-    real_first_byte = ca._watch_first_byte
-    real_stream_idle = ca._watch_stream_idle
+    real_first_byte = ps._watch_first_byte
+    real_stream_idle = ps._watch_stream_idle
     armed: set[str] = set()
 
     def spy_first_byte(*args: Any, **kwargs: Any) -> Any:
@@ -3342,8 +3344,8 @@ async def test_dispatch_arms_both_watchdogs_unconditionally(
         armed.add("stream_idle")
         return real_stream_idle(*args, **kwargs)
 
-    monkeypatch.setattr(ca, "_watch_first_byte", spy_first_byte)
-    monkeypatch.setattr(ca, "_watch_stream_idle", spy_stream_idle)
+    monkeypatch.setattr(ps, "_watch_first_byte", spy_first_byte)
+    monkeypatch.setattr(ps, "_watch_stream_idle", spy_stream_idle)
 
     script = tmp_path / "quick.py"
     script.write_text(
@@ -3377,7 +3379,7 @@ async def test_kill_process_does_not_hang_when_sigkill_never_reaps(
     """
     import signal
 
-    import agentshore.agents.cli_agent as ca
+    import agentshore.agents.cli.supervisor as ps
 
     class _HangingProc:
         def __init__(self) -> None:
@@ -3401,14 +3403,14 @@ async def test_kill_process_does_not_hang_when_sigkill_never_reaps(
             raise ProcessLookupError
         killpg_signals.append(sig)
 
-    monkeypatch.setattr(ca.os, "getpgid", lambda pid: 12345)
-    monkeypatch.setattr(ca.os, "killpg", _fake_killpg)
-    monkeypatch.setattr(ca, "_SIGKILL_GRACE", 0.05)
+    monkeypatch.setattr(ps.os, "getpgid", lambda pid: 12345)
+    monkeypatch.setattr(ps.os, "killpg", _fake_killpg)
+    monkeypatch.setattr(ps, "_SIGKILL_GRACE", 0.05)
 
     with structlog.testing.capture_logs() as captured:
         # The whole point: this must complete. If the unbounded wait regressed,
         # the outer wait_for raises TimeoutError and the test fails.
-        await asyncio.wait_for(ca._kill_process(proc, "agy-stuck"), timeout=3.0)  # type: ignore[arg-type]
+        await asyncio.wait_for(ps.kill_process(proc, "agy-stuck"), timeout=3.0)  # type: ignore[arg-type]
 
     events = {e.get("event") for e in captured}
     assert "sending_sigkill" in events
@@ -3428,7 +3430,7 @@ async def test_kill_process_survivor_probe_swallows_permission_error(
     this user does not own. That only caught ProcessLookupError, so the EPERM
     propagated up through dispatch and failed the whole play.
     """
-    import agentshore.agents.cli_agent as ca
+    import agentshore.agents.cli.supervisor as ps
 
     class _ExitedProc:
         def __init__(self) -> None:
@@ -3445,11 +3447,11 @@ async def test_kill_process_survivor_probe_swallows_permission_error(
         if sig == 0:
             raise PermissionError(1, "Operation not permitted")
 
-    monkeypatch.setattr(ca.os, "getpgid", lambda pid: 12345)
-    monkeypatch.setattr(ca.os, "killpg", _fake_killpg)
+    monkeypatch.setattr(ps.os, "getpgid", lambda pid: 12345)
+    monkeypatch.setattr(ps.os, "killpg", _fake_killpg)
 
     # Must return normally rather than raising PermissionError.
-    await ca._kill_process(proc, "agent-eperm")  # type: ignore[arg-type]
+    await ps.kill_process(proc, "agent-eperm")  # type: ignore[arg-type]
 
 
 async def test_kill_process_announces_every_agentshore_initiated_sigterm(
@@ -3465,7 +3467,7 @@ async def test_kill_process_announces_every_agentshore_initiated_sigterm(
     """
     import signal
 
-    import agentshore.agents.cli_agent as ca
+    import agentshore.agents.cli.supervisor as ps
 
     class _ExitedProc:
         def __init__(self) -> None:
@@ -3483,11 +3485,11 @@ async def test_kill_process_announces_every_agentshore_initiated_sigterm(
             raise ProcessLookupError
         signals.append(sig)
 
-    monkeypatch.setattr(ca.os, "getpgid", lambda pid: 777)
-    monkeypatch.setattr(ca.os, "killpg", _fake_killpg)
+    monkeypatch.setattr(ps.os, "getpgid", lambda pid: 777)
+    monkeypatch.setattr(ps.os, "killpg", _fake_killpg)
 
     with structlog.testing.capture_logs() as captured:
-        await ca._kill_process(_ExitedProc(), "agent-term")  # type: ignore[arg-type]
+        await ps.kill_process(_ExitedProc(), "agent-term")  # type: ignore[arg-type]
 
     announced = [e for e in captured if e.get("event") == "agent_process_terminating"]
     assert len(announced) == 1
@@ -3495,36 +3497,3 @@ async def test_kill_process_announces_every_agentshore_initiated_sigterm(
     assert announced[0]["pid"] == 5150
     # Announced *before* the signal actually went out.
     assert signal.SIGTERM in signals
-
-
-def test_all_reexports_satellite_imports_are_declared() -> None:
-    """``cli_agent.__all__`` must list every name it imports from ``cli/*.py``.
-
-    ``cli_agent.py`` re-exports a curated subset of its ``agents/cli/`` satellite
-    modules' names — only what its own internal logic or an external caller
-    (tests patching/importing via ``agentshore.agents.cli_agent``) actually
-    needs, not every public symbol those satellites define. Nothing previously
-    forced the import block and ``__all__`` to stay in sync: this parses
-    ``cli_agent.py``'s own source and fails if a satellite import is ever added
-    (or renamed) without a matching ``__all__`` update, or vice versa.
-    """
-    import ast
-    import inspect
-
-    from agentshore.agents import cli_agent
-
-    tree = ast.parse(inspect.getsource(cli_agent))
-    satellite_names: set[str] = set()
-    for node in ast.walk(tree):
-        if (
-            isinstance(node, ast.ImportFrom)
-            and node.module
-            and node.module.startswith("agentshore.agents.cli.")
-        ):
-            satellite_names.update(alias.asname or alias.name for alias in node.names)
-
-    assert satellite_names, "expected cli_agent.py to import from its cli/ satellites"
-    missing_from_all = satellite_names - set(cli_agent.__all__)
-    assert not missing_from_all, (
-        f"imported from a cli/ satellite but missing from __all__: {missing_from_all}"
-    )

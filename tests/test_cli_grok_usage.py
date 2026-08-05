@@ -116,25 +116,25 @@ def test_cli_model_grok_4_5_passthrough_no_warn() -> None:
 
 def test_first_byte_deadline_resolution() -> None:
     """Per-type default, config override, and global default all clamp to timeout."""
-    from agentshore.agents.cli_agent import (
-        _FIRST_BYTE_DEADLINE_S,
-        _resolve_first_byte_deadline,
-    )
+    from agentshore.agents.cli.supervisor import resolve_first_byte_deadline
+    from agentshore.agents.cli.watchdogs import _FIRST_BYTE_DEADLINE_S
 
     cfg = AgentConfig()
     # All streaming agents share one generous 600s first-byte deadline (#213):
     # reasoning models legitimately go silent before the first token, so the
     # deadline only catches a child emitting nothing; wall-clock backstops hangs.
-    assert _resolve_first_byte_deadline(AgentType.GROK, cfg, timeout=3600.0) == 600.0
+    assert resolve_first_byte_deadline(AgentType.GROK, cfg, timeout=3600.0) == 600.0
     assert (
-        _resolve_first_byte_deadline(AgentType.GROK, cfg, timeout=3600.0) == _FIRST_BYTE_DEADLINE_S
+        resolve_first_byte_deadline(AgentType.GROK, cfg, timeout=3600.0)
+        == _FIRST_BYTE_DEADLINE_S
     )
     # Codex/other falls back to the same global default.
     assert (
-        _resolve_first_byte_deadline(AgentType.CODEX, cfg, timeout=3600.0) == _FIRST_BYTE_DEADLINE_S
+        resolve_first_byte_deadline(AgentType.CODEX, cfg, timeout=3600.0)
+        == _FIRST_BYTE_DEADLINE_S
     )
     # Explicit config override wins over the per-type default.
     cfg_override = AgentConfig(first_byte_timeout_seconds=20)
-    assert _resolve_first_byte_deadline(AgentType.GROK, cfg_override, timeout=3600.0) == 20.0
+    assert resolve_first_byte_deadline(AgentType.GROK, cfg_override, timeout=3600.0) == 20.0
     # Always clamped to the wall-clock timeout.
-    assert _resolve_first_byte_deadline(AgentType.GROK, cfg, timeout=10.0) == 10.0
+    assert resolve_first_byte_deadline(AgentType.GROK, cfg, timeout=10.0) == 10.0
