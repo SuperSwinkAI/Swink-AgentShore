@@ -13,19 +13,18 @@
     "ui-integrity-check:ci": "UI_INTEGRITY_CHECK=1 playwright test --reporter=line",
     "build:lib": "vite build --mode lib && tsc -p tsconfig.lib.json"
   },
-  "dependencies": {},
   "devDependencies": {
     "@playwright/test": "1.62.1",
     "@types/react": "19.2.18",
     "@types/react-dom": "19.2.4",
     "@vitejs/plugin-react": "6.0.5",
     "jsdom": "30.0.1",
-    "typescript": "7.0.2",
-    "vite": "8.2.0",
-    "vitest": "4.1.10",
-    "ws": "8.21.1",
     "react": "19.2.8",
-    "react-dom": "19.2.8"
+    "react-dom": "19.2.8",
+    "typescript": "7.0.2",
+    "vite": "8.2.1",
+    "vitest": "4.1.10",
+    "ws": "8.21.3"
   },
   "main": "./dist/index.js",
   "module": "./dist/index.js",
