@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from agentshore.config import BudgetConfig, RuntimeConfig, SessionConfig
+from agentshore.core.session_runtime import LifecyclePhase
 
 
 @pytest.mark.asyncio
@@ -122,7 +123,7 @@ async def test_orchestrator_uses_config_budget(tmp_path: Path) -> None:
 
     assert len(recorded) == 1
     assert recorded[0] == PlayType.ISSUE_PICKUP
-    assert orch._runtime.draining is True
+    assert orch._runtime.lifecycle.phase is LifecyclePhase.STOPPED
     assert orch._runtime.drain_reason == "budget_reserve_reached"
 
 

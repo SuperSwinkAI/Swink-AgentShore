@@ -58,6 +58,47 @@ def _priority_from_labels(labels: list[str]) -> int | None:
     return None
 
 
+def _issue_record_from_json(
+    session_id: str, item: dict[str, object]
+) -> GitHubIssueRecord | None:
+    """Map one REST ``/issues`` item to a cache record.
+
+    GitHub intentionally mixes pull requests into this endpoint; those objects
+    carry ``pull_request`` and return ``None`` so callers cannot cache them as
+    issues. Keeping the wire mapping pure lets captured contract fixtures test
+    GitHub's real snake-case response independently from subprocess behavior.
+    """
+    if "pull_request" in item:
+        return None
+
+    label_objs = item.get("labels", [])
+    if not isinstance(label_objs, list):
+        label_objs = []
+    labels = [
+        str(label["name"]) if isinstance(label, dict) else str(label) for label in label_objs
+    ]
+
+    raw_number = item.get("number")
+    if not isinstance(raw_number, (int, str)):
+        _logger.warning("gh_response_missing_number", item=item)
+        return None
+
+    user = item.get("user")
+    github_author = str(user["login"]) if isinstance(user, dict) and user.get("login") else None
+    return GitHubIssueRecord(
+        issue_number=int(raw_number),
+        session_id=session_id,
+        title=str(item.get("title", "")),
+        state=str(item.get("state", "open")).lower(),
+        created_at=str(item.get("created_at", now_iso())),
+        closed_at=str(item["closed_at"]) if item.get("closed_at") else None,
+        labels=labels,
+        priority=_priority_from_labels(labels),
+        url=str(item["html_url"]) if item.get("html_url") else None,
+        github_author=github_author,
+    )
+
+
 def _pr_record_from_json(session_id: str, item: dict[str, object]) -> PullRequestRecord | None:
     """Map a single ``gh pr`` JSON object (queried with ``_PR_JSON_FIELDS``) to a
     ``PullRequestRecord``, or ``None`` if the item lacks a usable PR number.
@@ -206,45 +247,15 @@ class GitHubAdapter:
         exclude = self._cfg.intake.issue_labels_exclude
 
         for item in raw_items:
-            # REST /issues mixes issues and PRs; PRs carry a ``pull_request``
-            # key. Filter here so the rest of AgentShore never sees PRs as issues.
-            if "pull_request" in item:
+            record = _issue_record_from_json(self._session_id, item)
+            if record is None:
                 continue
 
-            label_objs = item.get("labels", [])
-            if not isinstance(label_objs, list):
-                label_objs = []
-            label_names: list[str] = [
-                str(lbl["name"]) if isinstance(lbl, dict) else str(lbl) for lbl in label_objs
-            ]
-
-            if include and not any(lbl in label_names for lbl in include):
+            if include and not any(label in record.labels for label in include):
                 continue
-            if exclude and any(lbl in label_names for lbl in exclude):
+            if exclude and any(label in record.labels for label in exclude):
                 continue
-
-            raw_number = item.get("number")
-            if not isinstance(raw_number, (int, str)):
-                _logger.warning("gh_response_missing_number", item=item)
-                continue
-            user = item.get("user")
-            github_author = (
-                str(user["login"]) if isinstance(user, dict) and user.get("login") else None
-            )
-            records.append(
-                GitHubIssueRecord(
-                    issue_number=int(raw_number),
-                    session_id=self._session_id,
-                    title=str(item.get("title", "")),
-                    state=str(item.get("state", "open")).lower(),
-                    created_at=str(item.get("created_at", now_iso())),
-                    closed_at=str(item["closed_at"]) if item.get("closed_at") else None,
-                    labels=label_names,
-                    priority=_priority_from_labels(label_names),
-                    url=str(item["html_url"]) if item.get("html_url") else None,
-                    github_author=github_author,
-                )
-            )
+            records.append(record)
 
         return records
 

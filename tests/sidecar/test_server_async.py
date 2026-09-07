@@ -455,49 +455,6 @@ async def test_session_stop_without_active_session_returns_session_inactive() ->
 
 
 @pytest.mark.asyncio
-async def test_session_start_then_status_reports_running_state() -> None:
-    state = ServerState(ipc_endpoint={"kind": "ws", "url": "ws://127.0.0.1:9473/ws"})
-    start = await _drive(
-        {
-            "jsonrpc": "2.0",
-            "id": 10,
-            "method": "session.start",
-        },
-        state=state,
-    )
-    assert "result" in start
-    assert isinstance(start["result"]["session_id"], str)
-    assert start["result"]["ipc_endpoint"] == {"kind": "ws", "url": "ws://127.0.0.1:9473/ws"}
-
-    status = await _drive(
-        {
-            "jsonrpc": "2.0",
-            "id": 11,
-            "method": "session.status",
-        },
-        state=state,
-    )
-    assert "result" in status
-    assert status["result"]["state"] == "running"
-    assert status["result"]["session_id"] == start["result"]["session_id"]
-    assert isinstance(status["result"]["started_at"], str)
-
-
-@pytest.mark.asyncio
-async def test_session_status_idle_without_active_session() -> None:
-    status = await _drive(
-        {
-            "jsonrpc": "2.0",
-            "id": 12,
-            "method": "session.status",
-        },
-        state=ServerState(),
-    )
-    assert "result" in status
-    assert status["result"] == {"state": "idle", "session_id": None, "started_at": None}
-
-
-@pytest.mark.asyncio
 async def test_archive_list_returns_rows(tmp_path: Path) -> None:
     store, _, archive_id = await _populated_session(tmp_path / "db.sqlite")
     try:

@@ -21,6 +21,7 @@ from agentshore.core.phases import (
     _author_labels_for_config,
     _phase_queue_agent_instantiation,
 )
+from agentshore.core.session_runtime import LifecyclePhase
 from agentshore.data.models import PlayRecord
 from agentshore.plays.base import PlayParams
 from agentshore.plays.override import OverrideKind
@@ -1005,7 +1006,7 @@ async def test_run_until_idle_begins_drain_on_budget_reserve(tmp_path: Path) -> 
         with patch.object(orch._state_builder, "build_state", new=_fake_state):
             await orch.run_until_idle()
 
-    assert orch._runtime.draining is True
+    assert orch._runtime.lifecycle.phase is LifecyclePhase.STOPPED
     assert orch._runtime.drain_reason == "budget_reserve_reached"
     selector.select.assert_not_called()
 

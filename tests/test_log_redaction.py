@@ -21,6 +21,7 @@ from agentshore.logging import get_logger, setup_logging
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
+
 def _fake(prefix: str, body: str) -> str:
     """Assemble a credential-shaped test value at runtime.
 

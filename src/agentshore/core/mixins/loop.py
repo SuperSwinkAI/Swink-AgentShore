@@ -792,13 +792,14 @@ class LoopRunner:
         callback fires on loop exit. ``clear_pause_deadline`` resets the
         unanswered-pause deadline.
         """
-        self._runtime.drain_reason = reason
         if fire_natural_exit:
             self._runtime.natural_exit_reason = reason
         if clear_pause_deadline:
             self._runtime.pause_deadline = None
+        # Record the lifecycle transition before delegating so observers see the
+        # drain reason even when the controller is mocked in a focused test.
+        self._runtime.lifecycle.request_drain(reason)
         if arm_gate_only:
-            self._runtime.draining = True
             # Unblock the gate so the loop proceeds to begin_drain next iteration.
             self._runtime.pause_event.set()
             return

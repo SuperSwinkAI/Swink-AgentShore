@@ -1,5 +1,7 @@
 import { Component, type ErrorInfo, type ReactNode } from "react";
 
+import "./ErrorBoundary.css";
+
 import { dashboardLogger } from "../logger";
 
 interface ErrorBoundaryProps {

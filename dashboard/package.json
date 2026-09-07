@@ -1,7 +1,7 @@
 {
   "name": "@agentshore/dashboard",
   "private": true,
-  "version": "0.10.4",
+  "version": "0.10.7",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -13,19 +13,18 @@
     "ui-integrity-check:ci": "UI_INTEGRITY_CHECK=1 playwright test --reporter=line",
     "build:lib": "vite build --mode lib && tsc -p tsconfig.lib.json"
   },
-  "dependencies": {},
   "devDependencies": {
-    "@playwright/test": "1.62.0",
-    "@types/react": "19.2.17",
-    "@types/react-dom": "19.2.3",
-    "@vitejs/plugin-react": "6.0.4",
-    "jsdom": "30.0.0",
-    "typescript": "7.0.2",
-    "vite": "8.1.5",
-    "vitest": "4.1.10",
-    "ws": "8.21.1",
+    "@playwright/test": "1.62.1",
+    "@types/react": "19.2.18",
+    "@types/react-dom": "19.2.7",
+    "@vitejs/plugin-react": "6.1.1",
+    "jsdom": "30.0.1",
     "react": "19.2.8",
-    "react-dom": "19.2.8"
+    "react-dom": "19.2.8",
+    "typescript": "7.0.2",
+    "vite": "8.2.2",
+    "vitest": "5.0.0",
+    "ws": "8.21.3"
   },
   "main": "./dist/index.js",
   "module": "./dist/index.js",

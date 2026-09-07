@@ -297,7 +297,12 @@ class _WorkClaimsMixin(_DataStoreBase):
 
     @_serialized
     async def finish_work_claim_group(
-        self, session_id: str, claim_group_id: str, *, status: str
+        self,
+        session_id: str,
+        claim_group_id: str,
+        *,
+        status: str,
+        commit: bool = True,
     ) -> None:
         """Finish active rows in a claim group with a terminal status."""
         if status == "retrying":
@@ -312,7 +317,8 @@ class _WorkClaimsMixin(_DataStoreBase):
                 """,
                 (session_id, claim_group_id, *status_params),
             )
-            await self._conn.commit()
+            if commit:
+                await self._conn.commit()
             return
         if status not in _TERMINAL_WORK_CLAIM_STATUSES:
             raise ValueError(f"work claim status must be terminal, got {status!r}")
@@ -332,7 +338,8 @@ class _WorkClaimsMixin(_DataStoreBase):
             """,
             (status, now_iso(), session_id, claim_group_id, *status_params),
         )
-        await self._conn.commit()
+        if commit:
+            await self._conn.commit()
 
     @_serialized
     async def save_dispatch_replay(

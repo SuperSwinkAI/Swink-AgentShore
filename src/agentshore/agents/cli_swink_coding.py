@@ -16,6 +16,10 @@ with no translation. There is no supported reasoning-effort flag for this CLI
 type), so *reasoning_effort* is accepted only for signature parity with the
 other CLI adapters and is otherwise ignored.
 
+Minimum supported binary is **v0.2.3**: ``--session-id`` (below) is emitted on
+every new dispatch, and an older binary rejects the unknown flag at startup
+before doing any work. ``--tier-map`` already required v0.2.1.
+
 A per-dispatch tier backend override is supported via ``--tier-map
 <tier>=<provider>:<model>[@endpoint]`` (SuperSwink-Coding#282, shipped in
 swink-coding v0.2.1). ``model`` here may therefore be either a plain tier
@@ -34,6 +38,10 @@ Output is newline-delimited JSON on stdout::
      "duration_ms":N,"time_to_first_byte_ms":N|null,"empty":true?}
     {"type":"error","message":"..."}
 
+Each new dispatch pins its own durable session id via ``--session-id``
+(SuperSwink-Coding#300) so the id is known before spawn — see
+:func:`new_pinned_session_id`. The flag is mutually exclusive with ``--resume``.
+
 ``result`` is the terminal event and carries the authoritative final text,
 usage, and session id — it is preferred over concatenating ``text`` deltas.
 ``error`` is emitted (with a non-zero process exit) when the run fails before
@@ -49,6 +57,7 @@ swink-coding-specific usage mapper is needed (unlike Grok's aliased keys).
 
 from __future__ import annotations
 
+import uuid
 from typing import Literal
 
 from agentshore.agents._jsonl import (
@@ -110,6 +119,23 @@ def classify_swink_model(value: str) -> Literal["alias", "tier_map"]:
     return "tier_map"
 
 
+def new_pinned_session_id() -> str:
+    """Return a fresh session id to pin a NEW swink-coding run to.
+
+    ``--session-id`` (SuperSwink-Coding#300, shipped in swink-coding v0.2.3)
+    pins the durable session id of a new run instead of letting the CLI mint an
+    ``sc_*`` one, so AgentShore knows the id — and therefore the transcript path
+    ``~/.swink-coding/sessions/<id>.json`` — *before* the process is spawned.
+
+    Ids must match ``[A-Za-z0-9._-]+`` and must not name an already-saved
+    session (the CLI rejects a collision at startup, pointing at ``--resume``),
+    so this mints a fresh uuid4 per dispatch. The ``as-`` prefix marks the
+    session on disk as AgentShore-pinned; ``latest`` is reserved by the CLI and
+    is unreachable from this shape.
+    """
+    return f"as-{uuid.uuid4().hex}"
+
+
 def _model_flags(model: str | None, model_tier: str | None) -> list[str]:
     """Return the ``--model``/``--tier-map`` argv slice for *model*.
 
@@ -143,6 +169,8 @@ def build_argv(
     prompt_on_stdin: bool,
     prompt_file: str | None = None,
     model_tier: str | None = None,
+    session_id: str | None = None,
+    disallowed_tools: tuple[str, ...] = (),
 ) -> list[str]:
     """Return argv for one non-interactive swink-coding CLI invocation.
 
@@ -163,11 +191,29 @@ def build_argv(
     tier alias being overridden) is required and both ``--model <model_tier>``
     and ``--tier-map <model_tier>=<value>`` are emitted. See
     :func:`classify_swink_model`.
+
+    *session_id*, when set, pins this new run's durable session id via
+    ``--session-id`` (SuperSwink-Coding#300) — see
+    :func:`new_pinned_session_id`. It is mutually exclusive with ``--resume``
+    at the CLI boundary, so :func:`build_resume_argv` never forwards it.
+
+    *disallowed_tools* emits one repeated ``--disallowed-tools <spec>`` per
+    entry, the executing play's tool-denial policy pushed down to the CLI's own
+    permission layer. Deny rules layer on top of the child's config and win in
+    every mode **including ``--yolo``**, which is why this is the only lever
+    that survives the YOLO default in *extra_flags*. Specs use the CLI's
+    ``tool`` / ``tool(glob)`` grammar; unknown tool names fail fast at startup,
+    so an entry that does not name a real tool wedges the dispatch rather than
+    silently doing nothing (see ``_CODE_REVIEW_DENIED_TOOLS``).
     """
     resolved_binary = binary or "swink-coding"
     args = [resolved_binary]
     args += _model_flags(model, model_tier)
+    if session_id:
+        args += ["--session-id", session_id]
     args.extend(extra_flags)
+    for spec in disallowed_tools:
+        args += ["--disallowed-tools", spec]
     args += ["--output-format", "stream-json"]
     if project_dir:
         args += ["--cwd", project_dir]
@@ -190,6 +236,8 @@ def build_resume_argv(
     prompt_on_stdin: bool,
     prompt_file: str | None = None,
     model_tier: str | None = None,
+    session_id: str | None = None,
+    disallowed_tools: tuple[str, ...] = (),
 ) -> list[str]:
     """Return argv for a swink-coding JSON-retry RESUME dispatch (``--resume <id>``).
 
@@ -198,6 +246,16 @@ def build_resume_argv(
     omitted. Narrow single-shot use only (desktop-dy2j), matching the other CLI
     adapters' resume shape. Always uses the explicit session id, never the
     ``latest`` sentinel the binary also accepts.
+
+    *session_id* (the ``--session-id`` pin for a *new* run) is accepted for
+    signature parity and deliberately **not** forwarded: the CLI rejects
+    ``--session-id`` alongside ``--resume`` at the argument boundary, and a
+    resumed run already has an id. Pinning is a new-run concern only.
+
+    *disallowed_tools*, unlike *session_id*, **is** forwarded: the retry
+    re-enters the same play's session to finish the same work, so its denials
+    still apply. ``--disallowed-tools`` is ephemeral per-invocation state, not
+    session state, so it has to be re-passed on the resume to hold.
     """
     argv = build_argv(
         prompt=prompt,
@@ -209,6 +267,7 @@ def build_resume_argv(
         prompt_on_stdin=prompt_on_stdin,
         prompt_file=prompt_file,
         model_tier=model_tier,
+        disallowed_tools=disallowed_tools,
     )
     # argv[0] is the binary; inject --resume <id> directly after it.
     return [argv[0], "--resume", resume_session_id, *argv[1:]]
@@ -227,9 +286,14 @@ def _swink_coding_session_id(event: dict[str, object]) -> str | None:
 def parse_swink_coding_jsonl(raw: str) -> tuple[str, _UsageTotals, str | None]:
     """Parse swink-coding CLI NDJSON output into (text, usage_totals, session_id).
 
-    - ``type:"result"`` is the terminal event: its ``text`` field (even when
-      empty — the CLI flags a legitimately empty result via ``"empty":true``)
-      is authoritative and is never overridden by concatenated deltas.
+    - ``type:"result"`` is the terminal event: a nonempty ``text`` field is
+      authoritative and is never overridden by concatenated deltas. An *empty*
+      ``text`` is authoritative only when the CLI also set ``"empty":true``,
+      which is how it marks a run that legitimately produced nothing (#415).
+      An empty ``text`` with no such flag means the terminal text is missing,
+      not that the run was silent — the accumulated ``text`` deltas are used
+      instead, so a run that streamed a complete result block is not reported
+      as a no-op.
     - ``type:"error"`` is used as a fallback terminal only when no ``result``
       event ever arrived (the run failed before producing one); its ``message``
       is surfaced as the dispatch text.
@@ -243,6 +307,7 @@ def parse_swink_coding_jsonl(raw: str) -> tuple[str, _UsageTotals, str | None]:
     usage_totals = _UsageTotals()
     text_chunks: list[str] = []
     result_seen = False
+    result_flagged_empty = False
     terminal_text: str | None = None
     error_text: str | None = None
 
@@ -259,6 +324,7 @@ def parse_swink_coding_jsonl(raw: str) -> tuple[str, _UsageTotals, str | None]:
 
         if event_type == "result":
             result_seen = True
+            result_flagged_empty = event.get("empty") is True
             text_value = event.get("text")
             if isinstance(text_value, str):
                 terminal_text = text_value
@@ -278,8 +344,17 @@ def parse_swink_coding_jsonl(raw: str) -> tuple[str, _UsageTotals, str | None]:
         # session.started / tool_use / tool_result: session id (if any) is
         # already captured above; these carry no text or usage of their own.
 
-    if result_seen:
+    if result_seen and (terminal_text or result_flagged_empty):
+        # Nonempty terminal text wins outright; an empty one wins only when the
+        # CLI explicitly flagged the run as empty.
         text_out = terminal_text if terminal_text is not None else ""
+    elif result_seen:
+        # Unflagged empty terminal text (#415): the terminal event is missing
+        # its text rather than reporting a silent run, so the streamed deltas
+        # are the best evidence of what the run produced. Without this a run
+        # that streamed a complete result block is handed back as "" and scored
+        # a no-op, which then burns the whole no-op retry budget re-running it.
+        text_out = "".join(text_chunks) or error_text or raw
     elif error_text is not None:
         text_out = error_text
     else:

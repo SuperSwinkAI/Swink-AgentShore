@@ -1,6 +1,6 @@
 [project]
 name = "agentshore"
-version = "0.10.4"
+version = "0.10.7"
 description = "Swink™ AgentShore™ — RL-based multi-agent orchestrator"
 readme = "README.md"
 license = { text = "MIT" }
@@ -47,21 +47,22 @@ dependencies = [
     # (``agy``), which blocks on a terminal Device-Attributes query over plain
     # pipes. See ``agents/cli/conpty.py``.
     "pywinpty>=2.0.0; sys_platform == 'win32'",
+    "pydantic>=2.12.5",
 ]
 
 [dependency-groups]
 dev = [
     "bandit==1.9.4",
-    "mypy==2.3.0",
+    "mypy==2.3.1",
     "pip-audit==2.10.1",
-    "pre-commit==4.6.1",
+    "pre-commit==4.6.2",
     "pytest==9.1.1",
     "pytest-asyncio==1.4.0",
     "pytest-cov==7.1.0",
     "pytest-timeout==2.4.0",
     "pytest-xdist==3.8.0",
-    "ruff==0.16.0",
-    "types-pyyaml==6.0.12.20260724",
+    "ruff==0.16.6",
+    "types-pyyaml==6.0.12.20260815",
 ]
 
 [project.urls]
@@ -165,6 +166,7 @@ ignore_missing_imports = true
 testpaths = ["tests"]
 markers = [
     "real_resolve_executable: exercise the genuine cli_agent._resolve_executable (opt out of the test_cli_agent autouse identity stub)",
+    "github_contract: opt-in read-only contract checks against the current GitHub repository",
 ]
 # -n auto + --dist=worksteal cuts wall-time ~4-5x on an 8-core box; combined
 # with branch coverage the full suite finishes in ~90s instead of ~20 min.

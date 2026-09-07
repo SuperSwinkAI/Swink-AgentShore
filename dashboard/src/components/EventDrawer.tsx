@@ -1,4 +1,7 @@
 import React from "react";
+
+import "./EventDrawer.css";
+
 import type {
   ActivePlay,
   AgentSnapshot,

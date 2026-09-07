@@ -1,4 +1,7 @@
 import React from "react";
+
+import "./EpicPanel.css";
+
 import type { ProjectGraph, StateUpdate } from "../types";
 import { createNotifyStore } from "../notifyStore";
 

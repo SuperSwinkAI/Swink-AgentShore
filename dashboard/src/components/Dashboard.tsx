@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type JSX } from "react";
 
-import "../dashboard.css";
+import "./Dashboard.css";
 
 import {
   BootstrapModal,
@@ -65,8 +65,8 @@ import { WebSocketClient, type ConnectionState, type DashboardTransport } from "
 /**
  * Single React surface that both the desktop app and the bridge SPA can
  * mount. Renders the bridge's HUD DOM structure (canvas + topbar +
- * main-area + bottom-bar + modals) so the existing CSS in dashboard.css
- * lays out the panels correctly without per-target overrides.
+ * main-area + bottom-bar + modals) so the component-owned styles lay out the
+ * panels correctly without per-target overrides.
  *
  * Owns a AgentShoreStateManager and routes incoming transport messages to
  * the module-level notify\* functions exported by each component.

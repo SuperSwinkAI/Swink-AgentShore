@@ -4,6 +4,8 @@ yolo, --cwd, resume), NDJSON result/error parsing, and terminal-event detection.
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from agentshore.agents.cli_swink_coding import (
@@ -11,6 +13,7 @@ from agentshore.agents.cli_swink_coding import (
     build_argv,
     build_resume_argv,
     classify_swink_model,
+    new_pinned_session_id,
     parse_swink_coding_jsonl,
 )
 
@@ -346,6 +349,150 @@ def test_build_resume_argv_tier_map_model_emits_model_and_tier_map_flags() -> No
 
 
 # ---------------------------------------------------------------------------
+# --session-id pinning (SuperSwink-Coding#300)
+# ---------------------------------------------------------------------------
+
+
+def test_new_pinned_session_id_matches_cli_id_grammar() -> None:
+    """The CLI validates ids against [A-Za-z0-9._-]+ and reserves ``latest``."""
+    ident = new_pinned_session_id()
+    assert re.fullmatch(r"[A-Za-z0-9._-]+", ident)
+    assert ident != "latest"
+    assert ident.startswith("as-")
+
+
+def test_new_pinned_session_id_is_fresh_each_call() -> None:
+    """An id naming an already-saved session is rejected at startup, so every
+    dispatch must mint its own."""
+    assert len({new_pinned_session_id() for _ in range(100)}) == 100
+
+
+def test_build_argv_emits_session_id_flag_when_pinned() -> None:
+    argv = build_argv(
+        prompt="do the thing",
+        binary="swink-coding",
+        model="small",
+        reasoning_effort=None,
+        extra_flags=("--yolo",),
+        project_dir="/worktree",
+        prompt_on_stdin=False,
+        session_id="as-deadbeef",
+    )
+    assert "--session-id" in argv
+    assert argv[argv.index("--session-id") + 1] == "as-deadbeef"
+
+
+def test_build_argv_omits_session_id_flag_when_unpinned() -> None:
+    argv = build_argv(
+        prompt="do the thing",
+        binary="swink-coding",
+        model="small",
+        reasoning_effort=None,
+        extra_flags=("--yolo",),
+        project_dir="/worktree",
+        prompt_on_stdin=False,
+    )
+    assert "--session-id" not in argv
+
+
+def test_build_resume_argv_never_forwards_session_id() -> None:
+    """``--session-id`` and ``--resume`` are mutually exclusive at the CLI
+    boundary — forwarding the pin would make every resume dispatch exit non-zero."""
+    argv = build_resume_argv(
+        resume_session_id="sc_abc123",
+        prompt="emit the block",
+        binary="swink-coding",
+        model="small",
+        reasoning_effort=None,
+        extra_flags=("--yolo",),
+        project_dir="/wt",
+        prompt_on_stdin=False,
+        session_id="as-deadbeef",
+    )
+    assert "--session-id" not in argv
+    assert argv[:3] == ["swink-coding", "--resume", "sc_abc123"]
+
+
+# ---------------------------------------------------------------------------
+# --disallowed-tools (per-play tool denial)
+# ---------------------------------------------------------------------------
+
+
+def test_build_argv_emits_one_disallowed_tools_flag_per_spec() -> None:
+    """The CLI flag is repeatable, not comma-joined — a single
+    ``--disallowed-tools a,b`` would be parsed as one tool named ``a,b`` and
+    rejected at startup as unknown."""
+    argv = build_argv(
+        prompt="review it",
+        binary="swink-coding",
+        model="small",
+        reasoning_effort=None,
+        extra_flags=("--yolo",),
+        project_dir="/worktree",
+        prompt_on_stdin=False,
+        disallowed_tools=("write_file", "edit_file"),
+    )
+    pairs = [(argv[i], argv[i + 1]) for i, tok in enumerate(argv) if tok == "--disallowed-tools"]
+    assert pairs == [
+        ("--disallowed-tools", "write_file"),
+        ("--disallowed-tools", "edit_file"),
+    ]
+
+
+def test_build_argv_omits_disallowed_tools_when_play_denies_nothing() -> None:
+    """The default is the agent's full tool surface; denial is opt-in."""
+    argv = build_argv(
+        prompt="do the thing",
+        binary="swink-coding",
+        model="small",
+        reasoning_effort=None,
+        extra_flags=("--yolo",),
+        project_dir="/worktree",
+        prompt_on_stdin=False,
+    )
+    assert "--disallowed-tools" not in argv
+
+
+def test_disallowed_tools_survives_the_yolo_default() -> None:
+    """Deny rules win over the CLI's permissive mode — that property is the
+    whole reason this lever is worth having, since every AgentShore dispatch
+    carries ``--yolo``."""
+    argv = build_argv(
+        prompt="review it",
+        binary="swink-coding",
+        model="small",
+        reasoning_effort=None,
+        extra_flags=("--yolo",),
+        project_dir="/worktree",
+        prompt_on_stdin=False,
+        disallowed_tools=("write_file",),
+    )
+    assert "--yolo" in argv
+    assert "--disallowed-tools" in argv
+
+
+def test_build_resume_argv_forwards_disallowed_tools() -> None:
+    """Unlike the session-id pin, denials MUST cross the JSON-retry resume: the
+    flag is per-invocation, not session state, so a resume that dropped it would
+    hand back the very tools the play denied."""
+    argv = build_resume_argv(
+        resume_session_id="sc_abc123",
+        prompt="emit the block",
+        binary="swink-coding",
+        model="small",
+        reasoning_effort=None,
+        extra_flags=("--yolo",),
+        project_dir="/wt",
+        prompt_on_stdin=False,
+        disallowed_tools=("write_file", "edit_file"),
+    )
+    assert argv[:3] == ["swink-coding", "--resume", "sc_abc123"]
+    assert argv.count("--disallowed-tools") == 2
+    assert "write_file" in argv
+    assert "edit_file" in argv
+
+
+# ---------------------------------------------------------------------------
 # parse_swink_coding_jsonl — result event (primary path)
 # ---------------------------------------------------------------------------
 
@@ -404,6 +551,52 @@ def test_parse_result_event_empty_text_is_authoritative_not_overridden_by_deltas
     text, _usage, session_id = parse_swink_coding_jsonl(raw)
     assert text == ""
     assert session_id == "sc_2"
+
+
+def test_parse_unflagged_empty_result_falls_back_to_streamed_deltas() -> None:
+    """#415: an empty ``text`` with no ``"empty"`` flag means the terminal text is
+    missing, not that the run was silent — the streamed deltas carry the real
+    output and must not be discarded (doing so scored the dispatch a no-op)."""
+    raw = "\n".join(
+        [
+            '{"type":"session.started","session_id":"sc_3"}',
+            '{"type":"text","data":"Pruned 4 branches. "}',
+            '{"type":"text","data":"```json\\n{\\"success\\": true}\\n```"}',
+            '{"type":"result","text":"","session_id":"sc_3"}',
+        ]
+    )
+    text, _usage, session_id = parse_swink_coding_jsonl(raw)
+    assert text == 'Pruned 4 branches. ```json\n{"success": true}\n```'
+    assert session_id == "sc_3"
+
+
+def test_parse_unflagged_empty_result_with_no_deltas_falls_back_to_error_message() -> None:
+    """#415: with no deltas to fall back to, an error event's message still beats
+    handing back an empty string."""
+    raw = "\n".join(
+        [
+            '{"type":"error","message":"backend refused the request"}',
+            '{"type":"result","text":"","session_id":"sc_4"}',
+        ]
+    )
+    text, _usage, session_id = parse_swink_coding_jsonl(raw)
+    assert text == "backend refused the request"
+    assert session_id == "sc_4"
+
+
+def test_parse_flagged_empty_result_still_wins_over_deltas_and_error() -> None:
+    """#415 must not weaken the flagged case: ``"empty":true`` remains authoritative
+    even when deltas and an error message are both present."""
+    raw = "\n".join(
+        [
+            '{"type":"text","data":"partial"}',
+            '{"type":"error","message":"ignored"}',
+            '{"type":"result","text":"","session_id":"sc_5","empty":true}',
+        ]
+    )
+    text, _usage, session_id = parse_swink_coding_jsonl(raw)
+    assert text == ""
+    assert session_id == "sc_5"
 
 
 def test_parse_result_event_reasoning_tokens_used_when_no_output_tokens() -> None:

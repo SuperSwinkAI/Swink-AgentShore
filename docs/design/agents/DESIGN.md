@@ -61,6 +61,15 @@ Per-play tier eligibility is a hard selection filter (`_selection.py`). Plays no
 
 Skill-backed plays render a project-local skill prompt, write a play-specific context file, then dispatch to the chosen agent. The result parser extracts the last valid result-shaped JSON object from raw agent output. CLI permission gates are bypassed by default (autonomous orchestrator - agents can't pause for per-tool approval); a user who sets `extra_flags` opts out and manages flags themselves.
 
+`dispatch_cli` is a coordinator, not the subprocess state machine. Provider
+differences are selected through the `CliDriverRegistry`: drivers own prompt-file
+preparation, session pinning, output unwrapping, and provider-specific session-id
+recovery. `ProcessSupervisor` owns spawn mode (pipes or ConPTY), stdin delivery,
+spawn/exit callbacks, watchdog completion, cancellation, and child cleanup. Both
+boundaries are injectable, so dispatch tests fake collaborators instead of
+monkeypatching a facade's module globals. Stream reading/parsing lives separately
+in `agents/cli/stream.py` and `agents/cli/parsing.py`.
+
 Skill templates source from `src/agentshore/skills/templates/` and install to `.agents/skills/<skill-name>/SKILL.md`:
 
 `agentshore-calibrate-alignment`, `agentshore-cleanup`, `agentshore-code-review`, `agentshore-design-audit`, `agentshore-groom-backlog`, `agentshore-issue-pickup`, `agentshore-merge-pr`, `agentshore-prune`, `agentshore-reconcile-state`, `agentshore-refine-tasks`, `agentshore-run-qa`, `agentshore-seed-project`, `agentshore-systematic-debugging`, `agentshore-unblock-pr`, `agentshore-write-plan`.

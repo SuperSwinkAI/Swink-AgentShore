@@ -1,0 +1,30 @@
+/* ── Kanban stage ───────────────────────────────────────────── */
+#kanban-stage[hidden] {
+  display: none;
+}
+#kanban-stage {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  background: var(--color-fm-bg);
+  overflow: hidden;
+}
+#stats-stage[hidden] {
+  display: none;
+}
+#stats-stage {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  background: var(--color-fm-bg);
+  overflow: hidden;
+  padding: calc(var(--stats-inset-top, 38px) + 14px)
+    calc(var(--stats-inset-right, var(--dashboard-side-panel-width)) + 16px)
+    calc(var(--stats-inset-bottom, 120px) + 16px)
+    calc(var(--stats-inset-left, var(--dashboard-side-panel-width)) + 16px);
+}
+/* When HTML stages are active hide the office canvas underneath. */
+body.kanban-active .agentshore-dashboard-canvas,
+body.stats-active .agentshore-dashboard-canvas {
+  display: none;
+}

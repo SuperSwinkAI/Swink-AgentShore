@@ -3,7 +3,7 @@ import type { NavigateFunction } from "react-router-dom";
 
 /**
  * Match the bridge SPA's body chrome when the dashboard fills the
- * viewport: use dashboard.css's themed --color-fm-bg.
+ * viewport: use the dashboard package's shared themed --color-fm-bg token.
  */
 export function useDashboardBodyClass(pathname: string): void {
   useEffect(() => {

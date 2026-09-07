@@ -19,7 +19,6 @@ from agentshore.sidecar.rpc.handlers.agents import _dispatch_agents_rpc
 from agentshore.sidecar.rpc.handlers.app import _dispatch_app_handshake
 from agentshore.sidecar.rpc.handlers.archive import _dispatch_archive
 from agentshore.sidecar.rpc.handlers.beads import _dispatch_beads_rpc
-from agentshore.sidecar.rpc.handlers.config import _dispatch_config_rpc
 from agentshore.sidecar.rpc.handlers.custom import _dispatch_custom_method
 from agentshore.sidecar.rpc.handlers.identities import _dispatch_identities_rpc
 from agentshore.sidecar.rpc.handlers.preferences import _dispatch_preferences_rpc
@@ -75,7 +74,7 @@ class Route:
 # ---------------------------------------------------------------------------
 # Adapter wrappers — inject computed extra args for handlers that need them
 # ---------------------------------------------------------------------------
-# Handlers for identities/agents/config need ``active_project_path``; the
+# Handlers for identities/agents need ``active_project_path``; the
 # recents handler needs ``recents_path_fn``.  We wrap them here in thin
 # callables that have the *same* uniform signature as every other RouteHandler
 # so ``handle_request`` can call every route with a single pattern.
@@ -121,26 +120,6 @@ def _wrap_agents(
     )
 
 
-def _wrap_config(
-    method: str,
-    raw_params: object,
-    *,
-    req_id: int | str | None,
-    is_notification: bool,
-    notify: Callable[[JsonRpcNotification], None] | None,
-    state: ServerState,
-) -> DispatchResult:
-    return _dispatch_config_rpc(
-        method,
-        raw_params,
-        req_id=req_id,
-        is_notification=is_notification,
-        notify=notify,
-        state=state,
-        active_project_path=_active_project_path(state),
-    )
-
-
 # ---------------------------------------------------------------------------
 # Dispatch table
 # ---------------------------------------------------------------------------
@@ -150,7 +129,6 @@ def _wrap_config(
 HANDLERS: dict[str, Route] = {
     "app.handshake": Route(_dispatch_app_handshake),
     "session.start": Route(_dispatch_session, notify_ok=True),
-    "session.status": Route(_dispatch_session, notify_ok=True),
     "session.stop": Route(_dispatch_session, notify_ok=True),
     "session.set_budget": Route(_dispatch_session_budget),
     "session.get_budget": Route(_dispatch_session_budget),
@@ -167,8 +145,6 @@ HANDLERS: dict[str, Route] = {
     "archive.list": Route(_dispatch_archive),
     "archive.fetch_report": Route(_dispatch_archive),
     "archive.fetch_logs": Route(_dispatch_archive),
-    "config.read": Route(_wrap_config),
-    "config.write": Route(_wrap_config),
     "beads.designate_migrator": Route(_dispatch_beads_rpc),
 }
 

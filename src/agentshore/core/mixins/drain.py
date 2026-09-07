@@ -140,8 +140,7 @@ class DrainController:
         actual cleanup runs when ``stop()`` is awaited (typically by
         ``__aexit__``).
         """
-        self._runtime.stop_reason = reason
-        self._runtime.stop_requested = True
+        self._runtime.lifecycle.request_stop(reason)
         self._runtime.pause_reason = None
         self._runtime.pause_event.set()  # wake loop if paused
 
@@ -153,8 +152,7 @@ class DrainController:
         """
         if self._runtime.drain_initialized:
             return
-        self._runtime.draining = True
-        self._runtime.drain_reason = reason
+        self._runtime.lifecycle.request_drain(reason)
         self._runtime.pause_reason = None
         self._runtime.pause_event.set()
 
@@ -199,16 +197,12 @@ class DrainController:
         Idempotent — safe to call multiple times (e.g., from signal handler and
         dashboard simultaneously). Does not cancel in-flight plays.
         """
-        if self._runtime.drain_initialized or self._runtime.stop_requested:
+        if not self._runtime.lifecycle.begin_drain(reason):
             return
         self.request_end_session_report(open_browser=True)
-        self._runtime.draining = True
-        self._runtime.drain_reason = reason
-        self._runtime.stop_reason = reason
         self._runtime.pause_reason = None
-        # IMPORTANT: no await may precede this assignment without re-introducing a
-        # concurrent-entry race.
-        self._runtime.drain_initialized = True
+        # IMPORTANT: ``begin_drain`` above atomically claims the transition before
+        # the first await, preventing concurrent drain initialization.
         await self._host._safe_call(
             self._store.update_session_state(self._session_id, "draining"),
             "update_session_state",
@@ -563,10 +557,7 @@ class DrainController:
         """Reverse a budget/time reserve drain, returning the session to running."""
         # A reversed drain must not be reaped by the bounded-drain watchdog (#180).
         self._stop_graceful_drain_watchdog()
-        self._runtime.draining = False
-        self._runtime.drain_initialized = False
-        self._runtime.drain_reason = None
-        self._runtime.stop_reason = ""
+        self._runtime.lifecycle.resume_from_drain()
         self._runtime.pause_reason = None
         # Cancel the end-session report queued by begin_drain so a resumed
         # session does not surface a premature report.
@@ -586,7 +577,7 @@ class DrainController:
         through the cleanup body. The whole body is shielded so a cancellation
         of the awaiting caller does not interrupt the WAL checkpoint mid-flight.
         """
-        if self._runtime.stopped:
+        if not self._runtime.lifecycle.begin_stop():
             await self._runtime.stop_done.wait()
             return
         # Cancel the bounded-drain watchdog (#180) now that a stop is underway so
@@ -595,11 +586,7 @@ class DrainController:
         # land a ``CancelledError`` at the completion-gate await below and skip
         # teardown (see ``_stop_graceful_drain_watchdog``).
         self._stop_graceful_drain_watchdog()
-        self._runtime.stopped = True
-        self._runtime.stop_requested = True
         self._runtime.pause_reason = None
-        if not self._runtime.drain_initialized:
-            self._runtime.stop_reason = "stop_requested"
         self._runtime.pause_event.set()  # wake paused loop to recheck _stop_requested
         completion_idle = self._runtime.completion_processing_idle
         # Invariant: once ``stopped`` is committed above, ``do_stop`` MUST run — it
@@ -626,6 +613,7 @@ class DrainController:
         try:
             await self.stop_inner(grace_period_s)
         finally:
+            self._runtime.lifecycle.mark_stopped()
             self._runtime.stop_done.set()
 
     async def generate_end_session_report(self) -> Path:

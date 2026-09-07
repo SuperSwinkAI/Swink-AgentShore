@@ -1,0 +1,121 @@
+{
+  "author": {
+    "id": "MDQ6VXNlcjMyNTkxNjY=",
+    "is_bot": false,
+    "login": "fixture-user",
+    "name": "Fixture User"
+  },
+  "baseRefName": "integration",
+  "body": "Closes #415 and #416.",
+  "closingIssuesReferences": [
+    {
+      "id": "I_kwDOSi_TqM8AAAABKffvKQ",
+      "number": 415,
+      "repository": {
+        "id": "R_kgDOSi_TqA",
+        "name": "Swink-AgentShore",
+        "owner": {
+          "id": "O_kgDOD3blmQ",
+          "login": "fixture-org"
+        }
+      },
+      "url": "https://github.com/example/contract-fixture/issues/415"
+    },
+    {
+      "id": "I_kwDOSi_TqM8AAAABKff6DA",
+      "number": 416,
+      "repository": {
+        "id": "R_kgDOSi_TqA",
+        "name": "Swink-AgentShore",
+        "owner": {
+          "id": "O_kgDOD3blmQ",
+          "login": "fixture-org"
+        }
+      },
+      "url": "https://github.com/example/contract-fixture/issues/416"
+    }
+  ],
+  "createdAt": "2026-07-28T13:47:05Z",
+  "headRefName": "fix/415-swink-empty-result-deltas",
+  "headRefOid": "836bb5eef13193b6a4471ffe1fb5700410fa88f6",
+  "isDraft": false,
+  "labels": [],
+  "mergeable": "UNKNOWN",
+  "number": 417,
+  "reviewDecision": "",
+  "state": "MERGED",
+  "statusCheckRollup": [
+    {
+      "__typename": "CheckRun",
+      "completedAt": "2026-07-28T13:50:17Z",
+      "conclusion": "SUCCESS",
+      "detailsUrl": "https://github.com/example/contract-fixture/actions/runs/30365131937/job/90294320018",
+      "name": "Python (ruff \u00b7 mypy \u00b7 pytest)",
+      "startedAt": "2026-07-28T13:47:13Z",
+      "status": "COMPLETED",
+      "workflowName": "CI"
+    },
+    {
+      "__typename": "CheckRun",
+      "completedAt": "2026-07-28T13:47:27Z",
+      "conclusion": "SUCCESS",
+      "detailsUrl": "https://github.com/example/contract-fixture/actions/runs/30365136227/job/90294334079",
+      "name": "gate",
+      "startedAt": "2026-07-28T13:47:17Z",
+      "status": "COMPLETED",
+      "workflowName": "PR Gate"
+    },
+    {
+      "__typename": "CheckRun",
+      "completedAt": "2026-07-28T13:47:44Z",
+      "conclusion": "SUCCESS",
+      "detailsUrl": "https://github.com/example/contract-fixture/actions/runs/30365131937/job/90294319829",
+      "name": "Dashboard (vitest)",
+      "startedAt": "2026-07-28T13:47:18Z",
+      "status": "COMPLETED",
+      "workflowName": "CI"
+    },
+    {
+      "__typename": "CheckRun",
+      "completedAt": "2026-07-28T13:47:49Z",
+      "conclusion": "SUCCESS",
+      "detailsUrl": "https://github.com/example/contract-fixture/actions/runs/30365131937/job/90294319973",
+      "name": "Desktop (vitest)",
+      "startedAt": "2026-07-28T13:47:19Z",
+      "status": "COMPLETED",
+      "workflowName": "CI"
+    },
+    {
+      "__typename": "CheckRun",
+      "completedAt": "2026-07-28T13:47:54Z",
+      "conclusion": "SUCCESS",
+      "detailsUrl": "https://github.com/example/contract-fixture/actions/runs/30365131937/job/90294319952",
+      "name": "Desktop crate (cargo check \u00b7 macos-latest)",
+      "startedAt": "2026-07-28T13:47:14Z",
+      "status": "COMPLETED",
+      "workflowName": "CI"
+    },
+    {
+      "__typename": "CheckRun",
+      "completedAt": "2026-07-28T13:48:42Z",
+      "conclusion": "SUCCESS",
+      "detailsUrl": "https://github.com/example/contract-fixture/actions/runs/30365131937/job/90294319850",
+      "name": "Desktop crate (cargo check \u00b7 windows-latest)",
+      "startedAt": "2026-07-28T13:47:13Z",
+      "status": "COMPLETED",
+      "workflowName": "CI"
+    },
+    {
+      "__typename": "CheckRun",
+      "completedAt": "2026-07-28T13:48:07Z",
+      "conclusion": "SUCCESS",
+      "detailsUrl": "https://github.com/example/contract-fixture/actions/runs/30365131937/job/90294319852",
+      "name": "Windows spine (import \u00b7 parse \u00b7 ps1 syntax)",
+      "startedAt": "2026-07-28T13:47:15Z",
+      "status": "COMPLETED",
+      "workflowName": "CI"
+    }
+  ],
+  "title": "Captured linked-issue pull request",
+  "url": "https://github.com/example/contract-fixture/pull/417"
+}

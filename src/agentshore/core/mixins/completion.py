@@ -726,7 +726,9 @@ class CompletionProcessor:
             )
             if reason is not None and reason != "stop_requested":
                 self._runtime.natural_exit_reason = reason
-            self._runtime.stop_requested = True
+            self._runtime.lifecycle.request_stop(
+                reason if reason is not None and reason != "stop_requested" else None
+            )
         elif reason is not None and self._runtime.pause_event.is_set():
             await self._lifecycle.pause_with_reason(reason)
 

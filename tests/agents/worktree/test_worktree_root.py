@@ -80,7 +80,7 @@ def test_parse_worktrees_rejects_negative_reap_ttl():
 
 def test_parse_worktrees_ignores_removed_orphan_retention_key():
     """A stale ``orphan_retention_seconds`` key from an old config is ignored, not an error."""
-    cfg = _parse_worktrees({"orphan_retention_seconds": 604800})  # type: ignore[typeddict-unknown-key]
+    cfg = _parse_worktrees({"orphan_retention_seconds": 604800})
     assert cfg.root is None
 
 

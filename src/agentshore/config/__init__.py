@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
 import yaml
 
-from agentshore.config._parsers import _build_config, _RawConfig
+from agentshore.config._parsers import _build_config
 from agentshore.config.models import (
     AgentConfig,
     AgentPreferencesConfig,
@@ -272,7 +272,6 @@ rl:
 
 session:
   max_plays: null
-  timeout_minutes: null
   auto_alignment_check_every: 5
   auto_archive: true
   archive_dir: .agentshore/archives
@@ -380,7 +379,10 @@ def load_config(path: Path | None = None) -> RuntimeConfig:
     on top regardless of *path*, so a reload re-applies preference changes.
     """
     if path is None or not path.exists():
-        cfg = _build_config(cast("_RawConfig", yaml.safe_load(_build_default_yaml())))
+        data = yaml.safe_load(_build_default_yaml())
+        if not isinstance(data, dict):  # pragma: no cover - guarded by bundled tests
+            raise ConfigError("built-in config root must be a mapping")
+        cfg = _build_config(data)
         return _apply_global_preferences(cfg)
 
     try:
@@ -396,7 +398,7 @@ def load_config(path: Path | None = None) -> RuntimeConfig:
     if not isinstance(data, dict):
         raise ConfigError(f"config root must be a mapping, got {type(data).__name__}")
 
-    return _apply_global_preferences(_build_config(cast("_RawConfig", data)))
+    return _apply_global_preferences(_build_config(data))
 
 
 def generate_default_config(project_path: Path) -> Path:

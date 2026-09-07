@@ -116,6 +116,15 @@ class Play(Protocol):
     - ``requeue_on_anti_confirmation``: defer to a later tick (up to a cap)
       rather than taking a failure penalty on an anti-confirmation violation
       (only ``code_review``).
+
+    ``disallowed_tools`` is the play's tool-denial policy: names of agent tools
+    this play must not be able to reach, denied at the CLI's own permission
+    layer rather than merely discouraged in the skill prompt. It states intent
+    ("a reviewer does not write files"), and each agent adapter decides how to
+    express it — see ``agents.cli.argv._TOOL_DENIAL_CAPABLE_AGENT_TYPES``.
+    Adapters whose CLI has no equivalent flag ignore it, so a denial is a
+    hardening measure, not a security boundary: it closes the honest-mistake
+    path on the agents that support it and is advisory everywhere else.
     """
 
     authors_prs: bool
@@ -123,6 +132,7 @@ class Play(Protocol):
     is_handoff: bool
     is_observation: bool
     requeue_on_anti_confirmation: bool
+    disallowed_tools: tuple[str, ...]
 
     @property
     def play_type(self) -> PlayType: ...

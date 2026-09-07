@@ -86,6 +86,14 @@ def _verdict_from_prior(result: SkillResult | None) -> str | None:
     return None
 
 
+# Tool names denied to the reviewing agent (see ``CodeReviewPlay``). These are
+# swink-coding's native tool names; the CLI validates them at startup and exits
+# non-zero on an unknown one, so a rename upstream surfaces as a hard dispatch
+# failure rather than a silently-dropped denial. Adapters whose CLI has no
+# deny flag ignore the list entirely.
+_CODE_REVIEW_DENIED_TOOLS: tuple[str, ...] = ("write_file", "edit_file")
+
+
 class CodeReviewPlay(SkillBackedPlay):
     """Review an open pull request.
 
@@ -106,6 +114,21 @@ class CodeReviewPlay(SkillBackedPlay):
     # Anti-confirmation violations are a transient timing race (reviewer reassigned
     # between resolve and dispatch); requeue to a later tick instead of penalizing.
     requeue_on_anti_confirmation = True
+
+    # Anti-confirmation, enforced a third time at the tool layer. The identity
+    # and executor checks above stop the *wrong reviewer* from being chosen;
+    # this stops the *right* reviewer from quietly fixing what it was sent to
+    # judge. A review's whole output is a verdict plus comments, posted through
+    # ``gh`` — it has no legitimate reason to write or edit a file, so denying
+    # both costs the play nothing.
+    #
+    # Deliberately NOT denied: ``gh`` and ``git`` (the review is posted with
+    # one and read with the other) and ``bash``. Denying ``bash`` would block
+    # legitimate review work — building the branch, running a test to check a
+    # claim — and it is a wide enough tool to write a file anyway
+    # (``echo > f``). This is a hardening measure against the honest failure
+    # mode, not a sandbox: an agent set on writing can still get there.
+    disallowed_tools = _CODE_REVIEW_DENIED_TOOLS
 
     @property
     def play_type(self) -> PlayType:

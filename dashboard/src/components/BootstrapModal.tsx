@@ -1,4 +1,7 @@
 import React, { useEffect, useState } from "react";
+
+import "./Modal.css";
+
 import { createNotifyStore } from "../notifyStore";
 
 // React port of `dashboard/src/hud/bootstrapModal.ts`. Host wires up

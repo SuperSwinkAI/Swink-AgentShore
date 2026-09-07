@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
 import click
 
@@ -18,7 +18,6 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from agentshore.config import RuntimeConfig
-    from agentshore.config._parsers import _RawAgent
     from agentshore.config.models import ModelTierConfig
 
 
@@ -85,7 +84,7 @@ def _load_config_for_agent_setup(config_path: Path) -> RuntimeConfig:
         for agent_key, agent_raw in raw_agents.items():
             if agent_key in {"fresh_start", "preferences"} or not isinstance(agent_raw, dict):
                 continue
-            agents[str(agent_key)] = _parse_agent(str(agent_key), cast("_RawAgent", agent_raw))
+            agents[str(agent_key)] = _parse_agent(str(agent_key), agent_raw)
 
         if not agents:
             raise

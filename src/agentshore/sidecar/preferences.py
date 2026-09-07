@@ -1,9 +1,8 @@
 """Persistence helpers for the ``preferences.*`` sidecar RPCs.
 
 These read/write the machine-global ``preferences.yaml`` (not a project file),
-mirroring the role :mod:`agentshore.sidecar.config` plays for ``agentshore.yaml``.
-The dispatcher lives in :mod:`agentshore.sidecar.server`; the live-reload of an
-active session is triggered there via the orchestrator handle.
+using the same atomic YAML-replacement pattern as project configuration writers.
+The RPC handler triggers live reload through the active orchestrator handle.
 """
 
 from __future__ import annotations

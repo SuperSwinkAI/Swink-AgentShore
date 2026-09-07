@@ -163,6 +163,43 @@ def _issue_label_mutation(mut: dict[str, object]) -> tuple[int, list[str]] | Non
     return issue_number, labels
 
 
+def _build_mutation_intents(
+    session_id: str,
+    play_id: int,
+    skill_result: SkillResult | None,
+) -> list[ExternalMutationRecord]:
+    """Normalize agent-requested mutations into durable pending intents."""
+    if skill_result is None:
+        return []
+    created_at = now_iso()
+    intents: list[ExternalMutationRecord] = []
+    for mutation in skill_result.requested_mutations:
+        mutation_type = str(mutation.get("type", "unknown"))
+        if mutation_type == "request_play":
+            continue
+        issue_label = _issue_label_mutation(mutation)
+        blocked = _block_issue_on_mutation(mutation)
+        if issue_label is not None:
+            target = str(issue_label[0])
+        elif blocked is not None:
+            target = str(blocked[0])
+        else:
+            target = str(mutation.get("target", ""))
+        intents.append(
+            ExternalMutationRecord(
+                session_id=session_id,
+                play_id=play_id,
+                idempotency_key=build_idempotency_key(session_id, mutation),
+                mutation_type=mutation_type,
+                target=target,
+                status="pending",
+                created_at=created_at,
+                request_json=json.dumps(mutation),
+            )
+        )
+    return intents
+
+
 class _SkipDispatchError(Exception):
     """Internal signal that a phase short-circuited with a terminal PlayOutcome.
 
@@ -689,11 +726,16 @@ class PlayExecutor:
         ):
             self._planned_issues.discard(params.issue_number)
 
-        if skill_result is not None and isinstance(skill_result, SkillResult):
-            await self._persist_mutations(play_id, params, skill_result, state)
+        typed_skill_result = skill_result if isinstance(skill_result, SkillResult) else None
+        mutation_intents = _build_mutation_intents(
+            self._session_id,
+            play_id,
+            typed_skill_result,
+        )
 
         await self._persist_completed_play(
             play_id=play_id,
+            play_type=play_type,
             started_at=started_at,
             ended_at=ended_at,
             elapsed_s=elapsed_s,
@@ -702,13 +744,17 @@ class PlayExecutor:
             alignment_before=setup.alignment_before,
             alignment_after=alignment_after,
             alignment_delta=alignment_delta,
+            claim_group_id=_claim_group_id(params),
+            claim_status=(
+                "retrying"
+                if outcome.retry_requested
+                else ("completed" if outcome.success else "released")
+            ),
+            mutation_intents=mutation_intents,
         )
-        await self._finish_claim_group(
-            params,
-            status="retrying"
-            if outcome.retry_requested
-            else ("completed" if outcome.success else "released"),
-        )
+
+        if typed_skill_result is not None:
+            await self._apply_mutations(params, typed_skill_result, state)
 
         # Stamp play_id, alignment_delta (live beads delta), and
         # inflation_raised on outcome.
@@ -755,6 +801,7 @@ class PlayExecutor:
         self,
         *,
         play_id: int,
+        play_type: PlayType,
         started_at: str,
         ended_at: str,
         elapsed_s: float,
@@ -763,29 +810,36 @@ class PlayExecutor:
         alignment_before: float | None,
         alignment_after: float | None,
         alignment_delta: float | None,
+        claim_group_id: str | None,
+        claim_status: str,
+        mutation_intents: list[ExternalMutationRecord],
     ) -> None:
         failure_category = _infer_failure_category(outcome) if not outcome.success else None
-        await self._persist_play(
+        await self._store.finalize_play(
             play_id,
-            started_at,
-            outcome.success,
-            ended_at=ended_at,
-            duration_ms=int(elapsed_s * 1000),
-            error=outcome.error,
-            failure_category=failure_category,
-            # Failure outcomes often omit agent_id, but params.agent_id holds
-            # the agent this play was dispatched to (set at selection). Without
-            # the fallback, failed skill-backed plays persisted agent_id=None
-            # and the ESR Play Log rendered them as the literal "agentshore"
-            # instead of the agent that ran them. Internal (agentless) plays
-            # keep None.
-            agent_id=outcome.agent_id or params.agent_id,
-            token_cost=outcome.token_cost,
-            dollar_cost=outcome.dollar_cost,
-            partial=outcome.partial,
-            alignment_before=alignment_before,
-            alignment_after=alignment_after,
-            alignment_delta=alignment_delta,
+            PlayRecord(
+                session_id=self._session_id,
+                play_type=play_type.value,
+                started_at=started_at,
+                success=outcome.success,
+                ended_at=ended_at,
+                duration_ms=int(elapsed_s * 1000),
+                error=outcome.error,
+                failure_category=failure_category,
+                # Failure outcomes often omit agent_id, but params.agent_id holds
+                # the agent this play was dispatched to (set at selection).
+                agent_id=outcome.agent_id or params.agent_id,
+                token_cost=outcome.token_cost,
+                dollar_cost=outcome.dollar_cost,
+                partial=outcome.partial,
+                alignment_before=alignment_before,
+                alignment_after=alignment_after,
+                alignment_delta=alignment_delta,
+                artifacts=list(outcome.artifacts),
+            ),
+            claim_group_id=claim_group_id,
+            claim_status=claim_status,
+            mutation_intents=mutation_intents,
         )
 
     async def _start_claim_group(self, params: PlayParams, play_id: int) -> bool:
@@ -1100,22 +1154,26 @@ class PlayExecutor:
                     artifact,
                 )
 
-    async def _persist_mutations(
+    async def _apply_mutations(
         self,
-        play_id: int,
         params: PlayParams,
         skill_result: SkillResult,
         state: OrchestratorState,
     ) -> None:
-        """Persist each requested mutation with an idempotency key."""
-        now = now_iso()
+        """Apply external effects after their intents and play are durable."""
         applied_labels: set[tuple[int, str]] = set()
         for mut in skill_result.requested_mutations:
             key = build_idempotency_key(self._session_id, mut)
             issue_label = _issue_label_mutation(mut)
             if issue_label is not None:
                 issue_number, labels = issue_label
-                await self._apply_issue_labels(issue_number, labels, key)
+                applied = await self._apply_issue_labels(issue_number, labels, key)
+                await self._store.update_external_mutation_status(
+                    self._session_id,
+                    key,
+                    "ok" if applied else "unpersisted",
+                    "",
+                )
                 applied_labels.update((issue_number, label) for label in labels)
                 continue
             block = _block_issue_on_mutation(mut)
@@ -1129,17 +1187,11 @@ class PlayExecutor:
                 elif resolution == "cycle_conflict":
                     applied_labels.add((blocked_issue, BLOCKED_LABEL))
                     applied_labels.add((blocked_issue, NEEDS_HUMAN_LABEL))
-                await self._store.record_external_mutation(
-                    ExternalMutationRecord(
-                        session_id=self._session_id,
-                        idempotency_key=key,
-                        mutation_type="block_issue_on",
-                        target=str(blocked_issue),
-                        status=resolution,
-                        created_at=now,
-                        play_id=play_id,
-                        request_json=json.dumps(mut),
-                    )
+                await self._store.update_external_mutation_status(
+                    self._session_id,
+                    key,
+                    resolution,
+                    "",
                 )
                 continue
             # ``request_play`` was an agent-driven "run this play next" directive
@@ -1148,18 +1200,8 @@ class PlayExecutor:
             # policy chooses the next play from the post-completion state instead.
             if str(mut.get("type", "")) == "request_play":
                 continue
-            await self._store.record_external_mutation(
-                ExternalMutationRecord(
-                    session_id=self._session_id,
-                    idempotency_key=key,
-                    mutation_type=str(mut.get("type", "unknown")),
-                    target=str(mut.get("target", "")),
-                    status="pending",
-                    created_at=now,
-                    play_id=play_id,
-                    request_json=json.dumps(mut),
-                )
-            )
+            # Unknown mutation types stay pending in the durable intent ledger
+            # for a dedicated consumer; the executor never applies them inline.
 
         if _is_policy_disallowed(skill_result) and params.issue_number is not None:
             issue_number = params.issue_number

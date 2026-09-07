@@ -21,6 +21,7 @@ FAILED_STATUS_STATES = {
 }
 PENDING_STATUS_STATES = {"PENDING", "QUEUED", "IN_PROGRESS", "EXPECTED", "REQUESTED"}
 SUCCESS_STATUS_STATES = {"SUCCESS", "PASSED"}
+TERMINAL_STATUS_STATES = {"COMPLETED"}
 
 
 def label_names(raw: object) -> list[str]:
@@ -52,7 +53,8 @@ def status_rollup_summary(raw: object) -> str | None:
         return None
     if states & PENDING_STATUS_STATES:
         return "pending"
-    if states <= SUCCESS_STATUS_STATES:
+    decisive_states = states - TERMINAL_STATUS_STATES
+    if decisive_states and decisive_states <= SUCCESS_STATUS_STATES:
         return "passed"
     return "unknown"
 

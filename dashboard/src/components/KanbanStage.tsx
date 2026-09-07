@@ -1,4 +1,7 @@
 import React, { useState } from "react";
+
+import "./KanbanStage.css";
+
 import type { AgentSnapshot, ProjectGraph, StateUpdate } from "../types";
 import {
   deriveColumns,

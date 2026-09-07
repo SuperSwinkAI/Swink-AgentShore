@@ -1,4 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
+
+import "./Modal.css";
+
 import { createNotifyStore } from "../notifyStore";
 
 // React port of `dashboard/src/hud/feedbackModal.ts`: visibility/reason via
