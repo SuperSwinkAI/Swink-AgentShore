@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AgentShore: a coding agent alone vs. an orchestrated loop</title>
+<style>
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: #f3f6ff;
+    font-family: Inter, system-ui, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+  }
+  .frame {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 100vh;
+    padding: 24px;
+    box-sizing: border-box;
+  }
+  svg {
+    display: block;
+    width: 100%;
+    height: auto;
+    max-width: 1920px;
+  }
+  /* Print / PDF export lands on one landscape page. */
+  @page { size: 1920px 1080px; margin: 0; }
+  @media print {
+    .frame { min-height: auto; padding: 0; }
+  }
+</style>
+</head>
+<body>
+<div class="frame">
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1920 1080" font-family="Inter, system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" role="img" aria-labelledby="diagTitle diagDesc">
+  <title id="diagTitle">AgentShore: a coding agent alone vs. an orchestrated RL loop</title>
+  <desc id="diagDesc">Left: a coding agent alone, where the human is the loop. Right: AgentShore's observe, decide, act, learn cycle running unattended, with the human setting direction and reading results.</desc>
+
+  <defs>
+    <marker id="arrowMuted" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#7b8fb0"/>
+    </marker>
+    <marker id="arrowStop" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#d03457"/>
+    </marker>
+    <marker id="arrowAccent" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#2d6ee6"/>
+    </marker>
+    <marker id="arrowInk" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#2a3f66"/>
+    </marker>
+  </defs>
+
+  <rect width="1920" height="1080" fill="#f3f6ff"/>
+
+  <!-- ============ HEADER ============ -->
+  <text x="80" y="92" font-size="46" font-weight="700" fill="#19243b">AgentShore</text>
+  <text x="80" y="136" font-size="25" fill="#5e7398">An RL policy decides what to do next. CLI coding agents do it.</text>
+
+  <!-- ============ LEFT PANEL: agent alone ============ -->
+  <rect x="80" y="190" width="620" height="740" rx="22" fill="#e9edf7" stroke="#d0d9ea" stroke-width="2"/>
+
+  <text x="120" y="248" font-size="19" font-weight="700" letter-spacing="3.5" fill="#7b8fb0">TODAY</text>
+  <text x="120" y="296" font-size="34" font-weight="700" fill="#19243b">A coding agent, alone</text>
+  <text x="120" y="334" font-size="25" fill="#5e7398">You are the loop.</text>
+
+  <!-- return path: the human closes the loop -->
+  <path d="M210,740 L150,740 L150,428 L204,428" fill="none" stroke="#7b8fb0" stroke-width="3" stroke-dasharray="9 8" marker-end="url(#arrowMuted)"/>
+  <text x="126" y="590" font-size="19" font-weight="600" fill="#d03457" text-anchor="middle" transform="rotate(-90 126 590)">…until you stop</text>
+
+  <!-- node 1: you -->
+  <rect x="210" y="380" width="340" height="96" rx="14" fill="#ffffff" stroke="#c3cee3" stroke-width="2"/>
+  <g fill="#5e7398" transform="translate(246 424)">
+    <circle cx="0" cy="-9" r="8.5"/>
+    <path d="M-13,11 a13,13 0 0 1 26,0 z"/>
+  </g>
+  <text x="278" y="422" font-size="26" font-weight="700" fill="#19243b">You</text>
+  <text x="278" y="450" font-size="18" fill="#5e7398">write the prompt, pick the task</text>
+
+  <line x1="380" y1="476" x2="380" y2="530" stroke="#7b8fb0" stroke-width="3" marker-end="url(#arrowMuted)"/>
+
+  <!-- node 2: agent -->
+  <rect x="210" y="536" width="340" height="96" rx="14" fill="#ffffff" stroke="#c3cee3" stroke-width="2"/>
+  <text x="244" y="578" font-size="26" font-weight="700" fill="#19243b">Coding agent</text>
+  <text x="244" y="606" font-size="18" fill="#5e7398">writes the code, opens the PR</text>
+
+  <line x1="380" y1="632" x2="380" y2="686" stroke="#7b8fb0" stroke-width="3" marker-end="url(#arrowMuted)"/>
+
+  <!-- node 3: output -->
+  <rect x="210" y="692" width="340" height="96" rx="14" fill="#ffffff" stroke="#c3cee3" stroke-width="2"/>
+  <text x="244" y="734" font-size="26" font-weight="700" fill="#19243b">One patch</text>
+  <text x="244" y="762" font-size="18" fill="#5e7398">one task, then idle</text>
+
+  <text x="120" y="866" font-size="23" fill="#5e7398">Excellent <tspan font-weight="700" fill="#19243b">inside</tspan> a task.</text>
+  <text x="120" y="898" font-size="23" font-weight="700" fill="#19243b">Nothing decides which task is next.</text>
+
+  <!-- ============ VS ============ -->
+  <circle cx="730" cy="560" r="27" fill="#f3f6ff" stroke="#c3cee3" stroke-width="2"/>
+  <text x="730" y="568" font-size="20" font-weight="700" fill="#7b8fb0" text-anchor="middle">vs</text>
+
+  <!-- ============ RIGHT PANEL: agentshore ============ -->
+  <rect x="760" y="190" width="1080" height="740" rx="22" fill="#ffffff" stroke="#bcd0f4" stroke-width="2"/>
+
+  <text x="800" y="248" font-size="19" font-weight="700" letter-spacing="3.5" fill="#2d6ee6">AGENTSHORE</text>
+  <text x="800" y="296" font-size="34" font-weight="700" fill="#19243b">An orchestrated loop</text>
+
+  <!-- input strip: human sets direction -->
+  <rect x="800" y="320" width="410" height="46" rx="23" fill="#eaf1fd" stroke="#bcd0f4" stroke-width="2"/>
+  <g fill="#2a3f66" transform="translate(830 343)">
+    <circle cx="0" cy="-9" r="8.5"/>
+    <path d="M-13,11 a13,13 0 0 1 26,0 z"/>
+  </g>
+  <text x="856" y="351" font-size="21" fill="#2a3f66"><tspan font-weight="700">You</tspan>  ·  goals, issues, guardrails</text>
+  <line x1="1080" y1="366" x2="1080" y2="392" stroke="#2a3f66" stroke-width="3" marker-end="url(#arrowInk)"/>
+
+  <!-- loop container -->
+  <rect x="790" y="392" width="1020" height="452" rx="20" fill="#f7faff" stroke="#2d6ee6" stroke-width="2.5" stroke-dasharray="10 9"/>
+  <rect x="1408" y="377" width="358" height="31" rx="15" fill="#ffffff"/>
+  <text x="1752" y="399" font-size="18" font-weight="700" letter-spacing="1.6" fill="#2d6ee6" text-anchor="end">RUNS UNATTENDED · OVERNIGHT</text>
+
+  <!-- cycle arrows -->
+  <line x1="1268" y1="512" x2="1352" y2="512" stroke="#2d6ee6" stroke-width="3.5" marker-end="url(#arrowAccent)"/>
+  <line x1="1575" y1="600" x2="1575" y2="648" stroke="#2d6ee6" stroke-width="3.5" marker-end="url(#arrowAccent)"/>
+  <line x1="1352" y1="736" x2="1268" y2="736" stroke="#2d6ee6" stroke-width="3.5" marker-end="url(#arrowAccent)"/>
+  <line x1="1045" y1="648" x2="1045" y2="600" stroke="#0f8a6c" stroke-width="3.5" marker-end="url(#arrowAccent)"/>
+
+  <!-- card 1: OBSERVE -->
+  <rect x="830" y="424" width="430" height="176" rx="14" fill="#ffffff" stroke="#bcd0f4" stroke-width="2"/>
+  <circle cx="864" cy="462" r="16" fill="#2d6ee6"/>
+  <text x="864" y="469" font-size="18" font-weight="700" fill="#ffffff" text-anchor="middle">1</text>
+  <text x="892" y="470" font-size="27" font-weight="700" fill="#19243b">Observe</text>
+  <text x="862" y="512" font-size="21" fill="#2a3f66">Read the whole project state</text>
+  <text x="862" y="548" font-size="19" fill="#5e7398">252 signals — goal alignment, budget,</text>
+  <text x="862" y="576" font-size="19" fill="#5e7398">agent health, failure history</text>
+
+  <!-- card 2: DECIDE -->
+  <rect x="1360" y="424" width="430" height="176" rx="14" fill="#ffffff" stroke="#bcd0f4" stroke-width="2"/>
+  <circle cx="1394" cy="462" r="16" fill="#2d6ee6"/>
+  <text x="1394" y="469" font-size="18" font-weight="700" fill="#ffffff" text-anchor="middle">2</text>
+  <text x="1422" y="470" font-size="27" font-weight="700" fill="#19243b">Decide</text>
+  <text x="1392" y="512" font-size="21" fill="#2a3f66">PPO policy picks one play</text>
+  <text x="1392" y="548" font-size="19" fill="#5e7398">19 plays — pick up an issue, review a PR,</text>
+  <text x="1392" y="576" font-size="19" fill="#5e7398">run QA, groom the backlog, merge, prune</text>
+
+  <!-- card 3: ACT -->
+  <rect x="1360" y="660" width="430" height="176" rx="14" fill="#ffffff" stroke="#bcd0f4" stroke-width="2"/>
+  <circle cx="1394" cy="698" r="16" fill="#2d6ee6"/>
+  <text x="1394" y="705" font-size="18" font-weight="700" fill="#ffffff" text-anchor="middle">3</text>
+  <text x="1422" y="706" font-size="27" font-weight="700" fill="#19243b">Act</text>
+  <text x="1392" y="748" font-size="21" fill="#2a3f66">Hand it to a CLI coding agent</text>
+  <text x="1392" y="786" font-size="19" font-weight="600"><tspan fill="#2d6ee6">Claude Code</tspan><tspan fill="#b4c1d8" dx="9">·</tspan><tspan fill="#df7a19" dx="9">Codex</tspan><tspan fill="#b4c1d8" dx="9">·</tspan><tspan fill="#0f8a6c" dx="9">Grok</tspan><tspan fill="#b4c1d8" dx="9">·</tspan><tspan fill="#d03457" dx="9">Antigravity</tspan></text>
+  <text x="1392" y="816" font-size="19" fill="#5e7398">reviewer ≠ author, enforced</text>
+
+  <!-- card 4: LEARN -->
+  <rect x="830" y="660" width="430" height="176" rx="14" fill="#ffffff" stroke="#a9dcca" stroke-width="2"/>
+  <circle cx="864" cy="698" r="16" fill="#0f8a6c"/>
+  <text x="864" y="705" font-size="18" font-weight="700" fill="#ffffff" text-anchor="middle">4</text>
+  <text x="892" y="706" font-size="27" font-weight="700" fill="#19243b">Learn</text>
+  <text x="862" y="748" font-size="21" fill="#2a3f66">Reward what actually closed</text>
+  <text x="862" y="784" font-size="19" fill="#5e7398">project closure delta, not tokens spent —</text>
+  <text x="862" y="812" font-size="19" fill="#5e7398">the policy updates before the next tick</text>
+
+  <!-- output strip -->
+  <line x1="1080" y1="844" x2="1080" y2="866" stroke="#2a3f66" stroke-width="3" marker-end="url(#arrowInk)"/>
+  <rect x="800" y="866" width="592" height="46" rx="23" fill="#eaf1fd" stroke="#bcd0f4" stroke-width="2"/>
+  <g fill="#2a3f66" transform="translate(830 889)">
+    <circle cx="0" cy="-9" r="8.5"/>
+    <path d="M-13,11 a13,13 0 0 1 26,0 z"/>
+  </g>
+  <text x="856" y="897" font-size="21" fill="#2a3f66"><tspan font-weight="700">You</tspan>  ·  review the PRs, watch the dashboard, steer</text>
+
+  <!-- ============ FOOTER TAKEAWAY ============ -->
+  <text x="80" y="1010" font-size="29" fill="#5e7398">A coding agent decides <tspan font-weight="700" fill="#19243b">how</tspan> to write the code. AgentShore decides <tspan font-weight="700" fill="#2d6ee6">what to do next</tspan> — and keeps deciding.</text>
+</svg>
+
+</div>
+</body>
+</html>
