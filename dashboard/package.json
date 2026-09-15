@@ -1,7 +1,7 @@
 {
   "name": "@agentshore/dashboard",
   "private": true,
-  "version": "0.10.7",
+  "version": "0.10.8",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -14,15 +14,15 @@
     "build:lib": "vite build --mode lib && tsc -p tsconfig.lib.json"
   },
   "devDependencies": {
-    "@playwright/test": "1.62.1",
-    "@types/react": "19.2.18",
-    "@types/react-dom": "19.2.7",
+    "@playwright/test": "1.63.0",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
     "@vitejs/plugin-react": "6.1.1",
     "jsdom": "30.0.1",
-    "react": "19.2.8",
-    "react-dom": "19.2.8",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
     "typescript": "7.0.2",
-    "vite": "8.2.2",
+    "vite": "8.3.0",
     "vitest": "5.0.0",
     "ws": "8.21.3"
   },
