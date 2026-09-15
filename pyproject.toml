@@ -1,6 +1,6 @@
 [project]
 name = "agentshore"
-version = "0.10.7"
+version = "0.10.8"
 description = "Swink™ AgentShore™ — RL-based multi-agent orchestrator"
 readme = "README.md"
 license = { text = "MIT" }
