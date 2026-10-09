@@ -264,3 +264,90 @@ def test_extract_output_strips_ansi_then_unwraps_task_block() -> None:
     assert "\x1b" not in result
     assert "\r" not in result
     assert result == '```json\n{"success": true}\n```'
+
+
+# ---------------------------------------------------------------------------
+# parse_stream_json (agy --output-format stream-json, captured from agy 1.3.2)
+
+_FIXTURES = Path(__file__).parent / "fixtures"
+
+
+def _ev(kind: str, **payload: object) -> str:
+    return json.dumps({"event": kind, kind: payload})
+
+
+def test_parse_stream_json_fresh_run_fixture() -> None:
+    raw = (_FIXTURES / "agy_stream_json_1_3_2.jsonl").read_text(encoding="utf-8")
+    text, usage, conv = cli_antigravity.parse_stream_json(raw)
+    assert text == "I am starting now.\nDONE\n"
+    assert conv == "67aff0d8-6041-482e-bf7b-5e538be5a80e"
+    assert (usage.tokens_in, usage.tokens_out, usage.turn_count) == (24011, 127, 2)
+    assert usage.max_turn_input_tokens == 12112
+
+
+def test_parse_stream_json_resume_counts_only_this_invocation() -> None:
+    # result.usage on a --conversation resume is cumulative (36334 in); the
+    # per-step usages are this invocation's spend only.
+    raw = (_FIXTURES / "agy_stream_json_resume_1_3_2.jsonl").read_text(encoding="utf-8")
+    text, usage, conv = cli_antigravity.parse_stream_json(raw)
+    assert text == "OK\n"
+    assert conv == "67aff0d8-6041-482e-bf7b-5e538be5a80e"
+    assert (usage.tokens_in, usage.tokens_out) == (12323, 1)
+
+
+def test_parse_stream_json_handoff_detected_on_extracted_response() -> None:
+    """#242: the async-handoff detector must see the agent's prose, not the
+    NDJSON envelope — identical to what plain-text mode printed."""
+    tail = "Started the build. I will pause calling tools and wait for it to finish."
+    raw = "\n".join(
+        [
+            json.dumps({"event": "init", "conversation_id": "c1", "init": {}}),
+            _ev("result", conversation_id="c1", status="SUCCESS", response=tail, usage={}),
+        ]
+    )
+    text, _usage, conv = cli_antigravity.parse_stream_json(raw)
+    assert text == tail
+    assert conv == "c1"
+    assert cli_antigravity.is_async_handoff(text)
+
+
+def test_parse_stream_json_cut_off_before_result_joins_deltas() -> None:
+    raw = "\n".join(
+        [
+            _ev("step_update", conversation_id="c2", step_type="agent_response", text_delta="a"),
+            _ev("step_update", conversation_id="c2", step_type="tool", text_delta="ignored"),
+            _ev(
+                "step_update",
+                conversation_id="c2",
+                step_type="agent_response",
+                state="DONE",
+                text_delta="b",
+                usage={"input_tokens": 10, "output_tokens": 2, "thinking_tokens": 3},
+            ),
+        ]
+    )
+    text, usage, conv = cli_antigravity.parse_stream_json(raw)
+    assert (text, conv) == ("ab", "c2")
+    assert (usage.tokens_in, usage.tokens_out) == (10, 5)
+
+
+def test_parse_stream_json_error_result_yields_empty_text() -> None:
+    # Mirrors plain mode (empty stdout, error on stderr) so no-op detection holds.
+    raw = _ev("result", conversation_id="", status="ERROR", response="", error="bad model")
+    assert cli_antigravity.parse_stream_json(raw) == ("", cli_antigravity._UsageTotals(), None)
+
+
+def test_parse_stream_json_plain_text_passes_through_verbatim() -> None:
+    raw = 'Working...\n```json\n{"success": true}\n```\n'
+    text, usage, conv = cli_antigravity.parse_stream_json(raw)
+    assert text == raw
+    assert (usage.tokens_in, usage.tokens_out, conv) == (0, 0, None)
+
+
+def test_agy_result_event_is_terminal() -> None:
+    from agentshore.agents.cli.parsing import _is_terminal_event
+
+    assert _is_terminal_event(_ev("result", response="x").encode(), AgentType.ANTIGRAVITY)
+    assert not _is_terminal_event(
+        _ev("step_update", text_delta="result").encode(), AgentType.ANTIGRAVITY
+    )

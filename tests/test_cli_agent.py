@@ -315,10 +315,11 @@ def test_build_argv_codex_shape() -> None:
     argv = build_argv(AgentType.CODEX, "do the thing", binary="codex", project_dir="/work")
     assert argv[0] == "codex"
     assert "exec" in argv
-    # Default YOLO flag for codex; --full-auto is skipped when bypass is set.
+    # Default YOLO flag for codex; the sandbox mode is skipped when bypass is set.
     assert "--ignore-user-config" in argv
     assert "--ignore-rules" in argv
     assert "--dangerously-bypass-approvals-and-sandbox" in argv
+    assert 'sandbox_mode="workspace-write"' not in argv
     assert "--full-auto" not in argv
     assert "-C" in argv
     assert "/work" in argv
@@ -413,13 +414,13 @@ def test_build_argv_grok_shape() -> None:
     ]
 
 
-def test_build_argv_antigravity_shape() -> None:
-    """``agy`` argv: plain-text passthrough — no ``--output-format``, no effort flag.
+def test_build_argv_antigravity_shape(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``agy`` argv: ``--output-format stream-json``, no effort flag.
 
     The YOLO default supplies ``--dangerously-skip-permissions``; the model is the
-    display-name string with the reasoning effort baked in, so there is no
-    separate ``--effort`` flag and no JSON stream-format flag.
+    display-name string with the reasoning effort baked in, so no ``--effort``.
     """
+    monkeypatch.setattr("sys.platform", "darwin")
     argv = build_argv(
         AgentType.ANTIGRAVITY,
         "do the thing",
@@ -436,10 +437,18 @@ def test_build_argv_antigravity_shape() -> None:
         "/wt",
         "--print-timeout",
         "50m0s",
+        "--output-format",
+        "stream-json",
         "--dangerously-skip-permissions",
         "-p",
         "do the thing",
     ]
+
+
+def test_build_argv_antigravity_windows_stays_plain_text(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Under the Windows ConPTY path agy stays on plain text (NDJSON wrap risk)."""
+    monkeypatch.setattr("sys.platform", "win32")
+    argv = build_argv(AgentType.ANTIGRAVITY, "x", binary="agy", project_dir="/wt")
     assert "--output-format" not in argv
 
 
@@ -467,13 +476,13 @@ def test_build_argv_antigravity_prompt_always_in_argv_never_stdin() -> None:
 
 
 async def test_read_output_antigravity_passthrough_returns_raw_verbatim() -> None:
-    """``agy`` has no ``_PARSERS`` entry, so plain-text stdout is returned verbatim.
+    """Plain-text agy stdout (Windows / older agy) carries no stream-json events,
+    so the agy parser returns it verbatim with zero usage.
 
     The embedded JSON result block survives untouched (no JSONL extraction), and
     ``parse_skill_result`` can still pull ``success=True`` out of the raw text.
     """
-    # No parser for antigravity → the read loop takes the raw passthrough branch.
-    assert AgentType.ANTIGRAVITY not in _PARSERS
+    assert AgentType.ANTIGRAVITY in _PARSERS
 
     raw_text = 'Working on it...\nHere is the result: {"success": true, "summary": "ok"}\nDone.\n'
     proc = _FakeProcess([raw_text.encode()])
@@ -717,8 +726,25 @@ def test_build_argv_codex_explicit_flags_disable_yolo_default() -> None:
     assert "--ignore-user-config" not in argv
     assert "--ignore-rules" not in argv
     assert "--dangerously-bypass-approvals-and-sandbox" not in argv
-    # Without the bypass, --full-auto IS appended.
-    assert "--full-auto" in argv
+    # Without the bypass, the workspace-write sandbox IS set — via the config
+    # key, since the deprecated --full-auto is gone and `codex exec resume`
+    # rejects --sandbox.
+    assert "--full-auto" not in argv
+    assert "--sandbox" not in argv
+    assert argv[argv.index('sandbox_mode="workspace-write"') - 1] == "-c"
+
+
+def test_build_resume_argv_codex_without_bypass_keeps_sandbox_config() -> None:
+    argv = build_resume_argv(
+        AgentType.CODEX,
+        "emit the block",
+        "thread_x",
+        binary="codex",
+        extra_flags=("--some-other-flag",),
+    )
+    assert argv[:4] == ["codex", "exec", "resume", "thread_x"]
+    assert "--sandbox" not in argv
+    assert 'sandbox_mode="workspace-write"' in argv
 
 
 def test_build_argv_claude_yolo_default() -> None:
@@ -765,8 +791,27 @@ def test_build_resume_argv_claude_shape() -> None:
         "--verbose",
         "--output-format",
         "stream-json",
+        "--dangerously-skip-permissions",
         "emit the block",
     ]
+
+
+def test_build_resume_argv_claude_forwards_extra_flags_not_model() -> None:
+    """The retry must keep the dispatch's permission flags (else it runs in
+    ``auto`` mode) but not model/effort — resume re-enters verbatim."""
+    argv = build_resume_argv(
+        AgentType.CLAUDE_CODE,
+        "emit the block",
+        "sess-abc",
+        binary="claude",
+        model="opus",
+        reasoning_effort="high",
+        extra_flags=("--permission-mode", "bypassPermissions"),
+    )
+    assert argv[-3:] == ["--permission-mode", "bypassPermissions", "emit the block"]
+    assert "--dangerously-skip-permissions" not in argv
+    assert "--model" not in argv
+    assert "--effort" not in argv
 
 
 def test_build_resume_argv_codex_shape() -> None:
@@ -798,8 +843,65 @@ def test_build_resume_argv_grok_shape() -> None:
     assert argv[-1] == "emit the block"
 
 
-def test_build_resume_argv_antigravity_shape() -> None:
+def test_build_argv_grok_pins_session_and_translates_denied_tools() -> None:
+    """grok 1.0.50: ``--session-id <uuid>`` pins a new run; play denials (swink
+    names) become grok's built-in names in one comma list; unknown names drop."""
+    argv = build_argv(
+        AgentType.GROK,
+        "review it",
+        binary="grok",
+        session_id="278771ef-4e14-46ca-8535-39c092b86931",
+        disallowed_tools=("write_file", "edit_file", "write_file(*.md)", "nope"),
+    )
+    assert argv[argv.index("--session-id") + 1] == "278771ef-4e14-46ca-8535-39c092b86931"
+    assert argv[argv.index("--disallowed-tools") + 1] == "write,search_replace"
+    assert argv.count("--disallowed-tools") == 1
+
+
+def test_build_resume_argv_grok_forwards_denials_but_never_pins() -> None:
+    """``--session-id`` names a NEW session and is rejected with ``-r``."""
+    argv = build_resume_argv(
+        AgentType.GROK,
+        "emit the block",
+        "grok-sess",
+        binary="grok",
+        disallowed_tools=("write_file",),
+    )
+    assert "--session-id" not in argv
+    assert argv[argv.index("--disallowed-tools") + 1] == "write"
+
+
+async def test_dispatch_cli_grok_pins_uuid_session_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A new grok run is pinned with a UUID (grok rejects swink's ``as-`` ids),
+    and the pin backstops output with no parseable session id."""
+    import uuid
+
+    captured: list[list[str]] = []
+
+    async def fake_create_subprocess_exec(*argv: str, **kwargs: Any) -> _FakeProcess:
+        captured.append(list(argv))
+        return _FakeProcess([b'{"type":"text","data":"hi"}\n'])
+
+    monkeypatch.setattr(
+        "agentshore.agents.cli.supervisor.asyncio.create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+    cfg = AgentConfig(enabled=True, binary="grok", timeout=10)
+    handle = _make_handle(agent_type=AgentType.GROK)
+    handle.dispatches = 1
+
+    result = await dispatch_cli(handle, "prompt", cfg=cfg)
+
+    pinned = captured[0][captured[0].index("--session-id") + 1]
+    assert str(uuid.UUID(pinned)) == pinned
+    assert result.session_id == pinned
+
+
+def test_build_resume_argv_antigravity_shape(monkeypatch: pytest.MonkeyPatch) -> None:
     """agy resumes via ``--conversation <id>`` and keeps --add-dir <cwd>."""
+    monkeypatch.setattr("sys.platform", "darwin")
     argv = build_resume_argv(
         AgentType.ANTIGRAVITY,
         "emit the block",
@@ -810,6 +912,7 @@ def test_build_resume_argv_antigravity_shape() -> None:
     )
     assert argv[:3] == ["agy", "--conversation", "conv-uuid"]
     assert "--add-dir" in argv and argv[argv.index("--add-dir") + 1] == "/wt"
+    assert argv[argv.index("--output-format") + 1] == "stream-json"
     assert argv[-2:] == ["-p", "emit the block"]
 
 
@@ -1111,6 +1214,43 @@ async def test_dispatch_cli_antigravity_session_id_none_when_cache_absent(
     assert result.session_id is None
 
 
+async def test_dispatch_cli_antigravity_stream_json_id_beats_cache_and_reports_tokens(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A stream-json run (captured agy 1.3.2 fixture) supplies its own conversation
+    id — preferred over a (stale) cache entry — plus non-zero token usage."""
+    home = tmp_path / "home"
+    cache_dir = home / ".gemini" / "antigravity-cli" / "cache"
+    cache_dir.mkdir(parents=True)
+    (cache_dir / "last_conversations.json").write_text(
+        json.dumps({str(tmp_path): "stale-cache-id"}), encoding="utf-8"
+    )
+    monkeypatch.setenv("HOME", str(home))
+    fixture = (Path(__file__).parent / "fixtures" / "agy_stream_json_1_3_2.jsonl").read_bytes()
+
+    async def fake_create_subprocess_exec(*argv: str, **kwargs: Any) -> _FakeProcess:
+        return _FakeProcess(fixture.splitlines(keepends=True))
+
+    monkeypatch.setattr(
+        "agentshore.agents.cli.supervisor.asyncio.create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+    monkeypatch.setattr(
+        "agentshore.agents.cli.supervisor.conpty.should_use_conpty", lambda _at: False
+    )
+    cfg = AgentConfig(enabled=True, binary="agy", timeout=10)
+    handle = _make_handle(agent_type=AgentType.ANTIGRAVITY)
+    handle.dispatches = 1
+
+    result = await dispatch_cli(handle, "prompt", cfg=cfg, cwd_override=tmp_path)
+
+    assert result.session_id == "67aff0d8-6041-482e-bf7b-5e538be5a80e"
+    assert result.raw_output == "I am starting now.\nDONE\n"
+    assert result.tokens_in == 24011
+    assert result.tokens_out == 127
+
+
 def test_build_argv_codex_no_resume() -> None:
     """Regression â€” `session_id` / `is_resume` were removed; every dispatch
     builds a fresh-session argv. See `feedback_persistent_sessions` memory."""
@@ -1122,7 +1262,7 @@ def test_build_argv_codex_no_resume() -> None:
     )
 
     assert argv[:3] == ["codex", "exec", "--json"]
-    # YOLO bypass is the default, so --full-auto is omitted (yolo replaces it).
+    # YOLO bypass is the default, so the sandbox mode is omitted (yolo replaces it).
     assert "--ignore-user-config" in argv
     assert "--ignore-rules" in argv
     assert "--dangerously-bypass-approvals-and-sandbox" in argv

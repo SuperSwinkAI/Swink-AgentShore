@@ -103,11 +103,47 @@ def test_probe_missing_binary_is_error(tmp_path: Path) -> None:
 
 
 def test_probe_unprobeable_agent_type_never_spawns() -> None:
-    # CLAUDE_CODE/GROK have no probe argv and aren't actively probed → UNPROBEABLE
-    # without resolving or spawning a binary. (agy IS actively probed; see below.)
-    result = probe_cli_auth(AgentType.CLAUDE_CODE, binary="/nonexistent/claude")
+    # GROK has no probe argv and isn't actively probed → UNPROBEABLE without
+    # resolving or spawning a binary. (agy IS actively probed; see below.)
+    result = probe_cli_auth(AgentType.GROK, binary="/nonexistent/grok")
     assert result.status == "unprobeable"
     assert result.ok
+
+
+# claude: `claude auth status` prints JSON {"loggedIn": bool}; rc 0 / rc 1.
+
+
+def test_claude_probe_logged_in_is_ok(tmp_path: Path) -> None:
+    binary = _make_fake_agent(
+        tmp_path, body='print(\'{"loggedIn": true, "authMethod": "claude.ai"}\'); sys.exit(0)'
+    )
+    result = probe_cli_auth(AgentType.CLAUDE_CODE, binary=binary)
+    assert result.status == AUTH_OK
+
+
+def test_claude_probe_logged_out_blocks_launch(tmp_path: Path) -> None:
+    binary = _make_fake_agent(
+        tmp_path, body='print(\'{"loggedIn": false, "authMethod": "none"}\'); sys.exit(1)'
+    )
+    result = probe_cli_auth(AgentType.CLAUDE_CODE, binary=binary)
+    assert result.status == AUTH_EXPIRED
+    assert result.blocks_launch
+
+
+@pytest.mark.parametrize(
+    ("body"),
+    [
+        "print('not json'); sys.exit(1)",
+        "print('[1, 2]'); sys.exit(0)",
+        # loggedIn false but an unexpected exit code: not definitive.
+        "print('{\"loggedIn\": false}'); sys.exit(2)",
+    ],
+)
+def test_claude_probe_unparseable_is_nonblocking_error(tmp_path: Path, body: str) -> None:
+    binary = _make_fake_agent(tmp_path, body=body)
+    result = probe_cli_auth(AgentType.CLAUDE_CODE, binary=binary)
+    assert result.status == AUTH_ERROR
+    assert not result.blocks_launch
 
 
 # agy has no status verb and HANGS in -p mode when logged out instead of erroring,

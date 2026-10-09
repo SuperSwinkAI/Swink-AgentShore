@@ -43,7 +43,7 @@ def test_resolve_prefers_per_model_entry() -> None:
     pb = load_pricebook()
     sonnet = pb.resolve("claude_code", "sonnet")
     assert sonnet is pb.models["sonnet"]
-    assert sonnet.cost_per_1k_output == 0.015
+    assert sonnet.cost_per_1k_output == 0.01
 
 
 def test_resolve_prefers_per_model_entry_for_opus() -> None:
@@ -52,8 +52,21 @@ def test_resolve_prefers_per_model_entry_for_opus() -> None:
     # Per-model entry, not the claude_code agent-default fallback.
     assert opus is pb.models["opus"]
     assert opus is not pb.agent_defaults["claude_code"]
-    assert opus.cost_per_1k_input == 0.015
-    assert opus.cost_per_1k_output == 0.075
+    # The `opus` alias resolves to claude-opus-5-5, so it carries those rates.
+    assert opus == pb.models["claude-opus-5-5"]
+    assert opus.cost_per_1k_input == 0.004
+    assert opus.cost_per_1k_output == 0.02
+    assert opus.max_context == 1_000_000
+
+
+def test_claude_pinned_ids_carry_generation_specific_rates() -> None:
+    pb = load_pricebook()
+    assert pb.models["claude-opus-4-5"].max_context == 200_000
+    assert pb.models["claude-opus-4-8"].cost_per_1k_input == 0.005
+    assert pb.models["claude-haiku-5-5"].cost_per_1k_input == 0.0001
+    assert pb.models["claude-fable-5-1"].cost_per_1k_cached_input == 0.00025
+    # No explicit cache rate → the global multipliers apply.
+    assert pb.models["claude-sonnet-4-6"].cost_per_1k_cached_input is None
 
 
 def test_resolve_prefers_per_model_entry_for_gpt_5_5() -> None:
@@ -173,7 +186,7 @@ def test_bundled_pricebook_ignores_global_override(
             }
         },
     )
-    assert bundled_pricebook().models["sonnet"].cost_per_1k_input == 0.003
+    assert bundled_pricebook().models["sonnet"].cost_per_1k_input == 0.002
     assert load_pricebook().models["sonnet"].cost_per_1k_input == 9.9
 
 

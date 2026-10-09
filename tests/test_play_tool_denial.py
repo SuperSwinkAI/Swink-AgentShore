@@ -60,6 +60,17 @@ def test_every_declared_denial_names_a_real_cli_tool() -> None:
             assert tool in _KNOWN_CLI_TOOLS, f"{play_type.value} denies unknown tool {tool!r}"
 
 
+def test_every_declared_denial_reaches_grok() -> None:
+    """Grok is denial-capable but uses its own tool names; a denial with no
+    grok mapping would be silently dropped for grok dispatches."""
+    from agentshore.agents.cli_grok import _GROK_TOOL_NAMES
+
+    registry = build_default_registry()
+    for play_type in registry.covered():
+        for tool in registry.get(play_type).disallowed_tools:
+            assert tool in _GROK_TOOL_NAMES, f"{play_type.value} denial {tool!r} unmapped for grok"
+
+
 def test_code_review_is_the_only_play_denying_anything() -> None:
     """Scope guard. Every other play gets the agent's full tool surface; adding
     a denial elsewhere is a deliberate policy decision and should show up here

@@ -49,7 +49,11 @@ _TERMINAL_EVENT_TYPES: Final[dict[AgentType, frozenset[str]]] = {
     AgentType.CODEX: frozenset({"turn.completed"}),
     AgentType.GROK: frozenset({"end"}),
     AgentType.SWINK_CODING: frozenset({"result"}),
+    AgentType.ANTIGRAVITY: frozenset({"result"}),
 }
+
+# CLIs whose stream keys the event type as ``event`` rather than ``type``.
+_EVENT_KEYED_TYPES: Final[frozenset[AgentType]] = frozenset({AgentType.GROK, AgentType.ANTIGRAVITY})
 
 
 def _is_terminal_event(line: bytes, agent_type: AgentType) -> bool:
@@ -71,9 +75,9 @@ def _is_terminal_event(line: bytes, agent_type: AgentType) -> bool:
         return False
     if not isinstance(event, dict):
         return False
-    # Grok CLI uses ``event`` (not ``type``) as the event-type key in some output shapes.
+    # Grok (some shapes) and agy use ``event`` (not ``type``) as the event-type key.
     return event.get("type") in terminal_types or (
-        agent_type == AgentType.GROK and event.get("event") in terminal_types
+        agent_type in _EVENT_KEYED_TYPES and event.get("event") in terminal_types
     )
 
 
@@ -180,6 +184,13 @@ def _extract_text_from_swink_coding_jsonl(raw: str) -> tuple[str, _UsageTotals, 
     return cli_swink_coding.parse_swink_coding_jsonl(raw)
 
 
+def _extract_text_from_antigravity_stream_json(raw: str) -> tuple[str, _UsageTotals, str | None]:
+    """Parse agy ``--output-format stream-json`` output.  Delegates to the narrow parser."""
+    from agentshore.agents import cli_antigravity
+
+    return cli_antigravity.parse_stream_json(raw)
+
+
 def _extract_text_from_stream_json(raw: str) -> str:
     last_result: str | None = None
     for event in _iter_json_events(raw):
@@ -261,4 +272,5 @@ _PARSERS: dict[AgentType, CliOutputFormat] = {
     AgentType.CODEX: _FunctionFormat(_extract_text_from_codex_jsonl),
     AgentType.GROK: _FunctionFormat(_extract_text_from_grok_jsonl),
     AgentType.SWINK_CODING: _FunctionFormat(_extract_text_from_swink_coding_jsonl),
+    AgentType.ANTIGRAVITY: _FunctionFormat(_extract_text_from_antigravity_stream_json),
 }

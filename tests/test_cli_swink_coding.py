@@ -5,6 +5,7 @@ yolo, --cwd, resume), NDJSON result/error parsing, and terminal-event detection.
 from __future__ import annotations
 
 import re
+from typing import Any
 
 import pytest
 
@@ -172,6 +173,25 @@ def test_build_argv_always_includes_output_format_stream_json() -> None:
     )
     assert "--output-format" in argv
     assert argv[argv.index("--output-format") + 1] == "stream-json"
+
+
+def test_build_argv_context_path_rides_append_system_prompt() -> None:
+    """Mirrors Claude: the play-context path is surfaced via --append-system-prompt;
+    absent context → no flag, and the resume path never emits it."""
+    kwargs: dict[str, Any] = {
+        "prompt": "hi",
+        "binary": "swink-coding",
+        "model": "small",
+        "reasoning_effort": None,
+        "extra_flags": (),
+        "project_dir": None,
+        "prompt_on_stdin": False,
+    }
+    argv = build_argv(**kwargs, context_path="/wt/.agentshore/ctx.md")
+    i = argv.index("--append-system-prompt")
+    assert argv[i + 1] == "Context file: /wt/.agentshore/ctx.md"
+    assert "--append-system-prompt" not in build_argv(**kwargs)
+    assert "--append-system-prompt" not in build_resume_argv(resume_session_id="sc_1", **kwargs)
 
 
 # ---------------------------------------------------------------------------

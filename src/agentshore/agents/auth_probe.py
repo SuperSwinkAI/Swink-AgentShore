@@ -18,7 +18,7 @@ setup screen provably means the launch gate will pass:
 * the desktop agents/identities setup screen (``agents.check_auth`` RPC).
 
 The probe is intentionally conservative: agent types with a reliable,
-non-mutating auth-status command (codex, swink-coding) are probed via that
+non-mutating auth-status command (claude, codex, swink-coding) are probed via that
 command; agy is probed actively (it has no status verb). On Windows the agy probe must run under
 a ConPTY (see ``agents/cli/conpty.py``): in ``-p`` mode agy blocks on a terminal
 Device-Attributes query until the terminal replies, so over plain pipes it hangs
@@ -30,6 +30,7 @@ other type returns ``UNPROBEABLE`` and never blocks a launch.
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -65,11 +66,12 @@ _BLOCKING_STATUSES = frozenset({AUTH_EXPIRED})
 DEFAULT_PROBE_TIMEOUT_S = 10.0
 
 # Per-type auth-status command (args appended to the resolved binary). Only
-# Codex and swink-coding expose a reliable, non-interactive, non-mutating
-# status verb today; the others fall through to UNPROBEABLE until a
-# trustworthy command is confirmed (a wrong probe that blocks launch is worse
+# Claude, Codex and swink-coding expose a reliable, non-interactive,
+# non-mutating status verb today; the others fall through to UNPROBEABLE until
+# a trustworthy command is confirmed (a wrong probe that blocks launch is worse
 # than no probe).
 _PROBE_ARGV: dict[AgentType, tuple[str, ...]] = {
+    AgentType.CLAUDE_CODE: ("auth", "status"),
     AgentType.CODEX: ("login", "status"),
     AgentType.SWINK_CODING: ("auth", "status"),
 }
@@ -200,6 +202,9 @@ def probe_cli_auth(
 
     stdout = stdout or ""
     stderr = stderr or ""
+    if agent_type == AgentType.CLAUDE_CODE:
+        # Structured JSON is authoritative; skip the free-text marker scan.
+        return _classify_claude_status(stdout, proc.returncode)
     combined = f"{stdout}\n{stderr}".lower()
     if any(marker in combined for marker in _NOT_AUTHED_MARKERS):
         detail = _first_meaningful_line(stderr) or _first_meaningful_line(stdout)
@@ -216,6 +221,30 @@ def probe_cli_auth(
             else f"auth probe exited {proc.returncode}",
         )
     return AuthProbeResult(agent_type, AUTH_OK, "authenticated")
+
+
+def _classify_claude_status(stdout: str, returncode: int | None) -> AuthProbeResult:
+    """Classify ``claude auth status`` output.
+
+    claude 2.1.x prints JSON with a ``loggedIn`` bool: rc 0 + ``true`` when
+    authenticated (OAuth or ``ANTHROPIC_API_KEY``), rc 1 + ``false`` when not.
+    Only that definitive pair gates a launch; anything else (unparseable JSON,
+    a mismatched exit code) is a non-blocking error.
+    """
+    at = AgentType.CLAUDE_CODE
+    try:
+        logged_in = json.loads(stdout).get("loggedIn")
+    except (ValueError, AttributeError):
+        logged_in = None
+    if logged_in is True and returncode == 0:
+        return AuthProbeResult(at, AUTH_OK, "authenticated")
+    if logged_in is False and returncode == 1:
+        return AuthProbeResult(
+            at, AUTH_EXPIRED, "Claude Code is not logged in — run `claude auth login`"
+        )
+    return AuthProbeResult(
+        at, AUTH_ERROR, f"unrecognized `claude auth status` output (exit {returncode})"
+    )
 
 
 def _probe_antigravity_auth(

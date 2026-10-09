@@ -20,10 +20,12 @@ from agentshore.state import AgentType
 # AgentConfig (see agentshore.agents.costs), not this registry.
 AGENT_CAPABILITIES: dict[AgentType, dict[str, object]] = {
     AgentType.CLAUDE_CODE: {
-        "max_context": 200_000,
+        # The opus/sonnet/haiku aliases resolve to 1M-context models.
+        "max_context": 1_000_000,
     },
     AgentType.CODEX: {
-        "max_context": 400_000,
+        # gpt-5.x context_window per codex-cli 0.144.1 `debug models`.
+        "max_context": 272_000,
     },
     AgentType.GROK: {
         "max_context": 256_000,
