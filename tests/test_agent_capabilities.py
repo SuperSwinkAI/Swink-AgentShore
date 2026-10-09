@@ -27,7 +27,7 @@ class TestAgentCapabilities:
 
     def test_claude_code_max_context(self) -> None:
         caps = AGENT_CAPABILITIES[AgentType.CLAUDE_CODE]
-        assert caps["max_context"] == 200_000
+        assert caps["max_context"] == 1_000_000
 
     def test_antigravity_max_context(self) -> None:
         caps = AGENT_CAPABILITIES[AgentType.ANTIGRAVITY]
@@ -35,7 +35,7 @@ class TestAgentCapabilities:
 
     def test_codex_max_context(self) -> None:
         caps = AGENT_CAPABILITIES[AgentType.CODEX]
-        assert caps["max_context"] == 400_000
+        assert caps["max_context"] == 272_000
 
     def test_swink_coding_max_context(self) -> None:
         caps = AGENT_CAPABILITIES[AgentType.SWINK_CODING]
@@ -44,7 +44,7 @@ class TestAgentCapabilities:
     def test_get_capability_returns_value(self) -> None:
         """get_capability() returns the correct value for a known key."""
         result = get_capability(AgentType.CLAUDE_CODE, "max_context")
-        assert result == 200_000
+        assert result == 1_000_000
 
     def test_get_capability_raises_on_unknown_key(self) -> None:
         """get_capability() raises KeyError for an unknown key."""

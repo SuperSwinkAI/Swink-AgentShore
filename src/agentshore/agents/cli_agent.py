@@ -264,9 +264,7 @@ async def dispatch_cli(
         python_executable=python_executable,
         resume_session_id=resume_session_id,
         effective_cwd=effective_cwd,
-        prompt_file=(
-            str(preparation.prompt_file) if preparation.prompt_file is not None else None
-        ),
+        prompt_file=(str(preparation.prompt_file) if preparation.prompt_file is not None else None),
         pinned_session_id=preparation.pinned_session_id,
         disallowed_tools=disallowed_tools,
     )

@@ -1,6 +1,6 @@
 [project]
 name = "agentshore"
-version = "0.10.8"
+version = "0.10.9"
 description = "Swink™ AgentShore™ — RL-based multi-agent orchestrator"
 readme = "README.md"
 license = { text = "MIT" }
@@ -53,7 +53,7 @@ dependencies = [
 [dependency-groups]
 dev = [
     "bandit==1.9.4",
-    "mypy==2.3.1",
+    "mypy==2.4.0",
     "pip-audit==2.10.1",
     "pre-commit==4.6.2",
     "pytest==9.1.1",
@@ -61,7 +61,7 @@ dev = [
     "pytest-cov==7.1.0",
     "pytest-timeout==2.4.0",
     "pytest-xdist==3.8.0",
-    "ruff==0.16.7",
+    "ruff==0.16.10",
     "types-pyyaml==6.0.12.20260906",
 ]
 

@@ -153,7 +153,9 @@ def _make_store() -> AsyncMock:
 async def test_executor_commits_finalization_before_applying_external_mutations() -> None:
     call_order: list[str] = []
     store = _make_store()
-    store.finalize_play = AsyncMock(side_effect=lambda *_args, **_kwargs: call_order.append("finalize"))
+    store.finalize_play = AsyncMock(
+        side_effect=lambda *_args, **_kwargs: call_order.append("finalize")
+    )
     github = MagicMock()
 
     async def _label_issue(*_args: object, **_kwargs: object) -> bool:

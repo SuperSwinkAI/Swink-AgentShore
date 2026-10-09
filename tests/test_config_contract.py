@@ -48,7 +48,7 @@ def test_generated_cli_config_round_trips(tmp_path: Path) -> None:
     assert config.agents["codex"].model_tiers["small"].model == "gpt-5.6-luna"
     assert config.agents["codex"].model_tiers["medium"].model == "gpt-5.6-terra"
     assert config.agents["codex"].model_tiers["medium"].reasoning_effort == "medium"
-    assert config.agents["codex"].max_context == 400_000
+    assert config.agents["codex"].max_context == 272_000
     # Token rates now live in the pricebook (pricing.yaml), not on AgentConfig.
     codex_price = config.pricebook.resolve("codex", None)
     assert codex_price.cost_per_1k_input == 0.00175
@@ -223,7 +223,7 @@ def test_agent_config_has_timeout_and_output_size() -> None:
     assert (
         config.agent_timeout == 10800
     )  # 3h max-runtime backstop; silence (stream_idle) is primary
-    assert config.pricebook.resolve("claude_code", None).cost_per_1k_cached_input == 0.0003
+    assert config.pricebook.resolve("claude_code", None).cost_per_1k_cached_input == 0.0002
     assert config.pricebook.resolve("codex", None).cost_per_1k_cached_input == 0.000175
     assert config.pricebook.resolve("grok", None).cost_per_1k_cached_input == 0.0002
     assert config.skills.path == ".agents/skills/"
@@ -254,7 +254,7 @@ agents:
     config = load_config(tmp_path / "agentshore.yaml")
 
     # max_context default is sourced from the pricebook's agent_defaults.
-    assert config.agents["codex"].max_context == 400_000
+    assert config.agents["codex"].max_context == 272_000
     # Token rates resolve through the pricebook, not the AgentConfig.
     codex_price = config.pricebook.resolve("codex", None)
     assert codex_price.cost_per_1k_input == 0.00175

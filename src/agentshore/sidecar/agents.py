@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, TypedDict
 import yaml
 
 from agentshore.agents.model_catalog import load_model_catalog
-from agentshore.agents.model_tiers import DEFAULT_MODEL_TIERS, REASONING_EFFORTS
+from agentshore.agents.model_tiers import REASONING_EFFORTS, default_model_tiers_for
 from agentshore.environment import detect_agent_binaries
 from agentshore.identity_names import canonical_identity_name
 from agentshore.state import AgentType
@@ -46,7 +46,8 @@ def agents_catalog() -> dict[str, object]:
 
     A per-agent-key list of known model IDs (bundled catalog plus any global
     override — agentshore.agents.model_catalog.load_model_catalog) plus the
-    per-tier recommended defaults (agentshore.agents.model_tiers.DEFAULT_MODEL_TIERS)
+    per-tier recommended defaults (agentshore.agents.model_tiers.default_model_tiers_for,
+    resolved against any live-discovered model list)
     and the valid reasoning-effort vocabularies per agent type
     (agentshore.agents.model_tiers.REASONING_EFFORTS).
     Local file I/O only (no network) — the desktop calls this once on mount
@@ -57,7 +58,7 @@ def agents_catalog() -> dict[str, object]:
     models: dict[str, list[str]] = {key: list(items) for key, items in load_model_catalog().items()}
     defaults: dict[str, dict[str, dict[str, str | None]]] = {}
     for agent_type in AgentType:
-        tier_map = DEFAULT_MODEL_TIERS.get(agent_type, {})
+        tier_map = default_model_tiers_for(agent_type)
         defaults[agent_type.value] = {
             tier: {
                 "model": cfg.model,

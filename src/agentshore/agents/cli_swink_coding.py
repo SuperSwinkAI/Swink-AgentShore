@@ -176,10 +176,11 @@ def build_argv(
 
     Keyword signature mirrors ``cli_grok.build_argv``/``cli_antigravity.build_argv``
     so the ``cli_agent`` dispatch call site stays uniform across CLI agent types.
-    ``reasoning_effort`` and ``context_path`` are accepted only for signature
-    parity and are intentionally ignored: the installed binary registers no
-    efforts for this agent type (no ``--effort`` flag is ever emitted) and has
-    no system-prompt-file flag. *extra_flags* carries ``--yolo`` via the
+    ``reasoning_effort`` is accepted only for signature parity and is
+    intentionally ignored: no efforts are registered for this agent type (no
+    ``--effort`` flag is ever emitted). *context_path*, like Claude's, rides
+    ``--append-system-prompt "Context file: <path>"`` (swink-coding 0.2.4+);
+    the resume path omits it, as Claude's does. *extra_flags* carries ``--yolo`` via the
     YOLO default. Prompt delivery has three mutually-exclusive modes: *prompt_file*
     (``--prompt-file <path>``, the Windows/large-prompt path) takes priority; else
     stdin (*prompt_on_stdin*, ``-p`` omitted entirely — the child reads the whole
@@ -214,6 +215,8 @@ def build_argv(
     args.extend(extra_flags)
     for spec in disallowed_tools:
         args += ["--disallowed-tools", spec]
+    if context_path:
+        args += ["--append-system-prompt", f"Context file: {context_path}"]
     args += ["--output-format", "stream-json"]
     if project_dir:
         args += ["--cwd", project_dir]

@@ -58,9 +58,7 @@ def _priority_from_labels(labels: list[str]) -> int | None:
     return None
 
 
-def _issue_record_from_json(
-    session_id: str, item: dict[str, object]
-) -> GitHubIssueRecord | None:
+def _issue_record_from_json(session_id: str, item: dict[str, object]) -> GitHubIssueRecord | None:
     """Map one REST ``/issues`` item to a cache record.
 
     GitHub intentionally mixes pull requests into this endpoint; those objects
@@ -74,9 +72,7 @@ def _issue_record_from_json(
     label_objs = item.get("labels", [])
     if not isinstance(label_objs, list):
         label_objs = []
-    labels = [
-        str(label["name"]) if isinstance(label, dict) else str(label) for label in label_objs
-    ]
+    labels = [str(label["name"]) if isinstance(label, dict) else str(label) for label in label_objs]
 
     raw_number = item.get("number")
     if not isinstance(raw_number, (int, str)):

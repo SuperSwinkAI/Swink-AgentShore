@@ -1,18 +1,18 @@
 """Deterministic per-harness model-list discovery via free, local CLI probes.
 
-Codex, Grok, and Antigravity each expose a subcommand that enumerates
-currently-selectable models without spending API tokens:
+Codex, Grok, Antigravity, and swink-coding each expose a subcommand that
+enumerates currently-selectable models without spending API tokens:
 
     codex debug models   -> JSON catalog (slug / display_name / visibility / ...)
     grok models            -> plain text, one model per line, default marked
-    agy models              -> plain text, one display-name per line
+    agy models              -> plain text, ``<id>\\t<display-name>`` per line
     swink-coding models --json -> JSON array of per-provider/endpoint rows
                                  (reachable + concrete models); the three tier
                                  aliases are always selectable on top of that
                                  (see the function)
 
-(Confirmed against codex-cli 0.141.0, the current grok CLI, and agy; see the
-model-catalog spike notes in docs/design/agents/DESIGN.md.)
+(Confirmed against codex-cli 0.144.1, grok 1.0.50, agy 1.3.2, and swink-coding
+0.2.4; see the model-catalog spike notes in docs/design/agents/DESIGN.md.)
 
 Claude Code has no such surface: no flag, no subcommand, and no separate
 bundled manifest — its model IDs are baked into the compiled binary with no
@@ -32,7 +32,7 @@ import json
 import os
 import shutil
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
 
 import structlog
@@ -40,7 +40,7 @@ import structlog
 from agentshore import subprocess_env
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Mapping
 
 _logger = structlog.get_logger(__name__)
 
@@ -65,6 +65,10 @@ class DiscoveryResult:
     models: tuple[str, ...]
     status: DiscoveryStatus
     detail: str = ""
+    # The CLI's own default model when it marks one (grok), else None.
+    default: str | None = None
+    # Per-model supported reasoning efforts when the CLI reports them (codex).
+    efforts: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -125,42 +129,67 @@ def _result_from_proc(
     return None
 
 
-def _parse_codex_models(stdout: str) -> tuple[str, ...]:
-    """Parse `codex debug models` JSON: visible slugs only (hidden = internal)."""
+def _parse_codex_models(stdout: str) -> tuple[tuple[str, ...], dict[str, tuple[str, ...]]]:
+    """Parse `codex debug models` JSON: visible slugs only (hidden = internal),
+    plus each slug's ``supported_reasoning_levels`` (efforts vary per model)."""
     try:
         payload = json.loads(stdout)
     except json.JSONDecodeError:
-        return ()
+        return (), {}
     if not isinstance(payload, dict):
-        return ()
+        return (), {}
     raw_models = payload.get("models")
     if not isinstance(raw_models, list):
-        return ()
-    return tuple(
-        model["slug"]
-        for model in raw_models
-        if isinstance(model, dict)
-        and isinstance(model.get("slug"), str)
-        and model.get("visibility") != "hide"
-    )
+        return (), {}
+    slugs: list[str] = []
+    efforts: dict[str, tuple[str, ...]] = {}
+    for model in raw_models:
+        if not isinstance(model, dict) or model.get("visibility") == "hide":
+            continue
+        slug = model.get("slug")
+        if not isinstance(slug, str):
+            continue
+        slugs.append(slug)
+        levels = model.get("supported_reasoning_levels")
+        if isinstance(levels, list):
+            names = tuple(
+                effort
+                for lvl in levels
+                if isinstance(effort := lvl.get("effort") if isinstance(lvl, dict) else lvl, str)
+            )
+            if names:
+                efforts[slug] = names
+    return tuple(slugs), efforts
 
 
-def _parse_bullet_list(stdout: str) -> tuple[str, ...]:
-    """Parse `grok models` output: lines like '* name (default)' / '- name'."""
+def _parse_bullet_list(stdout: str) -> tuple[tuple[str, ...], str | None]:
+    """Parse `grok models` output: lines like '* name (default)' / '- name'.
+
+    Returns the model names and the one marked ``(default)``, if any.
+    """
     models: list[str] = []
+    default: str | None = None
     for line in stdout.splitlines():
         stripped = line.strip()
         if not stripped or stripped[0] not in "*-":
             continue
-        name = stripped[1:].strip().removesuffix("(default)").strip()
+        raw = stripped[1:].strip()
+        name = raw.removesuffix("(default)").strip()
         if name:
             models.append(name)
-    return tuple(models)
+            if raw != name:
+                default = name
+    return tuple(models), default
 
 
 def _parse_plain_lines(stdout: str) -> tuple[str, ...]:
-    """Parse `agy models` output: one model display-name per non-empty line."""
-    return tuple(line.strip() for line in stdout.splitlines() if line.strip())
+    """Parse `agy models` output: one model per non-empty line.
+
+    agy >= 1.3 prints ``<id>\\t<Display Name>``; ``--model`` takes the display
+    name, so keep the field after the tab. Older agy printed the display name
+    alone, which passes through unchanged.
+    """
+    return tuple(line.split("\t", 1)[-1].strip() for line in stdout.splitlines() if line.strip())
 
 
 def discover_codex_models(
@@ -174,11 +203,11 @@ def discover_codex_models(
     terminal = _result_from_proc("codex", result, timeout=timeout)
     if terminal is not None:
         return terminal
-    models = _parse_codex_models(result.stdout)
+    models, efforts = _parse_codex_models(result.stdout)
     if not models:
         detail = "no visible models in `codex debug models` output"
         return DiscoveryResult("codex", (), "error", detail)
-    return DiscoveryResult("codex", models, "ok")
+    return DiscoveryResult("codex", models, "ok", efforts=efforts)
 
 
 def discover_grok_models(
@@ -195,10 +224,10 @@ def discover_grok_models(
     terminal = _result_from_proc("grok", result, timeout=timeout)
     if terminal is not None:
         return terminal
-    models = _parse_bullet_list(result.stdout)
+    models, default = _parse_bullet_list(result.stdout)
     if not models:
         return DiscoveryResult("grok", (), "error", "no models parsed from `grok models` output")
-    return DiscoveryResult("grok", models, "ok")
+    return DiscoveryResult("grok", models, "ok", default=default)
 
 
 def discover_antigravity_models(
@@ -311,6 +340,11 @@ _FREE_DISCOVERY_FUNCS: tuple[tuple[str, Callable[..., DiscoveryResult]], ...] = 
     ("antigravity", discover_antigravity_models),
     ("swink_coding", discover_swink_coding_models),
 )
+
+
+def free_discovery_func(agent_key: str) -> Callable[..., DiscoveryResult] | None:
+    """Return *agent_key*'s free probe, or None (Claude Code has no free probe)."""
+    return dict(_FREE_DISCOVERY_FUNCS).get(agent_key)
 
 
 def discover_all(*, timeout: float = DEFAULT_DISCOVERY_TIMEOUT_S) -> dict[str, DiscoveryResult]:

@@ -100,6 +100,22 @@ def test_hardened_env_grok_overlays_headless_keys(monkeypatch: pytest.MonkeyPatc
     assert env["TERM"] == "dumb"
 
 
+def test_hardened_env_antigravity_disables_self_update() -> None:
+    """agy must not silently self-update mid-session (only the literal "true" works)."""
+    assert (
+        subprocess_env.hardened_env(for_antigravity=True)["AGY_CLI_DISABLE_AUTO_UPDATE"] == "true"
+    )
+    assert "AGY_CLI_DISABLE_AUTO_UPDATE" not in subprocess_env.hardened_env(for_grok=True)
+
+
+def test_hardened_env_grok_disables_host_claude_cursor_imports() -> None:
+    """grok must not load the user's Claude/Cursor skills or Claude MCP servers."""
+    env = subprocess_env.hardened_env(for_grok=True)
+    assert env["GROK_CLAUDE_SKILLS_ENABLED"] == "false"
+    assert env["GROK_CURSOR_SKILLS_ENABLED"] == "false"
+    assert env["GROK_CLAUDE_MCPS_ENABLED"] == "false"
+
+
 def test_hardened_env_grok_preserves_existing_term(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("TERM", "xterm-256color")
     env = subprocess_env.hardened_env(for_grok=True)

@@ -312,8 +312,10 @@ def hardened_env(
 
     *for_grok* overlays headless keys for the Grok CLI (``CI``/``NO_COLOR``/
     ``CLICOLOR`` and a ``TERM=dumb`` fallback) so it never tries to drive an
-    interactive TTY surface on a detached subprocess. *for_antigravity* applies
-    the identical headless-hardening overlay for the Antigravity CLI (``agy``).
+    interactive TTY surface on a detached subprocess, and switches off grok's
+    import of the user's Claude/Cursor skills and Claude MCP servers.
+    *for_antigravity* applies the identical headless-hardening overlay for the
+    Antigravity CLI (``agy``) and disables its silent self-update.
     """
     env = dict(os.environ)
     env["PYTHONIOENCODING"] = "utf-8"
@@ -348,6 +350,21 @@ def hardened_env(
         env["CLICOLOR"] = "0"
         if not env.get("TERM"):
             env["TERM"] = "dumb"
+    if for_grok:
+        # grok 1.0.50 imports the host user's Claude/Cursor skills and Claude
+        # MCP servers (~/.claude.json) into every dispatch. AgentShore's skills
+        # live in the project's grok-native ``.agents/skills/``, which these
+        # flags don't touch; project ``.mcp.json`` stays loaded too
+        # (``GROK_CURSOR_MCPS_ENABLED`` is left alone: it also drops project
+        # ``.cursor/mcp.json``). Verified with ``grok inspect``.
+        env["GROK_CLAUDE_SKILLS_ENABLED"] = "false"
+        env["GROK_CURSOR_SKILLS_ENABLED"] = "false"
+        env["GROK_CLAUDE_MCPS_ENABLED"] = "false"
+    if for_antigravity:
+        # agy self-updates silently mid-dispatch (1.2.1 -> 1.3.2 observed during
+        # a run), shifting the CLI contract under a live session. agy has no
+        # flag for this; the env var only honours the literal "true" (agy 1.3.2).
+        env["AGY_CLI_DISABLE_AUTO_UPDATE"] = "true"
     if overlay:
         for key, value in overlay.items():
             if value is not None:

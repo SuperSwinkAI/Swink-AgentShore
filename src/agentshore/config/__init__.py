@@ -171,14 +171,14 @@ agents:
   antigravity:
     enabled: true
     binary: agy
-    model: "Gemini 3.5 Flash (High)"
+    model: "Gemini 3.8 Flash (High)"
     model_tiers:
       small:
         enabled: true
         model: "GPT-OSS 120B (Medium)"
       medium:
         enabled: true
-        model: "Gemini 3.5 Flash (High)"
+        model: "Gemini 3.8 Flash (High)"
       large:
         enabled: true
         model: "Gemini 3.1 Pro (High)"

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol
 
@@ -87,7 +88,8 @@ class DefaultCliDriver:
 
 
 class GrokCliDriver(DefaultCliDriver):
-    """Route oversized Windows prompts through Grok's prompt-file option."""
+    """Route oversized Windows prompts through Grok's prompt-file option and
+    pin new runs' session ids (``--session-id`` requires a UUID)."""
 
     def prepare(
         self,
@@ -96,11 +98,13 @@ class GrokCliDriver(DefaultCliDriver):
         python_executable: str | None,
         resume_session_id: str | None,
     ) -> CliRunPreparation:
-        del resume_session_id
         prompt_file = (
             _write_grok_prompt_file(prompt) if _prompt_on_stdin(python_executable) else None
         )
-        return CliRunPreparation(prompt_file=prompt_file)
+        pinned_session_id = (
+            str(uuid.uuid4()) if resume_session_id is None and python_executable is None else None
+        )
+        return CliRunPreparation(prompt_file=prompt_file, pinned_session_id=pinned_session_id)
 
 
 class SwinkCodingCliDriver(DefaultCliDriver):
@@ -123,7 +127,11 @@ class SwinkCodingCliDriver(DefaultCliDriver):
 
 
 class AntigravityCliDriver(DefaultCliDriver):
-    """Normalize Antigravity's task envelope and recover its cached conversation id."""
+    """Normalize Antigravity's task envelope; fall back to its cached conversation id.
+
+    The stream-json parser normally supplies the conversation id; the on-disk
+    cache lookup covers plain-text runs (Windows, older agy) that carry none.
+    """
 
     def finalize(
         self,

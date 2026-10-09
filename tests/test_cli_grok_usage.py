@@ -1,10 +1,9 @@
 """Grok CLI parser/usage/first-byte/alias coverage (WI-A, issues #177/#204).
 
-The live Grok CLI (0.2.32) emits *no* usage block in any output format, so the
-real-capture fixture asserts the parser degrades gracefully (text + session id,
-zero usage, no error). A representative with-usage fixture plus shape-variant
-unit tests assert the widened parser extracts non-zero tokens when usage *is*
-present (forward-compat / relay paths).
+Grok 0.2.32 emitted *no* usage block, so that real capture asserts the parser
+degrades gracefully (text + session id, zero usage, no error). The 1.0.50
+capture asserts usage and the vendor-reported ``total_cost_usd`` are read, and
+shape-variant unit tests cover older/relay usage shapes.
 """
 
 from __future__ import annotations
@@ -12,12 +11,10 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-import structlog
 
 from agentshore.agents.cli_grok import (
     _grok_usage_block,
     _grok_usage_from_dict,
-    cli_model,
     parse_grok_jsonl,
 )
 from agentshore.config.models import AgentConfig
@@ -83,35 +80,25 @@ def test_usage_block_nesting_tolerance() -> None:
     assert _grok_usage_block({"stopReason": "EndTurn", "sessionId": "x"}) is None
 
 
-@pytest.mark.parametrize(
-    "model",
-    [
-        "grok-build",
-        "grok-code-fast",
-        "grok-code-fast-1",
-        "grok-code-fast-1-0825",
-        "grok-build-0.1",
-        "grok-4.3",
-        "grok-composer-2.5-fast",
-        "some-other-model",
-    ],
-)
-def test_cli_model_any_non_current_warns_and_collapses(model: str) -> None:
-    """Any model that is not grok-4.5 (including the retired grok-build name)
-    is collapsed to grok-4.5 with a warning."""
-    with structlog.testing.capture_logs() as captured:
-        result = cli_model(model)
-    assert result == "grok-4.5"
-    events = [e["event"] for e in captured]
-    assert "grok_model_alias_override" in events
+def test_real_1_0_50_capture_reads_usage_and_vendor_cost() -> None:
+    """grok 1.0.50 stamps ``total_cost_usd`` on ``end``; it wins over the pricing table."""
+    text, usage, session_id = parse_grok_jsonl(_read("grok_streaming_real_1_0_50.jsonl"))
+
+    assert text == "OK"
+    assert session_id == "01a11e87-9f16-78c0-971a-8d8c0c382746"
+    assert usage.tokens_in == 23393
+    assert usage.tokens_out == 16
+    assert usage.reported_cost == pytest.approx(0.01593988)
 
 
-def test_cli_model_grok_4_5_passthrough_no_warn() -> None:
-    """grok-4.5 passes through unchanged with no warning."""
-    with structlog.testing.capture_logs() as captured:
-        assert cli_model("grok-4.5") == "grok-4.5"
-    events = [e["event"] for e in captured]
-    assert "grok_model_alias_override" not in events
+def test_error_event_surfaces_message_not_raw_json() -> None:
+    """A pre-start failure (not signed in) returns the message, not the JSON line."""
+    text, usage, session_id = parse_grok_jsonl(_read("grok_error_unauth_1_0_50.jsonl"))
+
+    assert text.startswith("Not signed in.")
+    assert '"type"' not in text
+    assert session_id is None
+    assert usage.reported_cost == 0.0
 
 
 def test_first_byte_deadline_resolution() -> None:
@@ -125,13 +112,11 @@ def test_first_byte_deadline_resolution() -> None:
     # deadline only catches a child emitting nothing; wall-clock backstops hangs.
     assert resolve_first_byte_deadline(AgentType.GROK, cfg, timeout=3600.0) == 600.0
     assert (
-        resolve_first_byte_deadline(AgentType.GROK, cfg, timeout=3600.0)
-        == _FIRST_BYTE_DEADLINE_S
+        resolve_first_byte_deadline(AgentType.GROK, cfg, timeout=3600.0) == _FIRST_BYTE_DEADLINE_S
     )
     # Codex/other falls back to the same global default.
     assert (
-        resolve_first_byte_deadline(AgentType.CODEX, cfg, timeout=3600.0)
-        == _FIRST_BYTE_DEADLINE_S
+        resolve_first_byte_deadline(AgentType.CODEX, cfg, timeout=3600.0) == _FIRST_BYTE_DEADLINE_S
     )
     # Explicit config override wins over the per-type default.
     cfg_override = AgentConfig(first_byte_timeout_seconds=20)
