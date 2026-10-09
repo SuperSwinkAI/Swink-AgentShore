@@ -30,7 +30,7 @@ This is the same rule as the skill-template direct-usage prohibition below — t
 uv sync --group dev          # Install all dependencies (including dev tools)
 uv run agentshore --help        # Run CLI
 uv run pytest tests/         # Run full suite (xdist-parallel, ~75s on 8-core)
-uv run pytest tests/test_cli.py::test_cli_help -p no:xdist  # Run a focused test
+uv run pytest tests/test_cli.py::test_cli_help -n 0 --no-cov  # Run a focused test
 uv run ruff check src/ tests/        # Lint
 uv run ruff format src/ tests/       # Format
 uv run mypy src/                     # Type check
@@ -43,9 +43,9 @@ The venv lives at `.venv/` — created automatically by `uv sync`. The CLI entry
 Per `pyproject.toml`, the default `addopts` runs the suite under `pytest-xdist` with `-n auto --dist=worksteal`, plus branch coverage and a 180s per-test timeout. This drops the full suite from ~20 min serial to ~75s on an 8-core box.
 
 - **Full suite**: `uv run pytest tests/` — do NOT pass `-o addopts=''` (that wipes xdist + coverage + timeout and pushes the run back to 8+ min).
-- **Avoid `-o addopts=''`**: This flag silently disables xdist parallelism, coverage enforcement, and the per-test timeout. It should almost never be used. If you think you need it, prefer `-p no:xdist` instead (keeps coverage + timeout). The only defensible use is a single focused test where xdist worker startup costs more than it saves and the coverage gate (80% floor) is unreachable from one test — even then, consider running without it first.
-- **Focused single test/file**: `uv run pytest tests/path/to/test.py::test_name` — runs fine with default addopts in most cases. Add `-p no:xdist` if xdist worker startup is slower than the test itself.
-- **Debug a flaky parallel-only failure**: `uv run pytest tests/path -p no:xdist` — forces serial execution while keeping coverage + timeout.
+- **Avoid `-o addopts=''`**: This flag silently disables xdist parallelism, coverage enforcement, and the per-test timeout. It should almost never be used. To run serially, pass `-n 0` instead (keeps the timeout). Do NOT use `-p no:xdist`: addopts still passes `-n auto`, so pytest exits with "unrecognized arguments: -n".
+- **Focused single test/file**: `uv run pytest tests/path/to/test.py::test_name --no-cov` — any partial run fails the 80% coverage floor (`fail_under`) unless you pass `--no-cov`. Add `-n 0` if xdist worker startup is slower than the test itself.
+- **Debug a flaky parallel-only failure**: `uv run pytest tests/path -n 0 --no-cov` — forces serial execution while keeping the timeout.
 - **Never tail-pipe a long-running pytest** (`| tail -N` buffers until EOF, so a healthy run looks hung). Use `-q --tb=line` for compact output, or redirect to a file.
 
 ## Builds: the Python build spine
