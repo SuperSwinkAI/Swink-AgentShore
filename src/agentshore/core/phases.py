@@ -71,6 +71,7 @@ _AUTHOR_LABEL_COLORS: dict[str, str] = {
     "codex": "F4D44D",
     "grok": "14B8A6",
     "antigravity": "4285F4",
+    "swink_coding": "3ED421",
     "copilot": "8B5CF6",
 }
 _AUTHOR_LABEL_DEFAULT_COLOR = "cccccc"
