@@ -4,7 +4,7 @@ This file provides guidance to Codex CLI when working with code in this reposito
 
 ## What This Is
 
-AgentShore is an RL-based orchestrator that coordinates multiple LLM coding agents (Claude Code, Codex CLI, API-based LLMs) via reinforcement learning. A PPO policy network selects "plays" (22-action head, 19 active plays like Seed Project, Issue Pickup, Code Review, Run QA) to progress coding projects via a beads-native epic/story/task graph. AgentShore does not generate code — it decides what to do next and which agent does it.
+AgentShore is an RL-based orchestrator that coordinates multiple CLI coding agents (Claude Code, Codex, Grok, Antigravity, swink-coding, GitHub Copilot CLI) via reinforcement learning. A PPO policy network selects "plays" (22-action head, 19 active plays + 3 reserved, action-space version 13) to progress coding projects via a beads-native epic/story/task graph. AgentShore does not generate code — it decides what to do next and which agent does it.
 
 ## Critical: Never Use In-Repo AgentShore Skills or Plays as Agent Instructions
 
@@ -30,7 +30,7 @@ This is the same rule as the [skill-template direct-usage prohibition](#critical
 uv sync --group dev          # Install all dependencies (including dev tools)
 uv run agentshore --help        # Run CLI
 uv run pytest tests/         # Run full suite (xdist-parallel, ~75s on 8-core)
-uv run pytest tests/test_cli.py::test_cli_help -p no:xdist  # Run a focused test
+uv run pytest tests/test_cli.py::test_cli_help -n 0 --no-cov  # Run a focused test
 uv run ruff check src/ tests/        # Lint
 uv run ruff format src/ tests/       # Format
 uv run mypy src/                     # Type check
@@ -52,9 +52,9 @@ AgentShore dispatches coding agents into fresh `git worktree` checkouts that sha
 Per `pyproject.toml`, the default `addopts` runs the suite under `pytest-xdist` with `-n auto --dist=worksteal`, plus branch coverage and a 180s per-test timeout. This drops the full suite from ~20 min serial to ~75s on an 8-core box.
 
 - **Full suite**: `uv run pytest tests/` — do NOT pass `-o addopts=''` (that wipes xdist + coverage + timeout and pushes the run back to 8+ min).
-- **Avoid `-o addopts=''`**: it silently disables xdist parallelism, coverage enforcement, and the per-test timeout. Prefer `-p no:xdist` instead (keeps coverage + timeout).
-- **Focused single test/file**: `uv run pytest tests/path/to/test.py::test_name` — runs fine with default addopts in most cases. Add `-p no:xdist` only if xdist startup cost exceeds the test time.
-- **Debug a flaky parallel-only failure**: `uv run pytest tests/path -p no:xdist` — forces serial execution while keeping coverage + timeout.
+- **Avoid `-o addopts=''`**: it silently disables xdist parallelism, coverage enforcement, and the per-test timeout. To run serially, pass `-n 0` instead (keeps the timeout). Do NOT use `-p no:xdist`: addopts still passes `-n auto`, so pytest exits with "unrecognized arguments: -n".
+- **Focused single test/file**: `uv run pytest tests/path/to/test.py::test_name --no-cov` — any partial run fails the 80% coverage floor (`fail_under`) unless you pass `--no-cov`. Add `-n 0` only if xdist startup cost exceeds the test time.
+- **Debug a flaky parallel-only failure**: `uv run pytest tests/path -n 0 --no-cov` — forces serial execution while keeping the timeout.
 - **Never tail-pipe a long-running pytest** (`| tail -N` buffers until EOF, so a healthy run looks hung). Use `-q --tb=line` for compact output, or redirect to a file.
 
 ## Desktop Builds
@@ -71,21 +71,25 @@ The system runs as a single asyncio process. The core loop is: observe state →
 
 **UI and transport modes, same core**: In solo mode, a Textual TUI renders state. In embedded/headless agent mode, state streams over a Unix domain socket or TCP IPC. Dashboard mode is a browser bridge on top of the same IPC stream. The `StateProvider` protocol (`src/agentshore/state.py`) decouples core from the consumers.
 
-**RL engine** (`src/agentshore/rl/`): Custom PPO policy network in PyTorch. 22-action discrete head (19 active plays + 3 permanently reserved/masked slots, action-space version 13). State vector (246 features, observation version 13) encodes alignment scores, budget, agent states, failure counts, trajectory projections. Policy outputs are masked to prevent invalid plays (e.g., can't review a PR that doesn't exist).
+**RL engine** (`src/agentshore/rl/`): Custom PPO policy network in PyTorch. 22-action discrete head (19 active plays + 3 permanently reserved/masked slots, action-space version 13). State vector (254 features, observation version 16) encodes alignment scores, budget, agent states, failure counts, trajectory projections. Policy outputs are masked to prevent invalid plays (e.g., can't review a PR that doesn't exist).
 
 **Plays** (`src/agentshore/plays/`): Each play implements a `Play` protocol with `preconditions()`, `execute()`, and `estimated_cost()`. The RL engine selects the play type; a separate parameter resolver picks which agent/issue/PR. Anti-confirmation bias is a hard invariant for Code Review: the reviewer GitHub identity must differ from the PR author. Run QA validates trunk/default-branch state and is not identity-blocked in the current implementation.
 
-**Agents** (`src/agentshore/agents/`): CLI agents (Claude Code, Codex, Gemini) are asyncio subprocesses. API agents (GPT and other OpenAI-compatible backends) use httpx. The agent manager handles lifecycle, health monitoring, handoff tracking, and context enrichment from session learnings.
+**Agents** (`src/agentshore/agents/`): every agent is a CLI subprocess driven over asyncio — the six supported types are Claude Code, Codex, Grok, Antigravity, swink-coding, and GitHub Copilot CLI (the `AgentType` enum). There is no API/httpx agent-execution path; httpx appears only for model-list discovery, the bd-binary download, and the GitHub API identity preflight. The agent manager handles lifecycle, health monitoring, handoff tracking, and context enrichment from session learnings.
 
-**Beads integration**: AgentShore operates on a three-layer architecture. **BEADS** is the canonical project graph (epics → stories → tasks); **GitHub** is the human conversation surface, with each issue/PR mirrored via `external_ref="gh-N"`; **AgentShore SQLite** is the session-scoped RL state (schema version 4). `agentshore init` runs `ensure_bd_installed → bd_init_project → bd_setup_for_agent_types` to wire the layers together. Alignment is tracked as `alignment_delta: float | None` — `None` means beads is not initialised; `0.0` means first tick or no change; a non-zero float is the `global_closure_ratio` delta since the last tick.
+**Beads integration**: AgentShore operates on a three-layer architecture. **BEADS** is the canonical project graph (epics → stories → tasks); **GitHub** is the human conversation surface, with each issue/PR mirrored via `external_ref="gh-N"`; **AgentShore SQLite** is the session-scoped RL state (schema version 5). `agentshore init` runs `ensure_bd_installed → bd_init_project → bd_setup_for_agent_types` to wire the layers together. Alignment is tracked as `alignment_delta: float | None` — `None` means beads is not initialised; `0.0` means first tick or no change; a non-zero float is the `global_closure_ratio` delta since the last tick.
 
-**Data** (`src/agentshore/data/`): Single SQLite database per project (aiosqlite, WAL mode). Schema is in `src/agentshore/data/schema.sql` — 22 tables (schema version 4) covering sessions, plays, agents, GitHub issues, pull requests, branch activity, review queue, work claims, dispatch replay, external mutations, scope evidence, policy checkpoints, RL experience, handoffs, trajectory snapshots, human feedback, learnings, archives, review patterns, and worktrees (plus the `schema_info`/`schema_version` meta tables). The version/table-count are pinned by `tests/test_schema_fresh_db.py`.
+**Data** (`src/agentshore/data/`): Single SQLite database per project (aiosqlite, WAL mode). Schema is in `src/agentshore/data/schema.sql` — 21 tables (schema version 5) covering sessions, plays, agents, GitHub issues, pull requests, branch activity, review queue, work claims, dispatch replay, external mutations, scope evidence, policy checkpoints, RL experience, handoffs, trajectory snapshots, human feedback, archives, review patterns, and worktrees (plus the `schema_info`/`schema_version` meta tables). The version/table-count are pinned by `tests/test_schema_fresh_db.py`.
 
 **Scope validation**: After each skill-backed play, `validate_scope()` enforces issue-inflation limits. Artifact drift is not blocked until AgentShore has reliable beads-native path boundaries; existing drift tables are evidence logs for other consumers.
 
+## Per-Agent GitHub Identities
+
+CLI agents (Claude Code, Codex, Grok, Antigravity, swink-coding, Copilot) can be bound to different GitHub identities via the `identities:` block in `agentshore.yaml` and an `identity:` field per agent. The Agent Manager applies the resolved identity (git authorship + `GH_TOKEN`, mirrored to `COPILOT_GITHUB_TOKEN` for Copilot) as a per-subprocess env overlay in `src/agentshore/agents/identity.py:resolve_identity_env`. Config parse drops any agent key that does not resolve to a supported `AgentType` (`_strip_unsupported_agents`) with a `UserWarning`, so a stale or typo'd agent block is ignored rather than wedging the load. Tokens load via `gh_token_login`, `gh_token_env`, or AgentShore-managed `gh_token_keychain` services; they never appear in log events. See `docs/identity.md`.
+
 ## Design Docs
 
-Comprehensive design documentation lives in `docs/design/`. The PRD cross-links to relevant design docs. Start with `docs/design/HLD.md` for architecture diagrams and the component map — it links to all 13 component design docs. The TUI mockups are in `docs/design/ui/MOCKUPS.md`.
+Comprehensive design documentation lives in `docs/design/`. The PRD cross-links to relevant design docs. Start with `docs/design/HLD.md` for architecture diagrams and the component map — it links to all 13 component design docs.
 
 ## Key Conventions
 
