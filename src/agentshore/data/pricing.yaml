@@ -98,6 +98,8 @@ models:
   # Rate estimated at Opus-tier pending confirmation from Anthropic's
   # pricing page.
   claude-fable-5: *claude_opus_rates
+  # `fable` CLI alias (claude 2.1.x) -> latest Fable model; same rates as above.
+  fable: *claude_opus_rates
   # ── codex (OpenAI) ─────────────────────────────────────────────────────────
   # gpt-5.6 family (released 2026-07-09). Rates from OpenAI's published API
   # pricing; max_context verified live via codex-cli 0.144.1 `debug models`

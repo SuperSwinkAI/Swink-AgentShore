@@ -57,6 +57,7 @@ def test_claude_catalog_includes_fable_and_current_sonnet() -> None:
     claude_models = KNOWN_MODELS["claude_code"]
 
     assert "claude-fable-5" in claude_models
+    assert "fable" in claude_models  # CLI alias for the latest Fable model
     assert "claude-sonnet-5" in claude_models
     assert "claude-opus-4-6" in claude_models
     assert "claude-opus-4-8" in claude_models
