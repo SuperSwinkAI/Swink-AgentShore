@@ -1,10 +1,9 @@
 """Grok CLI parser/usage/first-byte/alias coverage (WI-A, issues #177/#204).
 
-The live Grok CLI (0.2.32) emits *no* usage block in any output format, so the
-real-capture fixture asserts the parser degrades gracefully (text + session id,
-zero usage, no error). A representative with-usage fixture plus shape-variant
-unit tests assert the widened parser extracts non-zero tokens when usage *is*
-present (forward-compat / relay paths).
+Grok 0.2.32 emitted *no* usage block, so that real capture asserts the parser
+degrades gracefully (text + session id, zero usage, no error). The 1.0.50
+capture asserts usage and the vendor-reported ``total_cost_usd`` are read, and
+shape-variant unit tests cover older/relay usage shapes.
 """
 
 from __future__ import annotations
@@ -79,6 +78,27 @@ def test_usage_block_nesting_tolerance() -> None:
     assert _grok_usage_block({"tokens_in": 4, "tokens_out": 5}) == {"tokens_in": 4, "tokens_out": 5}
     # No usage-bearing keys (the live 0.2.32 ``end`` event) -> None.
     assert _grok_usage_block({"stopReason": "EndTurn", "sessionId": "x"}) is None
+
+
+def test_real_1_0_50_capture_reads_usage_and_vendor_cost() -> None:
+    """grok 1.0.50 stamps ``total_cost_usd`` on ``end``; it wins over the pricing table."""
+    text, usage, session_id = parse_grok_jsonl(_read("grok_streaming_real_1_0_50.jsonl"))
+
+    assert text == "OK"
+    assert session_id == "01a11e87-9f16-78c0-971a-8d8c0c382746"
+    assert usage.tokens_in == 23393
+    assert usage.tokens_out == 16
+    assert usage.reported_cost == pytest.approx(0.01593988)
+
+
+def test_error_event_surfaces_message_not_raw_json() -> None:
+    """A pre-start failure (not signed in) returns the message, not the JSON line."""
+    text, usage, session_id = parse_grok_jsonl(_read("grok_error_unauth_1_0_50.jsonl"))
+
+    assert text.startswith("Not signed in.")
+    assert '"type"' not in text
+    assert session_id is None
+    assert usage.reported_cost == 0.0
 
 
 def test_first_byte_deadline_resolution() -> None:

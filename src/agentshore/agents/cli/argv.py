@@ -102,22 +102,29 @@ _RESUMABLE_AGENT_TYPES: frozenset[AgentType] = frozenset(
 
 
 # Agent types whose CLI lets the caller pin a NEW run's durable session id
-# (swink-coding's ``--session-id``, SuperSwink-Coding#300, v0.2.3+). Pinning
+# (swink-coding's ``--session-id``, SuperSwink-Coding#300, v0.2.3+; grok's
+# ``-s/--session-id <UUID>``, 1.0.50). Pinning
 # means AgentShore knows the id before spawn instead of having to recover it
 # from the child's output, so the narrow JSON-retry resume stays reachable even
 # when a dispatch produces nothing parseable. This is a capability set, not a
 # policy one: any CLI that grows the same flag belongs here.
-_PINNABLE_SESSION_AGENT_TYPES: frozenset[AgentType] = frozenset({AgentType.SWINK_CODING})
+_PINNABLE_SESSION_AGENT_TYPES: frozenset[AgentType] = frozenset(
+    {AgentType.SWINK_CODING, AgentType.GROK}
+)
 
 
 # Agent types whose CLI accepts an ephemeral per-dispatch tool deny list
-# (swink-coding's ``--disallowed-tools``). Deny rules layer on top of the
+# (swink-coding's ``--disallowed-tools``; grok's ``--disallowed-tools a,b``,
+# which removes the built-in tools outright — names translated in
+# ``cli_grok._GROK_TOOL_NAMES``). Deny rules layer on top of the
 # child's own config and win in every mode, including its YOLO mode, so this is
 # the one lever that survives AgentShore's permissive dispatch posture. A play
 # declares WHAT it must not touch (``Play.disallowed_tools``); each adapter
 # decides how — or whether — its CLI can express that. This is a capability
 # set, not a policy one: any CLI that grows the same flag belongs here.
-_TOOL_DENIAL_CAPABLE_AGENT_TYPES: frozenset[AgentType] = frozenset({AgentType.SWINK_CODING})
+_TOOL_DENIAL_CAPABLE_AGENT_TYPES: frozenset[AgentType] = frozenset(
+    {AgentType.SWINK_CODING, AgentType.GROK}
+)
 
 
 def _apply_yolo_default(agent_type: AgentType, extra_flags: tuple[str, ...]) -> tuple[str, ...]:
@@ -242,7 +249,10 @@ def _build_argv_codex(
     yolo = "--dangerously-bypass-approvals-and-sandbox" in extra_flags
     args = [binary, "exec", "--json"]
     if not yolo:
-        args.append("--full-auto")
+        # Replaces the deprecated `--full-auto` (codex-cli 0.144.1). Passed as
+        # the config key, not `--sandbox workspace-write`: `codex exec resume`
+        # reuses this argv and rejects `--sandbox` but accepts `-c`.
+        args += ["-c", 'sandbox_mode="workspace-write"']
     if model:
         args += ["-m", model]
     if reasoning_effort:
@@ -274,11 +284,13 @@ def _build_resume_argv_claude_code(
     session_id: str | None,
     disallowed_tools: tuple[str, ...],
 ) -> list[str]:
-    """Claude Code resume argv. ``model``, ``reasoning_effort``, ``extra_flags``,
-    ``project_dir``, ``prompt_file``, ``model_tier``, ``session_id``, and
-    ``disallowed_tools`` are accepted only for ``_ResumeArgvBuilder`` signature
-    parity and ignored: ``--resume`` re-enters the prior session verbatim with
-    no per-dispatch flags.
+    """Claude Code resume argv. ``model``, ``reasoning_effort``, ``project_dir``,
+    ``prompt_file``, ``model_tier``, ``session_id``, and ``disallowed_tools``
+    are accepted only for ``_ResumeArgvBuilder`` signature parity and ignored:
+    ``--resume`` re-enters the prior session verbatim. ``extra_flags`` IS
+    forwarded — permission mode is per-invocation, not restored by
+    ``--resume``, so dropping the YOLO ``--dangerously-skip-permissions``
+    default would run the retry in ``auto`` permission mode.
     """
     binary = binary or "claude"
     argv = [
@@ -289,6 +301,7 @@ def _build_resume_argv_claude_code(
         "--verbose",
         "--output-format",
         "stream-json",
+        *extra_flags,
     ]
     if not prompt_on_stdin:
         argv.append(prompt)
@@ -395,9 +408,10 @@ def build_argv(
     than a plain tier alias, to say which tier's backend is being overridden
     for this dispatch. Ignored by every other agent type.
 
-    *session_id* is likewise swink-coding-specific (SuperSwink-Coding#300): it
-    pins the new run's durable session id so the caller knows it before spawn
-    (:data:`_PINNABLE_SESSION_AGENT_TYPES`). Ignored by every other agent type.
+    *session_id* pins the new run's durable session id so the caller knows it
+    before spawn (swink-coding ``--session-id``, SuperSwink-Coding#300; grok
+    ``--session-id <uuid>``). Honoured only by
+    :data:`_PINNABLE_SESSION_AGENT_TYPES`; ignored by every other agent type.
 
     *disallowed_tools* is the executing play's tool-denial policy
     (``Play.disallowed_tools``) — tool names the play must not be able to reach,

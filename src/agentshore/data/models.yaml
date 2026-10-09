@@ -29,7 +29,12 @@ models:
     - sonnet
     - opus
     - fable
-    # Pinned model IDs
+    # Pinned model IDs — current generation (alias targets)
+    - claude-haiku-5-5
+    - claude-sonnet-5-5
+    - claude-opus-5-5
+    - claude-fable-5-1
+    # Pinned model IDs — earlier generations
     - claude-haiku-4-5
     - claude-sonnet-4-5
     - claude-sonnet-4-6
@@ -38,6 +43,7 @@ models:
     - claude-opus-4-6
     - claude-opus-4-7
     - claude-opus-4-8
+    - claude-opus-5
     - claude-fable-5
 
   codex:
@@ -88,9 +94,10 @@ models:
     # swink-coding's `--model` flag only accepts these three literal tier
     # aliases; the CLI itself resolves each alias to a concrete model id from
     # its own local config (~/.swink-coding/config.toml), which can point at
-    # local backends such as Ollama. AgentShore has no visibility into what an
-    # alias actually resolves to, so the catalog is just the three aliases —
-    # no pinned model IDs, no live-fetch branch.
+    # local backends such as Ollama. This offline fallback is just the three
+    # aliases, no pinned model IDs; the live list comes from
+    # `swink-coding models --json` (agents/model_discovery.py), which keeps
+    # these aliases selectable on top of the concrete models it reports.
     - small
     - medium
     - large

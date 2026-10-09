@@ -1,18 +1,18 @@
 """Deterministic per-harness model-list discovery via free, local CLI probes.
 
-Codex, Grok, and Antigravity each expose a subcommand that enumerates
-currently-selectable models without spending API tokens:
+Codex, Grok, Antigravity, and swink-coding each expose a subcommand that
+enumerates currently-selectable models without spending API tokens:
 
     codex debug models   -> JSON catalog (slug / display_name / visibility / ...)
     grok models            -> plain text, one model per line, default marked
-    agy models              -> plain text, one display-name per line
+    agy models              -> plain text, ``<id>\\t<display-name>`` per line
     swink-coding models --json -> JSON array of per-provider/endpoint rows
                                  (reachable + concrete models); the three tier
                                  aliases are always selectable on top of that
                                  (see the function)
 
-(Confirmed against codex-cli 0.141.0, the current grok CLI, and agy; see the
-model-catalog spike notes in docs/design/agents/DESIGN.md.)
+(Confirmed against codex-cli 0.144.1, grok 1.0.50, agy 1.3.2, and swink-coding
+0.2.4; see the model-catalog spike notes in docs/design/agents/DESIGN.md.)
 
 Claude Code has no such surface: no flag, no subcommand, and no separate
 bundled manifest — its model IDs are baked into the compiled binary with no
