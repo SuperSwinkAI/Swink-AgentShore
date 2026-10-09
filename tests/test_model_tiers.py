@@ -67,7 +67,7 @@ def test_default_model_tiers_for_antigravity() -> None:
     assert set(tiers) == {"small", "medium", "large"}
     # Small tier runs on the open-weight GPT-OSS 120B backend agy exposes.
     assert tiers["small"].model == "GPT-OSS 120B (Medium)"
-    assert tiers["medium"].model == "Gemini 3.5 Flash (High)"
+    assert tiers["medium"].model == "Gemini 3.8 Flash (High)"
     assert tiers["large"].model == "Gemini 3.1 Pro (High)"
     # Effort is baked into the display-name, so no separate effort flag.
     assert tiers["small"].reasoning_effort is None
@@ -196,19 +196,21 @@ def test_reasoning_efforts_claude_code_has_five_values() -> None:
     assert len(efforts) == 5
 
 
-def test_reasoning_efforts_grok_has_five_values() -> None:
-    efforts = reasoning_efforts_for(AgentType.GROK)
-
-    assert efforts == ("low", "medium", "high", "xhigh", "max")
-    assert len(efforts) == 5
+def test_reasoning_efforts_grok_is_common_subset() -> None:
+    # grok-4.5 rejects xhigh/max (grok 1.0.50), so the CLI-wide set is low..high.
+    assert reasoning_efforts_for(AgentType.GROK) == ("low", "medium", "high")
 
 
-def test_reasoning_efforts_codex_includes_minimal() -> None:
-    efforts = reasoning_efforts_for(AgentType.CODEX)
-
-    assert efforts[0] == "minimal"
-    assert efforts == ("minimal", "low", "medium", "high", "xhigh")
-    assert len(efforts) == 5
+def test_reasoning_efforts_codex_matches_gpt_5_6() -> None:
+    # gpt-5.6-* reject "minimal"; "none" and "max" are accepted (codex-cli 0.144.1).
+    assert reasoning_efforts_for(AgentType.CODEX) == (
+        "none",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max",
+    )
 
 
 def test_reasoning_efforts_antigravity_is_empty() -> None:

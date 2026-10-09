@@ -11,6 +11,7 @@ from dataclasses import replace
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
+from agentshore.agents import model_resolver
 from agentshore.agents.circuit_breaker import CircuitBreaker
 from agentshore.agents.cli_agent import dispatch_cli
 from agentshore.agents.handle import AgentHandle, AgentInvocationResult, is_noop_invocation
@@ -262,6 +263,9 @@ class AgentManager:
         agent_id = str(uuid.uuid4())
         agent_cfg = self._cfg.agents.get(agent_type.value, AgentConfig())
         tier = model_tier or DEFAULT_MODEL_TIER
+        # Live model list first, so a retired configured model resolves to its
+        # current replacement instead of spawning a dead agent.
+        await model_resolver.ensure_discovered(agent_type)
         tier_cfg = effective_model_tier_config(agent_type, agent_cfg, tier)
 
         from agentshore.agents.handle import _generate_display_name

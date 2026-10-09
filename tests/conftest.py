@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import webbrowser
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -14,6 +15,19 @@ from agentshore.state import PlayOutcome, PlayType
 def _prevent_browser_side_effects(monkeypatch: pytest.MonkeyPatch) -> None:
     """Keep report/dashboard tests from opening the user's browser."""
     monkeypatch.setattr(webbrowser, "open", lambda *_args, **_kwargs: True)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_live_model_discovery(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Never spawn the real agent CLIs' model probes (or write the user's
+    global model catalog) from tests; start each test with an empty
+    live-model cache. Tests exercising discovery call the probes directly."""
+    from agentshore.agents import model_discovery, model_resolver
+
+    monkeypatch.setattr(model_discovery, "free_discovery_func", lambda _key: None)
+    model_resolver.reset()
+    yield
+    model_resolver.reset()
 
 
 @pytest.fixture

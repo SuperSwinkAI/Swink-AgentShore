@@ -276,6 +276,11 @@ async def finalize_nonzero_exit(
         return True
     error_class = _classify_error(rc, stderr_text, raw_output)
     handle.last_error_class = error_class
+    if error_class == ErrorClass.INVALID_MODEL:
+        # Steer the next spawn of this tier to a model the CLI still offers.
+        from agentshore.agents.model_resolver import mark_model_invalid
+
+        mark_model_invalid(handle.agent_type, handle.model)
     _logger.warning(
         "cli_agent_nonzero_exit",
         agent_id=handle.agent_id,
@@ -463,9 +468,7 @@ class ProcessSupervisor:
         on_subprocess_exited: Callable[[int, int | None], Awaitable[None]] | None = None,
     ) -> SupervisedProcessResult:
         if not os.path.isdir(request.cwd):
-            raise AgentProcessCrashed(
-                f"dispatch cwd (worktree) no longer exists: {request.cwd}"
-            )
+            raise AgentProcessCrashed(f"dispatch cwd (worktree) no longer exists: {request.cwd}")
 
         try:
             if request.allow_conpty and conpty.should_use_conpty(handle.agent_type):

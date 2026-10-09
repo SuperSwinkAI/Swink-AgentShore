@@ -54,6 +54,7 @@ _FROZEN_AUTH_MARKERS = (
     "lacks access to repository",
     "not found/could not resolve repository",
     "not resolvable to this token/session",
+    "not signed in",
     "repository is not resolvable to this token",
     "repository not found",
     "repository/pr is not accessible",

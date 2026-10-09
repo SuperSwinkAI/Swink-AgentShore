@@ -77,6 +77,11 @@ STDERR_AUTH_PATTERNS: tuple[str, ...] = (
     "cannot access repository metadata",
     "failed to renew cache ttl",
     "failed to refresh available models",
+    # grok 1.0: "Not signed in. To authenticate ... grok login --device-code".
+    # (claude's "Not logged in" is caught by its structured
+    # ``authentication_failed`` code; "not logged in" itself stays in the
+    # sibling PROBE_NOT_AUTHED_MARKERS vocabulary.)
+    "not signed in",
 )
 
 # CLI stdout-safe auth subset (high-precision). Drops the short generic tokens
@@ -173,9 +178,12 @@ RATE_LIMIT_STDERR_PATTERNS: tuple[str, ...] = (
 # "hit your usage limit" is the Codex stdout quota signature (mirrors Claude's
 # "hit your session limit"); kept as the full distinctive phrase so it never
 # matches an agent's work product (#276).
+# No bare "rate_limit": claude >= 2.1 streams an informational
+# ``{"type":"rate_limit_event",...,"status":"allowed"}`` on every run, which
+# made any killed run read as rate-limited. Claude's real quota failure is the
+# structured ``"error":"rate_limit"`` code (cli/errors._CLAUDE_ERROR_CODES).
 RATE_LIMIT_STDOUT_MARKERS: tuple[str, ...] = (
     "rate limit",
-    "rate_limit",
     "too many requests",
     "retry after",
     "hit your session limit",
@@ -211,6 +219,17 @@ INVALID_MODEL_STDERR_PATTERNS: tuple[str, ...] = (
     "not found or is not supported",
     "not supported when using codex with a chatgpt account",
     "invalid_request_error",
+    # OpenAI API-key auth: "The model `x` does not exist or you do not have access to it."
+    "does not exist or you do not have access",
+    # claude 2.1 stderr tag / result text
+    "unrecognized_model",
+    "issue with the selected model",
+    # agy 1.2+: 'invalid model selection (--model "X" ...): model X is not
+    # recognized as a known model or custom model in settings'
+    "invalid model selection",
+    "is not recognized as a known model",
+    # swink-coding: 'unknown tier "x"; expected small|medium|large'
+    "unknown tier",
 )
 # CLI stdout-safe subset (distinctive Codex phrasings only).
 # Was ``cli/errors._INVALID_MODEL_STDOUT``.

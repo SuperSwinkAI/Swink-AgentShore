@@ -51,16 +51,22 @@ def test_discover_codex_ok_filters_hidden_models(tmp_path: Path) -> None:
     payload = json.dumps(
         {
             "models": [
-                {"slug": "gpt-5.5", "visibility": "list"},
+                {
+                    "slug": "gpt-5.6-luna",
+                    "visibility": "list",
+                    "supported_reasoning_levels": [{"effort": "low"}, {"effort": "max"}],
+                },
                 {"slug": "codex-auto-review", "visibility": "hide"},
-                {"slug": "gpt-5.4", "visibility": "list"},
+                {"slug": "gpt-5.5", "visibility": "list"},
             ]
         }
     )
     binary = _make_fake_cli(tmp_path, "fake-codex", body=f"print({payload!r}); sys.exit(0)")
     result = discover_codex_models(binary=binary)
     assert result.status == "ok"
-    assert result.models == ("gpt-5.5", "gpt-5.4")
+    assert result.models == ("gpt-5.6-luna", "gpt-5.5")
+    # Per-model effort levels ride along for model_resolver.resolve_effort.
+    assert result.efforts == {"gpt-5.6-luna": ("low", "max")}
 
 
 def test_discover_codex_unparseable_json_is_error(tmp_path: Path) -> None:
@@ -112,6 +118,7 @@ def test_discover_grok_ok_parses_bullets_and_strips_default_marker(tmp_path: Pat
     result = discover_grok_models(binary=binary)
     assert result.status == "ok"
     assert result.models == ("grok-4.5", "grok-composer-2.5-fast")
+    assert result.default == "grok-4.5"
 
 
 def test_discover_grok_no_parseable_lines_is_error(tmp_path: Path) -> None:
@@ -128,6 +135,18 @@ def test_discover_grok_missing_binary_is_unavailable(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 # antigravity
 # ---------------------------------------------------------------------------
+
+
+def test_discover_antigravity_keeps_display_name_from_tabbed_lines(tmp_path: Path) -> None:
+    # agy >= 1.3 prints "<id>\t<Display Name>"; --model takes the display name.
+    body = (
+        "print('gemini-3.8-flash-high\\tGemini 3.8 Flash (High)')\n"
+        "print('gpt-oss-120b-medium\\tGPT-OSS 120B (Medium)')\n"
+        "sys.exit(0)"
+    )
+    binary = _make_fake_cli(tmp_path, "fake-agy", body=body)
+    result = discover_antigravity_models(binary=binary)
+    assert result.models == ("Gemini 3.8 Flash (High)", "GPT-OSS 120B (Medium)")
 
 
 def test_discover_antigravity_ok_parses_plain_lines(tmp_path: Path) -> None:

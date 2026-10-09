@@ -12,12 +12,10 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-import structlog
 
 from agentshore.agents.cli_grok import (
     _grok_usage_block,
     _grok_usage_from_dict,
-    cli_model,
     parse_grok_jsonl,
 )
 from agentshore.config.models import AgentConfig
@@ -83,37 +81,6 @@ def test_usage_block_nesting_tolerance() -> None:
     assert _grok_usage_block({"stopReason": "EndTurn", "sessionId": "x"}) is None
 
 
-@pytest.mark.parametrize(
-    "model",
-    [
-        "grok-build",
-        "grok-code-fast",
-        "grok-code-fast-1",
-        "grok-code-fast-1-0825",
-        "grok-build-0.1",
-        "grok-4.3",
-        "grok-composer-2.5-fast",
-        "some-other-model",
-    ],
-)
-def test_cli_model_any_non_current_warns_and_collapses(model: str) -> None:
-    """Any model that is not grok-4.5 (including the retired grok-build name)
-    is collapsed to grok-4.5 with a warning."""
-    with structlog.testing.capture_logs() as captured:
-        result = cli_model(model)
-    assert result == "grok-4.5"
-    events = [e["event"] for e in captured]
-    assert "grok_model_alias_override" in events
-
-
-def test_cli_model_grok_4_5_passthrough_no_warn() -> None:
-    """grok-4.5 passes through unchanged with no warning."""
-    with structlog.testing.capture_logs() as captured:
-        assert cli_model("grok-4.5") == "grok-4.5"
-    events = [e["event"] for e in captured]
-    assert "grok_model_alias_override" not in events
-
-
 def test_first_byte_deadline_resolution() -> None:
     """Per-type default, config override, and global default all clamp to timeout."""
     from agentshore.agents.cli.supervisor import resolve_first_byte_deadline
@@ -125,13 +92,11 @@ def test_first_byte_deadline_resolution() -> None:
     # deadline only catches a child emitting nothing; wall-clock backstops hangs.
     assert resolve_first_byte_deadline(AgentType.GROK, cfg, timeout=3600.0) == 600.0
     assert (
-        resolve_first_byte_deadline(AgentType.GROK, cfg, timeout=3600.0)
-        == _FIRST_BYTE_DEADLINE_S
+        resolve_first_byte_deadline(AgentType.GROK, cfg, timeout=3600.0) == _FIRST_BYTE_DEADLINE_S
     )
     # Codex/other falls back to the same global default.
     assert (
-        resolve_first_byte_deadline(AgentType.CODEX, cfg, timeout=3600.0)
-        == _FIRST_BYTE_DEADLINE_S
+        resolve_first_byte_deadline(AgentType.CODEX, cfg, timeout=3600.0) == _FIRST_BYTE_DEADLINE_S
     )
     # Explicit config override wins over the per-type default.
     cfg_override = AgentConfig(first_byte_timeout_seconds=20)

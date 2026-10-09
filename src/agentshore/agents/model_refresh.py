@@ -14,9 +14,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal
 
-from agentshore.agents import model_discovery, model_discovery_llm
+from agentshore.agents import model_discovery, model_discovery_llm, model_resolver
 from agentshore.agents.model_catalog import load_model_catalog, write_model_catalog_override
 from agentshore.agents.pricing import load_pricebook
+from agentshore.state import AgentType
 
 HarnessStatus = Literal["ok", "unavailable", "timeout", "error", "budget_exceeded", "skipped"]
 
@@ -109,6 +110,7 @@ def refresh_model_catalog(
     for agent_key, result in free_results.items():
         prior = tuple(before.get(agent_key, ()))
         if result.status == "ok":
+            model_resolver.record_discovery(AgentType(agent_key), result)
             added, removed = _diff(prior, result.models)
             outcomes[agent_key] = HarnessRefreshOutcome(
                 agent_key, "ok", result.models, added, removed, result.detail

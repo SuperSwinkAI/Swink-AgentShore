@@ -128,24 +128,31 @@ def test_codex_catalog_includes_current_lineup() -> None:
     assert "gpt-5.5" in codex_models
 
 
-def test_grok_known_models_hard_pinned_to_current() -> None:
-    # grok is hard-pinned: exactly one entry, grok-4.5 (grok-build renamed).
-    assert KNOWN_MODELS["grok"] == ["grok-4.5"]
+def test_grok_known_models_include_default_tier_model() -> None:
+    # Offline fallback must still contain the default tier model.
+    assert "grok-4.5" in KNOWN_MODELS["grok"]
 
 
-def test_grok_no_live_fetch(monkeypatch: pytest.MonkeyPatch) -> None:
-    # models_for_agent for grok must never call a live xAI API.
+def test_grok_no_live_api_fetch(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Without a CLI probe result, grok falls back to the catalog — never a live xAI API.
     monkeypatch.setenv("XAI_API_KEY", "xai-test")
-    result = models_for_agent("grok")
-    assert result == ["grok-4.5"]
+    assert models_for_agent("grok") == KNOWN_MODELS["grok"]
+
+
+def test_live_probe_result_replaces_catalog(monkeypatch: pytest.MonkeyPatch) -> None:
+    from agentshore.agents import model_discovery
+
+    live = model_discovery.DiscoveryResult("grok", ("grok-9", "grok-4.5"), "ok", default="grok-9")
+    monkeypatch.setattr(model_discovery, "free_discovery_func", lambda _key: lambda **_kw: live)
+    assert models_for_agent("grok") == ["grok-9", "grok-4.5"]
 
 
 def test_antigravity_known_models_include_non_google_backends() -> None:
-    # agy (validated against `agy models`, agy 1.0.14) exposes non-Google
-    # backends alongside Gemini; all three must be selectable.
+    # agy (mirrors `agy models`, agy 1.3.2) exposes non-Google backends
+    # alongside Gemini; they must be selectable.
     antigravity = KNOWN_MODELS["antigravity"]
-    assert "Claude Sonnet 4.6 (Thinking)" in antigravity
-    assert "Claude Opus 4.6 (Thinking)" in antigravity
+    assert "Claude Sonnet 5.5 (High)" in antigravity
+    assert "Claude Opus 5.5 (High)" in antigravity
     assert "GPT-OSS 120B (Medium)" in antigravity
     assert "Gemini 3.1 Pro (High)" in antigravity
 

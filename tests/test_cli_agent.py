@@ -576,9 +576,7 @@ def test_resolve_first_byte_deadline_per_dispatch_override() -> None:
     assert resolve_first_byte_deadline(AgentType.ANTIGRAVITY, cfg, 90.0, 120.0) == 90.0
     # An explicit per-agent config override is itself overridden by the per-dispatch one.
     cfg_override = AgentConfig(first_byte_timeout_seconds=900)
-    assert resolve_first_byte_deadline(
-        AgentType.ANTIGRAVITY, cfg_override, 3600.0, 120.0
-    ) == 120.0
+    assert resolve_first_byte_deadline(AgentType.ANTIGRAVITY, cfg_override, 3600.0, 120.0) == 120.0
 
 
 def test_extract_output_antigravity_passthrough_when_no_status_block() -> None:
@@ -622,20 +620,17 @@ def test_extract_output_antigravity_empty_output_normalised() -> None:
     assert extract_output(raw) == ""
 
 
-@pytest.mark.parametrize(
-    "alias",
-    [
-        "grok-build",
-        "grok-build-0.1",
-        "grok-code-fast-1",
-        "grok-code-fast",
-        "grok-code-fast-1-0825",
-    ],
-)
-def test_build_argv_grok_normalizes_cli_model_aliases(alias: str) -> None:
-    argv = build_argv(AgentType.GROK, "do the thing", binary="grok", model=alias)
+@pytest.mark.parametrize("model", ["grok-4.5", "grok-4.7", "grok-4.7-build-fast"])
+def test_build_argv_grok_passes_model_through(model: str) -> None:
+    argv = build_argv(AgentType.GROK, "do the thing", binary="grok", model=model)
 
-    assert argv[argv.index("-m") + 1] == "grok-4.5"
+    assert argv[argv.index("-m") + 1] == model
+
+
+def test_build_argv_grok_omits_model_flag_when_unset() -> None:
+    argv = build_argv(AgentType.GROK, "do the thing", binary="grok")
+
+    assert "-m" not in argv
 
 
 def test_build_argv_grok_prefers_grok_default_binary(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -883,7 +878,9 @@ async def test_dispatch_cli_swink_coding_pins_session_id_and_falls_back_to_it(
         "agentshore.agents.cli.supervisor.asyncio.create_subprocess_exec",
         fake_create_subprocess_exec,
     )
-    monkeypatch.setattr("agentshore.agents.cli.supervisor.conpty.should_use_conpty", lambda _at: False)
+    monkeypatch.setattr(
+        "agentshore.agents.cli.supervisor.conpty.should_use_conpty", lambda _at: False
+    )
     cfg = AgentConfig(enabled=True, binary="swink-coding", timeout=10)
     handle = _make_handle(agent_type=AgentType.SWINK_CODING)
     handle.dispatches = 1
@@ -915,7 +912,9 @@ async def test_dispatch_cli_swink_coding_prefers_observed_session_id_over_pin(
         "agentshore.agents.cli.supervisor.asyncio.create_subprocess_exec",
         fake_create_subprocess_exec,
     )
-    monkeypatch.setattr("agentshore.agents.cli.supervisor.conpty.should_use_conpty", lambda _at: False)
+    monkeypatch.setattr(
+        "agentshore.agents.cli.supervisor.conpty.should_use_conpty", lambda _at: False
+    )
     cfg = AgentConfig(enabled=True, binary="swink-coding", timeout=10)
     handle = _make_handle(agent_type=AgentType.SWINK_CODING)
     handle.dispatches = 1
@@ -940,7 +939,9 @@ async def test_dispatch_cli_swink_coding_resume_does_not_pin_session_id(
         "agentshore.agents.cli.supervisor.asyncio.create_subprocess_exec",
         fake_create_subprocess_exec,
     )
-    monkeypatch.setattr("agentshore.agents.cli.supervisor.conpty.should_use_conpty", lambda _at: False)
+    monkeypatch.setattr(
+        "agentshore.agents.cli.supervisor.conpty.should_use_conpty", lambda _at: False
+    )
     cfg = AgentConfig(enabled=True, binary="swink-coding", timeout=10)
     handle = _make_handle(agent_type=AgentType.SWINK_CODING)
     handle.dispatches = 1
@@ -966,7 +967,9 @@ async def test_dispatch_cli_forwards_play_tool_denials_to_the_cli(
         "agentshore.agents.cli.supervisor.asyncio.create_subprocess_exec",
         fake_create_subprocess_exec,
     )
-    monkeypatch.setattr("agentshore.agents.cli.supervisor.conpty.should_use_conpty", lambda _at: False)
+    monkeypatch.setattr(
+        "agentshore.agents.cli.supervisor.conpty.should_use_conpty", lambda _at: False
+    )
     cfg = AgentConfig(enabled=True, binary="swink-coding", timeout=10)
     handle = _make_handle(agent_type=AgentType.SWINK_CODING)
     handle.dispatches = 1
@@ -994,7 +997,9 @@ async def test_dispatch_cli_forwards_tool_denials_across_the_json_retry_resume(
         "agentshore.agents.cli.supervisor.asyncio.create_subprocess_exec",
         fake_create_subprocess_exec,
     )
-    monkeypatch.setattr("agentshore.agents.cli.supervisor.conpty.should_use_conpty", lambda _at: False)
+    monkeypatch.setattr(
+        "agentshore.agents.cli.supervisor.conpty.should_use_conpty", lambda _at: False
+    )
     cfg = AgentConfig(enabled=True, binary="swink-coding", timeout=10)
     handle = _make_handle(agent_type=AgentType.SWINK_CODING)
     handle.dispatches = 1
@@ -1027,7 +1032,9 @@ async def test_dispatch_cli_omits_deny_flag_for_agents_that_cannot_express_it(
         "agentshore.agents.cli.supervisor.asyncio.create_subprocess_exec",
         fake_create_subprocess_exec,
     )
-    monkeypatch.setattr("agentshore.agents.cli.supervisor.conpty.should_use_conpty", lambda _at: False)
+    monkeypatch.setattr(
+        "agentshore.agents.cli.supervisor.conpty.should_use_conpty", lambda _at: False
+    )
     cfg = AgentConfig(enabled=True, binary="claude", timeout=10)
     handle = _make_handle(agent_type=AgentType.CLAUDE_CODE)
     handle.dispatches = 1
@@ -1065,7 +1072,9 @@ async def test_dispatch_cli_antigravity_resolves_session_id_from_cache(
     # Pin the plain-pipe spawn so this session-id-resolution test exercises the
     # create_subprocess_exec mock identically on every platform (on Windows agy
     # would otherwise route through the ConPTY path).
-    monkeypatch.setattr("agentshore.agents.cli.supervisor.conpty.should_use_conpty", lambda _at: False)
+    monkeypatch.setattr(
+        "agentshore.agents.cli.supervisor.conpty.should_use_conpty", lambda _at: False
+    )
     cfg = AgentConfig(enabled=True, binary="agy", timeout=10)
     handle = _make_handle(agent_type=AgentType.ANTIGRAVITY)
     handle.dispatches = 1
@@ -1090,7 +1099,9 @@ async def test_dispatch_cli_antigravity_session_id_none_when_cache_absent(
         fake_create_subprocess_exec,
     )
     # Pin the plain-pipe spawn (see sibling test) so this is platform-independent.
-    monkeypatch.setattr("agentshore.agents.cli.supervisor.conpty.should_use_conpty", lambda _at: False)
+    monkeypatch.setattr(
+        "agentshore.agents.cli.supervisor.conpty.should_use_conpty", lambda _at: False
+    )
     cfg = AgentConfig(enabled=True, binary="agy", timeout=10)
     handle = _make_handle(agent_type=AgentType.ANTIGRAVITY)
     handle.dispatches = 1

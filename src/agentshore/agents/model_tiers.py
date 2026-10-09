@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import dataclasses
 from typing import TYPE_CHECKING
 
+from agentshore.agents import model_resolver
 from agentshore.config.models import AgentConfig, ModelTierConfig
 from agentshore.state import AgentType
 
@@ -42,7 +44,7 @@ DEFAULT_MODEL_TIERS: dict[AgentType, dict[str, ModelTierConfig]] = {
         # Effort is baked into the display-name, so reasoning_effort is unset
         # (REASONING_EFFORTS is empty). Small tier = open-weight GPT-OSS 120B.
         "small": ModelTierConfig(model="GPT-OSS 120B (Medium)"),
-        "medium": ModelTierConfig(model="Gemini 3.5 Flash (High)"),
+        "medium": ModelTierConfig(model="Gemini 3.8 Flash (High)"),
         "large": ModelTierConfig(model="Gemini 3.1 Pro (High)"),
     },
     AgentType.SWINK_CODING: {
@@ -57,11 +59,15 @@ DEFAULT_MODEL_TIERS: dict[AgentType, dict[str, ModelTierConfig]] = {
 
 
 # Canonical reasoning-effort vocabularies per agent type.  Empty tuple means
-# the agent CLI has no effort flag and the field must not be set.
+# the agent CLI has no effort flag and the field must not be set. These are the
+# CLI-wide fallback; per-model levels discovered live (codex) take precedence
+# and out-of-range values are clamped by model_resolver.resolve_effort.
+# Grok: the lowest common set (grok-4.5 rejects xhigh/max; grok 1.0.50).
+# Codex: gpt-5.6-* reject "minimal" (codex-cli 0.144.1).
 REASONING_EFFORTS: dict[AgentType, tuple[str, ...]] = {
     AgentType.CLAUDE_CODE: ("low", "medium", "high", "xhigh", "max"),
-    AgentType.GROK: ("low", "medium", "high", "xhigh", "max"),
-    AgentType.CODEX: ("minimal", "low", "medium", "high", "xhigh"),
+    AgentType.GROK: ("low", "medium", "high"),
+    AgentType.CODEX: ("none", "low", "medium", "high", "xhigh", "max"),
     AgentType.ANTIGRAVITY: (),
     AgentType.SWINK_CODING: (),
 }
@@ -73,8 +79,29 @@ def reasoning_efforts_for(agent_type: AgentType) -> tuple[str, ...]:
 
 
 def default_model_tiers_for(agent_type: AgentType) -> dict[str, ModelTierConfig]:
-    """Return the pinned tier map for an agent type."""
-    return dict(DEFAULT_MODEL_TIERS.get(agent_type, {}))
+    """Return the default tier map for an agent type, resolved against the
+    live model list when one has been discovered (see model_resolver)."""
+    return {
+        tier: _resolved(agent_type, cfg, cfg.model)
+        for tier, cfg in DEFAULT_MODEL_TIERS.get(agent_type, {}).items()
+    }
+
+
+def _resolved(agent_type: AgentType, cfg: ModelTierConfig, fallback: str | None) -> ModelTierConfig:
+    """Swap *cfg*'s model/effort for ones the installed CLI currently offers.
+
+    swink-coding is exempt: its tier aliases are resolved by the CLI itself and
+    its ``provider:model@endpoint`` overrides are validated at config parse.
+    """
+    if agent_type == AgentType.SWINK_CODING:
+        return cfg
+    model = model_resolver.resolve_model(agent_type, cfg.model, fallback)
+    effort = model_resolver.resolve_effort(
+        agent_type, model, cfg.reasoning_effort, reasoning_efforts_for(agent_type)
+    )
+    if model == cfg.model and effort == cfg.reasoning_effort:
+        return cfg
+    return dataclasses.replace(cfg, model=model, reasoning_effort=effort)
 
 
 def enabled_model_tiers(agent_type: AgentType, agent_cfg: AgentConfig) -> tuple[str, ...]:
@@ -140,23 +167,26 @@ def effective_model_tier_config(
 
     Explicit ``model_tiers`` entries win. Legacy top-level ``model`` and
     ``reasoning_effort`` are preserved for the default medium-tier equivalent.
+    The chosen model/effort is then resolved against the CLI's live model list
+    (model_resolver), so a retired model degrades to its closest replacement.
     """
     tier = model_tier or DEFAULT_MODEL_TIER
     default = DEFAULT_MODEL_TIERS.get(agent_type, {}).get(tier, ModelTierConfig())
     configured = agent_cfg.model_tiers.get(tier)
 
     if configured is not None:
-        return ModelTierConfig(
+        chosen = ModelTierConfig(
             enabled=configured.enabled,
             model=configured.model or default.model,
             reasoning_effort=configured.reasoning_effort or default.reasoning_effort,
             max=configured.max,
         )
-
-    if tier == DEFAULT_MODEL_TIER and (agent_cfg.model or agent_cfg.reasoning_effort):
-        return ModelTierConfig(
+    elif tier == DEFAULT_MODEL_TIER and (agent_cfg.model or agent_cfg.reasoning_effort):
+        chosen = ModelTierConfig(
             model=agent_cfg.model or default.model,
             reasoning_effort=agent_cfg.reasoning_effort or default.reasoning_effort,
         )
+    else:
+        chosen = default
 
-    return default
+    return _resolved(agent_type, chosen, default.model)
