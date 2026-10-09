@@ -9,14 +9,16 @@ local work already completed.
 
 from __future__ import annotations
 
-import asyncio
 import contextlib
 import dataclasses
 import re
 from typing import TYPE_CHECKING
 
 from agentshore.agents.identity import IdentityResolutionError, resolve_identity_env
-from agentshore.command import CommandTimeoutError, run_command
+from agentshore.agents.worktree.allocator import (
+    _remote_branch_exists as _allocator_remote_branch_exists,
+)
+from agentshore.core.branch_sync import resolve_ff_fetch_overlay
 from agentshore.error_markers import AUTH_MARKERS
 from agentshore.error_markers import PUBLISH_AUTH_MARKERS as _AUTH_ERROR_MARKERS
 from agentshore.errors import PreconditionFailed
@@ -237,27 +239,12 @@ class IssuePickupPublishReconciler:
         return resolve_identity_env(self._cfg, agent_cfg, strict=True)
 
     async def _remote_branch_exists(self, branch: str) -> bool:
-        try:
-            result = await run_command(
-                "git",
-                "ls-remote",
-                "--exit-code",
-                "--heads",
-                "origin",
-                f"refs/heads/{branch}",
-                cwd=self._project_path,
-                stdout=asyncio.subprocess.DEVNULL,
-                timeout_seconds=30,
-            )
-        except (OSError, CommandTimeoutError) as exc:
-            _logger.warning("issue_pickup_branch_check_failed", branch=branch, error=str(exc))
-            return False
-        if result.returncode == 0:
-            return True
-        if result.stderr:
-            _logger.debug(
-                "issue_pickup_remote_branch_missing",
-                branch=branch,
-                stderr=result.stderr[:300],
-            )
-        return False
+        # Hardened git layer + default-identity auth overlay, same probe the
+        # worktree allocator uses (#179): the ambient credential helper is not
+        # available headless, so an unauthenticated ls-remote on a private HTTPS
+        # remote would misread a live branch as missing.
+        return await _allocator_remote_branch_exists(
+            self._project_path,
+            f"refs/heads/{branch}",
+            env_overlay=resolve_ff_fetch_overlay(self._cfg),
+        )
