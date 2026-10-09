@@ -229,8 +229,8 @@ def test_no_version_bump() -> None:
     )
 
     assert NUM_ACTIONS == 22
-    assert OBSERVATION_DIM == 252
-    assert OBSERVATION_VERSION == 15
+    assert OBSERVATION_DIM == 254
+    assert OBSERVATION_VERSION == 16
     # encode_observation must NOT take a mask argument — the mask is derived
     # separately by the EligibilityAuthority, never folded into the observation.
     params = inspect.signature(encode_observation).parameters
