@@ -263,6 +263,9 @@ describe("AgentsScreen", () => {
     expect(screen.queryByTestId("agent-unavailable-claude_code")).not.toBeInTheDocument();
     expect(screen.queryByTestId("agent-unavailable-codex")).not.toBeInTheDocument();
     expect(screen.queryByTestId("agent-unavailable-antigravity")).not.toBeInTheDocument();
+    expect(screen.getByTestId("agent-unavailable-copilot")).toHaveTextContent(
+      "Copilot CLI — not detected",
+    );
   });
 
   it("keeps detected-but-unconfigured scaffolding while showing unavailable runners", async () => {

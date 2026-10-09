@@ -609,6 +609,10 @@ class IdentityResolver:
         if resolution.token is not None:
             overlay["GH_TOKEN"] = resolution.token
             overlay["GITHUB_TOKEN"] = resolution.token
+            # Copilot CLI reads COPILOT_GITHUB_TOKEN before GH_TOKEN, so an
+            # ambient one would otherwise override the per-agent identity.
+            # Only copilot reads it; harmless for every other agent.
+            overlay["COPILOT_GITHUB_TOKEN"] = resolution.token
 
         expanded_config_dir = _expanded_gh_config_dir(ident.gh_config_dir)
         if expanded_config_dir:
@@ -827,6 +831,16 @@ def report_identities(cfg: RuntimeConfig) -> list[IdentityStatus]:
                 continue
 
         resolution = _default_resolver.resolve_token_details(identity_name, ident, validate=True)
+        detail = (
+            resolution.detail
+            if resolution.token_validated
+            else (resolution.validation_error or resolution.detail)
+        )
+        if (resolution.token or "").startswith("ghp_") and _is_copilot_agent(agent_key, agent_cfg):
+            # Warn, don't block: the token is a valid GitHub identity for gh/git,
+            # but Copilot CLI rejects classic PATs for its own model access.
+            _logger.warning("copilot_identity_classic_pat", agent=agent_key, identity=identity_name)
+            detail += f"; WARNING: {_COPILOT_CLASSIC_PAT_WARNING}"
         rows.append(
             IdentityStatus(
                 agent_key=agent_key,
@@ -836,14 +850,24 @@ def report_identities(cfg: RuntimeConfig) -> list[IdentityStatus]:
                 token_valid=resolution.token_validated,
                 resolved_login=resolution.resolved_login,
                 validation_error=resolution.validation_error,
-                detail=(
-                    resolution.detail
-                    if resolution.token_validated
-                    else (resolution.validation_error or resolution.detail)
-                ),
+                detail=detail,
             )
         )
     return rows
+
+
+_COPILOT_CLASSIC_PAT_WARNING = (
+    "Copilot CLI rejects classic ghp_ PATs — use a fine-grained PAT with the "
+    '"Copilot Requests" permission or a gh OAuth token (gho_), from an account '
+    "with a Copilot seat"
+)
+
+
+def _is_copilot_agent(agent_key: str, agent_cfg: AgentConfig) -> bool:
+    from agentshore.agents.model_tiers import _agent_type_for_config
+    from agentshore.state import AgentType
+
+    return _agent_type_for_config(agent_key, agent_cfg) is AgentType.COPILOT
 
 
 def bad_identity_rows(rows: Iterable[IdentityStatus]) -> list[IdentityStatus]:

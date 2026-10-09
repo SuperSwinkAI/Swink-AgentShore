@@ -74,6 +74,10 @@ _FIRST_BYTE_DEADLINE_BY_TYPE: dict[AgentType, float] = {
     # TTFB. 60s is pure spawn/config headroom; only a genuinely wedged launch
     # reaches it.
     AgentType.SWINK_CODING: 60.0,
+    # copilot (1.0.94) emits ``session.mcp_server_status_changed`` within ~1s of
+    # spawn, before any model request, so first byte is spawn-bound like
+    # swink-coding's.
+    AgentType.COPILOT: 60.0,
 }
 
 # Effectively-infinite sleep used to park the first-byte watchdog once it has

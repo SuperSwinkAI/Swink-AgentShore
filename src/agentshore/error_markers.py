@@ -230,6 +230,8 @@ INVALID_MODEL_STDERR_PATTERNS: tuple[str, ...] = (
     "is not recognized as a known model",
     # swink-coding: 'unknown tier "x"; expected small|medium|large'
     "unknown tier",
+    # copilot 1.0.94: 'Error: Model "x" from --model flag is not available.'
+    "from --model flag is not available",
 )
 # CLI stdout-safe subset (distinctive Codex phrasings only).
 # Was ``cli/errors._INVALID_MODEL_STDOUT``.

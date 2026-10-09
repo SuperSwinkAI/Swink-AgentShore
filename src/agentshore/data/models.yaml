@@ -101,3 +101,17 @@ models:
     - small
     - medium
     - large
+
+  copilot:
+    # Offline fallback only — the live list comes from the Copilot API model
+    # catalog (agents/model_discovery.py discover_copilot_models), filtered to
+    # the models this account's seat may use. `auto` is always valid (the
+    # account routes it, e.g. to mai-code-1.1-flash). Ids are deliberately
+    # ones that don't collide with codex/claude_code pricing rows.
+    - auto
+    - claude-haiku-5.5
+    - claude-sonnet-5.5
+    - claude-opus-5.5
+    - mai-code-1.1-flash
+    - gemini-3.8-flash
+    - kimi-k3

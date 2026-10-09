@@ -333,7 +333,8 @@ export function AgentsScreen({
               </>
             ) : (
               <p className={styles.small}>
-                Install Claude Code, Codex CLI, Grok CLI, or Antigravity CLI (agy), then re-open this screen.
+                Install Claude Code, Codex CLI, Grok CLI, Antigravity CLI (agy), or GitHub Copilot
+                CLI (<code>brew install copilot-cli</code>), then re-open this screen.
               </p>
             )}
           </div>

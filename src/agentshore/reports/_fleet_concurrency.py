@@ -39,6 +39,7 @@ _HARNESS_LABELS: dict[str, str] = {
     "antigravity": "Antigravity",
     "claude_code": "Claude Code",
     "codex": "Codex",
+    "copilot": "Copilot",
     "grok": "Grok",
 }
 
@@ -48,6 +49,7 @@ _HARNESS_COLORS: dict[str, tuple[str, str]] = {
     "antigravity": ("#4285F4", "rgba(66,133,244,0.22)"),
     "claude_code": ("#E07B39", "rgba(224,123,57,0.24)"),
     "codex": ("#F4D44D", "rgba(244,212,77,0.28)"),
+    "copilot": ("#8B5CF6", "rgba(139,92,246,0.22)"),
     "grok": ("#14B8A6", "rgba(20,184,166,0.22)"),
 }
 _FALLBACK_COLORS: tuple[tuple[str, str], ...] = (

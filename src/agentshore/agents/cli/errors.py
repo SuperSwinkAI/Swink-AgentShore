@@ -142,8 +142,9 @@ def _structured_cli_errors(stdout: str) -> tuple[ErrorClass | None, str]:
     Returns ``(class, texts)``: a class when a CLI emitted a machine-readable
     error code, and the concatenated error messages from CLI-level error events
     — Claude ``result`` with ``is_error``, codex ``turn.failed`` / ``error``,
-    grok and swink-coding ``error``. Those messages are CLI diagnostics, not
-    agent work product, so the caller matches them against the full stderr
+    grok and swink-coding ``error``, copilot ``session.error``. Those messages
+    are CLI diagnostics, not agent work product, so the caller matches them
+    against the full stderr
     pattern sets. Needed because a terminal event can be larger than the 1000
     char stdout tail (claude's error ``result`` is ~1.4 KB) and because the
     tail may hold unrelated events (claude's ``rate_limit_event``).
@@ -160,6 +161,8 @@ def _structured_cli_errors(stdout: str) -> tuple[ErrorClass | None, str]:
             texts.append(str(event.get("result", "")))
         elif etype == "error":
             texts.append(str(event.get("message", "")))
+        elif etype == "session.error" and isinstance(data := event.get("data"), dict):
+            texts.append(str(data.get("message", "")))
         elif etype == "turn.failed" and isinstance(err := event.get("error"), dict):
             texts.append(str(err.get("message", "")))
     return code_class, "\n".join(texts)

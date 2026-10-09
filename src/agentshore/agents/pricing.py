@@ -48,6 +48,12 @@ _REQUIRED_RATE_FIELDS = ("cost_per_1k_input", "cost_per_1k_output")
 # per distinct gap, not one per dispatch.
 _WARNED_FALLBACKS: set[tuple[str, str]] = set()
 
+# Harnesses billed per request, not per token: their adapters report the dollar
+# cost themselves, and their model ids are shared with token-billed harnesses
+# (copilot serves gpt-5.6-* like codex), so the per-model table must never
+# apply — the agent-type default (token rates $0) always wins.
+_PER_REQUEST_BILLED_AGENT_TYPES: frozenset[str] = frozenset({"copilot"})
+
 
 @dataclass(frozen=True)
 class AgentPricing:
@@ -98,9 +104,11 @@ class PriceBook:
         ``(agent_type, model)`` so an unpriced model surfaces without crashing
         the play or silently mis-billing.
         """
+        agent_default = self.agent_defaults.get(agent_type) if agent_type else None
+        if agent_type in _PER_REQUEST_BILLED_AGENT_TYPES and agent_default is not None:
+            return agent_default
         if model and model in self.models:
             return self.models[model]
-        agent_default = self.agent_defaults.get(agent_type) if agent_type else None
         if model:
             # A model was named but isn't enumerated — surface the gap once.
             self._warn_fallback(agent_type, model, "agent_default" if agent_default else "default")

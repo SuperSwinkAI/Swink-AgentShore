@@ -195,12 +195,13 @@ def test_observation_vector_size_unchanged() -> None:
     assert obs.shape == (OBSERVATION_DIM,)
     # OBSERVATION_DIM provenance: v0.15 Phase 5 238→245 (action space 20→22 + skip-rate);
     # desktop-8zzy 245→246 (pr_pressure_ratio slot 178); #91 246→250 (PR-author 4→8 slots);
-    # #325 250→252 (swink_coding appended to PR-author block, 8→10 slots).
-    assert OBSERVATION_DIM == 252
+    # #325 250→252 (swink_coding appended to PR-author block, 8→10 slots);
+    # v16 252→254 (copilot appended to PR-author block, 10→12 slots).
+    assert OBSERVATION_DIM == 254
 
 
-def test_observation_version_bumped_to_15() -> None:
-    assert OBSERVATION_VERSION == 15
+def test_observation_version_bumped_to_16() -> None:
+    assert OBSERVATION_VERSION == 16
 
 
 def test_observation_vector_size_with_graph() -> None:

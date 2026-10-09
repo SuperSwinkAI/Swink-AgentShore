@@ -115,6 +115,7 @@ _AGENT_LABELS: dict[str, str] = {
     "grok": "grok",
     "antigravity": "agy",
     "swink_coding": "swink-coding",
+    "copilot": "copilot",
 }
 
 

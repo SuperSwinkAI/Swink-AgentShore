@@ -41,6 +41,10 @@ class TestAgentCapabilities:
         caps = AGENT_CAPABILITIES[AgentType.SWINK_CODING]
         assert caps["max_context"] == 32_768
 
+    def test_copilot_max_context(self) -> None:
+        caps = AGENT_CAPABILITIES[AgentType.COPILOT]
+        assert caps["max_context"] == 200_000
+
     def test_get_capability_returns_value(self) -> None:
         """get_capability() returns the correct value for a known key."""
         result = get_capability(AgentType.CLAUDE_CODE, "max_context")
