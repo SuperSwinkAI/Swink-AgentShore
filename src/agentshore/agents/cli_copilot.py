@@ -21,6 +21,12 @@ stderr marker tables in :mod:`agentshore.error_markers`.
 
 Usage on a resumed session (``--resume``) is session-cumulative: the
 checkpoint and ``result`` counters include the prior run's requests/tokens.
+``CopilotCliDriver`` (``agents/cli/drivers.py``) subtracts the prior run's
+totals via :func:`usage_since` so a JSON-retry resume bills only its own delta.
+
+Quota exhaustion and rate limits arrive as ``session.error`` with
+``errorType`` ``quota`` / ``rate_limit``; ``agents/cli/errors.py`` maps those
+structured types, so no text markers are needed.
 """
 
 from __future__ import annotations
@@ -36,8 +42,11 @@ _logger = structlog.get_logger(__name__)
 # ponytail: Copilot bills premium requests, not tokens. $0.04 is GitHub's
 # per-premium-request overage price — the ceiling: requests covered by the
 # seat's monthly allowance cost nothing, and accounts on the newer AI-credit
-# billing (``totalNanoAiu`` in the checkpoint) are priced differently. Make it a
-# pricebook knob if ESR cost accuracy for Copilot starts to matter.
+# billing (``totalNanoAiu`` in the checkpoint) are priced differently. 1.0.94
+# defines nano-AIU only as nano AI credits (the credit conversion lives in the
+# native ``responseLimitsNanoAiuToAiCredits``) and ships no credit->USD rate, so
+# totalNanoAiu is not priced here. Make it a pricebook knob if ESR cost
+# accuracy for Copilot starts to matter.
 _PREMIUM_REQUEST_USD = 0.04
 
 # Play-declared tool names (swink-coding's vocabulary, see
@@ -186,6 +195,25 @@ def _premium_requests(value: object) -> float:
     if isinstance(value, int | float) and not isinstance(value, bool):
         return float(value)
     return 0.0
+
+
+def usage_since(cumulative: _UsageTotals, prior: _UsageTotals) -> _UsageTotals:
+    """This run's share of session-cumulative *cumulative*, given the *prior* run's totals.
+
+    Counters clamp at zero (a resume that died before its first checkpoint
+    reports nothing). ``max_turn_input_tokens`` is a per-call value, kept as-is.
+    """
+    return replace(
+        cumulative,
+        tokens_in=max(0, cumulative.tokens_in - prior.tokens_in),
+        tokens_out=max(0, cumulative.tokens_out - prior.tokens_out),
+        cached_tokens_in=max(0, cumulative.cached_tokens_in - prior.cached_tokens_in),
+        cache_write_tokens_in=max(
+            0, cumulative.cache_write_tokens_in - prior.cache_write_tokens_in
+        ),
+        turn_count=max(0, cumulative.turn_count - prior.turn_count),
+        reported_cost=max(0.0, cumulative.reported_cost - prior.reported_cost),
+    )
 
 
 def parse_copilot_jsonl(raw: str) -> tuple[str, _UsageTotals, str | None]:

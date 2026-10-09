@@ -8,10 +8,12 @@ Fixtures are real ``copilot --output-format json`` captures from 1.0.94:
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
 
+from agentshore.agents._jsonl import _UsageTotals
 from agentshore.agents.cli.argv import (
     _DEFAULT_YOLO_FLAGS,
     _PINNABLE_SESSION_AGENT_TYPES,
@@ -24,7 +26,7 @@ from agentshore.agents.cli.drivers import DEFAULT_CLI_DRIVERS, CopilotCliDriver
 from agentshore.agents.cli.errors import _classify_error
 from agentshore.agents.cli.parsing import _PARSERS, _is_terminal_event
 from agentshore.agents.cli.watchdogs import _FIRST_BYTE_DEADLINE_BY_TYPE
-from agentshore.agents.cli_copilot import parse_copilot_jsonl
+from agentshore.agents.cli_copilot import parse_copilot_jsonl, usage_since
 from agentshore.errors import ErrorClass
 from agentshore.state import CLI_AGENT_TYPES, AgentType
 
@@ -181,6 +183,80 @@ def test_real_startup_failures_classify(stderr: str, expected: ErrorClass) -> No
 def test_session_error_event_feeds_classification() -> None:
     stdout = '{"type":"session.error","data":{"message":"429 Too Many Requests"}}\n'
     assert _classify_error(1, "", stdout) == ErrorClass.RATE_LIMIT
+
+
+@pytest.mark.parametrize(
+    ("error_type", "error_code", "message"),
+    [
+        # Message texts verbatim from the 1.0.94 runtime (runtime.node).
+        (
+            "quota",
+            "quota_exceeded",
+            "You've run out of your included AI credits for the month. "
+            "Manage budget: https://github.com/settings/copilot/features",
+        ),
+        (
+            "quota",
+            "session_quota_exceeded",
+            "You've reached the spending limit for this session. Start a new session to continue.",
+        ),
+        ("rate_limit", "user_weekly_rate_limited", "You've reached your weekly rate limit."),
+    ],
+)
+def test_structured_quota_and_rate_limit_session_errors(
+    error_type: str, error_code: str, message: str
+) -> None:
+    data = {"errorType": error_type, "errorCode": error_code, "message": message}
+    stdout = json.dumps({"type": "session.error", "data": data}) + "\n"
+    assert _classify_error(1, "", stdout) == ErrorClass.RATE_LIMIT
+
+
+def test_structured_authentication_session_error_reads_as_auth() -> None:
+    data = {"errorType": "authentication", "message": "Authentication failed"}
+    stdout = json.dumps({"type": "session.error", "data": data}) + "\n"
+    assert _classify_error(1, "", stdout) == ErrorClass.AUTH
+
+
+def test_other_session_error_types_do_not_read_as_rate_limit() -> None:
+    stdout = '{"type":"session.error","data":{"errorType":"session","message":"Turn error: x"}}\n'
+    assert _classify_error(1, "", stdout) != ErrorClass.RATE_LIMIT
+
+
+# --- resume usage delta ----------------------------------------------------
+
+
+def _finalize(
+    driver: CopilotCliDriver, usage: _UsageTotals, sid: str, resume: str | None
+) -> _UsageTotals:
+    prep = driver.prepare("p", python_executable=None, resume_session_id=resume)
+    return driver.finalize(
+        "", sid, usage=usage, preparation=prep, effective_cwd=Path("."), env={}
+    ).usage
+
+
+def test_json_retry_resume_bills_only_its_delta() -> None:
+    driver = CopilotCliDriver()
+    first = _UsageTotals(tokens_in=1000, tokens_out=50, cached_tokens_in=200, reported_cost=0.04)
+    assert _finalize(driver, first, "s1", None) == first
+    cumulative = _UsageTotals(
+        tokens_in=1600,
+        tokens_out=80,
+        cached_tokens_in=500,
+        max_turn_input_tokens=600,
+        reported_cost=0.08,
+    )
+    delta = _finalize(driver, cumulative, "s1", "s1")
+    assert (delta.tokens_in, delta.tokens_out, delta.cached_tokens_in) == (600, 30, 300)
+    assert delta.max_turn_input_tokens == 600
+    assert delta.reported_cost == pytest.approx(0.04)
+
+
+def test_resume_of_unknown_session_passes_usage_through_and_clamps() -> None:
+    driver = CopilotCliDriver()
+    usage = _UsageTotals(tokens_in=10, reported_cost=0.04)
+    assert _finalize(driver, usage, "s9", "s9") == usage
+    # A resume that died before its first checkpoint reports zeros: no negatives.
+    assert usage_since(_UsageTotals(), usage) == _UsageTotals()
 
 
 # --- registration ----------------------------------------------------------
