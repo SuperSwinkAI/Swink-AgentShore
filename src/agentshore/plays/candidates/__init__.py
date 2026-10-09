@@ -58,7 +58,12 @@ from agentshore.plays.candidates.predicates import (
     pr_unblockable,
     resource_conflict_reason,
 )
-from agentshore.state import AgentStatus, PlayType, is_agent_circuit_broken
+from agentshore.state import (
+    RECOVERABLE_ERROR_CLASSES,
+    AgentStatus,
+    PlayType,
+    is_agent_circuit_broken,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable
@@ -586,8 +591,28 @@ class PlayCandidateAnalyzer:
             for c in sorted_candidates.get(PlayType.UNBLOCK_PR, ())
             if c.params.pr_number is not None
         }
+        # Review-feasibility backstop (same class as pr_queue_human_blocked): a PR
+        # whose only actionable step is review isn't actionable when no live
+        # code_review-tier agent has an identity != its author (anti-confirmation).
+        # Else a fleet that lost its only cross-identity reviewer mid-run keeps
+        # END_SESSION shut on PRs nobody can review. Only the availability signal
+        # changes; candidates and the code_review mask (anti-confirmation
+        # eligibility stage) are untouched. A fleet with no live agents at all is
+        # unknown (cold start / respawn pending) → no filter.
+        feasible_review_pr_numbers = reviewable_pr_numbers
+        if any(agent.status != AgentStatus.TERMINATED for agent in state.agents):
+            reviewers = live_can_review_agents(state)
+            feasible_review_pr_numbers = {
+                n
+                for n in reviewable_pr_numbers
+                if pick_reviewer_for_pr(
+                    pr.github_author if (pr := pr_by_number.get(n)) is not None else None,
+                    reviewers,
+                )
+                is not None
+            }
         actionable_pr_numbers = (
-            reviewable_pr_numbers | mergeable_pr_numbers | unblockable_pr_numbers
+            feasible_review_pr_numbers | mergeable_pr_numbers | unblockable_pr_numbers
         )
         manual_required_open_pr_count = sum(
             1 for pr in self.open_prs if MANUAL_REQUIRED_LABEL in _labels(pr)
@@ -1039,6 +1064,23 @@ class PlayCandidateService:
             return []
 
 
+def _healthy_review_tier_agents(state: OrchestratorState) -> list[AgentSnapshot]:
+    """Agents at a code_review-allowed tier that aren't circuit-broken (#22)."""
+
+    allowed = allowed_tiers_for(PlayType.CODE_REVIEW) or frozenset()
+    return [
+        agent
+        for agent in state.agents
+        if (agent.model_tier or DEFAULT_MODEL_TIER) in allowed
+        and not is_agent_circuit_broken(
+            tasks_completed=agent.tasks_completed,
+            tasks_failed=agent.tasks_failed,
+            timeout_count=agent.timeout_count,
+            consecutive_timeouts=agent.consecutive_timeouts,
+        )
+    ]
+
+
 def idle_can_review_agents(state: OrchestratorState) -> list[AgentSnapshot]:
     """Idle, tier-eligible agents sorted for deterministic pinning.
 
@@ -1047,23 +1089,29 @@ def idle_can_review_agents(state: OrchestratorState) -> list[AgentSnapshot]:
     so this no longer filters on it.
     """
 
-    allowed = allowed_tiers_for(PlayType.CODE_REVIEW) or frozenset()
-    eligible = [
-        agent
-        for agent in state.agents
-        if agent.status == AgentStatus.IDLE
-        and (agent.model_tier or DEFAULT_MODEL_TIER) in allowed
-        # Circuit breaker (#22): don't pin a review to a known-dead reviewer
-        # (circuit-breaker case — 0 successes, repeated timeouts).
-        and not is_agent_circuit_broken(
-            tasks_completed=agent.tasks_completed,
-            tasks_failed=agent.tasks_failed,
-            timeout_count=agent.timeout_count,
-            consecutive_timeouts=agent.consecutive_timeouts,
-        )
-    ]
+    eligible = [a for a in _healthy_review_tier_agents(state) if a.status == AgentStatus.IDLE]
     eligible.sort(key=lambda agent: (agent.agent_type.value, agent.agent_id))
     return eligible
+
+
+def live_can_review_agents(state: OrchestratorState) -> list[AgentSnapshot]:
+    """Tier-eligible agents that can still review at some point this session.
+
+    Superset of ``idle_can_review_agents``: BUSY and recoverable-ERROR agents
+    (rate-limit/auth break) count because they return to IDLE. TERMINATED,
+    non-recoverable ERROR, and recovery-exhausted agents don't — the same agents
+    ``rl.eligibility.agent_needs_reaping`` treats as out of service.
+    """
+
+    return [
+        a
+        for a in _healthy_review_tier_agents(state)
+        if a.agent_id not in state.recovery_exhausted_agent_ids
+        and (
+            a.status in (AgentStatus.IDLE, AgentStatus.BUSY)
+            or (a.status == AgentStatus.ERROR and a.last_error_class in RECOVERABLE_ERROR_CLASSES)
+        )
+    ]
 
 
 def pick_reviewer_for_pr(
@@ -1209,6 +1257,7 @@ __all__ = [
     "PR_REPICK_COOLDOWN_SPEC",
     # Reviewer/tail helpers
     "idle_can_review_agents",
+    "live_can_review_agents",
     "pick_reviewer_for_pr",
     "in_progress_issue_numbers",
     # Private helpers (consumed by tests)

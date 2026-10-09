@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Protocol
 
-from agentshore.agents import cli_antigravity, cli_swink_coding
+from agentshore.agents import cli_antigravity, cli_copilot, cli_swink_coding
+from agentshore.agents._jsonl import _UsageTotals
 from agentshore.agents.cli.argv import _prompt_on_stdin, _write_grok_prompt_file
 from agentshore.state import AgentType
 
@@ -20,6 +21,7 @@ class CliRunPreparation:
 
     prompt_file: Path | None = None
     pinned_session_id: str | None = None
+    resume_session_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,6 +30,7 @@ class CliProviderOutput:
 
     raw_output: str
     session_id: str | None
+    usage: _UsageTotals = _UsageTotals()
 
 
 class CliDriver(Protocol):
@@ -46,6 +49,7 @@ class CliDriver(Protocol):
         raw_output: str,
         observed_session_id: str | None,
         *,
+        usage: _UsageTotals,
         preparation: CliRunPreparation,
         effective_cwd: Path,
         env: dict[str, str],
@@ -72,6 +76,7 @@ class DefaultCliDriver:
         raw_output: str,
         observed_session_id: str | None,
         *,
+        usage: _UsageTotals,
         preparation: CliRunPreparation,
         effective_cwd: Path,
         env: dict[str, str],
@@ -80,6 +85,7 @@ class DefaultCliDriver:
         return CliProviderOutput(
             raw_output=raw_output,
             session_id=observed_session_id or preparation.pinned_session_id,
+            usage=usage,
         )
 
     def cleanup(self, preparation: CliRunPreparation) -> None:
@@ -108,7 +114,21 @@ class GrokCliDriver(DefaultCliDriver):
 
 
 class CopilotCliDriver(DefaultCliDriver):
-    """Pin new copilot runs' session ids (``--session-id`` takes a UUID)."""
+    """Pin new copilot runs' session ids (``--session-id`` takes a UUID) and
+    turn a resumed run's session-cumulative usage into this run's delta.
+
+    copilot reports usage/premium requests cumulatively across ``--resume``, so
+    the JSON-retry resume would re-bill the original attempt. The driver
+    remembers each session's last reported totals and subtracts them when that
+    session is resumed.
+    """
+
+    # ponytail: FIFO cap on remembered sessions; the JSON-retry resume follows
+    # its original within the same play, so only recent sessions matter.
+    _MAX_REMEMBERED_SESSIONS = 256
+
+    def __init__(self) -> None:
+        self._session_totals: dict[str, _UsageTotals] = {}
 
     def prepare(
         self,
@@ -121,7 +141,41 @@ class CopilotCliDriver(DefaultCliDriver):
         pinned_session_id = (
             str(uuid.uuid4()) if resume_session_id is None and python_executable is None else None
         )
-        return CliRunPreparation(pinned_session_id=pinned_session_id)
+        return CliRunPreparation(
+            pinned_session_id=pinned_session_id, resume_session_id=resume_session_id
+        )
+
+    def finalize(
+        self,
+        raw_output: str,
+        observed_session_id: str | None,
+        *,
+        usage: _UsageTotals,
+        preparation: CliRunPreparation,
+        effective_cwd: Path,
+        env: dict[str, str],
+    ) -> CliProviderOutput:
+        output = super().finalize(
+            raw_output,
+            observed_session_id,
+            usage=usage,
+            preparation=preparation,
+            effective_cwd=effective_cwd,
+            env=env,
+        )
+        prior = (
+            self._session_totals.pop(preparation.resume_session_id, None)
+            if preparation.resume_session_id is not None
+            else None
+        )
+        if output.session_id is not None:
+            self._session_totals.pop(output.session_id, None)
+            self._session_totals[output.session_id] = usage
+            if len(self._session_totals) > self._MAX_REMEMBERED_SESSIONS:
+                del self._session_totals[next(iter(self._session_totals))]
+        if prior is None:
+            return output
+        return replace(output, usage=cli_copilot.usage_since(usage, prior))
 
 
 class SwinkCodingCliDriver(DefaultCliDriver):
@@ -155,6 +209,7 @@ class AntigravityCliDriver(DefaultCliDriver):
         raw_output: str,
         observed_session_id: str | None,
         *,
+        usage: _UsageTotals,
         preparation: CliRunPreparation,
         effective_cwd: Path,
         env: dict[str, str],
@@ -168,6 +223,7 @@ class AntigravityCliDriver(DefaultCliDriver):
         return super().finalize(
             raw_output,
             observed_session_id,
+            usage=usage,
             preparation=preparation,
             effective_cwd=effective_cwd,
             env=env,

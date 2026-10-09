@@ -135,6 +135,18 @@ _CLAUDE_ERROR_CODES: dict[str, ErrorClass] = {
     "billing_error": ErrorClass.RATE_LIMIT,
 }
 
+# Copilot ``session.error`` ``data.errorType`` categories (1.0.94
+# ``copilot-sdk/generated/session-events.d.ts`` ErrorData). ``rate_limit``
+# carries errorCode ``user_weekly_rate_limited``/``rate_limited``/...; ``quota``
+# carries ``quota_exceeded`` ("You've run out of your included AI credits for the
+# month"), ``session_quota_exceeded``, ``additional_spend_limit_reached``. Both
+# are holds, not failures — billing_error-equivalent, like claude's.
+_COPILOT_ERROR_TYPES: dict[str, ErrorClass] = {
+    "rate_limit": ErrorClass.RATE_LIMIT,
+    "quota": ErrorClass.RATE_LIMIT,
+    "authentication": ErrorClass.AUTH,
+}
+
 
 def _structured_cli_errors(stdout: str) -> tuple[ErrorClass | None, str]:
     """Pull the CLI's *own* error reports out of JSONL stdout.
@@ -162,6 +174,7 @@ def _structured_cli_errors(stdout: str) -> tuple[ErrorClass | None, str]:
         elif etype == "error":
             texts.append(str(event.get("message", "")))
         elif etype == "session.error" and isinstance(data := event.get("data"), dict):
+            code_class = _COPILOT_ERROR_TYPES.get(str(data.get("errorType")), code_class)
             texts.append(str(data.get("message", "")))
         elif etype == "turn.failed" and isinstance(err := event.get("error"), dict):
             texts.append(str(err.get("message", "")))

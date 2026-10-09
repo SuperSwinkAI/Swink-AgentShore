@@ -5,9 +5,13 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+from agentshore.errors import ErrorClass
 from agentshore.github.labels import MANUAL_REQUIRED_LABEL
 from agentshore.plays.candidates import MAX_OPEN_PRS, build_candidate_plan
 from agentshore.state import (
+    AgentSnapshot,
+    AgentStatus,
+    AgentType,
     IssueSnapshot,
     OrchestratorState,
     PlayType,
@@ -237,6 +241,104 @@ def test_pr_queue_not_human_blocked_below_threshold() -> None:
 
     assert summary.manual_required_open_pr_count == MAX_OPEN_PRS - 2
     assert summary.pr_queue_human_blocked is False
+
+
+def _agent(
+    agent_id: str,
+    identity: str,
+    *,
+    tier: str = "large",
+    status: AgentStatus = AgentStatus.IDLE,
+    error_class: ErrorClass | None = None,
+) -> AgentSnapshot:
+    return AgentSnapshot(
+        agent_id=agent_id,
+        agent_type=AgentType.CLAUDE_CODE,
+        status=status,
+        context_size=0,
+        total_cost=0.0,
+        total_tokens=0,
+        tasks_completed=1,
+        tasks_failed=0,
+        model_tier=tier,
+        github_identity=identity,
+        last_error_class=error_class,
+    )
+
+
+def test_review_only_pr_not_actionable_without_cross_identity_reviewer() -> None:
+    # The wedge: every PR authored by "alice", the only large agent is also
+    # "alice" (a "bob" medium can't review). Review is infeasible, so the PRs
+    # must not hold END_SESSION shut via actionable_pr_work.
+    summary = build_candidate_plan(
+        _state(
+            graph=_seeded_graph(),
+            agents=[_agent("a1", "alice"), _agent("b1", "bob", tier="medium")],
+            pull_requests=[_pr(20, github_author="alice"), _pr(21, github_author="alice")],
+        )
+    ).work_availability
+
+    assert summary.reviewable_pr_count == 2
+    assert summary.actionable_pr_work_count == 0
+    assert summary.has_actionable_work is False
+
+
+def test_review_only_pr_actionable_with_busy_or_recovering_cross_identity_reviewer() -> None:
+    for reviewer in (
+        _agent("b1", "bob", status=AgentStatus.BUSY),
+        _agent("b1", "bob", status=AgentStatus.ERROR, error_class=ErrorClass.RATE_LIMIT),
+    ):
+        summary = build_candidate_plan(
+            _state(
+                graph=_seeded_graph(),
+                agents=[_agent("a1", "alice"), reviewer],
+                pull_requests=[_pr(20, github_author="alice")],
+            )
+        ).work_availability
+        assert summary.actionable_pr_work_count == 1
+
+
+def test_review_infeasible_when_cross_identity_reviewer_out_of_service() -> None:
+    for state_kwargs in (
+        {"agents": [_agent("a1", "alice"), _agent("b1", "bob", status=AgentStatus.TERMINATED)]},
+        {
+            "agents": [_agent("a1", "alice"), _agent("b1", "bob")],
+            "recovery_exhausted_agent_ids": frozenset({"b1"}),
+        },
+    ):
+        summary = build_candidate_plan(
+            _state(
+                graph=_seeded_graph(),
+                pull_requests=[_pr(20, github_author="alice")],
+                **state_kwargs,
+            )
+        ).work_availability
+        assert summary.actionable_pr_work_count == 0
+
+
+def test_review_infeasible_pr_still_actionable_when_mergeable() -> None:
+    # Merge-ready work isn't review work: it still counts with no cross-identity reviewer.
+    summary = build_candidate_plan(
+        _state(
+            graph=_seeded_graph(),
+            agents=[_agent("a1", "alice")],
+            pull_requests=[
+                _pr(20, github_author="alice"),
+                _pr(
+                    30,
+                    github_author="alice",
+                    review_decision="APPROVED",
+                    mergeable="MERGEABLE",
+                    status_check_summary="SUCCESS",
+                    base_ref="main",
+                ),
+            ],
+            target_branch="main",
+        )
+    ).work_availability
+
+    assert summary.mergeable_pr_count == 1
+    assert summary.actionable_pr_work_count == 1
 
 
 def test_pr_queue_human_blocked_when_all_open_prs_manual_required_and_no_work() -> None:
