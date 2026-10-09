@@ -248,3 +248,13 @@ def test_pricebook_is_immutable() -> None:
     with pytest.raises(TypeError):
         pb.models["x"] = AgentPricing(1, 0.1, None, None, 0.2)  # type: ignore[index]
     assert isinstance(pb, PriceBook)
+
+
+def test_copilot_never_picks_up_token_rates_of_shared_model_ids() -> None:
+    """Copilot bills per premium request; a model id it shares with codex
+    (gpt-5.6-*) must not resolve to codex's per-token rates."""
+    book = bundled_pricebook()
+    assert book.resolve("codex", "gpt-5.6-terra").cost_per_1k_input > 0
+    copilot = book.resolve("copilot", "gpt-5.6-terra")
+    assert copilot == book.agent_defaults["copilot"]
+    assert copilot.cost_per_1k_input == 0.0

@@ -82,6 +82,10 @@ _DEFAULT_BINARY: dict[AgentType, str] = {
     AgentType.GROK: "grok",
     AgentType.ANTIGRAVITY: "agy",
     AgentType.SWINK_CODING: "swink-coding",
+    # copilot has no auth-status verb (`copilot login` only mutates), and its
+    # stored OAuth login lives in the OS credential store, so it stays
+    # UNPROBEABLE; runtime auth failures classify via error_markers.
+    AgentType.COPILOT: "copilot",
 }
 
 # agy has no non-mutating status verb, and — unlike the other CLIs — a dead

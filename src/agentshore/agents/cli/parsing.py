@@ -50,6 +50,7 @@ _TERMINAL_EVENT_TYPES: Final[dict[AgentType, frozenset[str]]] = {
     AgentType.GROK: frozenset({"end"}),
     AgentType.SWINK_CODING: frozenset({"result"}),
     AgentType.ANTIGRAVITY: frozenset({"result"}),
+    AgentType.COPILOT: frozenset({"result"}),
 }
 
 # CLIs whose stream keys the event type as ``event`` rather than ``type``.
@@ -184,6 +185,13 @@ def _extract_text_from_swink_coding_jsonl(raw: str) -> tuple[str, _UsageTotals, 
     return cli_swink_coding.parse_swink_coding_jsonl(raw)
 
 
+def _extract_text_from_copilot_jsonl(raw: str) -> tuple[str, _UsageTotals, str | None]:
+    """Parse Copilot CLI ``--output-format json`` output.  Delegates to the narrow parser."""
+    from agentshore.agents import cli_copilot
+
+    return cli_copilot.parse_copilot_jsonl(raw)
+
+
 def _extract_text_from_antigravity_stream_json(raw: str) -> tuple[str, _UsageTotals, str | None]:
     """Parse agy ``--output-format stream-json`` output.  Delegates to the narrow parser."""
     from agentshore.agents import cli_antigravity
@@ -273,4 +281,5 @@ _PARSERS: dict[AgentType, CliOutputFormat] = {
     AgentType.GROK: _FunctionFormat(_extract_text_from_grok_jsonl),
     AgentType.SWINK_CODING: _FunctionFormat(_extract_text_from_swink_coding_jsonl),
     AgentType.ANTIGRAVITY: _FunctionFormat(_extract_text_from_antigravity_stream_json),
+    AgentType.COPILOT: _FunctionFormat(_extract_text_from_copilot_jsonl),
 }

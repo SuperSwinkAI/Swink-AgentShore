@@ -1,6 +1,6 @@
 # Per-Agent GitHub Identities
 
-AgentShore can dispatch each CLI coding agent (Claude Code, Codex, Grok,
+AgentShore can dispatch each CLI coding agent (Claude Code, Codex, Grok, Copilot,
 Antigravity, and future local-LLM CLIs) under a distinct GitHub identity. This attributes PRs,
 commits, and reviews to the agent that produced them, and — more importantly —
 lets GitHub enforce "review by someone other than the author" at the platform
@@ -110,6 +110,34 @@ source (gh login, keychain paste, or env var), merges the resulting bindings
 back into the config, and leaves the SQLite database untouched. This is the
 path to add or fix an identity without re-initializing the project.
 
+## GitHub Copilot CLI
+
+Copilot is the one agent whose *model* access is also a GitHub credential, so
+its identity token does double duty: `gh`/`git` work **and** Copilot model
+requests. That puts two extra requirements on an identity bound to `copilot`:
+
+- **Copilot seat.** The identity's GitHub account needs an active Copilot
+  subscription (Free, Pro, Pro+, Business, or Enterprise). Which models it can
+  use follows that seat's policy; AgentShore discovers the allowed list from the
+  Copilot API and degrades unavailable tier models to `auto`.
+- **Token type.** Copilot CLI rejects classic personal access tokens (`ghp_`).
+  Use a fine-grained PAT (`github_pat_`) with the **"Copilot Requests"**
+  permission (plus the repository permissions the agent needs: contents,
+  pull requests, issues — read/write), or a `gh` OAuth token (`gho_`, e.g.
+  `gh_token_login` against a `gh auth login`'d account).
+
+`agentshore identity` (and the `agentshore start` identity report) appends a
+`WARNING` to any `copilot` row whose token is a classic `ghp_` PAT. It is a
+warning, not a failure: the token is still a valid GitHub identity for
+`gh`/`git`, but every Copilot dispatch will fail auth until it is replaced.
+
+Token precedence inside Copilot is `COPILOT_GITHUB_TOKEN` > `GH_TOKEN` >
+`GITHUB_TOKEN` > its stored `copilot login`. The identity overlay therefore sets
+`COPILOT_GITHUB_TOKEN` alongside `GH_TOKEN`/`GITHUB_TOKEN`, so an ambient
+`COPILOT_GITHUB_TOKEN` in your shell can't override the per-agent identity. A
+`copilot` agent with no identity bound uses whatever the ambient environment or
+`copilot login` provides.
+
 ## CLI agent backend auth (distinct from GitHub identity)
 
 A GitHub identity is one of two independent credentials each CLI agent needs.
@@ -205,6 +233,6 @@ authorship report the problem clearly; they do not fail silently.
 
 ## Constraint: one identity per agent type
 
-Each agent type (claude_code, codex, grok, antigravity) binds to exactly one
+Each agent type (claude_code, codex, grok, antigravity, swink_coding, copilot) binds to exactly one
 GitHub identity. Multi-instance pools with a different identity per instance are a
 future enhancement.

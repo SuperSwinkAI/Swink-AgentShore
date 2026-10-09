@@ -127,6 +127,7 @@ _AGENT_TYPE_LABEL: dict[str, str] = {
     "codex": "Codex",
     "grok": "Grok",
     "antigravity": "Antigravity",
+    "copilot": "Copilot",
 }
 
 

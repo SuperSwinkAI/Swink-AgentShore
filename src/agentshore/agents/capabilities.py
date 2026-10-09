@@ -36,6 +36,14 @@ AGENT_CAPABILITIES: dict[AgentType, dict[str, object]] = {
     AgentType.SWINK_CODING: {
         "max_context": 32_768,
     },
+    AgentType.COPILOT: {
+        # The Copilot API caps *prompt* tokens per model below its context
+        # window (models catalog `max_prompt_tokens`, 2026-10: 200k for the
+        # claude-*-5.5 tier defaults, 128k for auto -> mai-code-1.1-flash,
+        # 272k for gpt-5.x). AgentShore runs the CLI's `--context default`
+        # tier (not long_context), so the default-tier prompt cap is the limit.
+        "max_context": 200_000,
+    },
 }
 
 

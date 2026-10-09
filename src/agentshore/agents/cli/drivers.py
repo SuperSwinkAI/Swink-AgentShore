@@ -107,6 +107,23 @@ class GrokCliDriver(DefaultCliDriver):
         return CliRunPreparation(prompt_file=prompt_file, pinned_session_id=pinned_session_id)
 
 
+class CopilotCliDriver(DefaultCliDriver):
+    """Pin new copilot runs' session ids (``--session-id`` takes a UUID)."""
+
+    def prepare(
+        self,
+        prompt: str,
+        *,
+        python_executable: str | None,
+        resume_session_id: str | None,
+    ) -> CliRunPreparation:
+        del prompt
+        pinned_session_id = (
+            str(uuid.uuid4()) if resume_session_id is None and python_executable is None else None
+        )
+        return CliRunPreparation(pinned_session_id=pinned_session_id)
+
+
 class SwinkCodingCliDriver(DefaultCliDriver):
     """Pin new swink-coding sessions so malformed output remains resumable."""
 
@@ -168,6 +185,7 @@ class CliDriverRegistry:
             AgentType.GROK: GrokCliDriver(),
             AgentType.ANTIGRAVITY: AntigravityCliDriver(),
             AgentType.SWINK_CODING: SwinkCodingCliDriver(),
+            AgentType.COPILOT: CopilotCliDriver(),
         }
 
     def driver_for(self, agent_type: AgentType) -> CliDriver:
@@ -183,6 +201,7 @@ __all__ = [
     "CliDriverRegistry",
     "CliProviderOutput",
     "CliRunPreparation",
+    "CopilotCliDriver",
     "DEFAULT_CLI_DRIVERS",
     "DefaultCliDriver",
     "GrokCliDriver",
