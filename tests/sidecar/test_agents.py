@@ -208,11 +208,9 @@ def test_agents_catalog_efforts_map() -> None:
 
     efforts = catalog["efforts"]
     assert isinstance(efforts, dict)
-    # claude_code and grok share the same 5-value vocabulary.
     assert efforts["claude_code"] == ["low", "medium", "high", "xhigh", "max"]
-    assert efforts["grok"] == ["low", "medium", "high", "xhigh", "max"]
-    # codex has a unique minimal tier.
-    assert efforts["codex"] == ["minimal", "low", "medium", "high", "xhigh"]
+    assert efforts["grok"] == ["low", "medium", "high"]
+    assert efforts["codex"] == ["none", "low", "medium", "high", "xhigh", "max"]
 
 
 def test_detect_available_agents_maps_grok_aliases(monkeypatch) -> None:

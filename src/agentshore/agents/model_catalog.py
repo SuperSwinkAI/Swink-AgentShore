@@ -186,11 +186,23 @@ async def _fetch_openai_models(*, timeout: float = 5.0) -> list[str]:
 
 
 async def models_for_agent_async(agent_key: str, *, timeout: float = 5.0) -> list[str]:
-    """Return deduplicated model list: known first, then live extras.
+    """Return the selectable model list for *agent_key*.
 
-    Known models always appear in catalog order. Live API results contribute
-    only entries not already present, appended at the end.
+    When the harness has a free CLI probe (codex/grok/agy/swink-coding) and it
+    succeeds, the live list IS the answer (and is cached for model_resolver).
+    Otherwise: known catalog first, then live API extras appended at the end.
     """
+    from agentshore.agents import model_resolver
+    from agentshore.agents.model_discovery import free_discovery_func
+    from agentshore.state import AgentType
+
+    probe = free_discovery_func(agent_key)
+    if probe is not None:
+        result = await asyncio.to_thread(probe, timeout=timeout)
+        if result.status == "ok":
+            model_resolver.record_discovery(AgentType(agent_key), result)
+            return list(result.models)
+
     known = list(load_model_catalog().get(agent_key, []))
     known_set = set(known)
 

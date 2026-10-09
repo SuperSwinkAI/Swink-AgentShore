@@ -23,18 +23,15 @@ Usage keys emitted by the Grok CLI use both the standard Anthropic aliases
 usage accounting is correct without widening the shared ``_usage_totals_from_dict``
 helper used by Claude/Codex.
 
-Model selection is hard-pinned: the only accepted model is ``grok-4.5``
-(``grok-build`` was the prior model name, now itself an alias that collapses
-here). Any configured model that is not already ``grok-4.5`` is collapsed to
-it with a warning so the override is visible in logs (issue #204, task 4).
+The model is passed through as configured: grok >= 1.0 offers several models
+(``grok models``), and availability is resolved live by
+:mod:`agentshore.agents.model_resolver` before dispatch.
 The effort flag for the Grok CLI is ``--effort`` (NOT ``--reasoning-effort``).
 """
 
 from __future__ import annotations
 
 import shutil
-
-import structlog
 
 from agentshore.agents._jsonl import (
     _first_int,
@@ -44,8 +41,6 @@ from agentshore.agents._jsonl import (
     _UsageTotals,
 )
 
-_logger = structlog.get_logger(__name__)
-
 
 def default_binary() -> str:
     """Prefer ``grok`` but support hosts that only have the ``grok-build`` alias."""
@@ -54,24 +49,6 @@ def default_binary() -> str:
     if shutil.which("grok-build") is not None:
         return "grok-build"
     return "grok"
-
-
-def cli_model(model: str) -> str:
-    """Return the model id accepted by the installed Grok CLI.
-
-    The Grok CLI is hard-pinned to ``grok-4.5``. Any input that is not
-    already ``grok-4.5`` — including the retired ``grok-build`` name — is
-    collapsed to it with a warning so the override is visible in logs
-    (issue #204, task 4).
-    """
-    if model != "grok-4.5":
-        _logger.warning(
-            "grok_model_alias_override",
-            configured_model=model,
-            resolved_model="grok-4.5",
-            reason="configured model is not accepted by the installed Grok CLI",
-        )
-    return "grok-4.5"
 
 
 def build_argv(
@@ -107,8 +84,6 @@ def build_argv(
     tool-permission flag.
     """
     resolved_binary = binary or default_binary()
-    # Hard-pinned to grok-4.5; cli_model warns + collapses any other value.
-    resolved_model = cli_model(model) if model else "grok-4.5"
     args = [
         resolved_binary,
         "--no-auto-update",
@@ -124,7 +99,8 @@ def build_argv(
     if project_dir:
         args += ["--cwd", project_dir]
     args += ["--output-format", "streaming-json"]
-    args += ["-m", resolved_model]
+    if model:
+        args += ["-m", model]
     if reasoning_effort:
         args += ["--effort", reasoning_effort]
     args.extend(extra_flags)

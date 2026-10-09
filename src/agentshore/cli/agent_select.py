@@ -271,7 +271,9 @@ def _interactive_agent_select(
 
     click.echo("\n  Fetching available models...", nl=False)
     model_catalogs: dict[str, list[str]] = {
-        k: models_for_agent(k, timeout=3.0) for k, _ in candidates
+        # Live CLI probes (agy fetches over the network) need more than 3s.
+        k: models_for_agent(k, timeout=10.0)
+        for k, _ in candidates
     }
     click.echo(" done.")
 

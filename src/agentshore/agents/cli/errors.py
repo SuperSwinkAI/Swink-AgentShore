@@ -126,6 +126,45 @@ _STDIN_CLOSED_AFTER_CACHE_RENEWAL_MARKERS = ("write_stdin failed", "stdin closed
 # tail that is *only* such an artifact into a description of what happened.
 _STDIN_PROMPT_ARTIFACT_MARKERS = ("reading additional input from stdin",)
 
+# Claude Code tags a failed turn's ``assistant`` event with a machine-readable
+# ``error`` code (claude 2.1.x). Authoritative — checked before any text marker.
+_CLAUDE_ERROR_CODES: dict[str, ErrorClass] = {
+    "authentication_failed": ErrorClass.AUTH,
+    "model_not_found": ErrorClass.INVALID_MODEL,
+    "rate_limit": ErrorClass.RATE_LIMIT,
+    "billing_error": ErrorClass.RATE_LIMIT,
+}
+
+
+def _structured_cli_errors(stdout: str) -> tuple[ErrorClass | None, str]:
+    """Pull the CLI's *own* error reports out of JSONL stdout.
+
+    Returns ``(class, texts)``: a class when a CLI emitted a machine-readable
+    error code, and the concatenated error messages from CLI-level error events
+    — Claude ``result`` with ``is_error``, codex ``turn.failed`` / ``error``,
+    grok and swink-coding ``error``. Those messages are CLI diagnostics, not
+    agent work product, so the caller matches them against the full stderr
+    pattern sets. Needed because a terminal event can be larger than the 1000
+    char stdout tail (claude's error ``result`` is ~1.4 KB) and because the
+    tail may hold unrelated events (claude's ``rate_limit_event``).
+    """
+    from agentshore.agents._jsonl import _iter_json_events
+
+    code_class: ErrorClass | None = None
+    texts: list[str] = []
+    for event in _iter_json_events(stdout):
+        etype = event.get("type")
+        if etype == "assistant" and isinstance(code := event.get("error"), str):
+            code_class = _CLAUDE_ERROR_CODES.get(code, code_class)
+        elif etype == "result" and event.get("is_error") is True:
+            texts.append(str(event.get("result", "")))
+        elif etype == "error":
+            texts.append(str(event.get("message", "")))
+        elif etype == "turn.failed" and isinstance(err := event.get("error"), dict):
+            texts.append(str(err.get("message", "")))
+    return code_class, "\n".join(texts)
+
+
 # ---------------------------------------------------------------------------
 # Classification predicates
 # ---------------------------------------------------------------------------
@@ -225,7 +264,14 @@ def _classify_error(rc: int, stderr: str, stdout: str) -> ErrorClass:
     map (see ``core/recovery_tracker.py``), so classifying it correctly routes
     it out of take_break entirely.
     """
-    err = stderr.lower()
+    code_class, cli_error_text = _structured_cli_errors(stdout)
+    if code_class is not None:
+        return code_class
+    # codex wraps *every* 400 (unsupported effort, oversized request, ...) as
+    # invalid_request_error; only the specific model phrases may mark a model
+    # invalid, or one bad request would steer the tier off a working model.
+    cli_error_text = cli_error_text.lower().replace("invalid_request_error", "")
+    err = stderr.lower() + "\n" + cli_error_text
     out = stdout[-1000:].lower()
     combined = err + out
 
