@@ -540,9 +540,7 @@ def _parse_agents(
         if name in {"fresh_start", "preferences"}:
             continue
         if isinstance(agent_raw, Mapping):
-            agents[name] = _parse_agent(
-                name, agent_raw, legacy_max_default=legacy_max_default
-            )
+            agents[name] = _parse_agent(name, agent_raw, legacy_max_default=legacy_max_default)
         else:
             raise ConfigError(f"agents.{name} must be a mapping, got {type(agent_raw).__name__}")
 
@@ -573,9 +571,7 @@ def _parse_agents(
 # when unset, a cross-key aliasing rule the generic defaults-only shape can't
 # express.
 def _parse_reward(raw: WireMapping) -> RewardConfig:
-    reject_unknown_fields(
-        RewardConfig, raw, "rl.reward", allow=frozenset({"scope_creep_penalty"})
-    )
+    reject_unknown_fields(RewardConfig, raw, "rl.reward", allow=frozenset({"scope_creep_penalty"}))
     return RewardConfig(
         alignment_weight=float(raw.get("alignment_weight", 1.0)),
         issue_throughput_weight=float(raw.get("issue_throughput_weight", 2.0)),
@@ -922,9 +918,7 @@ def _build_config(data: WireMapping) -> RuntimeConfig:
         auto=_parse_auto(mapping(data.get("auto"), "auto")),
         intake=_parse_intake(mapping(data.get("intake"), "intake")),
         budget=(
-            _parse_budget(mapping(data["budget"], "budget"))
-            if "budget" in data
-            else BudgetConfig()
+            _parse_budget(mapping(data["budget"], "budget")) if "budget" in data else BudgetConfig()
         ),
         budget_absent="budget" not in data,
         trusted_ids=_parse_trusted_ids(trusted_ids_raw),
@@ -939,9 +933,7 @@ def _build_config(data: WireMapping) -> RuntimeConfig:
             mapping(data.get("circuit_breaker"), "circuit_breaker")
         ),
         health=_parse_health(mapping(data.get("health"), "health")),
-        data_integrity=_parse_data_integrity(
-            mapping(data.get("data_integrity"), "data_integrity")
-        ),
+        data_integrity=_parse_data_integrity(mapping(data.get("data_integrity"), "data_integrity")),
         task_validation=_parse_task_validation(
             mapping(data.get("task_validation"), "task_validation")
         ),

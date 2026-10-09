@@ -28,9 +28,7 @@ def mapping(value: object, path: str) -> Mapping[str, object]:
     return value
 
 
-def structure[ConfigT](
-    model: type[ConfigT], raw: Mapping[str, object], path: str
-) -> ConfigT:
+def structure[ConfigT](model: type[ConfigT], raw: Mapping[str, object], path: str) -> ConfigT:
     """Validate and construct one frozen config dataclass from YAML input."""
     try:
         return cast("ConfigT", _adapter(model).validate_python(dict(raw)))

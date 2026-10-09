@@ -45,9 +45,7 @@ def test_workspace_layout_invariants() -> None:
 
 
 def test_dashboard_css_does_not_lock_desktop_routes() -> None:
-    css = (ROOT / "dashboard" / "src" / "components" / "Dashboard.css").read_text(
-        encoding="utf-8"
-    )
+    css = (ROOT / "dashboard" / "src" / "components" / "Dashboard.css").read_text(encoding="utf-8")
 
     assert not re.search(
         r"^\s*html,\s*\n\s*body\s*\{[^}]*overflow:\s*hidden",
