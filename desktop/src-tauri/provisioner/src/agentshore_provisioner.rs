@@ -559,13 +559,13 @@ fn run_icacls(path: &Path, grant: &str, label: &str, logger: &Logger) -> Provisi
 }
 
 pub(crate) fn cleanup_legacy_layout(logger: &Logger) {
-    let Some(local) = env::var_os("LOCALAPPDATA").map(PathBuf::from) else {
-        return;
-    };
-    for path in [
-        local.join("Programs").join("AgentShore"),
-        local.join("AgentShore").join("venv"),
-    ] {
+    // Older installers staged a private bd binary here; AgentShore uses the system bd now.
+    let mut paths = vec![agentshore_programdata_root().join("bin")];
+    if let Some(local) = env::var_os("LOCALAPPDATA").map(PathBuf::from) {
+        paths.push(local.join("Programs").join("AgentShore"));
+        paths.push(local.join("AgentShore").join("venv"));
+    }
+    for path in paths {
         if path.exists() {
             match fs::remove_dir_all(&path) {
                 Ok(()) => logger.line(format!("removed legacy path {}", path.display())),
