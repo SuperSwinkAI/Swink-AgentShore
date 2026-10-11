@@ -45,6 +45,39 @@ pub fn update_window_state(app: &AppHandle) {
     }
 }
 
+/// Windows only: give the main window its taskbar icon.
+///
+/// Tauri applies the default window icon as `ICON_SMALL` (title bar) but
+/// never sets `ICON_BIG`, and tao explicitly clears `ICON_BIG` at window
+/// creation. The taskbar reads `ICON_BIG`, so it rendered Windows' generic
+/// window glyph instead of the logo. tauri-build embeds `icon.ico` in the exe
+/// as resource 32512 (`IDI_APPLICATION`), so load it from our own module and
+/// hand it to the window. Best-effort: a missing handle leaves the small icon
+/// in place.
+#[cfg(windows)]
+#[cfg_attr(test, allow(dead_code))]
+pub fn apply_taskbar_icon(app: &AppHandle) {
+    use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        LoadIconW, SendMessageW, ICON_BIG, IDI_APPLICATION, WM_SETICON,
+    };
+
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+    let Ok(hwnd) = window.hwnd() else {
+        return;
+    };
+    // SAFETY: plain Win32 calls on a live window handle owned by Tauri; the
+    // icon handle is a shared resource owned by the module, never freed here.
+    unsafe {
+        let icon = LoadIconW(GetModuleHandleW(std::ptr::null()), IDI_APPLICATION);
+        if !icon.is_null() {
+            SendMessageW(hwnd.0, WM_SETICON, ICON_BIG as usize, icon as isize);
+        }
+    }
+}
+
 /// Reload the main WebView in-place without touching the session.
 ///
 /// A WebView reload resets the React app to its root route. The `current_session`

@@ -67,7 +67,11 @@ def _signing_params(args: argparse.Namespace) -> list[str]:
 
 
 def _powershell() -> str:
-    return require_tool("powershell", "this command must run on Windows")
+    # Prefer pwsh. When the build runs from a PowerShell 7 shell (via uv/python),
+    # Windows PowerShell 5.1 inherits pwsh's PSModulePath and then cannot bind
+    # the certificate provider's -CodeSigningCert dynamic parameter inside the
+    # signing helper ("A parameter cannot be found ... 'CodeSigningCert'").
+    return shutil.which("pwsh") or require_tool("powershell", "this command must run on Windows")
 
 
 def setup_self_signed_cert(args: argparse.Namespace) -> None:

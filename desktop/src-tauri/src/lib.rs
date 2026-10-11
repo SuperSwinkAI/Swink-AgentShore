@@ -302,6 +302,8 @@ pub fn run() {
             // launch or handshake failures otherwise leave an invisible
             // but still-running GUI process because the window starts hidden.
             window::apply_restored_window_state(&app_handle);
+            #[cfg(windows)]
+            window::apply_taskbar_icon(&app_handle);
             window::attach_window_persistence(&app_handle);
 
             // DESIGN §2.6 — survive a supervisor-startup failure: store
