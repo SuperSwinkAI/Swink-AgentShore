@@ -214,8 +214,7 @@ def _github_api_ssl_context() -> ssl.SSLContext:
     bundle, so urllib's default context fails with CERTIFICATE_VERIFY_FAILED
     ("unable to get local issuer certificate"). Use certifi's bundle on
     macOS/Linux; on Windows use native trust loading, since enterprise roots live
-    in the Windows certificate store rather than certifi (mirrors
-    ``beads.downloader._httpx_verify_config``).
+    in the Windows certificate store rather than certifi.
     """
     if sys.platform.startswith("win"):
         return ssl.create_default_context()

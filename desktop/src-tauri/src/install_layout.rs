@@ -1,6 +1,6 @@
 //! Canonical Windows install-layout paths and process flags for AgentShore.
 //!
-//! Single source of truth for `ProgramData\AgentShore\{venv,bin,runtime}`,
+//! Single source of truth for `ProgramData\AgentShore\{venv,runtime}`,
 //! `sidecar.pid`, and `CREATE_NO_WINDOW`. Shared by the Tauri library crate
 //! and the provisioner binary via `#[path]` include. Do NOT duplicate these
 //! literals in other files.
@@ -43,16 +43,6 @@ pub fn agentshore_data_root() -> PathBuf {
 #[cfg(target_os = "windows")]
 pub fn managed_venv_path() -> PathBuf {
     agentshore_data_root().join("venv")
-}
-
-/// Managed tool bin dir: `%ProgramData%\AgentShore\bin` (Windows only).
-///
-/// This is where the provisioner drops `bd.exe` and other machine-managed
-/// tool binaries. Also known as `machine_managed_bin_path` in the sidecar
-/// runtime.
-#[cfg(target_os = "windows")]
-pub fn managed_bin_path() -> PathBuf {
-    agentshore_data_root().join("bin")
 }
 
 /// Runtime state dir: `%ProgramData%\AgentShore\runtime` (Windows only).

@@ -132,22 +132,16 @@ impl SidecarSupervisor {
     /// Wraps :meth:`start_classified` and flattens the error to a string
     /// for existing callers / cargo-tests that don't need the variant
     /// discrimination.
-    pub fn start(
-        app: &AppHandle,
-        bd_sidecar_path: Option<&std::path::Path>,
-    ) -> Result<Self, String> {
-        Self::start_classified(app, bd_sidecar_path).map_err(|e| e.message())
+    pub fn start(app: &AppHandle) -> Result<Self, String> {
+        Self::start_classified(app).map_err(|e| e.message())
     }
 
     /// DESIGN §2.6 — classified supervisor startup. Returns a structured
     /// error variant so the shell can distinguish build_id mismatch (the
     /// named fatal case from gh-337) from generic spawn / handshake
     /// failures.
-    pub fn start_classified(
-        app: &AppHandle,
-        bd_sidecar_path: Option<&std::path::Path>,
-    ) -> Result<Self, SupervisorStartError> {
-        let mut cmd = transport::sidecar_command(bd_sidecar_path);
+    pub fn start_classified(app: &AppHandle) -> Result<Self, SupervisorStartError> {
+        let mut cmd = transport::sidecar_command();
         let mut child = cmd.spawn().map_err(|e| SupervisorStartError::Other {
             reason: format!("spawn sidecar: {e}"),
         })?;

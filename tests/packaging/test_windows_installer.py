@@ -96,9 +96,7 @@ def test_windows_inno_template_avoids_per_user_cleanup_warning() -> None:
 def test_windows_spine_stages_provisioner_uv_and_wheel() -> None:
     spine = WINDOWS_PY.read_text()
 
-    assert "AGENTSHORE_SKIP_BD_SIDECAR" in spine
     assert "CARGO_HTTP_CHECK_REVOKE" in spine
-    assert "tauri.windows-installer.conf.json" in spine
     assert '"-p", "agentshore-provisioner", "--locked"' in spine
     assert 'installer_stage / "agentshore-provisioner.exe"' in spine
     assert 'installer_stage / "uv.exe"' in spine
@@ -156,11 +154,14 @@ def test_windows_spine_removes_stale_setup_artifacts_before_tauri_build() -> Non
     assert "security-scanner handles" in spine
 
 
-def test_windows_tauri_config_disables_build_time_bd_sidecar() -> None:
-    config = (REPO_ROOT / "packaging/desktop/windows/tauri.windows-installer.conf.json").read_text()
+def test_desktop_never_bundles_bd() -> None:
+    """bd is the system's (brew/npm); the app ships no copy and pins none."""
+    conf = (REPO_ROOT / "desktop/src-tauri/tauri.conf.json").read_text()
+    build_rs = (REPO_ROOT / "desktop/src-tauri/build.rs").read_text()
 
-    assert '"beforeBuildCommand": "npm run build:tauri-frontend"' in config
-    assert '"externalBin": []' in config
+    assert "externalBin" not in conf
+    assert "tauri-sidecars" not in conf
+    assert "agentshore-bd" not in build_rs
 
 
 def test_windows_tauri_entrypoint_uses_gui_subsystem_for_release_builds() -> None:
@@ -176,7 +177,7 @@ def _read_sidecar_module() -> str:
     )
 
 
-def test_windows_sidecar_runtime_uses_programdata_venv_and_bd_bin() -> None:
+def test_windows_sidecar_runtime_uses_programdata_venv() -> None:
     sidecar_rs = _read_sidecar_module()
     runtime_rs = (REPO_ROOT / "desktop/src-tauri/src/sidecar_runtime.rs").read_text()
     layout_rs = (REPO_ROOT / "desktop/src-tauri/src/install_layout.rs").read_text()
@@ -184,9 +185,8 @@ def test_windows_sidecar_runtime_uses_programdata_venv_and_bd_bin() -> None:
     # PROGRAMDATA access and path helpers moved to install_layout (single source of truth).
     assert 'std::env::var_os("PROGRAMDATA")' in layout_rs
     assert "managed_venv_python_path" in layout_rs
-    assert "managed_bin_path" in layout_rs
-    assert "locate_machine_managed_bd" in sidecar_rs
-    assert "AGENTSHORE_BD_BIN_ENV" in sidecar_rs
+    assert "managed_bin_path" not in layout_rs
+    assert "AGENTSHORE_BD_BIN_ENV" not in sidecar_rs  # the sidecar never pins bd
     assert "AGENTSHORE_GITHUB_HELPER" not in sidecar_rs
     assert r"AgentShore\venv\Scripts\python.exe" in runtime_rs
 
@@ -252,7 +252,6 @@ def test_windows_provisioner_has_stable_exit_codes_and_timeouts() -> None:
         "const UV_VENV_FAILURE: i32 = 40",
         "const WHEEL_INSTALL_FAILURE: i32 = 50",
         "const SIDECAR_IMPORT_FAILURE: i32 = 60",
-        "const BD_PROVISION_FAILURE: i32 = 70",
         "const TIMELAPSE_FAILURE: i32 = 80",
         "const CLI_FAILURE: i32 = 90",
     ]:
@@ -272,22 +271,20 @@ def test_windows_provisioner_uses_programdata_layout_and_icacls() -> None:
     assert r'OsString::from(r"C:\ProgramData")' in layout_rs
     assert 'join("install-logs")' in source
     assert 'join("venv")' in layout_rs
-    assert 'join("bin")' in layout_rs
     assert 'join("runtime")' in layout_rs
     assert "icacls.exe" in source
     assert "*S-1-5-32-545" in source
 
 
-def test_windows_provisioner_installs_wheel_and_machine_bd() -> None:
+def test_windows_provisioner_installs_wheel_but_not_bd() -> None:
     source = _provisioner_source()
 
     assert 'os("venv")' in source
     assert 'os("pip")' in source
     assert "import agentshore.sidecar" in source
-    # provision_bd lives in agentshore.beads.downloader; the installer is a
-    # consented context so it passes assume_yes=True and the version pin.
-    assert "from agentshore.beads.downloader import provision_bd" in source
-    assert "provision_bd(REQUIRED_BD_VERSION, assume_yes=True, dest_dir=Path({}))" in source
+    # bd is the system's; the installer never downloads or stages one.
+    assert "provision_bd" not in source
+    assert "bd.exe" not in source
 
 
 def test_windows_provisioner_rolls_back_failed_venv_replace() -> None:

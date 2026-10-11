@@ -10,7 +10,6 @@
     "prepare:tauri-assets": "node scripts/prepare-tauri-assets.mjs",
     "prebuild:tauri-frontend": "npm --prefix ../dashboard run build:lib",
     "build:tauri-frontend": "npm run build && npm run prepare:tauri-assets",
-    "build:tauri-sidecars": "uv run python ../packaging/desktop/build_bd_sidecar.py --out src-tauri/binaries",
     "preview": "vite preview",
     "tauri": "tauri",
     "pretest": "npm --prefix ../dashboard run build:lib",

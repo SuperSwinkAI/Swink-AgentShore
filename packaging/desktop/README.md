@@ -3,9 +3,9 @@
 Tooling for the macOS `.pkg` and Windows `.exe` installers that ship the
 AgentShore desktop shell. The shared model is: keep the Tauri app thin, ship a
 platform app shell, and provision the Python sidecar into a managed
-venv from the exact wheel built with the installer. macOS bundles the pinned
-`bd` sidecar beside the desktop executable; Windows provisions the pinned `bd`
-dependency through a compiled install-time provisioner.
+venv from the exact wheel built with the installer. Neither installer ships
+`bd`: AgentShore uses the system `bd` (Homebrew/npm) and `agentshore init`
+offers to install or upgrade it through that package manager.
 
 ## Architecture
 
@@ -23,26 +23,12 @@ Managed venv paths:
 - macOS: `$HOME/Library/Application Support/AgentShore/venv`
 - Windows: `%ProgramData%\AgentShore\venv`
 
-On macOS, the bundled `bd` CLI is the only external binary that stays beside
-the desktop executable. The Rust supervisor passes its path to the Python
-sidecar via `AGENTSHORE_BD_BIN`. On Windows, `agentshore-provisioner.exe`
-drives `agentshore.beads.setup.provision_bd()` into
-`%ProgramData%\AgentShore\bin` after installing the wheel.
+No external binaries ship beside the desktop executable. The Python sidecar
+resolves `bd` from PATH (with the user's brew/npm dirs overlaid) and refuses
+versions below `agentshore.beads.setup.SUPPORTED_BD_VERSION`; newer releases
+are accepted with a warning.
 
 ## Build Inputs
-
-`packaging/desktop/build_bd_sidecar.py` builds the bundled `bd` binary into
-`desktop/src-tauri/binaries/`. By default it **downloads the pinned `bd`
-release** for the build host's OS/arch from the beads GitHub releases and
-verifies its SHA-256 against the checksum table in the script before bundling —
-so the shipped `.app` is reproducible and version-correct regardless of what
-`bd` (if any) is on the build machine's PATH. Pass `--bd PATH` to bundle a
-local binary instead (offline/CI builds).
-
-The version (`PINNED_BD_VERSION`) and checksums are kept in lockstep with the
-runtime pin (`agentshore.beads.setup.REQUIRED_BD_VERSION`);
-`tests/sidecar/test_bd_sidecar.py` fails if they drift. To bump bd, update both
-constants and refresh the checksums from the release's `checksums.txt`.
 
 The Python wheel is built from the repo root with `uv build --wheel`. Both
 platform installers include that wheel for the desktop sidecar component and
@@ -50,7 +36,7 @@ the optional CLI component.
 
 ## macOS Installer
 
-`uv run python -m scripts.buildkit macos` builds the dashboard, bd sidecar,
+`uv run python -m scripts.buildkit macos` builds the dashboard,
 Tauri app, Python wheel, Tauri `.app`, `.dmg`, and distribution `.pkg`.
 
 The `.pkg` has three user-visible choices in `Distribution.xml.in`:

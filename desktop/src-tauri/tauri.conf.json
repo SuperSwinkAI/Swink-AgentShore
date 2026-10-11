@@ -7,7 +7,7 @@
     "frontendDist": "../dist",
     "devUrl": "http://127.0.0.1:1420",
     "beforeDevCommand": "npm run dev",
-    "beforeBuildCommand": "npm run build:tauri-frontend && npm run build:tauri-sidecars"
+    "beforeBuildCommand": "npm run build:tauri-frontend"
   },
   "app": {
     "withGlobalTauri": false,
@@ -39,9 +39,6 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ],
-    "externalBin": [
-      "binaries/agentshore-bd/agentshore-bd"
     ],
     "resources": {
       "../../src/agentshore/dashboard/static": "dashboard-static"

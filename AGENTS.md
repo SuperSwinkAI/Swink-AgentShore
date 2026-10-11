@@ -59,7 +59,7 @@ Per `pyproject.toml`, the default `addopts` runs the suite under `pytest-xdist` 
 
 ## Desktop Builds
 
-**A "build" always means `uv run python -m scripts.buildkit macos` (no flags), run from the repo root — never just `uv build`** (which only emits the wheel/sdist). That produces the shipping artifact: the signed `.app`/`.dmg`/`.pkg` (dashboard + bd sidecar + Tauri shell + Python wheel). Windows: `uv run python -m scripts.buildkit windows`.
+**A "build" always means `uv run python -m scripts.buildkit macos` (no flags), run from the repo root — never just `uv build`** (which only emits the wheel/sdist). That produces the shipping artifact: the signed `.app`/`.dmg`/`.pkg` (dashboard + Tauri shell + Python wheel). Windows: `uv run python -m scripts.buildkit windows`.
 
 The build entrypoint is the cross-platform Python spine in `scripts/buildkit/` (`python -m scripts.buildkit <macos|windows|version|verify>`) — the old `build-macos.sh`/`build-windows.ps1` shell scripts have been removed. The spine owns every phase and ends with a **verification gate** (`verify.py`) that asserts the `.app` payload is exactly the expected binaries (no stray/stale ones), the embedded version matches source, and the signature verifies. Shared phases live in `phases.py`; OS-native packaging in `macos.py`/`windows.py`; the only remaining PowerShell is the native cert/signtool carve-out `_win_signing.ps1` (invoked by `windows.py`). See `docs/design/build-pipeline-unification.md`.
 

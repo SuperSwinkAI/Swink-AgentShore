@@ -50,14 +50,11 @@ def test_default_flags_full_signed_pkg_build() -> None:
 
 def test_all_flags_map_through() -> None:
     macos = _load_macos()
-    ctx = macos.parse_args(
-        ["--debug", "--no-pkg", "--no-sign", "--skip-dashboard", "--skip-sidecar", "--install"]
-    )
+    ctx = macos.parse_args(["--debug", "--no-pkg", "--no-sign", "--skip-dashboard", "--install"])
     assert ctx.build_mode == "debug"
     assert ctx.build_pkg is False
     assert ctx.no_sign is True
     assert ctx.skip_dashboard is True
-    assert ctx.skip_sidecar is True
     assert ctx.do_install is True
 
 

@@ -261,7 +261,7 @@ to skip phases, install, or notarize. Output artifacts: a signed `.app`, a
 | Phase | Produces |
 |-------|----------|
 | Dashboard build | bridge static bundle (served by the WebSocket bridge) + `@agentshore/dashboard` lib bundle |
-| `bd` sidecar | bundled `bd` binary staged as a Tauri `externalBin` (`agentshore-bd`) |
+| `bd` | not bundled: the Python sidecar resolves the system `bd` from PATH (brew/npm); `agentshore init` offers to install/upgrade it through that package manager |
 | Tauri frontend | shell + dashboard assets, with the dashboard static dir mounted as a Tauri resource |
 | Python wheel | `uv build --wheel`, shipped inside the `.pkg` |
 | Tauri bundle | the signed `.app` (hardened runtime + `entitlements.plist`, min macOS 13) |

@@ -6,9 +6,7 @@ use crate::sidecar_env::{
     apply_no_window_creation_flags, apply_user_path_overlay, apply_windows_headless_env,
 };
 use crate::sidecar_pid::remove_sidecar_pid_file;
-use crate::sidecar_runtime::{
-    development_sidecar_command, locate_machine_managed_bd, locate_managed_venv_python,
-};
+use crate::sidecar_runtime::{development_sidecar_command, locate_managed_venv_python};
 use std::collections::VecDeque;
 use std::io::{BufRead, BufReader};
 use std::process::{Child, ChildStderr, Command, Stdio};
@@ -17,7 +15,6 @@ use std::sync::{Arc, Mutex};
 use super::SidecarSupervisor;
 
 pub(super) const MAX_STDERR_LINES: usize = 50;
-const AGENTSHORE_BD_BIN_ENV: &str = "AGENTSHORE_BD_BIN";
 
 /// Build the command that spawns the Python sidecar.
 ///
@@ -32,7 +29,10 @@ const AGENTSHORE_BD_BIN_ENV: &str = "AGENTSHORE_BD_BIN";
 /// the in-tree source so ``tauri dev`` and ``cargo test`` work without an
 /// install step. If the repo venv does not exist, use ``uv run`` as a
 /// last-resort development fallback.
-pub(super) fn sidecar_command(bd_path: Option<&std::path::Path>) -> Command {
+///
+/// ``bd`` is deliberately not wired here: the sidecar resolves the system bd
+/// from the (overlaid) PATH exactly like the user's shell does.
+pub(super) fn sidecar_command() -> Command {
     let mut cmd = match locate_managed_venv_python() {
         Some(python) => {
             let mut prod = Command::new(python);
@@ -47,11 +47,6 @@ pub(super) fn sidecar_command(bd_path: Option<&std::path::Path>) -> Command {
     cmd.env("PYTHONDONTWRITEBYTECODE", "1");
     apply_no_window_creation_flags(&mut cmd);
     apply_windows_headless_env(&mut cmd);
-    if let Some(p) = bd_path {
-        cmd.env(AGENTSHORE_BD_BIN_ENV, p);
-    } else if let Some(p) = locate_machine_managed_bd() {
-        cmd.env(AGENTSHORE_BD_BIN_ENV, p);
-    }
     apply_user_path_overlay(&mut cmd);
     cmd
 }
@@ -138,32 +133,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn sidecar_command_with_bd_path_sets_agentshore_bd_bin_env() {
-        let bd_path = std::path::Path::new("/tmp/agentshore-bd-fixture");
-        let cmd = sidecar_command(Some(bd_path));
-        let found = cmd
-            .get_envs()
-            .any(|(k, v)| k == AGENTSHORE_BD_BIN_ENV && v == Some(bd_path.as_os_str()));
+    fn sidecar_command_never_pins_bd() {
+        let cmd = sidecar_command();
         assert!(
-            found,
-            "expected AGENTSHORE_BD_BIN={} in command env",
-            bd_path.display()
+            !cmd.get_envs()
+                .any(|(k, _)| k == std::ffi::OsStr::new("AGENTSHORE_BD_BIN")),
+            "the sidecar must use the system bd from PATH, not a shell-pinned one"
         );
-    }
-
-    #[test]
-    fn sidecar_command_without_bd_path_uses_machine_managed_bd_when_available() {
-        let cmd = sidecar_command(None);
-        let value = cmd
-            .get_envs()
-            .find(|(k, _)| *k == std::ffi::OsStr::new(AGENTSHORE_BD_BIN_ENV))
-            .and_then(|(_, value)| value.map(std::ffi::OsString::from));
-        if let Some(path) = value {
-            assert!(
-                std::path::Path::new(&path).is_file(),
-                "machine-managed AGENTSHORE_BD_BIN should point at an existing bd executable"
-            );
-        }
     }
 
     /// #155 regression guard: the explicit teardown must terminate and reap

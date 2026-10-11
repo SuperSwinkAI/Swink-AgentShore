@@ -62,21 +62,6 @@ fn dev_venv_python_path(repo_root: &Path) -> Option<PathBuf> {
     candidates.into_iter().find(|path| path.is_file())
 }
 
-#[cfg(target_os = "windows")]
-pub(crate) fn locate_machine_managed_bd() -> Option<PathBuf> {
-    let path = install_layout::managed_bin_path().join("bd.exe");
-    if path.is_file() {
-        Some(path)
-    } else {
-        None
-    }
-}
-
-#[cfg(not(target_os = "windows"))]
-pub(crate) fn locate_machine_managed_bd() -> Option<PathBuf> {
-    None
-}
-
 /// Locate the Python interpreter inside the platform installer's managed venv.
 pub(crate) fn locate_managed_venv_python() -> Option<PathBuf> {
     #[cfg(target_os = "windows")]

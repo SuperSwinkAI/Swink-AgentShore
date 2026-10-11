@@ -69,13 +69,6 @@ pub(crate) fn apply_user_path_overlay(cmd: &mut Command) {
                 .join("Links"),
         );
     }
-    #[cfg(target_os = "windows")]
-    {
-        // Machine-managed bin dir (the provisioner drops bd.exe here).
-        // Gated on cfg so an empty PathBuf::new() is never pushed on POSIX
-        // (an empty PATH entry = cwd in POSIX PATH semantics — a security hole).
-        candidates.push(install_layout::managed_bin_path());
-    }
     if let Some(program_files) = std::env::var_os("ProgramFiles") {
         candidates.push(
             std::path::PathBuf::from(&program_files)

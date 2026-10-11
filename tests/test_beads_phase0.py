@@ -520,28 +520,6 @@ def test_resolve_bd_binary_falls_back_to_path_when_env_unset(
         assert resolve_bd_binary() == "/usr/local/bin/bd"
 
 
-def test_resolve_bd_binary_prefers_managed_dir_over_path(
-    tmp_path: object, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A bd AgentShore itself provisioned outranks an unrelated install on PATH."""
-    import sys
-    from pathlib import Path
-
-    from agentshore.beads import resolve_bd_binary
-
-    managed = Path(str(tmp_path)) / "bin"
-    managed.mkdir()
-    pinned = managed / ("bd.exe" if sys.platform == "win32" else "bd")
-    pinned.write_text("stub", encoding="utf-8")
-    pinned.chmod(0o755)
-
-    monkeypatch.delenv("AGENTSHORE_BD_BIN", raising=False)
-    monkeypatch.setattr("agentshore.beads.lock._managed_bd_dirs", lambda: (managed,))
-
-    with patch("shutil.which", return_value="/usr/local/bin/bd"):
-        assert resolve_bd_binary() == str(pinned)
-
-
 def test_resolve_bd_binary_returns_none_when_nothing_resolves(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -578,7 +556,7 @@ def test_ensure_bd_installed_accepts_env_var(
 ) -> None:
     from pathlib import Path
 
-    from agentshore.beads.setup import REQUIRED_BD_VERSION, ensure_bd_installed
+    from agentshore.beads.setup import SUPPORTED_BD_VERSION, ensure_bd_installed
 
     bd_path = Path(str(tmp_path)) / "bd"
     bd_path.write_text("stub", encoding="utf-8")
@@ -589,7 +567,7 @@ def test_ensure_bd_installed_accepts_env_var(
     # Stub reports the pinned version so the version check passes too.
     with (
         patch("shutil.which", return_value=None),
-        patch("agentshore.beads.setup.subprocess.run", new=_VersionRun(REQUIRED_BD_VERSION)),
+        patch("agentshore.beads.setup.subprocess.run", new=_VersionRun(SUPPORTED_BD_VERSION)),
     ):
         ensure_bd_installed()
 
@@ -611,7 +589,7 @@ def test_ensure_bd_installed_rejects_version_mismatch(
     with (
         patch("shutil.which", return_value=None),
         patch("agentshore.beads.setup.subprocess.run", new=_VersionRun("0.9.0")),
-        pytest.raises(RuntimeError, match="does not match"),
+        pytest.raises(RuntimeError, match="older than"),
     ):
         ensure_bd_installed()
 
