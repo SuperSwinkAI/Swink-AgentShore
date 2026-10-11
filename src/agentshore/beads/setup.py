@@ -114,13 +114,13 @@ def ensure_bd_installed() -> None:
     """
     from agentshore.beads.downloader import provision_bd
 
-    # provision_bd returns the existing bd path when already installed,
-    # downloads + returns the installed path when consent is present, or raises
-    # with instructions when bd is absent and no consent is given (the
+    # provision_bd returns the existing bd path when it already matches the
+    # pin, downloads + returns the pinned release when consent is present
+    # (bd absent *or* version-skewed), returns the skewed binary when consent
+    # is absent so the version check below raises the precise mismatch, or
+    # raises with instructions when bd is absent and no consent is given (the
     # headless-fail invariant).
-    bd_binary = resolve_bd_binary()
-    if bd_binary is None:
-        bd_binary = provision_bd(REQUIRED_BD_VERSION)
+    bd_binary = provision_bd(REQUIRED_BD_VERSION)
     if bd_binary is None:
         # Reachable only when the download was attempted and failed (best-effort
         # path returns None); the no-consent path raises inside provision_bd.

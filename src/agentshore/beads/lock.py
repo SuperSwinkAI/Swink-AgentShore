@@ -165,14 +165,36 @@ class BeadsSchemaDriftError(GraphReadError):
 
 
 def resolve_bd_binary() -> str | None:
-    """Resolve the bd binary path from env override first, then PATH."""
+    """Resolve bd: ``AGENTSHORE_BD_BIN``, then AgentShore-managed bin dirs, then PATH.
+
+    The managed dirs (per-user ``provision_bd`` default; on Windows also the
+    installer's ``%ProgramData%\\AgentShore\\bin``) outrank PATH so a pinned bd
+    that AgentShore itself installed wins over an unrelated install that
+    happens to be ahead on PATH (the npm ``bd`` package, homebrew, ...).
+    """
     env_value = os.environ.get("AGENTSHORE_BD_BIN")
     if env_value:
         env_path = Path(env_value)
         if env_path.is_file() and os.access(env_path, os.X_OK):
             return str(env_path.resolve())
         _logger.warning("agentshore_bd_bin_invalid", env_path=env_value)
+    bd_name = "bd.exe" if sys.platform == "win32" else "bd"
+    for managed_dir in _managed_bd_dirs():
+        candidate = managed_dir / bd_name
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
     return shutil.which("bd")
+
+
+def _managed_bd_dirs() -> tuple[Path, ...]:
+    """Directories where AgentShore itself installs the pinned bd, most specific first."""
+    from agentshore.beads.downloader import _default_install_dir
+
+    dirs = [_default_install_dir()]
+    if sys.platform == "win32":
+        programdata = os.environ.get("PROGRAMDATA") or r"C:\ProgramData"
+        dirs.append(Path(programdata) / "AgentShore" / "bin")
+    return tuple(dirs)
 
 
 def _bd_shim_dir() -> Path:

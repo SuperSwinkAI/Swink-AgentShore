@@ -117,7 +117,47 @@ def test_provision_bd_noop_when_already_installed(monkeypatch: pytest.MonkeyPatc
     from agentshore.beads import downloader
 
     monkeypatch.setattr("agentshore.beads.resolve_bd_binary", lambda: "/usr/bin/bd")
+    monkeypatch.setattr(downloader, "_bd_version_matches", lambda _bd, _v: True)
     assert downloader.provision_bd(_PINNED) == "/usr/bin/bd"  # must not raise/download
+
+
+def test_provision_bd_replaces_skewed_bd_with_consent(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A bd that resolves but is not the pinned version must not short-circuit a
+    consented caller: the Windows installer hit exactly this (npm bd 1.2.2 on
+    PATH, pinned 1.1.0) and never populated its managed bin dir."""
+    from agentshore.beads import downloader
+
+    monkeypatch.setattr("agentshore.beads.resolve_bd_binary", lambda: "/usr/bin/bd")
+    monkeypatch.setattr(downloader, "_bd_version_matches", lambda _bd, _v: False)
+    monkeypatch.delenv("AGENTSHORE_AUTO_INSTALL_BD", raising=False)
+
+    def _fake_download(version: str, asset: str, kind: str, *, dest_dir: Path) -> str:
+        return str(dest_dir / "bd")
+
+    monkeypatch.setattr(downloader, "_download_bd", _fake_download)
+
+    result = downloader.provision_bd(_PINNED, assume_yes=True, dest_dir=tmp_path)
+    assert result == str(tmp_path / "bd")
+
+
+def test_provision_bd_returns_skewed_bd_without_consent(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Headless + no opt-in + skewed bd: hand the skewed binary back (no download,
+    no raise) so the caller's _check_bd_version raises the precise mismatch."""
+    import types
+
+    from agentshore.beads import downloader
+
+    monkeypatch.setattr("agentshore.beads.resolve_bd_binary", lambda: "/usr/bin/bd")
+    monkeypatch.setattr(downloader, "_bd_version_matches", lambda _bd, _v: False)
+    monkeypatch.delenv("AGENTSHORE_AUTO_INSTALL_BD", raising=False)
+    monkeypatch.setattr(downloader.sys, "stdin", types.SimpleNamespace(isatty=lambda: False))
+    monkeypatch.setattr(
+        downloader, "_download_bd", lambda *a, **k: pytest.fail("must not download")
+    )
+
+    assert downloader.provision_bd(_PINNED) == "/usr/bin/bd"
 
 
 def test_provision_bd_headless_without_opt_in_raises_with_instructions(

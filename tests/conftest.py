@@ -30,6 +30,15 @@ def _isolate_live_model_discovery(monkeypatch: pytest.MonkeyPatch) -> Iterator[N
     model_resolver.reset()
 
 
+@pytest.fixture(autouse=True)
+def _no_managed_bd_dirs(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep bd resolution independent of whatever bd this machine has provisioned.
+
+    ``resolve_bd_binary`` prefers AgentShore's managed bin dirs over PATH; tests
+    that exercise that precedence monkeypatch ``_managed_bd_dirs`` themselves."""
+    monkeypatch.setattr("agentshore.beads.lock._managed_bd_dirs", lambda: ())
+
+
 @pytest.fixture
 def mock_agent_path() -> Path:
     """Return the path to the mock-agent executable.

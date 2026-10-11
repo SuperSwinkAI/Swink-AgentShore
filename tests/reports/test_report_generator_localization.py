@@ -8,6 +8,8 @@ import pytest
 
 from agentshore.reports.generator import ReportGenerator
 
+pytestmark = pytest.mark.skipif(not hasattr(time, "tzset"), reason="time.tzset is POSIX-only")
+
 
 @pytest.fixture
 def fixed_tz(monkeypatch: pytest.MonkeyPatch):

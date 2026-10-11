@@ -96,49 +96,82 @@ def provision_bd(
     """
     from agentshore.beads import resolve_bd_binary
 
-    bd_binary = resolve_bd_binary()
-    if bd_binary is not None:
-        # Already installed — nothing to provision.
-        return bd_binary
-
     version = os.environ.get("AGENTSHORE_BD_VERSION", required_version).strip() or required_version
 
+    bd_binary = resolve_bd_binary()
+    if bd_binary is not None:
+        if _bd_version_matches(bd_binary, version):
+            # Already installed at the pinned version — nothing to provision.
+            return bd_binary
+        # A bd exists but is not the pinned release (e.g. an npm-installed bd
+        # ahead on PATH). Previously this returned early and the Windows
+        # installer never populated its managed bin dir, so every later
+        # resolution landed on the skewed binary. With consent, install the
+        # pinned release alongside it (resolve_bd_binary prefers the managed
+        # dirs); without consent hand the skewed binary back so the caller's
+        # _check_bd_version raises the precise mismatch message.
+        _logger.warning("bd_version_skew_detected", path=bd_binary, required_version=version)
+        prompt = (
+            f"\nbd at {bd_binary} does not match AgentShore's pinned version {version}. "
+            f"Download bd {version} into AgentShore's managed bin dir? [y/N] "
+        )
+        if _consent_to_download(version, assume_yes=assume_yes, prompt=prompt):
+            return _download(version, dest_dir) or bd_binary
+        return bd_binary
+
+    prompt = f"\nbd {version} was not found. Allow AgentShore to download and install it? [y/N] "
+    if _consent_to_download(version, assume_yes=assume_yes, prompt=prompt):
+        return _download(version, dest_dir)
+
+    if not sys.stdin.isatty():
+        # Non-interactive and no opt-in: fail conservatively with instructions.
+        _logger.warning(
+            "bd_not_found_headless_no_opt_in",
+            required_version=version,
+            hint=f"Set {_AUTO_INSTALL_ENV_VAR}=1 to enable non-interactive install",
+        )
+    _raise_install_instructions(version)
+    return None  # unreachable — _raise_install_instructions always raises
+
+
+def _bd_version_matches(bd_binary: str, version: str) -> bool:
+    """True when ``bd --version`` at *bd_binary* reports the pinned *version*.
+
+    Delegates to ``setup._check_bd_version`` so the probe, the
+    ``AGENTSHORE_BD_VERSION`` override semantics (empty = presence-only), and
+    the mismatch wording live in exactly one place. A probe failure counts as a
+    mismatch: the binary is unusable as pinned either way.
+    """
+    from agentshore.beads.setup import _check_bd_version
+
+    try:
+        _check_bd_version(bd_binary)
+    except RuntimeError:
+        return False
+    return True
+
+
+def _consent_to_download(version: str, *, assume_yes: bool, prompt: str) -> bool:
+    """Return True when the caller, env, or interactive user consents to download."""
     if assume_yes or _auto_install_opted_in():
         _logger.info(
             "bd_auto_install_consented",
             via="assume_yes" if assume_yes else _AUTO_INSTALL_ENV_VAR,
             required_version=version,
         )
-        return _download(version, dest_dir)
-
-    if sys.stdin.isatty():
-        # Interactive terminal: prompt the user.
-        _logger.info("bd_not_found_prompting_user", required_version=version)
-        try:
-            answer = (
-                input(
-                    f"\nbd {version} was not found. "
-                    "Allow AgentShore to download and install it? [y/N] "
-                )
-                .strip()
-                .lower()
-            )
-        except (EOFError, KeyboardInterrupt):
-            answer = ""
-        if answer in ("y", "yes"):
-            _logger.info("bd_install_user_confirmed", required_version=version)
-            return _download(version, dest_dir)
-        _logger.info("bd_install_user_declined", required_version=version)
-        _raise_install_instructions(version)
-
-    # Non-interactive and no opt-in: fail conservatively with instructions.
-    _logger.warning(
-        "bd_not_found_headless_no_opt_in",
-        required_version=version,
-        hint=f"Set {_AUTO_INSTALL_ENV_VAR}=1 to enable non-interactive install",
-    )
-    _raise_install_instructions(version)
-    return None  # unreachable — _raise_install_instructions always raises
+        return True
+    if not sys.stdin.isatty():
+        return False
+    _logger.info("bd_prompting_user_for_download", required_version=version)
+    try:
+        answer = input(prompt).strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        answer = ""
+    if answer in ("y", "yes"):
+        _logger.info("bd_install_user_confirmed", required_version=version)
+        return True
+    _logger.info("bd_install_user_declined", required_version=version)
+    return False
 
 
 def _default_install_dir() -> Path:

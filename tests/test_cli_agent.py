@@ -3554,6 +3554,7 @@ async def test_dispatch_arms_both_watchdogs_unconditionally(
 # _kill_process — bounded post-SIGKILL reap (session a3202694 wedge)
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups (os.killpg)")
 async def test_kill_process_does_not_hang_when_sigkill_never_reaps(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -3608,6 +3609,7 @@ async def test_kill_process_does_not_hang_when_sigkill_never_reaps(
     assert proc.wait_calls >= 2
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups (os.killpg)")
 async def test_kill_process_survivor_probe_swallows_permission_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -3642,6 +3644,7 @@ async def test_kill_process_survivor_probe_swallows_permission_error(
     await ps.kill_process(proc, "agent-eperm")  # type: ignore[arg-type]
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups (os.killpg)")
 async def test_kill_process_announces_every_agentshore_initiated_sigterm(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
