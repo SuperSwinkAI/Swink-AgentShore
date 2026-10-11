@@ -76,6 +76,10 @@ Source: "{#StageDir}\installer\*"; DestDir: "{app}\installer"; Flags: ignorevers
 Name: "{autoprograms}\AgentShore"; Filename: "{app}\agentshore-desktop.exe"; Components: desktop
 Name: "{autodesktop}\AgentShore"; Filename: "{app}\agentshore-desktop.exe"; Components: desktop; Tasks: desktopicon
 
+[InstallDelete]
+; Older installers staged a private bd.exe here; AgentShore now uses the system bd.
+Type: filesandordirs; Name: "{commonappdata}\AgentShore\bin"
+
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}\installer"
 Type: filesandordirs; Name: "{commonappdata}\AgentShore\venv"
