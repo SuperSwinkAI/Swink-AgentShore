@@ -11,7 +11,7 @@ use serde_json::Value;
 use std::path::PathBuf;
 #[cfg(not(test))]
 use std::sync::atomic::Ordering;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 #[cfg(not(test))]
 use tauri::Emitter;
 use tauri::{AppHandle, Manager};
@@ -65,6 +65,30 @@ struct SidecarHolder {
 /// ``None`` and the shell routes to the fatal-error screen instead of
 /// dispatching JSON-RPC calls.
 type SidecarHolderState = Mutex<Option<SidecarHolder>>;
+
+/// Set once the background sidecar start (see `setup`) has finished, success
+/// or failure. RPCs wait on it so the first calls after the page loads don't
+/// race the handshake and report the shell as fatal.
+#[derive(Default)]
+struct SidecarStartup {
+    done: Mutex<bool>,
+    cv: Condvar,
+}
+
+impl SidecarStartup {
+    fn finish(&self) {
+        if let Ok(mut done) = self.done.lock() {
+            *done = true;
+        }
+        self.cv.notify_all();
+    }
+
+    fn wait(&self) {
+        if let Ok(done) = self.done.lock() {
+            drop(self.cv.wait_while(done, |done| !*done));
+        }
+    }
+}
 
 /// Fatal shell-state populated when the supervisor fails. Read by the
 /// React shell via ``get_fatal_shell_state`` on mount; non-empty value
@@ -130,6 +154,7 @@ async fn jsonrpc_call(
     // window and stalled $/progress; spawn_blocking keeps the event loop pumping.
     let app_for_call = app.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
+        app_for_call.state::<SidecarStartup>().wait();
         with_supervisor(&app_for_call, |sup| sup.call(method, params))
     })
     .await
@@ -223,6 +248,7 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(UiStateHolder::default())
         .manage::<SidecarHolderState>(Mutex::new(None))
+        .manage(SidecarStartup::default())
         .manage(FatalShellState::default())
         .manage(activity::ActivityHolder::new())
         .manage(QuitConfirmed::default())
@@ -278,24 +304,32 @@ pub fn run() {
             // leave SidecarHolderState as ``None`` so the WebView can route
             // to /fatal-error. Quit / Open log buttons on that screen are
             // the only allowed actions.
-            match sidecar::SidecarSupervisor::start_classified(&app_handle) {
-                Ok(supervisor) => {
-                    let holder_state = app_handle.state::<SidecarHolderState>();
-                    let mut guard = holder_state
-                        .lock()
-                        .map_err(|e| std::io::Error::other(e.to_string()))?;
-                    *guard = Some(SidecarHolder {
-                        supervisor: Arc::new(supervisor),
-                    });
-                }
-                Err(err) => {
-                    let fatal = app_handle.state::<FatalShellState>();
-                    if let Ok(mut guard) = fatal.info.lock() {
-                        *guard = Some(err.clone());
+            //
+            // Started off the UI thread: the handshake takes seconds (up to the
+            // handshake timeout), and blocking here froze the freshly shown
+            // window — Windows then gave its taskbar button the generic icon
+            // and never refreshed it. RPCs wait on `SidecarStartup` instead.
+            let startup_app = app_handle.clone();
+            std::thread::spawn(move || {
+                match sidecar::SidecarSupervisor::start_classified(&startup_app) {
+                    Ok(supervisor) => {
+                        let holder_state = startup_app.state::<SidecarHolderState>();
+                        if let Ok(mut guard) = holder_state.lock() {
+                            *guard = Some(SidecarHolder {
+                                supervisor: Arc::new(supervisor),
+                            });
+                        };
                     }
-                    let _ = app_handle.emit("app:fatal_error", err);
+                    Err(err) => {
+                        let fatal = startup_app.state::<FatalShellState>();
+                        if let Ok(mut guard) = fatal.info.lock() {
+                            *guard = Some(err.clone());
+                        }
+                        let _ = startup_app.emit("app:fatal_error", err);
+                    }
                 }
-            }
+                startup_app.state::<SidecarStartup>().finish();
+            });
 
             // Phase 2 — heartbeat watchdog (#274). See `heartbeat::spawn_watchdog_thread`.
             heartbeat::spawn_watchdog_thread(app_handle.clone());
