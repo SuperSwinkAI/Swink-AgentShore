@@ -23,6 +23,12 @@ export default defineConfig(({ mode }) => {
   if (mode === "lib") {
     return {
       plugins: [emitPngAssets(), react()],
+      // Relative base: emitted sprite PNGs must come out as
+      // `new URL("./x.png", import.meta.url)` so the consuming desktop Vite
+      // build re-emits them into its own assets dir. With the default "/"
+      // base they are baked in as root-absolute "/x.png" strings, which the
+      // Tauri WebView cannot serve (nothing lives at the bundle root).
+      base: "./",
       build: {
         lib: {
           entry: "src/index.ts",
