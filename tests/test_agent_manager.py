@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock
 import pytest
 import pytest_asyncio
 
+from agentshore.agents.auth_probe import AUTH_EXPIRED, AUTH_OK, AuthProbeResult
 from agentshore.agents.handle import AgentInvocationResult
 from agentshore.agents.manager import _PLACEHOLDER_COLD_START_COST, AgentManager
 from agentshore.config import AgentConfig, GitHubIdentity, RuntimeConfig
@@ -939,19 +940,43 @@ async def test_attempt_recovery_returns_false_for_unknown_agent_id(
     assert result is False
 
 
-async def test_attempt_recovery_does_not_clear_auth_quarantine(
-    store: DataStore, tmp_path: Path, mock_agent_path: Path
+async def test_attempt_recovery_keeps_auth_error_while_auth_still_fails(
+    store: DataStore, tmp_path: Path, mock_agent_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     mgr = _make_manager(store, tmp_path, mock_binary=str(mock_agent_path))
     handle = await mgr.instantiate(AgentType.CODEX)
     handle.transition_to(AgentStatus.ERROR)
     handle.last_error_class = ErrorClass.AUTH
+    monkeypatch.setattr(
+        "agentshore.agents.manager.probe_cli_auth",
+        lambda *_a, **_k: AuthProbeResult(AgentType.CODEX, AUTH_EXPIRED, "run codex login"),
+    )
 
     result = await mgr.attempt_recovery(handle.agent_id)
 
     assert result is False
     assert handle.status == AgentStatus.ERROR
     assert handle.last_error_class == "auth"
+
+
+async def test_attempt_recovery_returns_auth_errored_agent_to_work_once_auth_ok(
+    store: DataStore, tmp_path: Path, mock_agent_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A take_break after a mid-run auth failure recovers the agent once auth works."""
+    mgr = _make_manager(store, tmp_path, mock_binary=str(mock_agent_path))
+    handle = await mgr.instantiate(AgentType.CODEX)
+    handle.transition_to(AgentStatus.ERROR)
+    handle.last_error_class = ErrorClass.AUTH
+    monkeypatch.setattr(
+        "agentshore.agents.manager.probe_cli_auth",
+        lambda *_a, **_k: AuthProbeResult(AgentType.CODEX, AUTH_OK, "authenticated"),
+    )
+
+    result = await mgr.attempt_recovery(handle.agent_id)
+
+    assert result is True
+    assert handle.status == AgentStatus.IDLE
+    assert handle.last_error_class is None
 
 
 # Placeholder cost for no-usage agents (grok / antigravity).

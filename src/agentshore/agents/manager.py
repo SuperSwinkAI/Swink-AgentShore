@@ -12,6 +12,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from agentshore.agents import model_resolver
+from agentshore.agents.auth_probe import probe_cli_auth
 from agentshore.agents.circuit_breaker import CircuitBreaker
 from agentshore.agents.cli_agent import dispatch_cli
 from agentshore.agents.handle import AgentHandle, AgentInvocationResult, is_noop_invocation
@@ -763,6 +764,36 @@ class AgentManager:
     # Error recovery
     # -------------------------------------------------------------------------
 
+    async def _auth_restored(self, handle: AgentHandle) -> bool:
+        """Re-check an AUTH-errored agent's credentials after its break.
+
+        Re-resolves the GitHub identity token (refreshing the cached overlay, so
+        a `gh auth login` during the break takes effect) and re-probes the CLI
+        backend session. Only a definitive probe failure blocks; an
+        unprobeable/timeout result lets the agent back to work.
+        """
+        agent_cfg = self._cfg.agents.get(handle.agent_type.value, AgentConfig())
+        env = handle.identity_env
+        try:
+            if agent_cfg.identity:
+                env = resolve_identity_env(self._cfg, agent_cfg, strict=True)
+                await asyncio.to_thread(verify_identity_repo_access, self._working_dir, env)
+            probe = await asyncio.to_thread(
+                probe_cli_auth, handle.agent_type, env, binary=agent_cfg.binary
+            )
+        except (IdentityResolutionError, AgentAuthError) as exc:
+            _logger.warning(
+                "agent_recovery_auth_still_failing", agent_id=handle.agent_id, error=str(exc)
+            )
+            return False
+        if probe.blocks_launch:
+            _logger.warning(
+                "agent_recovery_auth_still_failing", agent_id=handle.agent_id, error=probe.detail
+            )
+            return False
+        handle.identity_env = env
+        return True
+
     async def attempt_recovery(self, agent_id: str) -> bool:
         """Try to transition an ERROR agent back to IDLE if the breaker allows it.
 
@@ -784,12 +815,16 @@ class AgentManager:
 
         if handle.status != AgentStatus.ERROR:
             return False
-        if handle.last_error_class in {ErrorClass.AUTH, ErrorClass.INVALID_MODEL}:
+        if handle.last_error_class == ErrorClass.INVALID_MODEL:
             _logger.debug(
                 "agent_recovery_skipped_config_error",
                 agent_id=agent_id,
                 error_class=handle.last_error_class,
             )
+            return False
+        if handle.last_error_class == ErrorClass.AUTH and not await self._auth_restored(handle):
+            # Still failing: the break counts as failed, and after
+            # BREAK_RECOVERY_FAILURE_LIMIT the agent is retired via END_AGENT.
             return False
 
         if cb.allows_dispatch:
