@@ -33,14 +33,13 @@ pub(crate) const PROCESS_OR_SWAP_FAILURE: i32 = 30;
 pub(crate) const UV_VENV_FAILURE: i32 = 40;
 pub(crate) const WHEEL_INSTALL_FAILURE: i32 = 50;
 pub(crate) const SIDECAR_IMPORT_FAILURE: i32 = 60;
-pub(crate) const BD_PROVISION_FAILURE: i32 = 70;
+// 70 was BD_PROVISION_FAILURE; bd is the system's now and is never provisioned here.
 pub(crate) const TIMELAPSE_FAILURE: i32 = 80;
 pub(crate) const CLI_FAILURE: i32 = 90;
 
 pub(crate) const UV_VENV_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 pub(crate) const WHEEL_INSTALL_TIMEOUT: Duration = Duration::from_secs(45 * 60);
 pub(crate) const SIDECAR_IMPORT_TIMEOUT: Duration = Duration::from_secs(2 * 60);
-pub(crate) const BD_PROVISION_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 pub(crate) const TIMELAPSE_TIMEOUT: Duration = Duration::from_secs(45 * 60);
 pub(crate) const CLI_TIMEOUT: Duration = Duration::from_secs(20 * 60);
 const ICACLS_TIMEOUT: Duration = Duration::from_secs(60);
@@ -560,13 +559,13 @@ fn run_icacls(path: &Path, grant: &str, label: &str, logger: &Logger) -> Provisi
 }
 
 pub(crate) fn cleanup_legacy_layout(logger: &Logger) {
-    let Some(local) = env::var_os("LOCALAPPDATA").map(PathBuf::from) else {
-        return;
-    };
-    for path in [
-        local.join("Programs").join("AgentShore"),
-        local.join("AgentShore").join("venv"),
-    ] {
+    // Older installers staged a private bd binary here; AgentShore uses the system bd now.
+    let mut paths = vec![agentshore_programdata_root().join("bin")];
+    if let Some(local) = env::var_os("LOCALAPPDATA").map(PathBuf::from) {
+        paths.push(local.join("Programs").join("AgentShore"));
+        paths.push(local.join("AgentShore").join("venv"));
+    }
+    for path in paths {
         if path.exists() {
             match fs::remove_dir_all(&path) {
                 Ok(()) => logger.line(format!("removed legacy path {}", path.display())),
@@ -612,11 +611,6 @@ pub(crate) fn managed_venv_python_path() -> PathBuf {
 }
 
 #[cfg(windows)]
-pub(crate) fn machine_bin_path() -> PathBuf {
-    install_layout::managed_bin_path()
-}
-
-#[cfg(windows)]
 pub(crate) fn runtime_dir() -> PathBuf {
     install_layout::runtime_dir()
 }
@@ -638,11 +632,6 @@ pub(crate) fn managed_venv_path() -> PathBuf {
 #[cfg(not(windows))]
 pub(crate) fn managed_venv_python_path() -> PathBuf {
     managed_venv_path().join("bin").join("python")
-}
-
-#[cfg(not(windows))]
-pub(crate) fn machine_bin_path() -> PathBuf {
-    agentshore_programdata_root().join("bin")
 }
 
 #[cfg(not(windows))]
@@ -676,14 +665,6 @@ pub(crate) fn format_args_for_log(args: &[OsString]) -> String {
         .join(" ")
 }
 
-pub(crate) fn python_string_literal(path: &Path) -> String {
-    let text = path
-        .to_string_lossy()
-        .replace('\\', "\\\\")
-        .replace('\'', "\\'");
-    format!("'{text}'")
-}
-
 pub(crate) fn os(value: impl AsRef<OsStr>) -> OsString {
     value.as_ref().to_os_string()
 }
@@ -699,12 +680,6 @@ mod tests {
     #[test]
     fn safe_log_name_replaces_whitespace() {
         assert_eq!(safe_log_name("Path Quote Test"), "Path-Quote-Test");
-    }
-
-    #[test]
-    fn python_literal_escapes_windows_path() {
-        let literal = python_string_literal(Path::new(r"C:\ProgramData\AgentShore\bin"));
-        assert_eq!(literal, r"'C:\\ProgramData\\AgentShore\\bin'");
     }
 
     #[test]

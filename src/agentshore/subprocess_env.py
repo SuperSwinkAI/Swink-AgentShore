@@ -131,7 +131,6 @@ def _canonical_windows_paths(name: str) -> Iterable[Path]:
     program_files_x86 = env_path("ProgramFiles(x86)") or Path(r"C:\Program Files (x86)")
     program_w6432 = env_path("ProgramW6432")
     local_appdata = env_path("LOCALAPPDATA")
-    programdata = env_path("PROGRAMDATA") or Path(r"C:\ProgramData")
 
     if name == "git":
         for base in (program_files, program_w6432):
@@ -144,10 +143,9 @@ def _canonical_windows_paths(name: str) -> Iterable[Path]:
         if local_appdata is not None:
             candidates.append(local_appdata / "Programs" / "GitHub CLI" / exe)
 
-    # Common to all: winget shim links and the AgentShore machine-managed bin.
+    # Common to all: winget shim links.
     if local_appdata is not None:
         candidates.append(local_appdata / "Microsoft" / "WinGet" / "Links" / exe)
-    candidates.append(programdata / "AgentShore" / "bin" / exe)
 
     for candidate in candidates:
         if candidate is not None:

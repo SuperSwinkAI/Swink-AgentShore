@@ -74,7 +74,9 @@ async def test_dispatch_cli_delegates_process_lifecycle_to_injected_supervisor(
 
     assert supervisor.request is not None
     assert supervisor.request.cwd == tmp_path
-    assert supervisor.request.argv[:3] == ("codex", "exec", "--json")
+    # Windows rewrites argv[0] to the resolved npm shim (``...\codex.CMD``).
+    assert Path(supervisor.request.argv[0]).stem.lower() == "codex"
+    assert supervisor.request.argv[1:3] == ("exec", "--json")
     assert result.raw_output == "completed"
     assert result.tokens_in == 12
     assert result.session_id == "session-from-output"

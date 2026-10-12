@@ -341,12 +341,14 @@ async def dispatch_cli(
     provider_output = driver.finalize(
         raw_output,
         observed_session_id,
+        usage=usage,
         preparation=preparation,
         effective_cwd=effective_cwd,
         env=env,
     )
     raw_output = provider_output.raw_output
     observed_session_id = provider_output.session_id
+    usage = provider_output.usage
 
     rc = proc.returncode
     if rc != 0 and not post_response_killed:

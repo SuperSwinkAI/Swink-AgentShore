@@ -39,7 +39,9 @@ _HARNESS_LABELS: dict[str, str] = {
     "antigravity": "Antigravity",
     "claude_code": "Claude Code",
     "codex": "Codex",
+    "copilot": "Copilot",
     "grok": "Grok",
+    "swink_coding": "Swink Coding",
 }
 
 # Keep these in sync with dashboard/src/agentRegistry.ts colorFill so ESR
@@ -48,7 +50,9 @@ _HARNESS_COLORS: dict[str, tuple[str, str]] = {
     "antigravity": ("#4285F4", "rgba(66,133,244,0.22)"),
     "claude_code": ("#E07B39", "rgba(224,123,57,0.24)"),
     "codex": ("#F4D44D", "rgba(244,212,77,0.28)"),
+    "copilot": ("#8B5CF6", "rgba(139,92,246,0.22)"),
     "grok": ("#14B8A6", "rgba(20,184,166,0.22)"),
+    "swink_coding": ("#3ED421", "rgba(62,212,33,0.22)"),
 }
 _FALLBACK_COLORS: tuple[tuple[str, str], ...] = (
     ("#be123c", "rgba(190,18,60,0.18)"),

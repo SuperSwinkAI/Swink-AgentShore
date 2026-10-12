@@ -8,7 +8,6 @@
 
 use serde::Serialize;
 use serde_json::Value;
-use std::path::Path;
 use std::path::PathBuf;
 #[cfg(not(test))]
 use std::sync::atomic::Ordering;
@@ -146,7 +145,9 @@ async fn jsonrpc_call(
     if let Ok(ref rpc_value) = result {
         if rpc_value.get("error").is_none() {
             match method_for_hook.as_str() {
-                methods::SESSION_START => session_state::SessionState::on_session_started(&app, rpc_value),
+                methods::SESSION_START => {
+                    session_state::SessionState::on_session_started(&app, rpc_value)
+                }
                 methods::SESSION_STOP => session_state::SessionState::on_session_stopped(&app),
                 _ => {}
             }
@@ -199,38 +200,6 @@ fn get_fatal_shell_state(app: AppHandle) -> Result<Option<sidecar::SupervisorSta
     let state = app.state::<FatalShellState>();
     let guard = state.info.lock().map_err(|e| e.to_string())?;
     Ok(guard.clone())
-}
-
-fn resolve_bundled_sidecar_path(command: &Path) -> std::io::Result<PathBuf> {
-    let exe_dir = std::env::current_exe()?
-        .parent()
-        .map(PathBuf::from)
-        .unwrap_or_default();
-
-    // Tauri's bundler places `externalBin` alongside the main executable on
-    // every platform — on macOS that's Contents/MacOS/, not Contents/Resources/.
-    // The old ../Resources/ lookup didn't exist, so bd subcommands silently fell
-    // through to whatever bd was on PATH.
-    let base_dir = exe_dir;
-
-    let mut command_path = base_dir.join(command);
-
-    #[cfg(windows)]
-    {
-        let already_exe = command_path.extension().is_some_and(|ext| ext == "exe");
-        if !already_exe {
-            command_path.as_mut_os_string().push(".exe");
-        }
-    }
-
-    #[cfg(not(windows))]
-    {
-        if command_path.extension().is_some_and(|ext| ext == "exe") {
-            command_path.set_extension("");
-        }
-    }
-
-    Ok(command_path)
 }
 
 #[cfg(not(test))]
@@ -295,13 +264,12 @@ pub fn run() {
             let menu = menu::build_app_menu(&app_handle)?;
             app.set_menu(menu)?;
 
-            let bd_sidecar_path = resolve_bundled_sidecar_path(Path::new("agentshore-bd"))
-                .ok()
-                .filter(|path| path.is_file());
             // Show the shell before sidecar startup. On Windows, process
             // launch or handshake failures otherwise leave an invisible
             // but still-running GUI process because the window starts hidden.
             window::apply_restored_window_state(&app_handle);
+            #[cfg(windows)]
+            window::apply_taskbar_icon(&app_handle);
             window::attach_window_persistence(&app_handle);
 
             // DESIGN §2.6 — survive a supervisor-startup failure: store
@@ -310,10 +278,7 @@ pub fn run() {
             // leave SidecarHolderState as ``None`` so the WebView can route
             // to /fatal-error. Quit / Open log buttons on that screen are
             // the only allowed actions.
-            match sidecar::SidecarSupervisor::start_classified(
-                &app_handle,
-                bd_sidecar_path.as_deref(),
-            ) {
+            match sidecar::SidecarSupervisor::start_classified(&app_handle) {
                 Ok(supervisor) => {
                     let holder_state = app_handle.state::<SidecarHolderState>();
                     let mut guard = holder_state
@@ -417,7 +382,7 @@ pub fn run() {}
 
 #[cfg(test)]
 mod tests {
-    use super::{read_text_file_impl, resolve_bundled_sidecar_path};
+    use super::read_text_file_impl;
 
     #[test]
     fn read_text_file_round_trips_a_tmp_file() {
@@ -439,15 +404,5 @@ mod tests {
         let _ = std::fs::remove_file(&missing);
         let result = read_text_file_impl(missing);
         assert!(result.is_err());
-    }
-
-    #[test]
-    fn resolve_bundled_sidecar_path_keeps_binary_stem() {
-        let path = resolve_bundled_sidecar_path(std::path::Path::new("agentshore-bd"))
-            .expect("resolve sidecar path");
-        assert_eq!(
-            path.file_stem().and_then(|stem| stem.to_str()),
-            Some("agentshore-bd")
-        );
     }
 }

@@ -53,7 +53,7 @@ def test_expected_payload_excludes_provisioner() -> None:
     verify = _load()
     expected = verify.expected_macos_payload(_REPO)
     assert "agentshore-desktop" in expected
-    assert "agentshore-bd" in expected
+    assert "agentshore-bd" not in expected  # bd is the system's, never bundled
     assert "agentshore-provisioner" not in expected
 
 

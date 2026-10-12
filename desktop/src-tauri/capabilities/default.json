@@ -9,7 +9,7 @@
     "updater:default",
     {
       "identifier": "shell:allow-execute",
-      "allow": [{ "name": "agentshore-desktop-sidecar" }, { "name": "agentshore-bd" }]
+      "allow": [{ "name": "agentshore-desktop-sidecar" }]
     },
     "dialog:allow-open",
     "dialog:allow-save",

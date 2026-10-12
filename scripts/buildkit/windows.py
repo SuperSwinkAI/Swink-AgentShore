@@ -34,10 +34,6 @@ def _stage_dir(ctx: BuildContext) -> Path:
     return ctx.tauri_dir / "target" / "windows-installer"
 
 
-def _windows_tauri_config(ctx: BuildContext) -> Path:
-    return ctx.packaging_dir / "windows" / "tauri.windows-installer.conf.json"
-
-
 def assert_signing_options(args: argparse.Namespace) -> None:
     if args.no_sign and args.self_sign:
         raise die("Use either --no-sign or --self-sign, not both.")
@@ -67,7 +63,11 @@ def _signing_params(args: argparse.Namespace) -> list[str]:
 
 
 def _powershell() -> str:
-    return require_tool("powershell", "this command must run on Windows")
+    # Prefer pwsh. When the build runs from a PowerShell 7 shell (via uv/python),
+    # Windows PowerShell 5.1 inherits pwsh's PSModulePath and then cannot bind
+    # the certificate provider's -CodeSigningCert dynamic parameter inside the
+    # signing helper ("A parameter cannot be found ... 'CodeSigningCert'").
+    return shutil.which("pwsh") or require_tool("powershell", "this command must run on Windows")
 
 
 def setup_self_signed_cert(args: argparse.Namespace) -> None:
@@ -159,10 +159,9 @@ def build_tauri_exe(ctx: BuildContext, args: argparse.Namespace) -> Path:
     cmd = [npx, "tauri", "build"]
     if ctx.build_mode == "debug":
         cmd.append("--debug")
-    # Windows provisions bd at install time, so build the exe with externalBin:[]
-    # (the windows config) and skip bundling.
-    cmd += ["--no-bundle", "--config", str(_windows_tauri_config(ctx)), "--", "--locked"]
-    run(cmd, cwd=ctx.desktop_dir, env=_cargo_env(args, AGENTSHORE_SKIP_BD_SIDECAR="1"))
+    # Inno Setup packages the exe; Tauri bundling is not used on Windows.
+    cmd += ["--no-bundle", "--", "--locked"]
+    run(cmd, cwd=ctx.desktop_dir, env=_cargo_env(args))
     app_exe = ctx.target_dir / "agentshore-desktop.exe"
     if not app_exe.is_file():
         raise die(f"Tauri build finished but {app_exe} does not exist")
@@ -310,8 +309,6 @@ def run_windows(ctx: BuildContext, args: argparse.Namespace) -> None:
     uv = resolve_uv()
     stop_processes()
     build_dashboard(ctx)
-    log("Skipping bundled bd sidecar binary")
-    info("Windows installer provisions bd during install via the managed sidecar venv.")
     build_frontend(ctx)
     build_wheel(ctx, uv_global_args=("--native-tls",))
 

@@ -71,6 +71,19 @@ def test_every_declared_denial_reaches_grok() -> None:
             assert tool in _GROK_TOOL_NAMES, f"{play_type.value} denial {tool!r} unmapped for grok"
 
 
+def test_every_declared_denial_reaches_copilot() -> None:
+    """Copilot denies by permission kind (``--deny-tool=write``); a denial with
+    no copilot mapping would be silently dropped for copilot dispatches."""
+    from agentshore.agents.cli_copilot import _COPILOT_TOOL_NAMES
+
+    registry = build_default_registry()
+    for play_type in registry.covered():
+        for tool in registry.get(play_type).disallowed_tools:
+            assert tool in _COPILOT_TOOL_NAMES, (
+                f"{play_type.value} denial {tool!r} unmapped for copilot"
+            )
+
+
 def test_code_review_is_the_only_play_denying_anything() -> None:
     """Scope guard. Every other play gets the agent's full tool surface; adding
     a denial elsewhere is a deliberate policy decision and should show up here

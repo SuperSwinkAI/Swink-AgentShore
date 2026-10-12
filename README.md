@@ -42,7 +42,7 @@ powershell -ExecutionPolicy Bypass -File scripts\install-agentshore.ps1
 
 If a corporate/AV HTTPS-inspection proxy breaks downloads, the script passes `uv`'s `--native-tls` for you; for bare `pip`, point it at your system CA bundle.
 
-The macOS desktop app (Tauri shell + bundled `bd` sidecar + Python wheel) is built and signed by `uv run python -m scripts.buildkit macos`, which produces a signed `.app`, `.dmg`, and `.pkg` installer. The Windows desktop app is built by `uv run python -m scripts.buildkit windows`, which produces a machine-wide Inno Setup wizard `.exe` with matching Desktop, Timelapse Capture, and CLI component choices. Both run from the repo root through the cross-platform build spine in `scripts/buildkit/`.
+The macOS desktop app (Tauri shell + Python wheel; `bd` is the system install, never bundled) is built and signed by `uv run python -m scripts.buildkit macos`, which produces a signed `.app`, `.dmg`, and `.pkg` installer. The Windows desktop app is built by `uv run python -m scripts.buildkit windows`, which produces a machine-wide Inno Setup wizard `.exe` with matching Desktop, Timelapse Capture, and CLI component choices. Both run from the repo root through the cross-platform build spine in `scripts/buildkit/`.
 
 ## Quick start
 

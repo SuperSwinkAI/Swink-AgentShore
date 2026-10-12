@@ -24,6 +24,7 @@ _BYPASS_FLAGS: dict[str, tuple[str, ...]] = {
     "codex": ("--dangerously-bypass-approvals-and-sandbox",),
     "grok": ("--permission-mode", "bypassPermissions"),
     "antigravity": ("--dangerously-skip-permissions",),
+    "copilot": ("--yolo",),
 }
 
 # Sourced from the canonical registry — one source of truth for binary→key.

@@ -142,9 +142,7 @@ def write(root: Path | None = None) -> list[str]:
     for rel, kind, _keys in MIRRORS:
         path = root / rel
         text = path.read_text(encoding="utf-8")
-        new_text, count = _VERSION_LINE[kind].subn(
-            rf"\g<pre>{canonical}\g<post>", text, count=1
-        )
+        new_text, count = _VERSION_LINE[kind].subn(rf"\g<pre>{canonical}\g<post>", text, count=1)
         if count != 1:
             raise RuntimeError(
                 f"{rel}: expected exactly one version line to rewrite, matched {count}"

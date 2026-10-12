@@ -40,25 +40,25 @@ if TYPE_CHECKING:
 
 _logger = structlog.get_logger(__name__)
 
-# Supply-chain + change-control pin for the `bd` (beads) binary. bd's CLI
-# semantics directly shape the beads graph — e.g. `bd link`'s default
-# dependency type changed across releases and silently inverted epic/task
-# linkage (blocking every leaf task → zero implementation work). Pinning the
-# binary means such a change can't slip in unannounced. Override with the
-# AGENTSHORE_BD_VERSION env var (set it empty to disable the check) only after
-# re-verifying the skill-template `bd` calls against the new release.
-REQUIRED_BD_VERSION = "1.1.0"
+# Lowest bd (beads) release AgentShore is validated against. It is the floor —
+# an older system bd makes ensure_bd_installed offer an upgrade — and the
+# version AgentShore asks a package manager for when it must install one.
+# Newer releases are accepted with a warning: bd's CLI semantics shift between
+# releases (`bd link`'s default dependency type, exit codes, --json shapes), so
+# bumping this means re-verifying the skill-template `bd` calls against the new
+# release. AgentShore never ships its own bd; it uses the system one. Override
+# with the AGENTSHORE_BD_VERSION env var (set it empty to disable the check).
+SUPPORTED_BD_VERSION = "1.1.0"
 
 
-def _check_bd_version(bd_binary: str) -> None:
-    """Assert the resolved bd binary matches the pinned version.
+def parse_bd_version(text: str) -> tuple[int, ...] | None:
+    """``"bd version 1.3.1 (abc)"`` → ``(1, 3, 1)``; ``None`` when no x.y.z is present."""
+    match = re.search(r"\d+\.\d+\.\d+", text)
+    return tuple(int(part) for part in match.group(0).split(".")) if match else None
 
-    Raises RuntimeError on mismatch. Honours AGENTSHORE_BD_VERSION as an
-    override (empty value disables the check entirely).
-    """
-    expected = os.environ.get("AGENTSHORE_BD_VERSION", REQUIRED_BD_VERSION).strip()
-    if not expected:
-        return
+
+def bd_version(bd_binary: str) -> str:
+    """Return the x.y.z reported by ``bd --version``; RuntimeError when unprobeable."""
     try:
         completed = subprocess.run(
             [bd_binary, "--version"],
@@ -74,16 +74,40 @@ def _check_bd_version(bd_binary: str) -> None:
         raise RuntimeError(
             f"could not determine bd version via `{bd_binary} --version`: {exc}"
         ) from exc
-    match = re.search(r"\d+\.\d+\.\d+", completed.stdout or completed.stderr or "")
-    found = match.group(0) if match else (completed.stdout or "").strip()
-    if found != expected:
+    output = completed.stdout or completed.stderr or ""
+    match = re.search(r"\d+\.\d+\.\d+", output)
+    if match is None:
+        raise RuntimeError(f"could not parse bd version from `{bd_binary} --version`: {output!r}")
+    return match.group(0)
+
+
+def _check_bd_version(bd_binary: str) -> None:
+    """Raise RuntimeError when bd is older than SUPPORTED_BD_VERSION; warn when newer.
+
+    Honours AGENTSHORE_BD_VERSION as an override (empty value disables the check).
+    """
+    expected = os.environ.get("AGENTSHORE_BD_VERSION", SUPPORTED_BD_VERSION).strip()
+    if not expected:
+        return
+    expected_parsed = parse_bd_version(expected)
+    if expected_parsed is None:
+        raise RuntimeError(f"AGENTSHORE_BD_VERSION={expected!r} is not an x.y.z version")
+    found = bd_version(bd_binary)
+    found_parsed = parse_bd_version(found)
+    assert found_parsed is not None  # bd_version only returns x.y.z
+    if found_parsed < expected_parsed:
         raise RuntimeError(
-            f"bd version {found!r} does not match AgentShore's pinned version {expected!r}. "
-            "bd is pinned because its CLI semantics affect the beads graph (e.g. `bd link`'s "
-            "default dependency type changed between releases and silently broke epic/task "
-            "linkage). Install bd "
-            f"{expected} from https://github.com/gastownhall/beads, or set AGENTSHORE_BD_VERSION "
-            "to override after re-verifying the skill-template `bd` calls."
+            f"bd {found} at {bd_binary} is older than AgentShore's supported version "
+            f"{expected}. Upgrade it (`brew upgrade beads` or `npm install -g "
+            f"@beads/bd@{expected}`), or run `agentshore init` to let AgentShore do it."
+        )
+    if found_parsed > expected_parsed:
+        _logger.warning(
+            "bd_newer_than_validated",
+            path=bd_binary,
+            found=found,
+            validated=expected,
+            hint="newer bd releases change CLI semantics; report play failures that mention bd",
         )
 
 
@@ -94,52 +118,37 @@ _BD_ACTOR_NAMES: dict[AgentType, str] = {
     AgentType.CODEX: "codex",
     AgentType.GROK: "grok",
     AgentType.SWINK_CODING: "swink-coding",
+    AgentType.COPILOT: "copilot",
 }
 
 
 def ensure_bd_installed() -> None:
-    """Verify that `bd` is on PATH and matches the pinned version.
+    """Verify the system `bd` is on PATH and at least SUPPORTED_BD_VERSION.
 
-    If bd is absent, delegates to ``downloader.provision_bd`` which enforces
-    the consent gate: interactive sessions may prompt the user; headless
-    sessions fail with instructions unless ``AGENTSHORE_AUTO_INSTALL_BD=1``
-    is set. This function never silently downloads a binary in headless mode.
+    When bd is missing or too old, ``install.ensure_system_bd`` may install or
+    upgrade it through the system's package manager, behind the consent gate:
+    interactive sessions are asked; headless sessions fail with instructions
+    unless ``AGENTSHORE_AUTO_INSTALL_BD=1`` is set.
 
-    Raises RuntimeError with install instructions if bd is not found (and
-    consent for download is absent), or if its version does not match
-    REQUIRED_BD_VERSION (see AGENTSHORE_BD_VERSION override). This check is
-    intentionally synchronous so it can be called from the Click-based
-    `agentshore init` command without an event loop.
+    Raises RuntimeError with instructions when bd cannot be made available.
+    Intentionally synchronous so the Click-based `agentshore init` can call it
+    without an event loop.
     """
-    from agentshore.beads.downloader import provision_bd
+    from agentshore.beads.install import ensure_system_bd
 
-    # provision_bd returns the existing bd path when already installed,
-    # downloads + returns the installed path when consent is present, or raises
-    # with instructions when bd is absent and no consent is given (the
-    # headless-fail invariant).
-    bd_binary = resolve_bd_binary()
-    if bd_binary is None:
-        bd_binary = provision_bd(REQUIRED_BD_VERSION)
-    if bd_binary is None:
-        # Reachable only when the download was attempted and failed (best-effort
-        # path returns None); the no-consent path raises inside provision_bd.
-        raise RuntimeError(
-            "The bd binary was not found. Set AGENTSHORE_BD_BIN to a bundled binary or install "
-            "bd from https://github.com/gastownhall/beads and re-run agentshore init."
-        )
+    bd_binary = ensure_system_bd(SUPPORTED_BD_VERSION)
     _check_bd_version(bd_binary)
     _warn_on_bd_path_skew(bd_binary)
-    _logger.info("bd_available", path=bd_binary, required_version=REQUIRED_BD_VERSION)
+    _logger.info("bd_available", path=bd_binary, supported_version=SUPPORTED_BD_VERSION)
 
 
 def _warn_on_bd_path_skew(bd_binary: str) -> None:
     """Log when the ambient-PATH ``bd`` differs from the pinned/resolved *bd_binary*.
 
-    The desktop app pins a bundled sidecar bd via ``AGENTSHORE_BD_BIN``
-    (``resolve_bd_binary`` prefers it), but a bare ``bd`` typed in a terminal
-    — or run by anything that doesn't go through AgentShore's own resolution
-    — still follows the ambient PATH and can land on a different, unpinned
-    install. Two writers at different schema versions against the same
+    With ``AGENTSHORE_BD_BIN`` set, ``resolve_bd_binary`` prefers it, but a
+    bare ``bd`` typed in a terminal — or run by anything that doesn't go
+    through AgentShore's own resolution — still follows the ambient PATH and
+    can land on a different install. Two writers at different schema versions against the same
     embedded Dolt store is a direct schema-drift vector (this is exactly what
     happened in practice: PATH bd was 1.0.4 while the pinned sidecar was
     1.1.0, and the two eventually disagreed badly enough that the newer
@@ -170,7 +179,7 @@ def _warn_on_bd_path_skew(bd_binary: str) -> None:
         return
     match = re.search(r"\d+\.\d+\.\d+", completed.stdout or completed.stderr or "")
     path_version = match.group(0) if match else (completed.stdout or "").strip()
-    expected = os.environ.get("AGENTSHORE_BD_VERSION", REQUIRED_BD_VERSION).strip()
+    expected = os.environ.get("AGENTSHORE_BD_VERSION", SUPPORTED_BD_VERSION).strip()
     if path_version == expected:
         return  # different binary, same version — not a drift risk
     _logger.warning(
@@ -190,7 +199,7 @@ def _warn_on_bd_path_skew(bd_binary: str) -> None:
 
 # Opt-in env var for headless/CI consent to the one dangerous recovery path:
 # migrating a *remote-backed* store's schema and pushing it. Mirrors
-# AGENTSHORE_AUTO_INSTALL_BD's shape (downloader.py) — must be explicitly set,
+# AGENTSHORE_AUTO_INSTALL_BD's shape (install.py) — must be explicitly set,
 # default is conservative (never silently fork a shared schema).
 _ALLOW_REMOTE_MIGRATE_ENV_VAR = "AGENTSHORE_ALLOW_REMOTE_MIGRATE"
 
@@ -241,7 +250,7 @@ def _beads_store_has_remote(project_path: Path) -> bool:
 def _remote_migrate_consented(*, assume_yes: bool) -> bool:
     """Consent gate for the one action that can unrecoverably fork a shared schema.
 
-    Mirrors ``downloader.provision_bd``'s consent shape: an explicitly
+    Mirrors ``install.ensure_system_bd``'s consent shape: an explicitly
     consented caller (``assume_yes``), the opt-in env var, or an interactive
     TTY confirmation. Everywhere else in this module auto-heals silently —
     this is the deliberate exception, because bd's own remote-migrate refusal

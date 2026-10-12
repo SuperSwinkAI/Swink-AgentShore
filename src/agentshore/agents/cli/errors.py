@@ -135,6 +135,18 @@ _CLAUDE_ERROR_CODES: dict[str, ErrorClass] = {
     "billing_error": ErrorClass.RATE_LIMIT,
 }
 
+# Copilot ``session.error`` ``data.errorType`` categories (1.0.94
+# ``copilot-sdk/generated/session-events.d.ts`` ErrorData). ``rate_limit``
+# carries errorCode ``user_weekly_rate_limited``/``rate_limited``/...; ``quota``
+# carries ``quota_exceeded`` ("You've run out of your included AI credits for the
+# month"), ``session_quota_exceeded``, ``additional_spend_limit_reached``. Both
+# are holds, not failures — billing_error-equivalent, like claude's.
+_COPILOT_ERROR_TYPES: dict[str, ErrorClass] = {
+    "rate_limit": ErrorClass.RATE_LIMIT,
+    "quota": ErrorClass.RATE_LIMIT,
+    "authentication": ErrorClass.AUTH,
+}
+
 
 def _structured_cli_errors(stdout: str) -> tuple[ErrorClass | None, str]:
     """Pull the CLI's *own* error reports out of JSONL stdout.
@@ -142,8 +154,9 @@ def _structured_cli_errors(stdout: str) -> tuple[ErrorClass | None, str]:
     Returns ``(class, texts)``: a class when a CLI emitted a machine-readable
     error code, and the concatenated error messages from CLI-level error events
     — Claude ``result`` with ``is_error``, codex ``turn.failed`` / ``error``,
-    grok and swink-coding ``error``. Those messages are CLI diagnostics, not
-    agent work product, so the caller matches them against the full stderr
+    grok and swink-coding ``error``, copilot ``session.error``. Those messages
+    are CLI diagnostics, not agent work product, so the caller matches them
+    against the full stderr
     pattern sets. Needed because a terminal event can be larger than the 1000
     char stdout tail (claude's error ``result`` is ~1.4 KB) and because the
     tail may hold unrelated events (claude's ``rate_limit_event``).
@@ -160,6 +173,9 @@ def _structured_cli_errors(stdout: str) -> tuple[ErrorClass | None, str]:
             texts.append(str(event.get("result", "")))
         elif etype == "error":
             texts.append(str(event.get("message", "")))
+        elif etype == "session.error" and isinstance(data := event.get("data"), dict):
+            code_class = _COPILOT_ERROR_TYPES.get(str(data.get("errorType")), code_class)
+            texts.append(str(data.get("message", "")))
         elif etype == "turn.failed" and isinstance(err := event.get("error"), dict):
             texts.append(str(err.get("message", "")))
     return code_class, "\n".join(texts)

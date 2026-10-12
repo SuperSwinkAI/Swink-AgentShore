@@ -16,8 +16,8 @@ const SLIDES: Slide[] = [
       <>
         <p>
           AgentShore is a reinforcement-learning <strong>orchestrator</strong>. It
-          coordinates CLI coding agents — Claude Code, Codex, Grok, and
-          Antigravity — to work through your backlog.
+          coordinates CLI coding agents — Claude Code, Codex, Grok, Antigravity,
+          and GitHub Copilot — to work through your backlog.
         </p>
         <p>
           It decides <em>what to do next and who does it</em>. It does not write the

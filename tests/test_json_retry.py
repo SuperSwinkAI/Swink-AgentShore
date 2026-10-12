@@ -463,6 +463,7 @@ def _state_with_agent(agent_type: AgentType, agent_id: str) -> OrchestratorState
         (AgentType.CODEX, "codex-1", "thread_x"),
         (AgentType.GROK, "grok-1", "grok-sess"),
         (AgentType.ANTIGRAVITY, "agy-1", "conv-uuid-42"),
+        (AgentType.COPILOT, "copilot-1", "407397b3-e46e-4da3-9b4d-fa75a095eccc"),
     ],
 )
 @pytest.mark.asyncio

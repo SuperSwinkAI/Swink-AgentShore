@@ -130,8 +130,8 @@ exactly the gate that would have caught #105. Required check.
 `phases/verify.py`, after packaging, on **both** platforms:
 1. **Payload manifest** (`manifest.py`): walk `.app/Contents/MacOS` (macOS) / the Inno
    staged `app/` (Windows); assert the binary set **exactly** matches the expected spec
-   (`agentshore-desktop` + bundled `agentshore-bd` on macOS; `agentshore-desktop.exe` on
-   Windows). Any extra (e.g. a stray `agentshore-provisioner`) or missing file → `BuildError`.
+   (`agentshore-desktop` on macOS; `agentshore-desktop.exe` on Windows — `bd` is never
+   bundled). Any extra (e.g. a stray `agentshore-provisioner`) or missing file → `BuildError`.
 2. **Signature**: `codesign --verify --deep --strict` (macOS, retained from `build-macos.sh:263`)
    / `signtool verify /pa` (Windows — currently absent).
 3. **Embedded version**: read `CFBundleShortVersionString` from `Info.plist` (macOS) /
@@ -147,9 +147,8 @@ This is what makes a false green impossible: a stale/extra/mis-versioned artifac
 - **Clean guarantee:** `phases/clean.py` removes the prior bundle **and** all staging dirs
   (`pkg-component`, `pkg-scripts`, `windows-installer`, `agentshore-wheel`) every run, so no
   run inherits another's leftovers (root cause of the stale-provisioner false green).
-- **bd sidecar:** lift staging out of `build.rs` into `phases/sidecar.py` as an explicit,
-  testable step (`build.rs` keeps only the cheap PATH guard); macOS stages+bundles, Windows
-  is a documented no-op (install-time provisioning).
+- **bd sidecar:** superseded — AgentShore no longer bundles or provisions `bd` on any
+  platform; it uses the system install (see `agentshore.beads.install`).
 
 ## CI coverage summary (after)
 

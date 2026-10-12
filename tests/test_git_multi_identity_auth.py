@@ -206,6 +206,38 @@ async def test_remote_branch_exists_threads_overlay_to_ls_remote(monkeypatch) ->
 
 
 @pytest.mark.asyncio
+async def test_publish_reconciler_branch_probe_uses_hardened_git_with_overlay(
+    monkeypatch,
+) -> None:
+    """The publish reconciler's ls-remote goes through the allocator probe + auth (#151)."""
+    from agentshore.agents.worktree import allocator as alloc
+    from agentshore.plays import _publish_reconciler as recon
+
+    captured: dict[str, object] = {}
+
+    async def fake_run_git(*args, cwd, check=True, timeout=60.0, env_overlay=None):  # type: ignore[no-untyped-def]
+        captured["args"] = args
+        captured["cwd"] = cwd
+        captured["overlay"] = env_overlay
+        return (0, "deadbeef\trefs/heads/feature", "")
+
+    overlay = {"GIT_CONFIG_COUNT": "3"}
+    monkeypatch.setattr(alloc, "_run_git", fake_run_git)
+    monkeypatch.setattr(recon, "resolve_ff_fetch_overlay", lambda _cfg: overlay)
+    reconciler = recon.IssuePickupPublishReconciler(
+        github=object(),  # type: ignore[arg-type]
+        manager=object(),  # type: ignore[arg-type]
+        cfg=RuntimeConfig(identities={}),
+        project_path=Path("/repo"),
+    )
+
+    assert await reconciler._remote_branch_exists("feature") is True
+    assert captured["args"] == ("ls-remote", "--heads", "origin", "refs/heads/feature")
+    assert captured["cwd"] == Path("/repo")
+    assert captured["overlay"] == overlay
+
+
+@pytest.mark.asyncio
 async def test_ensure_worktree_passes_fetch_overlay_to_branch_check(monkeypatch, tmp_path) -> None:
     """``ensure_worktree`` forwards ``fetch_env_overlay`` into the branch probe."""
     from agentshore.agents.worktree import allocator as alloc

@@ -173,6 +173,16 @@ def test_swink_coding_no_live_fetch(monkeypatch: pytest.MonkeyPatch) -> None:
     assert result == ["small", "medium", "large"]
 
 
+def test_copilot_known_models_include_auto_and_every_tier_default() -> None:
+    from agentshore.agents.model_tiers import DEFAULT_MODEL_TIERS
+    from agentshore.state import AgentType
+
+    copilot = KNOWN_MODELS["copilot"]
+    assert copilot[0] == "auto"
+    for cfg in DEFAULT_MODEL_TIERS[AgentType.COPILOT].values():
+        assert cfg.model in copilot
+
+
 def test_every_catalog_model_has_a_pricing_row() -> None:
     # Catalog↔pricing invariant: a selectable model with no `models:` row in
     # pricing.yaml bills at its agent_defaults rate — the wrong tier for

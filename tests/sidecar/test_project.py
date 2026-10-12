@@ -355,19 +355,30 @@ def test_ahead_behind_sync_returns_none_on_git_failure(
     assert result is None
 
 
+def test_fetch_auth_overlay_falls_back_to_none_on_bad_config(tmp_path: Path) -> None:
+    """An unloadable agentshore.yaml keeps the fetch unauthenticated, never raises."""
+    (tmp_path / "agentshore.yaml").write_text("{not: valid: yaml\n")
+    assert project_rpc._fetch_auth_overlay(tmp_path) is None  # noqa: SLF001
+
+
 def test_branches_refresh_fetches_and_bounds_git_probes(
     git_repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     project_rpc.select(str(git_repo))
     calls: list[tuple[list[str], float]] = []
+    overlays: dict[str, object] = {}
+    auth = {"GIT_CONFIG_COUNT": "3"}
+    monkeypatch.setattr(project_rpc, "_fetch_auth_overlay", lambda _path: auth)
 
     def fake_run_git(
         args: list[str],
         _cwd: Path,
         *,
         timeout_seconds: float = project_rpc.GIT_PROBE_TIMEOUT_SECONDS,
+        env_overlay: object = None,
     ) -> subprocess.CompletedProcess[str]:
         calls.append((args, timeout_seconds))
+        overlays[args[0]] = env_overlay
         stdout = ""
         if args == ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"]:
             stdout = "origin/main\n"
@@ -387,6 +398,9 @@ def test_branches_refresh_fetches_and_bounds_git_probes(
     assert rows[0]["name"] == "main"
     assert calls[0][0] == ["fetch", "--prune", "origin"]
     assert 0 < calls[0][1] <= project_rpc.BRANCH_LIST_TIMEOUT_SECONDS
+    # Only the network fetch carries the default-identity auth overlay (#151).
+    assert overlays["fetch"] is auth
+    assert overlays["for-each-ref"] is None
     called_args = [call[0] for call in calls]
     assert ["for-each-ref", "--format=%(refname:short)", "refs/heads/"] in called_args
     assert ["for-each-ref", "--format=%(refname:short)", "refs/remotes/origin/"] in called_args

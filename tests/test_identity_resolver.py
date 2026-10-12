@@ -102,6 +102,9 @@ def test_token_env_resolves(monkeypatch: pytest.MonkeyPatch) -> None:
     env = resolve_identity_env(fc, ac)
     assert env["GH_TOKEN"] == "ghp_secret"
     assert env["GITHUB_TOKEN"] == "ghp_secret"
+    # Copilot CLI reads COPILOT_GITHUB_TOKEN first; the overlay must pin it too
+    # or an ambient one would override the per-agent identity.
+    assert env["COPILOT_GITHUB_TOKEN"] == "ghp_secret"
 
 
 def test_token_env_missing_logs_warning_and_omits(
@@ -400,6 +403,39 @@ def test_report_env_token_present(monkeypatch: pytest.MonkeyPatch) -> None:
     assert row.token_valid is True
     assert row.resolved_login == "bot-user"
     assert "BOT_USER_GH_TOKEN" in row.detail
+
+
+@pytest.mark.parametrize(
+    ("agent_key", "token", "warned"),
+    [
+        ("copilot", "ghp_classic", True),
+        ("copilot", "github_pat_fine", False),
+        ("codex", "ghp_classic", False),
+    ],
+)
+def test_report_warns_on_classic_pat_for_copilot(
+    monkeypatch: pytest.MonkeyPatch, agent_key: str, token: str, warned: bool
+) -> None:
+    monkeypatch.setenv("BOT_USER_GH_TOKEN", token)
+    monkeypatch.setattr(
+        identity_mod.IdentityResolver,
+        "validate_github_token",
+        lambda _self, _token: (True, "bot-user", None),
+    )
+    rows = _report(
+        identities={
+            "bot-user": GitHubIdentity(
+                git_user_name="bot",
+                git_user_email="bot@example.com",
+                gh_token_env="BOT_USER_GH_TOKEN",
+            )
+        },
+        agents={agent_key: AgentConfig(identity="bot-user")},
+    )
+    (row,) = rows
+    assert row.token_valid is True  # a warning, not a blocking failure
+    assert ("classic ghp_" in row.detail) is warned
+    assert token not in row.detail
 
 
 def test_report_env_token_invalid(monkeypatch: pytest.MonkeyPatch) -> None:

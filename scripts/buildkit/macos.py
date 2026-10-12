@@ -1,6 +1,6 @@
 """macOS desktop build pipeline (`python -m scripts.buildkit macos`).
 
-Builds AgentShore's package layout (dashboard + sidecar + Tauri 2 shell), signs
+Builds AgentShore's package layout (dashboard + Python sidecar + Tauri 2 shell), signs
 the .app and .pkg with any available Developer ID certs, verifies the artifact,
 and reveals the .pkg in Finder. The cross-platform phases live in phases.py, the
 artifact gate in verify.py.
@@ -110,15 +110,6 @@ def clean_stale(ctx: BuildContext) -> None:
             info(f"Forgot pkg receipt: {receipt}")
 
 
-def build_sidecar(ctx: BuildContext) -> None:
-    if ctx.skip_sidecar:
-        log("Skipping sidecar binary build (--skip-sidecar)")
-        return
-    log("Building bundled bd sidecar binary")
-    npm = require_tool("npm", "install Node.js (npm)")
-    run([npm, "run", "build:tauri-sidecars"], cwd=ctx.desktop_dir)
-
-
 def resolve_signing_identity(ctx: BuildContext) -> None:
     if ctx.no_sign:
         log("Skipping code-signing identity resolution (--no-sign)")
@@ -202,11 +193,16 @@ def build_pkg(ctx: BuildContext) -> None:
     app_component_plist.write_text(_COMPONENT_PLIST.format(app_name=APP_NAME))
     app_pkg_args = [
         "pkgbuild",
-        "--root", str(ctx.built_app.parent),
-        "--component-plist", str(app_component_plist),
-        "--install-location", "/Applications",
-        "--identifier", APP_BUNDLE_ID,
-        "--version", version,
+        "--root",
+        str(ctx.built_app.parent),
+        "--component-plist",
+        str(app_component_plist),
+        "--install-location",
+        "/Applications",
+        "--identifier",
+        APP_BUNDLE_ID,
+        "--version",
+        version,
     ]
     if installer_scripts.is_dir():
         scripts_stage = ctx.tauri_dir / "target" / "pkg-scripts"
@@ -237,10 +233,19 @@ def build_pkg(ctx: BuildContext) -> None:
         ],
         {"postinstall", "install-agentshore-cli.sh"},
     )
-    run([
-        "pkgbuild", "--nopayload", "--scripts", str(cli_scripts),
-        "--identifier", "ai.agentshore.cli", "--version", version, str(cli_component_pkg),
-    ])
+    run(
+        [
+            "pkgbuild",
+            "--nopayload",
+            "--scripts",
+            str(cli_scripts),
+            "--identifier",
+            "ai.agentshore.cli",
+            "--version",
+            version,
+            str(cli_component_pkg),
+        ]
+    )
     info(f"Wrote CLI component pkg: {cli_component_pkg}")
 
     # — Timelapse component (nopayload, opt-in) —
@@ -254,11 +259,19 @@ def build_pkg(ctx: BuildContext) -> None:
         ],
         {"postinstall", "install-timelapse.sh"},
     )
-    run([
-        "pkgbuild", "--nopayload", "--scripts", str(timelapse_scripts),
-        "--identifier", "ai.agentshore.timelapse", "--version", version,
-        str(timelapse_component_pkg),
-    ])
+    run(
+        [
+            "pkgbuild",
+            "--nopayload",
+            "--scripts",
+            str(timelapse_scripts),
+            "--identifier",
+            "ai.agentshore.timelapse",
+            "--version",
+            version,
+            str(timelapse_component_pkg),
+        ]
+    )
     _raise_pkg_timeout(timelapse_component_pkg, component_dir / "agentshore-timelapse-expanded")
     info(f"Wrote timelapse component pkg: {timelapse_component_pkg}")
 
@@ -291,9 +304,12 @@ def build_pkg(ctx: BuildContext) -> None:
     ctx.installer_signing_id = installer_id
     pb_args = [
         "productbuild",
-        "--distribution", str(distribution_xml),
-        "--resources", str(installer_resources),
-        "--package-path", str(component_dir),
+        "--distribution",
+        str(distribution_xml),
+        "--resources",
+        str(installer_resources),
+        "--package-path",
+        str(component_dir),
     ]
     if installer_id:
         pb_args += ["--sign", installer_id]
@@ -314,10 +330,17 @@ def notarize(ctx: BuildContext) -> None:
     log(f"Notarizing .pkg (keychain profile: {ctx.keychain_profile})")
     require_tool("xcrun", "install Xcode Command Line Tools")
     pkg_out = ctx.desktop_dir / "dist" / f"{APP_NAME}.pkg"
-    run([
-        "xcrun", "notarytool", "submit", str(pkg_out),
-        "--keychain-profile", ctx.keychain_profile, "--wait",
-    ])
+    run(
+        [
+            "xcrun",
+            "notarytool",
+            "submit",
+            str(pkg_out),
+            "--keychain-profile",
+            ctx.keychain_profile,
+            "--wait",
+        ]
+    )
     run(["xcrun", "stapler", "staple", str(pkg_out)])
     info(f"Notarized + stapled {pkg_out}")
 
@@ -353,7 +376,6 @@ def run_macos(ctx: BuildContext) -> None:
     stop_processes(ctx)
     clean_stale(ctx)
     build_dashboard(ctx)
-    build_sidecar(ctx)
     build_frontend(ctx)
     build_wheel(ctx)
     resolve_signing_identity(ctx)
@@ -371,7 +393,6 @@ def parse_args(argv: list[str]) -> BuildContext:
         description="Build the AgentShore macOS .app/.dmg/.pkg.",
     )
     parser.add_argument("--skip-dashboard", action="store_true", help="reuse dashboard/dist")
-    parser.add_argument("--skip-sidecar", action="store_true", help="reuse staged bd sidecar")
     parser.add_argument("--debug", action="store_true", help="debug build instead of release")
     parser.add_argument("--install", action="store_true", help="also install to /Applications")
     parser.add_argument("--no-sign", action="store_true", help="skip Developer ID signing")
@@ -385,7 +406,6 @@ def parse_args(argv: list[str]) -> BuildContext:
     ctx = default_context()
     ctx.build_mode = "debug" if args.debug else "release"
     ctx.skip_dashboard = args.skip_dashboard
-    ctx.skip_sidecar = args.skip_sidecar
     ctx.do_install = args.install
     ctx.no_sign = args.no_sign
     ctx.build_pkg = not args.no_pkg

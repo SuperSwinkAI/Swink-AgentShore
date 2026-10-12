@@ -339,9 +339,12 @@ def test_build_argv_prompt_on_stdin_omits_prompt_from_argv() -> None:
     grok = build_argv(
         AgentType.GROK, huge, binary="grok", prompt_on_stdin=True, prompt_file="/tmp/p.txt"
     )
+    # copilot reads piped stdin when -p is omitted (verified 1.0.94).
+    copilot = build_argv(AgentType.COPILOT, huge, binary="copilot", prompt_on_stdin=True)
 
-    for argv in (claude, codex, grok):
+    for argv in (claude, codex, grok, copilot):
         assert huge not in argv
+    assert "-p" not in copilot
 
     # claude -p with no prompt arg reads stdin (last token stays a flag/value).
     assert "-p" in claude
@@ -897,6 +900,40 @@ async def test_dispatch_cli_grok_pins_uuid_session_id(
     pinned = captured[0][captured[0].index("--session-id") + 1]
     assert str(uuid.UUID(pinned)) == pinned
     assert result.session_id == pinned
+
+
+async def test_dispatch_cli_copilot_pins_uuid_then_resumes_with_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A new copilot run is pinned with ``--session-id <uuid>``; the pin backstops
+    output with no ``result`` event, and the JSON-retry resume re-enters it via
+    ``--resume=<id>`` with no second pin (verified live, copilot 1.0.94)."""
+    import uuid
+
+    captured: list[list[str]] = []
+
+    async def fake_create_subprocess_exec(*argv: str, **kwargs: Any) -> _FakeProcess:
+        captured.append(list(argv))
+        return _FakeProcess([b'{"type":"session.mcp_server_status_changed","data":{}}\n'])
+
+    monkeypatch.setattr(
+        "agentshore.agents.cli.supervisor.asyncio.create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+    cfg = AgentConfig(enabled=True, binary="copilot", timeout=10)
+    handle = _make_handle(agent_type=AgentType.COPILOT)
+    handle.dispatches = 1
+
+    result = await dispatch_cli(handle, "prompt", cfg=cfg)
+    pinned = captured[0][captured[0].index("--session-id") + 1]
+    assert str(uuid.UUID(pinned)) == pinned
+    assert result.session_id == pinned
+    assert "--yolo" in captured[0]
+
+    await dispatch_cli(handle, "emit the block", cfg=cfg, resume_session_id=pinned)
+    assert captured[1][:2] == ["copilot", f"--resume={pinned}"]
+    assert "--session-id" not in captured[1]
+    assert "--yolo" in captured[1]
 
 
 def test_build_resume_argv_antigravity_shape(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -3517,6 +3554,7 @@ async def test_dispatch_arms_both_watchdogs_unconditionally(
 # _kill_process — bounded post-SIGKILL reap (session a3202694 wedge)
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups (os.killpg)")
 async def test_kill_process_does_not_hang_when_sigkill_never_reaps(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -3571,6 +3609,7 @@ async def test_kill_process_does_not_hang_when_sigkill_never_reaps(
     assert proc.wait_calls >= 2
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups (os.killpg)")
 async def test_kill_process_survivor_probe_swallows_permission_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -3605,6 +3644,7 @@ async def test_kill_process_survivor_probe_swallows_permission_error(
     await ps.kill_process(proc, "agent-eperm")  # type: ignore[arg-type]
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups (os.killpg)")
 async def test_kill_process_announces_every_agentshore_initiated_sigterm(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

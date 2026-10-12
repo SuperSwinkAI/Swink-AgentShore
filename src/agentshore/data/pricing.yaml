@@ -59,6 +59,12 @@ agent_defaults:
     max_context: 32768
     cost_per_1k_input: 0.0
     cost_per_1k_output: 0.0
+  copilot:
+    # Copilot bills premium requests per seat, not tokens: the adapter reports
+    # cost from the result event's premiumRequests, so token rates are $0.
+    max_context: 200000
+    cost_per_1k_input: 0.0
+    cost_per_1k_output: 0.0
 
 # Per-model rates (highest precedence). Keys match the `model:` strings used in
 # agentshore.yaml model tiers. Seeded from the agent-type defaults so the shipped
@@ -242,3 +248,20 @@ models:
     cost_per_1k_output: 0.0
   medium: *swink_coding_rates
   large: *swink_coding_rates
+  # ── copilot (GitHub Copilot CLI, premium-request billing) ─────────────────
+  # Copilot bills premium requests, not tokens; the adapter reports cost from
+  # the result event's premiumRequests (see agent_defaults.copilot). Token
+  # rates are $0 so a token-derived estimate never double-bills. Copilot always
+  # resolves to agent_defaults.copilot (pricing._PER_REQUEST_BILLED_AGENT_TYPES),
+  # so ids shared with codex (gpt-5.6-*) never pick up codex token rates; these
+  # rows exist only so every catalog model is listed.
+  auto: &copilot_rates
+    max_context: 200000
+    cost_per_1k_input: 0.0
+    cost_per_1k_output: 0.0
+  claude-haiku-5.5: *copilot_rates
+  claude-sonnet-5.5: *copilot_rates
+  claude-opus-5.5: *copilot_rates
+  mai-code-1.1-flash: *copilot_rates
+  gemini-3.8-flash: *copilot_rates
+  kimi-k3: *copilot_rates

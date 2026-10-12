@@ -25,6 +25,10 @@ import grokSmallSpriteUrl from "./assets/agents/v2/grok-small-ball.png";
 import swinkCodingLargeSpriteUrl from "./assets/agents/v2/swink-large-humanoid.png";
 import swinkCodingMediumSpriteUrl from "./assets/agents/v2/swink-medium-humanoid.png";
 import swinkCodingSmallSpriteUrl from "./assets/agents/v2/swink-small-ball.png";
+// Copilot reuses the (otherwise unused) violet "strands" sprite set — no bespoke art.
+import copilotLargeSpriteUrl from "./assets/agents/v2/strands-large-humanoid.png";
+import copilotMediumSpriteUrl from "./assets/agents/v2/strands-medium-humanoid.png";
+import copilotSmallSpriteUrl from "./assets/agents/v2/strands-small-ball.png";
 import type { AgentModelTier } from "./characters/types";
 
 const V2_SPRITE_FRAME_WIDTH = 416;
@@ -115,6 +119,17 @@ export const AGENT_REGISTRY = {
       small: swinkCodingSmallSpriteUrl,
       medium: swinkCodingMediumSpriteUrl,
       large: swinkCodingLargeSpriteUrl,
+    },
+  },
+  copilot: {
+    label: "Copilot CLI",
+    colorFill: "#8B5CF6",
+    colorLabel: "P",
+    beta: true,
+    spriteUrls: {
+      small: copilotSmallSpriteUrl,
+      medium: copilotMediumSpriteUrl,
+      large: copilotLargeSpriteUrl,
     },
   },
 } as const satisfies Record<string, AgentRegistryEntry>;

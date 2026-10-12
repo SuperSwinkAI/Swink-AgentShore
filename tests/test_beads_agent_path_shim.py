@@ -31,6 +31,11 @@ def _make_executable(path: Path, marker: str) -> Path:
     return path
 
 
+# shutil.which on Windows only resolves PATHEXT names, so a bare ``bd`` file
+# is invisible there; give it an executable suffix on that host.
+_BD_NAME = "bd.exe" if sys.platform == "win32" else "bd"
+
+
 def test_returns_env_unchanged_when_bd_unresolvable(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("AGENTSHORE_BD_BIN", raising=False)
     with patch("shutil.which", return_value=None):
@@ -44,7 +49,7 @@ def test_returns_env_unchanged_when_already_matching(
     """No mismatch, no shim: bare ``bd`` already resolves to the same binary."""
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    bd_path = _make_executable(bin_dir / "bd", "real-bd")
+    bd_path = _make_executable(bin_dir / _BD_NAME, "real-bd")
     monkeypatch.setenv("AGENTSHORE_BD_BIN", str(bd_path))
 
     env = {"PATH": str(bin_dir)}
@@ -78,7 +83,13 @@ def test_creates_shim_and_prepends_path_on_mismatch(
 
     resolved = shutil.which("bd", path=new_env["PATH"])
     assert resolved is not None
-    assert os.path.samefile(resolved, orchestrator_bd)
+    if sys.platform == "win32":
+        # The Windows shim is a batch wrapper, not a link — it must live in the
+        # shim dir and forward to the orchestrator binary.
+        assert Path(resolved).parent == shim_dir
+        assert str(orchestrator_bd) in Path(resolved).read_text(encoding="utf-8")
+    else:
+        assert os.path.samefile(resolved, orchestrator_bd)
     # The stale binary is still reachable further down PATH, just not first.
     assert stale_bd.exists()
 

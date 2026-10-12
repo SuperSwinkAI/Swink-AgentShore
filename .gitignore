@@ -225,7 +225,6 @@ timelapse-runs/
 packaging/desktop/build_id.json
 packaging/desktop/.build/
 packaging/desktop/dist/
-packaging/desktop/src-tauri/binaries/
 
 # ── Internal review / QA working notes ───────────────────────────────────────
 TNQA.md

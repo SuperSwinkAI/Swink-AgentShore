@@ -83,11 +83,13 @@ _DEFAULT_YOLO_FLAGS: dict[AgentType, tuple[str, ...]] = {
     AgentType.GROK: ("--permission-mode", "bypassPermissions"),
     AgentType.ANTIGRAVITY: ("--dangerously-skip-permissions",),
     AgentType.SWINK_CODING: ("--yolo",),
+    # = --allow-all-tools --allow-all-paths --allow-all-urls (copilot 1.0.94).
+    AgentType.COPILOT: ("--yolo",),
 }
 
 # Agent types whose CLI exposes a resume-by-id flag AND for which AgentShore
-# holds a stable session id (claude/codex/grok/swink-coding parse it from
-# stdout; agy resolves it from its on-disk conversation cache). The narrow
+# holds a stable session id (claude/codex/grok/swink-coding/copilot parse it
+# from stdout; agy resolves it from its on-disk conversation cache). The narrow
 # JSON-retry path (desktop-dy2j) re-enters that one session to recover the
 # omitted result block.
 _RESUMABLE_AGENT_TYPES: frozenset[AgentType] = frozenset(
@@ -97,33 +99,36 @@ _RESUMABLE_AGENT_TYPES: frozenset[AgentType] = frozenset(
         AgentType.GROK,
         AgentType.ANTIGRAVITY,
         AgentType.SWINK_CODING,
+        AgentType.COPILOT,
     }
 )
 
 
 # Agent types whose CLI lets the caller pin a NEW run's durable session id
 # (swink-coding's ``--session-id``, SuperSwink-Coding#300, v0.2.3+; grok's
-# ``-s/--session-id <UUID>``, 1.0.50). Pinning
+# ``-s/--session-id <UUID>``, 1.0.50; copilot's ``--session-id <uuid>``,
+# 1.0.94). Pinning
 # means AgentShore knows the id before spawn instead of having to recover it
 # from the child's output, so the narrow JSON-retry resume stays reachable even
 # when a dispatch produces nothing parseable. This is a capability set, not a
 # policy one: any CLI that grows the same flag belongs here.
 _PINNABLE_SESSION_AGENT_TYPES: frozenset[AgentType] = frozenset(
-    {AgentType.SWINK_CODING, AgentType.GROK}
+    {AgentType.SWINK_CODING, AgentType.GROK, AgentType.COPILOT}
 )
 
 
 # Agent types whose CLI accepts an ephemeral per-dispatch tool deny list
 # (swink-coding's ``--disallowed-tools``; grok's ``--disallowed-tools a,b``,
 # which removes the built-in tools outright — names translated in
-# ``cli_grok._GROK_TOOL_NAMES``). Deny rules layer on top of the
+# ``cli_grok._GROK_TOOL_NAMES``; copilot's ``--deny-tool=<kind>`` permission
+# rules — kinds translated in ``cli_copilot._COPILOT_TOOL_NAMES``). Deny rules layer on top of the
 # child's own config and win in every mode, including its YOLO mode, so this is
 # the one lever that survives AgentShore's permissive dispatch posture. A play
 # declares WHAT it must not touch (``Play.disallowed_tools``); each adapter
 # decides how — or whether — its CLI can express that. This is a capability
 # set, not a policy one: any CLI that grows the same flag belongs here.
 _TOOL_DENIAL_CAPABLE_AGENT_TYPES: frozenset[AgentType] = frozenset(
-    {AgentType.SWINK_CODING, AgentType.GROK}
+    {AgentType.SWINK_CODING, AgentType.GROK, AgentType.COPILOT}
 )
 
 
@@ -402,6 +407,7 @@ def build_argv(
     Grok is the exception — it has no stdin prompt mode, so the caller writes
     the prompt to a temp file and passes its path as *prompt_file*, which Grok
     reads via ``--prompt-file`` (see ``cli_grok.build_argv`` and issue #160).
+    Copilot reads piped stdin when ``-p`` is omitted.
 
     *model_tier* is swink-coding-specific (SuperSwink-Coding#282): only used
     when *model* is a ``provider:model[@endpoint]`` tier_map override rather
@@ -410,7 +416,7 @@ def build_argv(
 
     *session_id* pins the new run's durable session id so the caller knows it
     before spawn (swink-coding ``--session-id``, SuperSwink-Coding#300; grok
-    ``--session-id <uuid>``). Honoured only by
+    and copilot ``--session-id <uuid>``). Honoured only by
     :data:`_PINNABLE_SESSION_AGENT_TYPES`; ignored by every other agent type.
 
     *disallowed_tools* is the executing play's tool-denial policy
@@ -423,7 +429,7 @@ def build_argv(
 
     Exported so tests can assert command shape without spawning a subprocess.
     """
-    from agentshore.agents import cli_antigravity, cli_grok, cli_swink_coding
+    from agentshore.agents import cli_antigravity, cli_copilot, cli_grok, cli_swink_coding
 
     extra_flags = _apply_yolo_default(agent_type, tuple(extra_flags))
     builders: dict[AgentType, _ArgvBuilder] = {
@@ -432,6 +438,7 @@ def build_argv(
         AgentType.GROK: cli_grok.build_argv,
         AgentType.ANTIGRAVITY: cli_antigravity.build_argv,
         AgentType.SWINK_CODING: cli_swink_coding.build_argv,
+        AgentType.COPILOT: cli_copilot.build_argv,
     }
     builder = builders.get(agent_type)
     if builder is None:
@@ -475,7 +482,8 @@ def build_resume_argv(
     resume (see ``feedback_persistent_sessions``). Each supported CLI exposes a
     resume-by-id flag, and AgentShore holds a stable session id for each:
     claude (``--resume``), codex (``exec resume``), grok (``-r``), antigravity
-    (``--conversation``, id from :func:`cli_antigravity.resolve_conversation_id`).
+    (``--conversation``, id from :func:`cli_antigravity.resolve_conversation_id`),
+    copilot (``--resume=<id>``).
 
     *model_tier* is swink-coding-specific (SuperSwink-Coding#282) — see
     :func:`build_argv`. Ignored by every other agent type.
@@ -488,7 +496,7 @@ def build_resume_argv(
 
     Exported so tests can assert command shape without spawning a subprocess.
     """
-    from agentshore.agents import cli_antigravity, cli_grok, cli_swink_coding
+    from agentshore.agents import cli_antigravity, cli_copilot, cli_grok, cli_swink_coding
 
     extra_flags = _apply_yolo_default(agent_type, tuple(extra_flags))
     builders: dict[AgentType, _ResumeArgvBuilder] = {
@@ -497,6 +505,7 @@ def build_resume_argv(
         AgentType.GROK: cli_grok.build_resume_argv,
         AgentType.ANTIGRAVITY: cli_antigravity.build_resume_argv,
         AgentType.SWINK_CODING: cli_swink_coding.build_resume_argv,
+        AgentType.COPILOT: cli_copilot.build_resume_argv,
     }
     builder = builders.get(agent_type)
     if builder is None:

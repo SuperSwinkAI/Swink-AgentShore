@@ -23,6 +23,7 @@ BINARY_TO_AGENT_TYPE: dict[str, AgentType] = {
     "grok-build": AgentType.GROK,
     "agy": AgentType.ANTIGRAVITY,
     "swink-coding": AgentType.SWINK_CODING,
+    "copilot": AgentType.COPILOT,
 }
 
 # Inverse: AgentType → canonical binary name (first/primary name only).
@@ -33,6 +34,7 @@ AGENT_TYPE_TO_BINARY: dict[AgentType, str] = {
     AgentType.GROK: "grok",
     AgentType.ANTIGRAVITY: "agy",
     AgentType.SWINK_CODING: "swink-coding",
+    AgentType.COPILOT: "copilot",
 }
 
 # AgentType → human-facing display prefix ("Claude: Fiery Robot").
@@ -42,6 +44,7 @@ AGENT_TYPE_DISPLAY_PREFIX: dict[AgentType, str] = {
     AgentType.GROK: "Grok",
     AgentType.ANTIGRAVITY: "Antigravity",
     AgentType.SWINK_CODING: "Swink",
+    AgentType.COPILOT: "Copilot",
 }
 
 # String-keyed variants for callers that compare against AgentType.value

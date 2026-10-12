@@ -23,7 +23,7 @@ from agentshore.command import CommandResult, git_sync
 from agentshore.config.models import TimelapseConfig
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Mapping
 
 # Internal project.* error codes (mapped to public codes by the dispatcher).
 # ERR_PROJECT_NOT_ACTIVE is remapped to server.ERR_NO_ACTIVE_PROJECT (-32011)
@@ -139,6 +139,7 @@ def _run_git(
     cwd: Path,
     *,
     timeout_seconds: float = GIT_PROBE_TIMEOUT_SECONDS,
+    env_overlay: Mapping[str, str] | None = None,
 ) -> CommandResult:
     """Run a read-only git probe through the hardened, non-interactive runner.
 
@@ -146,7 +147,24 @@ def _run_git(
     when git is not installed) — the credential-neutralizing env guarantees the
     probe can never hang on a Git-Credential-Manager / askpass dialog.
     """
-    return git_sync(*args, cwd=cwd, timeout_seconds=timeout_seconds)
+    return git_sync(*args, cwd=cwd, timeout_seconds=timeout_seconds, env_overlay=env_overlay)
+
+
+def _fetch_auth_overlay(path: Path) -> Mapping[str, str] | None:
+    """Default-identity git auth for the branch-list ``fetch``, or ``None``.
+
+    The hardened git env strips the ambient credential helper, so on a private
+    HTTPS remote an unauthenticated fetch fails and the branch list goes stale.
+    Same overlay as the FF-sync / worktree fetch (#178/#179). Any miss (no
+    config, no identities, no token) → ``None``: the fetch stays unauthenticated.
+    """
+    from agentshore.config import load_config
+    from agentshore.core.branch_sync import resolve_ff_fetch_overlay
+
+    try:
+        return resolve_ff_fetch_overlay(load_config(path / "agentshore.yaml"))
+    except Exception:  # best-effort: never break the branch picker over auth
+        return None
 
 
 def _repo_identity_probe_fallback(path: Path) -> dict[str, object]:
@@ -490,6 +508,7 @@ async def branches(*, refresh: bool = False) -> list[_BranchRow]:
             ["fetch", "--prune", "origin"],
             path,
             timeout_seconds=remaining,
+            env_overlay=_fetch_auth_overlay(path),
         )
         if fetch_res.returncode == GIT_TIMEOUT_RETURN_CODE or time.monotonic() >= deadline:
             return _list_branches_sync(path)

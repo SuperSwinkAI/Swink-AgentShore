@@ -556,7 +556,7 @@ def test_ensure_bd_installed_accepts_env_var(
 ) -> None:
     from pathlib import Path
 
-    from agentshore.beads.setup import REQUIRED_BD_VERSION, ensure_bd_installed
+    from agentshore.beads.setup import SUPPORTED_BD_VERSION, ensure_bd_installed
 
     bd_path = Path(str(tmp_path)) / "bd"
     bd_path.write_text("stub", encoding="utf-8")
@@ -567,7 +567,7 @@ def test_ensure_bd_installed_accepts_env_var(
     # Stub reports the pinned version so the version check passes too.
     with (
         patch("shutil.which", return_value=None),
-        patch("agentshore.beads.setup.subprocess.run", new=_VersionRun(REQUIRED_BD_VERSION)),
+        patch("agentshore.beads.setup.subprocess.run", new=_VersionRun(SUPPORTED_BD_VERSION)),
     ):
         ensure_bd_installed()
 
@@ -589,7 +589,7 @@ def test_ensure_bd_installed_rejects_version_mismatch(
     with (
         patch("shutil.which", return_value=None),
         patch("agentshore.beads.setup.subprocess.run", new=_VersionRun("0.9.0")),
-        pytest.raises(RuntimeError, match="does not match"),
+        pytest.raises(RuntimeError, match="older than"),
     ):
         ensure_bd_installed()
 

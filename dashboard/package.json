@@ -1,7 +1,7 @@
 {
   "name": "@agentshore/dashboard",
   "private": true,
-  "version": "0.10.9",
+  "version": "0.11.2",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -17,12 +17,12 @@
     "@playwright/test": "1.63.0",
     "@types/react": "19.3.0",
     "@types/react-dom": "19.3.0",
-    "@vitejs/plugin-react": "6.1.1",
-    "jsdom": "30.1.1",
+    "@vitejs/plugin-react": "6.1.2",
+    "jsdom": "30.1.2",
     "react": "19.3.0",
     "react-dom": "19.3.0",
     "typescript": "7.0.2",
-    "vite": "8.3.2",
+    "vite": "8.3.3",
     "vitest": "5.0.3",
     "ws": "8.22.0"
   },

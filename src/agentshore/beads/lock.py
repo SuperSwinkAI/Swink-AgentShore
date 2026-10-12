@@ -165,7 +165,11 @@ class BeadsSchemaDriftError(GraphReadError):
 
 
 def resolve_bd_binary() -> str | None:
-    """Resolve the bd binary path from env override first, then PATH."""
+    """Resolve the system bd: ``AGENTSHORE_BD_BIN`` override first, then PATH.
+
+    AgentShore never ships or stages its own bd — the same binary the user's
+    shell runs is the one AgentShore runs.
+    """
     env_value = os.environ.get("AGENTSHORE_BD_BIN")
     if env_value:
         env_path = Path(env_value)
@@ -215,9 +219,9 @@ def ensure_bd_on_agent_path(env: dict[str, str]) -> dict[str, str]:
     Grok, and Antigravity to run literal ``bd ...`` commands) resolve ``bd``
     from their own inherited ``PATH`` — independently of
     ``resolve_bd_binary()``, which every one of AgentShore's *own* writes goes
-    through. When the two disagree (e.g. the desktop app pins a bundled
-    sidecar bd via ``AGENTSHORE_BD_BIN`` while the user's ambient ``PATH``
-    resolves a different, older standalone install), an agent's literal ``bd``
+    through. When the two disagree (e.g. ``AGENTSHORE_BD_BIN`` points at one
+    bd while the user's ambient ``PATH`` resolves a different, older
+    standalone install), an agent's literal ``bd``
     calls silently run a version-skewed binary against the same embedded Dolt
     store the orchestrator just wrote with a different version — schema
     migrations between bd releases can then make agent-side writes fail (or

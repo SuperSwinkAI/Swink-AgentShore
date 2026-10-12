@@ -274,6 +274,94 @@ def test_discover_swink_coding_missing_binary_is_unavailable(tmp_path: Path) -> 
 
 
 # ---------------------------------------------------------------------------
+# copilot (Copilot API catalog GET, no CLI list verb)
+# ---------------------------------------------------------------------------
+
+_COPILOT_CATALOG = {
+    "data": [
+        {  # enabled, pickable, tool-calling -> kept with its efforts
+            "id": "mai-code-1.1-flash",
+            "model_picker_category": "lightweight",
+            "policy": {"state": "enabled"},
+            "capabilities": {
+                "type": "chat",
+                "supports": {"tool_calls": True, "reasoning_effort": ["low", "high"]},
+            },
+        },
+        {  # policy-disabled for this seat -> CLI rejects it -> dropped
+            "id": "claude-opus-5.5",
+            "model_picker_category": "powerful",
+            "policy": {"state": "disabled"},
+            "capabilities": {"type": "chat", "supports": {"tool_calls": True}},
+        },
+        {  # internal (no picker category) -> dropped
+            "id": "copilot-search-a",
+            "capabilities": {"type": "chat", "supports": {"tool_calls": True}},
+        },
+        {  # embeddings -> dropped
+            "id": "text-embedding-3-small",
+            "model_picker_category": "versatile",
+            "capabilities": {"type": "embeddings", "supports": {}},
+        },
+    ]
+}
+
+
+def test_parse_copilot_catalog_keeps_usable_models_and_leads_with_auto() -> None:
+    from agentshore.agents.model_discovery import _parse_copilot_catalog
+
+    models, efforts = _parse_copilot_catalog(json.dumps(_COPILOT_CATALOG))
+    assert models == ("auto", "mai-code-1.1-flash")
+    assert efforts == {"mai-code-1.1-flash": ("low", "high")}
+    assert _parse_copilot_catalog("not json") == ((), {})
+    assert _parse_copilot_catalog(json.dumps({"data": []})) == ((), {})
+
+
+def test_discover_copilot_ok_via_env_token(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import io
+    import urllib.request
+
+    from agentshore.agents.model_discovery import discover_copilot_models
+
+    seen: dict[str, str | None] = {}
+
+    def fake_urlopen(request: urllib.request.Request, **_kw: object) -> io.BytesIO:
+        seen["auth"] = request.get_header("Authorization")
+        return io.BytesIO(json.dumps(_COPILOT_CATALOG).encode())
+
+    monkeypatch.setenv("COPILOT_GITHUB_TOKEN", "gho_test")
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    binary = _make_fake_cli(tmp_path, "fake-copilot", body="")
+    result = discover_copilot_models(binary=binary)
+    assert result.status == "ok"
+    assert result.models == ("auto", "mai-code-1.1-flash")
+    assert result.default == "auto"
+    assert seen["auth"] == "Bearer gho_test"
+
+
+def test_discover_copilot_missing_binary_is_unavailable(tmp_path: Path) -> None:
+    from agentshore.agents.model_discovery import discover_copilot_models
+
+    result = discover_copilot_models(binary=str(tmp_path / "does-not-exist"))
+    assert result.status == "unavailable"
+
+
+def test_discover_copilot_without_token_is_unavailable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agentshore.agents import model_discovery
+
+    for name in ("COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(
+        model_discovery.shutil, "which", lambda name: None if name == "gh" else name
+    )
+    result = model_discovery.discover_copilot_models(binary="copilot")
+    assert result.status == "unavailable"
+    assert "token" in result.detail
+
+
+# ---------------------------------------------------------------------------
 # discover_all
 # ---------------------------------------------------------------------------
 
@@ -282,7 +370,7 @@ def test_discover_all_covers_the_free_harnesses_and_excludes_claude() -> None:
     # Real PATH lookup (no fakes) — just verifies shape/keys, not live content,
     # since CI has no guarantee any of these binaries are installed.
     results = discover_all(timeout=1.0)
-    assert set(results) == {"codex", "grok", "antigravity", "swink_coding"}
+    assert set(results) == {"codex", "grok", "antigravity", "swink_coding", "copilot"}
     assert "claude_code" not in results
     for key, result in results.items():
         assert result.agent_key == key

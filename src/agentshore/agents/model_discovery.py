@@ -14,6 +14,10 @@ enumerates currently-selectable models without spending API tokens:
 (Confirmed against codex-cli 0.144.1, grok 1.0.50, agy 1.3.2, and swink-coding
 0.2.4; see the model-catalog spike notes in docs/design/agents/DESIGN.md.)
 
+Copilot CLI (1.0.94) has no list verb; its probe is a read-only GET of the
+Copilot API model catalog (``api.githubcopilot.com/models``), which costs no
+premium requests — see :func:`discover_copilot_models`.
+
 Claude Code has no such surface: no flag, no subcommand, and no separate
 bundled manifest — its model IDs are baked into the compiled binary with no
 way to distinguish current from years-deprecated ones. Discovering its
@@ -332,6 +336,122 @@ def discover_swink_coding_models(
     return DiscoveryResult("swink_coding", models, "ok", detail)
 
 
+# Copilot CLI (1.0.94) has no model-list verb. Its catalog comes from the
+# Copilot API's metadata endpoint — a read-only GET that consumes no premium
+# requests — authenticated with the same token precedence the CLI uses.
+_COPILOT_MODELS_URL = "https://api.githubcopilot.com/models"
+_COPILOT_TOKEN_ENV_VARS: tuple[str, ...] = ("COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN")
+# `--model auto` is always valid (the account picks the model), so it leads the
+# list and is the resolver's fallback when a preferred model is unavailable.
+_COPILOT_AUTO_MODEL = "auto"
+
+
+def _parse_copilot_catalog(body: str) -> tuple[tuple[str, ...], dict[str, tuple[str, ...]]]:
+    """Parse the Copilot ``/models`` payload into dispatchable model ids.
+
+    Keeps tool-calling chat models that are user-pickable (have a
+    ``model_picker_category``; internal/legacy ids don't) and not
+    policy-disabled for this account (the CLI rejects those with ``Model "x"
+    from --model flag is not available``, verified 1.0.94), plus each model's
+    ``supports.reasoning_effort`` list.
+    """
+    try:
+        payload = json.loads(body)
+    except json.JSONDecodeError:
+        return (), {}
+    data = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(data, list):
+        return (), {}
+    models: list[str] = [_COPILOT_AUTO_MODEL]
+    efforts: dict[str, tuple[str, ...]] = {}
+    for entry in data:
+        if not isinstance(entry, dict):
+            continue
+        model_id = entry.get("id")
+        caps = entry.get("capabilities")
+        policy = entry.get("policy")
+        if not isinstance(model_id, str) or not isinstance(caps, dict):
+            continue
+        supports = caps.get("supports")
+        if not isinstance(supports, dict):
+            supports = {}
+        if (
+            caps.get("type") != "chat"
+            or not supports.get("tool_calls")
+            or not entry.get("model_picker_category")
+            or (isinstance(policy, dict) and policy.get("state") == "disabled")
+            or model_id in models
+        ):
+            continue
+        models.append(model_id)
+        levels = supports.get("reasoning_effort")
+        if isinstance(levels, list) and (names := tuple(x for x in levels if isinstance(x, str))):
+            efforts[model_id] = names
+    return (tuple(models) if len(models) > 1 else ()), efforts
+
+
+def _copilot_token(timeout: float) -> str | None:
+    """The token the Copilot CLI would use: env precedence, then ``gh auth token``.
+
+    The CLI's own stored OAuth login lives in the OS credential store and is
+    not read here; without an env token or a gh login, discovery is skipped.
+    """
+    for name in _COPILOT_TOKEN_ENV_VARS:
+        if token := os.environ.get(name, "").strip():
+            return token
+    gh = shutil.which("gh")
+    if gh is None:
+        return None
+    result = _run_probe([gh, "auth", "token"], timeout=timeout)
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip() or None
+
+
+def discover_copilot_models(
+    *, binary: str = "copilot", timeout: float = DEFAULT_DISCOVERY_TIMEOUT_S
+) -> DiscoveryResult:
+    """GET the Copilot API model catalog (free metadata read, no premium request).
+
+    ponytail: github.com only; GHE hosts (COPILOT_GH_HOST/GH_HOST) and the
+    per-identity catalog are not probed — the CLI's INVALID_MODEL path covers them.
+    """
+    import urllib.error
+    import urllib.request
+
+    from agentshore.agents.identity import _github_api_ssl_context
+
+    if shutil.which(binary) is None:
+        return DiscoveryResult("copilot", (), "unavailable", f"{binary!r} not found on PATH")
+    token = _copilot_token(timeout)
+    if token is None:
+        return DiscoveryResult("copilot", (), "unavailable", "no GitHub token for Copilot API")
+    request = urllib.request.Request(
+        _COPILOT_MODELS_URL,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/json",
+            "Copilot-Integration-Id": "copilot-developer-cli",
+            "User-Agent": "AgentShore",
+        },
+    )
+    try:
+        with urllib.request.urlopen(  # nosec B310 - fixed Copilot API host.
+            request, timeout=timeout, context=_github_api_ssl_context()
+        ) as response:
+            body = response.read().decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as exc:
+        return DiscoveryResult("copilot", (), "error", f"HTTP {exc.code} from Copilot models API")
+    except TimeoutError:
+        return DiscoveryResult("copilot", (), "timeout", f"timed out after {timeout:g}s")
+    except (urllib.error.URLError, OSError) as exc:
+        return DiscoveryResult("copilot", (), "error", str(exc)[:200])
+    models, efforts = _parse_copilot_catalog(body)
+    if not models:
+        return DiscoveryResult("copilot", (), "error", "no usable models in Copilot catalog")
+    return DiscoveryResult("copilot", models, "ok", default=_COPILOT_AUTO_MODEL, efforts=efforts)
+
+
 # Ordered so discover_all's dict preserves a stable, deterministic iteration
 # order regardless of dict-construction timing.
 _FREE_DISCOVERY_FUNCS: tuple[tuple[str, Callable[..., DiscoveryResult]], ...] = (
@@ -339,6 +459,7 @@ _FREE_DISCOVERY_FUNCS: tuple[tuple[str, Callable[..., DiscoveryResult]], ...] = 
     ("grok", discover_grok_models),
     ("antigravity", discover_antigravity_models),
     ("swink_coding", discover_swink_coding_models),
+    ("copilot", discover_copilot_models),
 )
 
 

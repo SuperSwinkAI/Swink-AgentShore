@@ -221,6 +221,42 @@ def test_reasoning_efforts_swink_coding_is_empty() -> None:
     assert reasoning_efforts_for(AgentType.SWINK_CODING) == ()
 
 
+def test_default_model_tiers_for_copilot_fall_back_to_auto() -> None:
+    from agentshore.agents import model_discovery, model_resolver
+
+    tiers = default_model_tiers_for(AgentType.COPILOT)
+    assert {t: (c.model, c.reasoning_effort) for t, c in tiers.items()} == {
+        "small": ("claude-haiku-5.5", "low"),
+        "medium": ("claude-sonnet-5.5", "medium"),
+        "large": ("claude-opus-5.5", "high"),
+    }
+    # A seat without Claude 5.5: small degrades to its family sibling, the
+    # rest to `auto`; efforts clamp to what the resolved model supports.
+    live = model_discovery.DiscoveryResult(
+        "copilot",
+        ("auto", "claude-haiku-4.5", "mai-code-1.1-flash"),
+        "ok",
+        default="auto",
+    )
+    model_resolver.record_discovery(AgentType.COPILOT, live)  # conftest resets
+    resolved = default_model_tiers_for(AgentType.COPILOT)
+    assert resolved["small"].model == "claude-haiku-4.5"
+    assert resolved["medium"].model == "auto"
+    assert resolved["large"].model == "auto"
+
+
+def test_reasoning_efforts_copilot_matches_cli_flag() -> None:
+    assert reasoning_efforts_for(AgentType.COPILOT) == (
+        "none",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max",
+    )
+
+
 def test_reasoning_efforts_constant_matches_helper() -> None:
     for agent_type in AgentType:
         assert reasoning_efforts_for(agent_type) == REASONING_EFFORTS.get(agent_type, ())

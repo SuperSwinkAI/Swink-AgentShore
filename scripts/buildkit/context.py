@@ -23,7 +23,6 @@ class BuildContext:
 
     # Shared flags
     skip_dashboard: bool = False
-    skip_sidecar: bool = False
     no_sign: bool = False
 
     # macOS flags

@@ -1,7 +1,7 @@
 {
   "name": "agentshore-desktop",
   "private": true,
-  "version": "0.10.9",
+  "version": "0.11.2",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -10,7 +10,6 @@
     "prepare:tauri-assets": "node scripts/prepare-tauri-assets.mjs",
     "prebuild:tauri-frontend": "npm --prefix ../dashboard run build:lib",
     "build:tauri-frontend": "npm run build && npm run prepare:tauri-assets",
-    "build:tauri-sidecars": "uv run python ../packaging/desktop/build_bd_sidecar.py --out src-tauri/binaries",
     "preview": "vite preview",
     "tauri": "tauri",
     "pretest": "npm --prefix ../dashboard run build:lib",
@@ -34,10 +33,10 @@
     "@types/node": "26.6.4",
     "@types/react": "19.3.0",
     "@types/react-dom": "19.3.0",
-    "@vitejs/plugin-react": "6.1.1",
-    "jsdom": "30.1.1",
+    "@vitejs/plugin-react": "6.1.2",
+    "jsdom": "30.1.2",
     "typescript": "7.0.2",
-    "vite": "8.3.2",
+    "vite": "8.3.3",
     "vitest": "5.0.3"
   }
 }

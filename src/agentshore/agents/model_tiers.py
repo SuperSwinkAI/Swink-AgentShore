@@ -55,6 +55,16 @@ DEFAULT_MODEL_TIERS: dict[AgentType, dict[str, ModelTierConfig]] = {
         "medium": ModelTierConfig(model="medium"),
         "large": ModelTierConfig(model="large"),
     },
+    AgentType.COPILOT: {
+        # Preferences, resolved against the live Copilot catalog
+        # (model_discovery.discover_copilot_models): one per catalog
+        # model_picker_category (lightweight/versatile/powerful). A model the
+        # seat lacks degrades to its newest same-family sibling, else `auto`
+        # (always valid; the account picks the model).
+        "small": ModelTierConfig(model="claude-haiku-5.5", reasoning_effort="low"),
+        "medium": ModelTierConfig(model="claude-sonnet-5.5", reasoning_effort="medium"),
+        "large": ModelTierConfig(model="claude-opus-5.5", reasoning_effort="high"),
+    },
 }
 
 
@@ -70,6 +80,9 @@ REASONING_EFFORTS: dict[AgentType, tuple[str, ...]] = {
     AgentType.CODEX: ("none", "low", "medium", "high", "xhigh", "max"),
     AgentType.ANTIGRAVITY: (),
     AgentType.SWINK_CODING: (),
+    # Copilot CLI 1.0.94 `--reasoning-effort`; per-model lists from the live
+    # catalog narrow this (resolve_effort clamps).
+    AgentType.COPILOT: ("none", "minimal", "low", "medium", "high", "xhigh", "max"),
 }
 
 

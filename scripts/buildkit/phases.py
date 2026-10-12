@@ -50,9 +50,7 @@ def build_wheel(ctx: BuildContext, *, uv_global_args: tuple[str, ...] = ()) -> N
     shutil.rmtree(stage, ignore_errors=True)
     stage.mkdir(parents=True, exist_ok=True)
     run([uv, *uv_global_args, "build", "--wheel", "--out-dir", str(stage)], cwd=ctx.root)
-    wheels = sorted(
-        stage.glob("agentshore-*-py3-none-any.whl"), key=lambda p: p.stat().st_mtime
-    )
+    wheels = sorted(stage.glob("agentshore-*-py3-none-any.whl"), key=lambda p: p.stat().st_mtime)
     if not wheels:
         raise die(f"uv build did not produce a wheel under {stage}")
     ctx.bundled_wheel = wheels[-1]

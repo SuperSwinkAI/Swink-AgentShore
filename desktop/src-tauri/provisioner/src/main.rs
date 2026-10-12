@@ -54,18 +54,11 @@ fn run_sidecar(args: Vec<OsString>) -> ProvisionResult<()> {
 
     let root = agentshore_programdata_root();
     let venv = managed_venv_path();
-    let bin = machine_bin_path();
     let runtime = runtime_dir();
     fs::create_dir_all(&root).map_err(|err| {
         ProvisionError::new(
             PROCESS_OR_SWAP_FAILURE,
             format!("create {}: {err}", root.display()),
-        )
-    })?;
-    fs::create_dir_all(&bin).map_err(|err| {
-        ProvisionError::new(
-            PROCESS_OR_SWAP_FAILURE,
-            format!("create {}: {err}", bin.display()),
         )
     })?;
     fs::create_dir_all(&runtime).map_err(|err| {
@@ -139,25 +132,10 @@ fn run_sidecar(args: Vec<OsString>) -> ProvisionResult<()> {
             &logger,
         )?;
 
-        logger.line("==> Provisioning bd dependency");
-        // assume_yes=True: the installer is a consented (admin-wizard) context, so
-        // provision_bd's headless-fail consent gate is satisfied and it downloads
-        // the pinned bd release. REQUIRED_BD_VERSION is single-sourced in setup.
-        let code = format!(
-            "from pathlib import Path\nfrom agentshore.beads.setup import REQUIRED_BD_VERSION\nfrom agentshore.beads.downloader import provision_bd\npath = provision_bd(REQUIRED_BD_VERSION, assume_yes=True, dest_dir=Path({}))\nraise SystemExit(0 if path else 1)\n",
-            python_string_literal(&bin)
-        );
-        run_required(
-            "bd provisioning",
-            BD_PROVISION_FAILURE,
-            &venv_python,
-            &[os("-c"), OsString::from(code)],
-            BD_PROVISION_TIMEOUT,
-            &logger,
-        )?;
-
+        // bd is deliberately not provisioned here: AgentShore uses the system
+        // bd (brew/npm/...) and `agentshore init` offers to install or upgrade
+        // it through that package manager on first use.
         grant_read_execute(&venv, &logger)?;
-        grant_read_execute(&bin, &logger)?;
         Ok(())
     })?;
 
