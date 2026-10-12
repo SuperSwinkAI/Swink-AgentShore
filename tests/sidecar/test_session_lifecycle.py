@@ -28,6 +28,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from agentshore.agents import identity as identity_mod
 from agentshore.agents.auth_probe import (
     AUTH_EXPIRED,
     AUTH_OK,
@@ -81,6 +82,9 @@ agents:
       large:
         enabled: true
 """
+
+
+_REAL_REPORT_IDENTITIES = identity_mod.report_identities
 
 
 def _write_valid_project(root: Path, *, agentshore_yaml: str | None = None) -> Path:
@@ -506,6 +510,37 @@ async def test_check_agent_auth_clean_git_auth_probe_proceeds(tmp_path: Path) ->
 
     git_auth_probe.assert_called_once()
     assert outcome.session_id == state.session_id
+
+
+@pytest.mark.asyncio
+async def test_check_agent_auth_blocks_when_identity_token_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gh-476: desktop session.start must validate identity tokens like the CLI.
+
+    The sidecar only ran the config-level identity checks, so an identity whose
+    token doesn't resolve on this machine passed launch and every
+    instantiate_agent for it failed mid-session.
+    """
+    config = VALID_TIERED_CONFIG.replace(
+        "gh_token_login: alpha-agent", "gh_token_env: AGENTSHORE_TEST_ALPHA_TOKEN"
+    ).replace("gh_token_login: beta-agent", "gh_token_env: AGENTSHORE_TEST_BETA_TOKEN")
+    monkeypatch.delenv("AGENTSHORE_TEST_ALPHA_TOKEN", raising=False)
+    monkeypatch.setenv("AGENTSHORE_TEST_BETA_TOKEN", "")
+    project = _write_valid_project(tmp_path / "token-missing", agentshore_yaml=config)
+    state = ServerState(active_project_path=str(project))
+
+    with (
+        patch.object(identity_mod, "report_identities", _REAL_REPORT_IDENTITIES),
+        patch("agentshore.agents.auth_probe.probe_configured_cli_auth") as backend_probe,
+        pytest.raises(SessionStartError) as excinfo,
+    ):
+        await run_session_start(state, start_bridge=False, start_orchestrator=False)
+
+    assert excinfo.value.step == STEP_CHECK_AGENT_AUTH
+    assert "token failed validation" in str(excinfo.value)
+    assert "AGENTSHORE_TEST_ALPHA_TOKEN" in str(excinfo.value)
+    backend_probe.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

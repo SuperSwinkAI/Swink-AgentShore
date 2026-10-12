@@ -320,8 +320,10 @@ def _check_agent_auth(cfg: RuntimeConfig, project_path: Path) -> None:
     to skip the git-remote probe entirely, so a broken git credential slipped
     past launch and wedged mid-session instead of failing fast here):
 
-    1. Identities — enabled CLI agents must resolve to at least two distinct
-       GitHub logins so review/merge can satisfy anti-confirmation-bias, and
+    1. Identities — every configured identity token must resolve, validate
+       against GitHub, and reach this repository (gh-476); enabled CLI agents
+       must resolve to at least two distinct GitHub logins so review/merge
+       can satisfy anti-confirmation-bias, and
        every identity must cover all model tiers (small/medium/large) —
        code_review is large-tier-only, so concentrating ``large`` on one
        identity deadlocks review (no distinct-identity reviewer).
@@ -344,6 +346,9 @@ def _check_agent_auth(cfg: RuntimeConfig, project_path: Path) -> None:
     from agentshore.agents.auth_probe import probe_configured_cli_auth
     from agentshore.agents.git_auth_probe import probe_all_identities
     from agentshore.agents.identity import (
+        bad_identity_rows,
+        report_identities,
+        report_identity_repo_access,
         require_per_identity_model_tier_coverage,
         require_two_distinct_gh_identities,
     )
@@ -356,6 +361,20 @@ def _check_agent_auth(cfg: RuntimeConfig, project_path: Path) -> None:
             require_per_identity_model_tier_coverage(cfg)
         except ConfigError as exc:
             raise SessionStartError(STEP_CHECK_AGENT_AUTH, -32603, str(exc)) from exc
+        # gh-476: the same token + repo-access gates the CLI's
+        # preflight_identities enforces. Without them a configured identity
+        # whose token doesn't resolve on this machine passed launch and every
+        # instantiate_agent for it failed mid-session.
+        invalid = bad_identity_rows(report_identities(cfg))
+        if invalid:
+            details = "; ".join(f"{r.agent_key}: {r.detail}" for r in invalid)
+            msg = f"configured GitHub identity token failed validation: {details}"
+            raise SessionStartError(STEP_CHECK_AGENT_AUTH, -32603, msg)
+        blocked = [r for r in report_identity_repo_access(cfg, project_path) if not r.ok]
+        if blocked:
+            details = "; ".join(f"{r.agent_key}: {' '.join(r.detail.split())}" for r in blocked)
+            msg = f"configured GitHub identity token cannot access this repository: {details}"
+            raise SessionStartError(STEP_CHECK_AGENT_AUTH, -32603, msg)
 
     def _cli_agent_auth() -> None:
         results = probe_configured_cli_auth(cfg)
