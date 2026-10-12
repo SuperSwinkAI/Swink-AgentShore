@@ -244,7 +244,7 @@ def pr_merge_ready(pr: object, *, target_branch: str | None = None) -> bool:
 
     A PR is merge-ready only when GitHub reports it mergeable, an approval
     signal is present (GitHub APPROVED or an AgentShore code-review PASS at the
-    current head_sha), and no blocking reason (changes_requested, blocked
+    current head_sha), and no blocking reason (draft, changes_requested, blocked
     label, ci_failed, manual_required, merge_conflicts) is in effect. The
     blocking check shares :func:`_pr_blocked_reasons` with
     :func:`pr_unblockable` so the two predicates can never simultaneously be
@@ -261,8 +261,10 @@ def pr_merge_ready(pr: object, *, target_branch: str | None = None) -> bool:
     they re-qualify here.
     """
 
-    reasons = _pr_blocked_reasons(pr)
-    if reasons and reasons != ["draft"]:
+    # A draft is never merge-ready: it goes through the correction process
+    # (unblock_pr rebases, validates, marks it ready) first (#479). Letting
+    # drafts through here had merge_pr re-pick one it could never merge.
+    if _pr_blocked_reasons(pr):
         return False
 
     base_ref = getattr(pr, "base_ref", None)
@@ -325,8 +327,7 @@ def pr_unblockable(pr: object) -> bool:
         return True
     if getattr(pr, "mergeable", None) == "CONFLICTING":
         return True
-    reasons = _pr_blocked_reasons(pr, labels=labels)
-    return bool(reasons and reasons != ["draft"])
+    return bool(_pr_blocked_reasons(pr, labels=labels))
 
 
 # ---------------------------------------------------------------------------

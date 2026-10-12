@@ -1159,3 +1159,21 @@ def test_candidate_resolved_agent_type_none_when_unresolvable() -> None:
 def test_candidate_resolved_agent_type_maps_concrete_agent_id() -> None:
     c = _candidate(PlayType.CODE_REVIEW, PlayParams(target_agent_id="codex-1"))
     assert _candidate_resolved_agent_type(c, {"codex-1": "codex"}) == "codex"
+
+
+def test_draft_pr_routes_to_unblock_not_merge() -> None:
+    """#479: an approved, mergeable draft is a correction target (unblock_pr
+    rebases it and marks it ready), never a merge_pr candidate."""
+    draft = _pr(
+        60,
+        base_ref="main",
+        mergeable="MERGEABLE",
+        review_decision="APPROVED",
+        is_draft=True,
+        blocked=True,
+        blocked_reasons=["draft"],
+    )
+    plan = build_candidate_plan(_state(pull_requests=[draft], target_branch="main"))
+    assert pr_merge_ready(draft) is False
+    assert plan.candidates_for(PlayType.MERGE_PR) == ()
+    assert [c.params.pr_number for c in plan.candidates_for(PlayType.UNBLOCK_PR)] == [60]
