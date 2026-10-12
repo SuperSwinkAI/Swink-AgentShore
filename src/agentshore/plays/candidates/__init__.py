@@ -24,7 +24,7 @@ from agentshore.github.labels import (
 from agentshore.github.pr_links import issue_numbers_for_pr
 from agentshore.github.trust import filter_trusted_pull_requests
 from agentshore.identity_names import canonical_identity_name, same_identity
-from agentshore.logging import get_logger
+from agentshore.logging import first_time, get_logger
 from agentshore.play_rules import (
     DESIGN_AUDIT_FRESHNESS_WINDOW_PLAYS,
     TERMINAL_SHUTDOWN_EVIDENCE_WINDOW_PLAYS,
@@ -211,12 +211,13 @@ class PlayCandidateAnalyzer:
                 )
                 if author is None or author not in trusted:
                     self.untrusted_issue_numbers.add(issue.issue_number)
-                    _logger.info(
-                        "github_issue_ignored",
-                        reason="untrusted_author",
-                        issue_number=issue.issue_number,
-                        author=issue.github_author,
-                    )
+                    if first_time("github_issue_ignored", issue.issue_number, author):
+                        _logger.info(
+                            "github_issue_ignored",
+                            reason="untrusted_author",
+                            issue_number=issue.issue_number,
+                            author=issue.github_author,
+                        )
 
         graph = state.graph
         self._graph_has_epics = bool(

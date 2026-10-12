@@ -30,6 +30,14 @@ def _isolate_live_model_discovery(monkeypatch: pytest.MonkeyPatch) -> Iterator[N
     model_resolver.reset()
 
 
+@pytest.fixture(autouse=True)
+def _reset_log_once() -> None:
+    """Each test sees ``first_time`` log events fresh."""
+    from agentshore import logging as agentshore_logging
+
+    agentshore_logging._seen_once.clear()
+
+
 @pytest.fixture
 def mock_agent_path() -> Path:
     """Return the path to the mock-agent executable.

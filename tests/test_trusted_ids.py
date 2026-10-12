@@ -369,6 +369,11 @@ def test_filter_keeps_allowlisted_pr_number_with_untrusted_author(
         {"pr_number": 99, "author": "stranger", "title": "PR 99", "context": "test"},
     ) in logger.events
 
+    # A later refresh with the same PRs logs nothing new (#477).
+    logger.events.clear()
+    filter_trusted_pull_requests(prs, cfg, context="test")
+    assert logger.events == []
+
 
 def test_filter_logs_allowlisted_even_when_author_is_trusted(
     monkeypatch: pytest.MonkeyPatch,

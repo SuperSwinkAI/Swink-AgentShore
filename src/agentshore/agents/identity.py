@@ -37,7 +37,7 @@ from agentshore.identity_names import (
     login_from_agentshore_keychain_service,
     same_identity,
 )
-from agentshore.logging import get_logger
+from agentshore.logging import first_time, get_logger
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
@@ -340,11 +340,9 @@ class IdentityResolver:
             _logger.warning("identity_gh_cli_missing", login=login)
             return None
         if result.returncode != 0:
-            _logger.warning(
-                "identity_gh_token_lookup_failed",
-                login=login,
-                error=result.stderr.strip()[:200],
-            )
+            error = result.stderr.strip()[:200]
+            if first_time("identity_gh_token_lookup_failed", cache_key, error):
+                _logger.warning("identity_gh_token_lookup_failed", login=login, error=error)
             return None
 
         token = result.stdout.strip()
