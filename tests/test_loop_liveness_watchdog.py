@@ -66,13 +66,15 @@ def test_disabled_timeout_does_not_start_task() -> None:
 async def test_stale_heartbeat_force_drains_and_stops(monkeypatch: Any) -> None:
     """A heartbeat older than the timeout triggers drain + stop within ~one interval."""
     orch = _make_orch(FeedbackConfig(loop_liveness_timeout_seconds=1.0))
-    # Heartbeat stamped well in the past → stale immediately.
-    orch._loop._last_loop_iteration_at = time.monotonic() - 100.0
+    # Heartbeat stamped at the dawn of the monotonic clock → stale immediately.
+    # Not ``monotonic() - 100``: on Linux monotonic is seconds since boot, so on
+    # a freshly provisioned CI runner that went negative and tripped the
+    # watchdog's "not armed yet" guard (``last <= 0.0``), which skips forever.
+    orch._loop._last_loop_iteration_at = 1e-6
     # Shrink the check interval so the watchdog reacts fast in-test.
     monkeypatch.setattr(loop_mod, "_LOOP_LIVENESS_CHECK_INTERVAL_SECONDS", 0.01)
 
-    # Generous cap: this is a liveness bound against a hung watchdog, not a
-    # latency assertion — a 2s cap flaked on loaded CI runners (v0.11.2 release gate).
+    # Liveness bound against a hung watchdog, not a latency assertion.
     await asyncio.wait_for(orch._loop._loop_liveness_watchdog(), timeout=15.0)
 
     orch._drain.begin_drain.assert_awaited_once_with("loop_liveness_timeout")
@@ -94,8 +96,7 @@ async def test_fresh_heartbeat_does_not_fire(monkeypatch: Any) -> None:
         orch._runtime.stop_requested = True
 
     advancer = asyncio.create_task(_advance_heartbeat())
-    # Generous cap: this is a liveness bound against a hung watchdog, not a
-    # latency assertion — a 2s cap flaked on loaded CI runners (v0.11.2 release gate).
+    # Liveness bound against a hung watchdog, not a latency assertion.
     await asyncio.wait_for(orch._loop._loop_liveness_watchdog(), timeout=15.0)
     await advancer
 
@@ -115,8 +116,7 @@ async def test_unarmed_heartbeat_does_not_fire(monkeypatch: Any) -> None:
         orch._runtime.stop_requested = True
 
     stopper = asyncio.create_task(_stop_soon())
-    # Generous cap: this is a liveness bound against a hung watchdog, not a
-    # latency assertion — a 2s cap flaked on loaded CI runners (v0.11.2 release gate).
+    # Liveness bound against a hung watchdog, not a latency assertion.
     await asyncio.wait_for(orch._loop._loop_liveness_watchdog(), timeout=15.0)
     await stopper
 
