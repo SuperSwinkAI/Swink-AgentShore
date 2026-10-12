@@ -71,7 +71,9 @@ async def test_stale_heartbeat_force_drains_and_stops(monkeypatch: Any) -> None:
     # Shrink the check interval so the watchdog reacts fast in-test.
     monkeypatch.setattr(loop_mod, "_LOOP_LIVENESS_CHECK_INTERVAL_SECONDS", 0.01)
 
-    await asyncio.wait_for(orch._loop._loop_liveness_watchdog(), timeout=2.0)
+    # Generous cap: this is a liveness bound against a hung watchdog, not a
+    # latency assertion — a 2s cap flaked on loaded CI runners (v0.11.2 release gate).
+    await asyncio.wait_for(orch._loop._loop_liveness_watchdog(), timeout=15.0)
 
     orch._drain.begin_drain.assert_awaited_once_with("loop_liveness_timeout")
     orch._drain.stop.assert_awaited_once()
@@ -92,7 +94,9 @@ async def test_fresh_heartbeat_does_not_fire(monkeypatch: Any) -> None:
         orch._runtime.stop_requested = True
 
     advancer = asyncio.create_task(_advance_heartbeat())
-    await asyncio.wait_for(orch._loop._loop_liveness_watchdog(), timeout=2.0)
+    # Generous cap: this is a liveness bound against a hung watchdog, not a
+    # latency assertion — a 2s cap flaked on loaded CI runners (v0.11.2 release gate).
+    await asyncio.wait_for(orch._loop._loop_liveness_watchdog(), timeout=15.0)
     await advancer
 
     orch._drain.begin_drain.assert_not_awaited()
@@ -111,7 +115,9 @@ async def test_unarmed_heartbeat_does_not_fire(monkeypatch: Any) -> None:
         orch._runtime.stop_requested = True
 
     stopper = asyncio.create_task(_stop_soon())
-    await asyncio.wait_for(orch._loop._loop_liveness_watchdog(), timeout=2.0)
+    # Generous cap: this is a liveness bound against a hung watchdog, not a
+    # latency assertion — a 2s cap flaked on loaded CI runners (v0.11.2 release gate).
+    await asyncio.wait_for(orch._loop._loop_liveness_watchdog(), timeout=15.0)
     await stopper
 
     orch._drain.begin_drain.assert_not_awaited()

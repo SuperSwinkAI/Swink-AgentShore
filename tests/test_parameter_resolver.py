@@ -2209,7 +2209,9 @@ async def test_resolve_timing_under_100ms() -> None:
         await resolver.resolve(play_type, state)
     elapsed_ms = (time.monotonic() - start) * 1000
 
-    assert elapsed_ms < 100, f"Resolution took {elapsed_ms:.1f}ms, expected <100ms"
+    # Pathological-slowness guard, not a benchmark: 7 resolves over 50 issues/PRs
+    # take ~10ms idle, but a 100ms cap flaked at 125ms under xdist load on CI.
+    assert elapsed_ms < 1000, f"Resolution took {elapsed_ms:.1f}ms, expected <1000ms"
 
 
 # ---------------------------------------------------------------------------
