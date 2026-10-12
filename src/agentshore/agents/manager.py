@@ -320,6 +320,12 @@ class AgentManager:
                     github_identity=github_login,
                     error=str(exc),
                 )
+                # gh-476: sideline the type on the same decaying cooldown as a
+                # launch wedge so instantiate_agent isn't re-picked every tick
+                # for a token that can't resolve; it retries once the cooldown
+                # expires (e.g. after `gh auth login`).
+                self.wedge_cooldown_types.add(agent_type.value)
+                self.wedge_cooldown_reasons[agent_type.value] = "identity_auth"
                 return handle
             handle.identity_env = identity_env
 

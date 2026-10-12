@@ -409,6 +409,27 @@ async def test_instantiate_play_returns_agent_artifact() -> None:
 
 
 @pytest.mark.asyncio
+async def test_instantiate_play_fails_when_identity_preflight_errors() -> None:
+    """gh-476: an agent whose identity preflight failed is not a successful spawn."""
+    play = InstantiateAgentPlay()
+    state = _make_state()
+
+    ctx = MagicMock()
+    ctx.cfg = RuntimeConfig()
+    handle = MagicMock()
+    handle.status = AgentStatus.ERROR
+    handle.last_error_class = "auth"
+    ctx.manager.instantiate = AsyncMock(return_value=handle)
+
+    from agentshore.plays.base import PlayParams
+
+    outcome = await play.execute(state, PlayParams(target_agent_type="claude_code"), ctx=ctx)
+
+    assert outcome.success is False
+    assert "identity preflight failed" in (outcome.error or "")
+
+
+@pytest.mark.asyncio
 async def test_instantiate_play_without_target_uses_first_enabled_config() -> None:
     play = InstantiateAgentPlay()
     state = _make_state()

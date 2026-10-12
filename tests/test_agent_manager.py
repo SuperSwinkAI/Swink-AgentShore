@@ -382,6 +382,9 @@ async def test_instantiate_repo_preflight_failure_does_not_register_agent(
     assert calls == 1
     assert handle.status == AgentStatus.ERROR
     assert handle.last_error_class == "auth"
+    # gh-476: the type is sidelined on the decaying cooldown, not re-spawned every tick.
+    assert AgentType.CODEX.value in mgr.wedge_cooldown_types
+    assert mgr.wedge_cooldown_reasons[AgentType.CODEX.value] == "identity_auth"
     # H5: preflight failure leaves no live, dispatchable handle behind.
     assert handle.agent_id not in mgr.handles
     assert handle.agent_id not in mgr.circuit_breakers

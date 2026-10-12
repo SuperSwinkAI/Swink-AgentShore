@@ -202,6 +202,13 @@ class InstantiateAgentPlay(InternalPlay):
             handle = await ctx.manager.instantiate(agent_type, model_tier=target_model_tier)
         except (aiosqlite.Error, sqlite3.Error, RuntimeError, OSError) as exc:
             return PlayOutcome.failed(self.play_type, str(exc))
+        if handle.status == AgentStatus.ERROR:
+            # gh-476: identity/repo-access preflight failed; the manager never
+            # registered the agent, so this spawn produced nothing.
+            return PlayOutcome.failed(
+                self.play_type,
+                f"{agent_type.value} identity preflight failed ({handle.last_error_class})",
+            )
 
         return PlayOutcome(
             play_type=self.play_type,
