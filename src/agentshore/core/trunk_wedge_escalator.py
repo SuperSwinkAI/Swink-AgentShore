@@ -73,7 +73,14 @@ class TrunkWedgeEscalator:
         if "dirty_trunk" not in error_text:
             return
         entries = await asyncio.to_thread(collect_dirty_trunk_paths, self._repo_root)
-        root_untracked = sorted(e.path for e in entries if e.status == "??" and "/" not in e.path)
+        # Porcelain reports an untracked root *directory* as ``name/``; strip the
+        # trailing slash so it counts as root-level (it previously read as
+        # subdirectory debris, so a root dir could block merge_pr forever with
+        # no wedge signal). force_quarantine_wedge_paths only moves plain
+        # files, so a wedging dir lands in ``unresolved_paths`` for a human.
+        root_untracked = sorted(
+            e.path for e in entries if e.status == "??" and "/" not in e.path.rstrip("/")
+        )
         if not root_untracked:
             # Not this pathology (tracked collision or subdirectory debris) —
             # leave to other handling.

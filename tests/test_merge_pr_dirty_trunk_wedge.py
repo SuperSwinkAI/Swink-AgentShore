@@ -245,3 +245,32 @@ async def test_no_escalation_before_wedge_threshold(tmp_path: Path) -> None:
 
     assert h._main_repo.is_trunk_wedged() is False
     assert (tmp_path / "scratch_plan.md").exists()
+
+
+@pytest.mark.asyncio
+async def test_untracked_root_directory_wedges_and_is_surfaced_not_moved(tmp_path: Path) -> None:
+    """Porcelain lists an untracked root dir as ``.codex/``. It must count as a
+    root-level blocker (it used to read as subdirectory debris and never
+    wedged), and because it can hold user config it is surfaced as unresolved
+    rather than force-moved.
+    """
+    (tmp_path / ".codex").mkdir()
+    (tmp_path / ".codex" / "config.toml").write_text("x")
+    h = _Harness(repo_root=tmp_path)
+    entries = [DirtyTrunkEntry(path=".codex/", status="??")]
+
+    with (
+        _patch_dirty_paths(entries),
+        patch("agentshore.core.trunk_wedge_escalator._logger") as mock_logger,
+    ):
+        for _ in range(3):
+            await h._handle_merge_pr_outcome(_outcome(success=False, error="dirty_trunk"))
+
+    assert h._main_repo.is_trunk_wedged() is True
+    needs_human_call = next(
+        call
+        for call in mock_logger.warning.call_args_list
+        if call.args[0] == "trunk_wedge_needs_human"
+    )
+    assert needs_human_call.kwargs["unresolved_paths"] == [".codex/"]
+    assert (tmp_path / ".codex" / "config.toml").exists()
