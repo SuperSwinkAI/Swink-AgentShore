@@ -96,6 +96,11 @@ def _sidecar_command() -> list[str]:
     return [sys.executable, "-m", "agentshore.sidecar"]
 
 
+def _offline_identity_sidecar_command() -> list[str]:
+    """Sidecar with session.start's identity token gates offline (fixture logins are fake)."""
+    return [sys.executable, str(Path(__file__).with_name("_offline_identity_sidecar.py"))]
+
+
 def _read_rss_kb(pid: int) -> int:
     """Return the sidecar process RSS in kilobytes via ``ps``.
 
@@ -118,9 +123,9 @@ def _read_rss_kb(pid: int) -> int:
     return int(cleaned.split()[0])
 
 
-def _spawn_sidecar() -> subprocess.Popen[str]:
+def _spawn_sidecar(command: list[str] | None = None) -> subprocess.Popen[str]:
     return subprocess.Popen(
-        _sidecar_command(),
+        command or _sidecar_command(),
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -253,7 +258,7 @@ def test_active_sidecar_rss_under_warning_band(
     (project_path / "agentshore.yaml").write_text(VALID_TIERED_CONFIG, encoding="utf-8")
     (project_path / ".beads").mkdir()
 
-    child = _spawn_sidecar()
+    child = _spawn_sidecar(_offline_identity_sidecar_command())
     try:
         _send_handshake(child)
         select_response = _send_rpc(child, 2, "project.select", {"path": str(project_path)})
