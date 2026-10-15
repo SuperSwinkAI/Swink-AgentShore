@@ -90,7 +90,8 @@ pytestmark = pytest.mark.skipif(
 
 
 def _sidecar_command() -> list[str]:
-    return [sys.executable, "-m", "agentshore.sidecar"]
+    # Identity token gates kept offline: the fixture's gh logins are fake.
+    return [sys.executable, str(Path(__file__).with_name("_offline_identity_sidecar.py"))]
 
 
 def _send(child: subprocess.Popen[str], req_id: int, method: str, params: object = None) -> None:
