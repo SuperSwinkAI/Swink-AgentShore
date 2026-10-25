@@ -197,17 +197,16 @@ wheels = [
 
 [[package]]
 name = "beaupy"
-version = "3.12.0"
+version = "4.0.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "emoji" },
     { name = "python-yakh" },
     { name = "questo" },
     { name = "rich" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/80/65/6e501a432db02adb3c974473d73360880878797fbe25405c08024fa76bce/beaupy-3.12.0.tar.gz", hash = "sha256:e0ca6d2356b611ae734c8cf97b28ed9e3bb941d3207af2426e182da836a385d6", size = 16671, upload-time = "2026-05-21T19:10:01.649Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/c5/5c/5ff6032a404f72111bb84eee68756235a6baecbd73811f77c4fae1476e85/beaupy-4.0.1.tar.gz", hash = "sha256:c2118ba6fdbbf4e7415c2477c43ee273d1365152d0a868e512585f251884ccba", size = 19939, upload-time = "2026-10-15T11:58:43.82Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/5f/91/645739784ac1cda4eb4dfaeb7b31aa0fe949499e517c0a9616341bb8201d/beaupy-3.12.0-py3-none-any.whl", hash = "sha256:b3c1451c81ae329f91b27688faac0ae0f7ccbefc5ee97967a888582000d477c9", size = 15007, upload-time = "2026-05-21T19:10:00.595Z" },
+    { url = "https://files.pythonhosted.org/packages/b9/4d/3347581e13a298db6ce5e4b6267483e1036b10bee3cdef26f6f6e0d035a2/beaupy-4.0.1-py3-none-any.whl", hash = "sha256:49a498ba29f0999acc37d944b915ab322051e7058bec0cc8c1f75bc5f27880c4", size = 19686, upload-time = "2026-10-15T11:58:42.669Z" },
 ]
 
 [[package]]
@@ -639,15 +638,6 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/c9/02/bd72be9134d25ed783ecbbc38a539ffaefbf90c78418c7fb7229600dbac7/distlib-0.4.3.tar.gz", hash = "sha256:f152097224a0ae24be5a0f6bae1b9359af82133bce63f98a95f86cae1aede9ed", size = 615141, upload-time = "2026-06-12T08:04:52.847Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/02/08/9c41fb51ab5b43eb21674aff13df270e8ba6c4b29c8624e328dc7a9482af/distlib-0.4.3-py2.py3-none-any.whl", hash = "sha256:4b0ce306c966eb73bc3a7b6abad017c556dadd92c44701562cd528ac7fde4d5b", size = 470628, upload-time = "2026-06-12T08:04:50.506Z" },
-]
-
-[[package]]
-name = "emoji"
-version = "2.15.0"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/a2/78/0d2db9382c92a163d7095fc08efff7800880f830a152cfced40161e7638d/emoji-2.15.0.tar.gz", hash = "sha256:eae4ab7d86456a70a00a985125a03263a5eac54cd55e51d7e184b1ed3b6757e4", size = 615483, upload-time = "2025-09-21T12:13:02.755Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/e1/5e/4b5aaaabddfacfe36ba7768817bd1f71a7a810a43705e531f3ae4c690767/emoji-2.15.0-py3-none-any.whl", hash = "sha256:205296793d66a89d88af4688fa57fd6496732eb48917a87175a023c8138995eb", size = 608433, upload-time = "2025-09-21T12:13:01.197Z" },
 ]
 
 [[package]]
@@ -1772,11 +1762,11 @@ wheels = [
 
 [[package]]
 name = "python-yakh"
-version = "0.4.1"
+version = "0.4.2"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/d2/77/bbff0a1e6fb03b8cc2cc373a44cfbbb4fd22863c657f8630f4a0f5eb207c/python_yakh-0.4.1.tar.gz", hash = "sha256:da03e800b4f2f5d85344f1668e852687c12dc1a99a03c65cf3dc13a3680da49d", size = 3988, upload-time = "2025-01-14T18:08:15.767Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/a0/e5/dc0206d318ca7506624daba9460000818585e61bbe1797f2614e0dda847f/python_yakh-0.4.2.tar.gz", hash = "sha256:7c4b73e8e8ba8f36ca53ed963a3a035f0e11bfa429b807c9aca58105cfd151c0", size = 4039, upload-time = "2026-09-23T10:52:24.8Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/22/42/72571b24514b5f59c328f12e5294b246958951b889fac2bd5321e08a4bab/python_yakh-0.4.1-py3-none-any.whl", hash = "sha256:d69507e13e03d09cefd88030f74b6d5369b67de004be975a35be28eb286122e4", size = 5826, upload-time = "2025-01-14T18:08:13.618Z" },
+    { url = "https://files.pythonhosted.org/packages/4f/ac/5c55846a02aaa9b419e3128342afa24a0e8c33c538b962e747596560d2dc/python_yakh-0.4.2-py3-none-any.whl", hash = "sha256:2aaecaada368a164e8bf334f9ebf7c565406f303ce4fea9f5d19311a3418e04f", size = 5912, upload-time = "2026-09-23T10:52:23.801Z" },
 ]
 
 [[package]]
