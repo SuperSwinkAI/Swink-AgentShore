@@ -64,11 +64,28 @@ def _resolve_epic_for_task(
     return None, None
 
 
+def _dependency_unresolved(dep: Bead, dependent: Bead, open_external_refs: frozenset[str]) -> bool:
+    """True while *dep* still blocks *dependent*.
+
+    A closed dep still blocks if another, non-closed bead mirrors the same
+    GitHub issue (#521). Concurrent mirror creation leaves duplicate beads per
+    ``external_ref``. Groom closes one as a "duplicate mirror", but edges that
+    pointed at it survive, so a closed duplicate would otherwise read as a
+    finished dependency while the issue is still open. A dependent sharing the
+    dep's own ref (an edge to its own duplicate) is never self-blocked.
+    """
+    if dep.status != BeadStatus.CLOSED:
+        return True
+    ref = dep.external_ref
+    return bool(ref) and ref != dependent.external_ref and ref in open_external_refs
+
+
 def _graph_task_from_bead(
     bead: Bead,
     *,
     epics_by_id: dict[str, Bead],
     beads_by_id: dict[str, Bead],
+    open_external_refs: frozenset[str] = frozenset(),
 ) -> GraphTask:
     epic_id, epic_title = _resolve_epic_for_task(
         bead,
@@ -78,7 +95,8 @@ def _graph_task_from_bead(
     blocked_by = frozenset(
         dep_id
         for dep_id in bead.depends_on_ids
-        if dep_id in beads_by_id and beads_by_id[dep_id].status != BeadStatus.CLOSED
+        if dep_id in beads_by_id
+        and _dependency_unresolved(beads_by_id[dep_id], bead, open_external_refs)
     )
     return GraphTask(
         bead_id=bead.bead_id,
@@ -265,11 +283,17 @@ def _build_project_graph(bead_items: list[RawBead]) -> ProjectGraph:
         )
         for epic in epic_beads
     ]
+    open_external_refs = frozenset(
+        bead.external_ref
+        for bead in beads
+        if bead.external_ref and bead.status != BeadStatus.CLOSED
+    )
     tasks = [
         _graph_task_from_bead(
             task,
             epics_by_id=epics_by_id,
             beads_by_id=beads_by_id,
+            open_external_refs=open_external_refs,
         )
         for task in task_beads
     ]

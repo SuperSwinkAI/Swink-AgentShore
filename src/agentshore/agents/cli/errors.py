@@ -126,6 +126,9 @@ _MODEL_FETCH_NETWORK_MARKERS = (
     "connection reset",
     "connection refused",
     "dns error",
+    # #520: "failed to refresh available models: request timed out"
+    "request timed out",
+    "operation timed out",
 )
 _STDIN_CLOSED_AFTER_CACHE_RENEWAL_MARKERS = ("write_stdin failed", "stdin closed")
 

@@ -439,13 +439,23 @@ def test_build_argv_antigravity_shape(monkeypatch: pytest.MonkeyPatch) -> None:
         "--add-dir",
         "/wt",
         "--print-timeout",
-        "50m0s",
+        "24h0m0s",
         "--output-format",
         "stream-json",
         "--dangerously-skip-permissions",
         "-p",
         "do the thing",
     ]
+
+
+def test_build_argv_antigravity_print_timeout_exceeds_play_budget() -> None:
+    """#518: agy's self-timeout must sit above AgentShore's own play budget."""
+    from agentshore.config.models import RuntimeConfig
+
+    argv = build_argv(AgentType.ANTIGRAVITY, "x", binary="agy", project_dir="/wt")
+    ceiling = argv[argv.index("--print-timeout") + 1]
+    hours = int(ceiling.split("h", 1)[0])
+    assert hours * 3600 > RuntimeConfig().effective_play_timeout("issue_pickup")
 
 
 def test_build_argv_antigravity_windows_stays_plain_text(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -2543,6 +2553,7 @@ def test_classify_error_codex_ttl_markers_on_stdout_only_are_not_auth(stdout: st
         "failed to refresh available models: timeout waiting for child process to exit",
         "failed to renew cache TTL: EOF while parsing a value at line 1",
         "failed to renew cache TTL: unknown variant `audio`, expected `text` or `image`",
+        "failed to refresh available models: request timed out",
     ],
 )
 def test_classify_error_transient_cache_blip_is_not_auth(stderr: str) -> None:
@@ -2702,6 +2713,17 @@ def test_stderr_sniffer_ignores_codex_cache_schema_parse_error() -> None:
     line = (
         "ERROR codex_models_manager::manager: failed to renew cache TTL: unknown "
         "variant `audio`, expected `text` or `image` at line 129 column 15\n"
+    )
+    assert sniffer.feed(line) is False
+    assert sniffer.auth_hit is False
+
+
+def test_stderr_sniffer_ignores_codex_model_refresh_request_timeout() -> None:
+    """#520: a model-list request timeout is a network blip, not an auth death."""
+    sniffer = _StderrSniffer()
+    line = (
+        "ERROR codex_models_manager::manager: failed to refresh available models: "
+        "request timed out\n"
     )
     assert sniffer.feed(line) is False
     assert sniffer.auth_hit is False

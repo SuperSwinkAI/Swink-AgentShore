@@ -1978,6 +1978,30 @@ async def test_block_issue_on_adds_beads_edge() -> None:
 
 
 @pytest.mark.asyncio
+async def test_block_issue_on_targets_live_bead_not_closed_duplicate() -> None:
+    """#521: with a closed duplicate mirror of the blocker listed last, the edge
+    must land on the live bead; a last-wins lookup linked the closed one, which
+    never blocks, so the same dep-blocked issue was re-picked indefinitely."""
+    from agentshore.beads import BeadStatus, BlockingDependencyOutcome, GraphTask, ProjectGraph
+
+    graph = _dep_graph()
+    dup = GraphTask(bead_id="bead-12-dup", title="t12", status=BeadStatus.CLOSED, issue_number=12)
+    graph = ProjectGraph(tasks=[*graph.tasks, dup])  # type: ignore[attr-defined]
+    state = dataclasses.replace(_make_state(), graph=graph)
+    github = AsyncMock()
+    github.label_issue = AsyncMock(return_value=True)
+    github.fetch_pull_request_by_number = AsyncMock(return_value=None)
+
+    with patch(
+        "agentshore.plays.executor.add_blocking_dependency",
+        new=AsyncMock(return_value=BlockingDependencyOutcome.LINKED),
+    ) as mock_add:
+        await _run_block_issue_on(state, github)
+
+    mock_add.assert_awaited_once_with(Path("/tmp/project"), "bead-17", "bead-12")
+
+
+@pytest.mark.asyncio
 async def test_block_issue_on_falls_back_to_label_without_bead_mirror() -> None:
     """No beads graph → stamp ``agentshore/blocked`` AND post a blocked-by marker
     comment naming the blocker, so groom_backlog can later evidence-clear the

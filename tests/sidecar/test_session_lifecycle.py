@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -36,6 +37,7 @@ from agentshore.agents.auth_probe import (
     AuthProbeResult,
 )
 from agentshore.agents.git_auth_probe import GIT_AUTH_FAILED, GitAuthProbeResult
+from agentshore.command import CommandResult, CommandStatus
 from agentshore.sidecar.server import ServerState, SessionContext, handle_request
 from agentshore.sidecar.session_lifecycle import (
     STEP_CHECK_AGENT_AUTH,
@@ -541,6 +543,142 @@ async def test_check_agent_auth_blocks_when_identity_token_missing(
     assert "token failed validation" in str(excinfo.value)
     assert "AGENTSHORE_TEST_ALPHA_TOKEN" in str(excinfo.value)
     backend_probe.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# gh-516: identity caches are reset at every session.start
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def _fresh_identity_caches() -> Iterator[None]:
+    identity_mod.reset_token_cache()
+    yield
+    identity_mod.reset_token_cache()
+
+
+def _fake_gh_api_user(logins_by_token: dict[str, str]) -> Callable[..., CommandResult]:
+    """Stub ``gh api user``: a token in ``logins_by_token`` validates as that
+    login, any other token gets GitHub's 401. Reads the dict at call time so a
+    test can flip a verdict between sessions."""
+
+    def _gh(*args: str, env_overlay: Mapping[str, str] | None = None, **_: object) -> CommandResult:
+        login = logins_by_token.get((env_overlay or {}).get("GH_TOKEN", ""))
+        if login is None:
+            return CommandResult(
+                args=("gh", *args),
+                returncode=1,
+                stdout="",
+                stderr="gh: Bad credentials (HTTP 401)",
+                status=CommandStatus.NONZERO,
+            )
+        return CommandResult(
+            args=("gh", *args),
+            returncode=0,
+            stdout=f"{login}\n",
+            stderr="",
+            status=CommandStatus.OK,
+        )
+
+    return _gh
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("_fresh_identity_caches")
+async def test_session_start_picks_up_keychain_pat_rotated_since_last_session(
+    tmp_path: Path,
+) -> None:
+    """gh-516: the desktop sidecar outlives sessions. A PAT rewritten in the
+    keychain after a failed session must be read by the next session.start
+    instead of the cached stale token and its 401."""
+    config = VALID_TIERED_CONFIG.replace(
+        "gh_token_login: alpha-agent", "gh_token_keychain: agentshore/alpha-agent"
+    ).replace("gh_token_login: beta-agent", "gh_token_keychain: agentshore/beta-agent")
+    project = _write_valid_project(tmp_path / "rotated-pat", agentshore_yaml=config)
+    state = ServerState(active_project_path=str(project))
+    keychain = {"agentshore/alpha-agent": "revoked-alpha", "agentshore/beta-agent": "beta-tok"}
+    logins_by_token = {"beta-tok": "beta-agent"}
+
+    with (
+        patch.object(identity_mod, "report_identities", _REAL_REPORT_IDENTITIES),
+        patch("agentshore.keyring_child.keyring_get", side_effect=keychain.get) as keyring_get,
+        patch.object(identity_mod.command, "gh_sync", _fake_gh_api_user(logins_by_token)),
+        patch("agentshore.agents.auth_probe.probe_configured_cli_auth", return_value=[]),
+        patch("agentshore.agents.git_auth_probe.probe_all_identities", return_value=[]),
+    ):
+        with pytest.raises(SessionStartError) as excinfo:
+            await run_session_start(state, start_bridge=False, start_orchestrator=False)
+        assert excinfo.value.step == STEP_CHECK_AGENT_AUTH
+        assert "Bad credentials" in str(excinfo.value)
+
+        # User rotates the PAT in the keychain; the sidecar process lives on.
+        keychain["agentshore/alpha-agent"] = "rotated-alpha"
+        logins_by_token["rotated-alpha"] = "alpha-agent"
+        keyring_get.reset_mock()
+
+        outcome = await run_session_start(state, start_bridge=False, start_orchestrator=False)
+
+    assert outcome.session_id == state.session_id
+    keyring_get.assert_any_call("agentshore/alpha-agent")
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("_fresh_identity_caches")
+async def test_session_start_revalidates_token_whose_401_was_cached_last_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gh-516: a negative (401) validation verdict is cached per token. The
+    same token, accepted by GitHub now, must be re-validated on the next
+    session.start rather than failing the launch gate on the stale verdict."""
+    config = VALID_TIERED_CONFIG.replace(
+        "gh_token_login: alpha-agent", "gh_token_env: AGENTSHORE_TEST_ALPHA_TOKEN"
+    ).replace("gh_token_login: beta-agent", "gh_token_env: AGENTSHORE_TEST_BETA_TOKEN")
+    monkeypatch.setenv("AGENTSHORE_TEST_ALPHA_TOKEN", "alpha-tok")
+    monkeypatch.setenv("AGENTSHORE_TEST_BETA_TOKEN", "beta-tok")
+    project = _write_valid_project(tmp_path / "stale-401", agentshore_yaml=config)
+    state = ServerState(active_project_path=str(project))
+    # Env-token identities validate against the identity name as the login.
+    logins_by_token = {"beta-tok": "beta"}
+
+    with (
+        patch.object(identity_mod, "report_identities", _REAL_REPORT_IDENTITIES),
+        patch.object(identity_mod.command, "gh_sync", _fake_gh_api_user(logins_by_token)),
+        patch("agentshore.agents.auth_probe.probe_configured_cli_auth", return_value=[]),
+        patch("agentshore.agents.git_auth_probe.probe_all_identities", return_value=[]),
+    ):
+        with pytest.raises(SessionStartError) as excinfo:
+            await run_session_start(state, start_bridge=False, start_orchestrator=False)
+        assert "Bad credentials" in str(excinfo.value)
+
+        # GitHub now accepts the very same token (e.g. SSO re-authorised).
+        logins_by_token["alpha-tok"] = "alpha"
+
+        outcome = await run_session_start(state, start_bridge=False, start_orchestrator=False)
+
+    assert outcome.session_id == state.session_id
+
+
+@pytest.mark.asyncio
+async def test_session_start_resets_identity_caches_before_token_gate(tmp_path: Path) -> None:
+    """gh-516: the cache reset must precede check_agent_auth's token gate
+    (``report_identities``), the first reader of the identity caches."""
+    project = _write_valid_project(tmp_path / "reset-order", agentshore_yaml=VALID_TIERED_CONFIG)
+    state = ServerState(active_project_path=str(project))
+    calls: list[str] = []
+
+    def _report(cfg: object) -> list[object]:
+        calls.append("report_identities")
+        return []
+
+    with (
+        patch.object(identity_mod, "reset_token_cache", side_effect=lambda: calls.append("reset")),
+        patch.object(identity_mod, "report_identities", side_effect=_report),
+        patch("agentshore.agents.auth_probe.probe_configured_cli_auth", return_value=[]),
+        patch("agentshore.agents.git_auth_probe.probe_all_identities", return_value=[]),
+    ):
+        await run_session_start(state, start_bridge=False, start_orchestrator=False)
+
+    assert calls == ["reset", "report_identities"]
 
 
 # ---------------------------------------------------------------------------

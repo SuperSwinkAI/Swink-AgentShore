@@ -1157,3 +1157,49 @@ def test_pin_bd_in_hook_scripts_rewrites_bare_bd_invocations(tmp_path: Path) -> 
     assert 'command -v "/pinned/bin/bd" >/dev/null 2>&1' in patched
     assert '"/pinned/bin/bd" hooks run pre-commit "$@"' in patched
     assert not_a_bd_hook.read_text(encoding="utf-8") == "#!/usr/bin/env sh\necho unrelated\n"
+
+
+def _raw_task(bead_id: str, status: str, ref: str, deps: tuple[str, ...] = ()) -> dict[str, Any]:
+    return {
+        "id": bead_id,
+        "title": bead_id,
+        "status": status,
+        "issue_type": "task",
+        "external_ref": ref,
+        "dependencies": [{"issue_id": bead_id, "depends_on_id": d, "type": "blocks"} for d in deps],
+    }
+
+
+def test_closed_duplicate_dependency_still_blocks_while_mirror_open() -> None:
+    """#521: an edge to a CLOSED duplicate of a still-open issue keeps blocking."""
+    from agentshore.beads.graph import _build_project_graph
+
+    graph = _build_project_graph(
+        [
+            _raw_task("dup-462", "closed", "gh-462"),
+            _raw_task("live-462", "open", "gh-462"),
+            _raw_task("t-543", "open", "gh-543", deps=("dup-462",)),
+        ]
+    )
+    task = next(t for t in graph.tasks if t.bead_id == "t-543")
+    assert task.blocked_by_ids == frozenset({"dup-462"})
+    assert task.ready is False
+
+
+def test_closed_dependency_resolves_once_every_mirror_closed() -> None:
+    """#521: when no bead for the dep's issue is open, the closed dep is resolved,
+    and an edge to the task's own closed duplicate never self-blocks."""
+    from agentshore.beads.graph import _build_project_graph
+
+    graph = _build_project_graph(
+        [
+            _raw_task("dup-462", "closed", "gh-462"),
+            _raw_task("old-462", "closed", "gh-462"),
+            _raw_task("t-543", "open", "gh-543", deps=("dup-462",)),
+            _raw_task("dup-77", "closed", "gh-77"),
+            _raw_task("t-77", "open", "gh-77", deps=("dup-77",)),
+        ]
+    )
+    by_id = {t.bead_id: t for t in graph.tasks}
+    assert by_id["t-543"].ready is True
+    assert by_id["t-77"].ready is True

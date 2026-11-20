@@ -2,7 +2,7 @@
 
 The Antigravity CLI is invoked headless as::
 
-    agy --model "<MODEL>" --add-dir "<project_dir>" --print-timeout 50m0s \
+    agy --model "<MODEL>" --add-dir "<project_dir>" --print-timeout 24h0m0s \
         --output-format stream-json --dangerously-skip-permissions -p "<PROMPT>"
 
 ``agy`` (verified 1.3.2) offers ``--output-format text|json|stream-json``. AgentShore
@@ -139,13 +139,15 @@ def build_argv(
         args += ["--model", model]
     if project_dir:
         args += ["--add-dir", project_dir]
-    # agy's print-mode wait defaults to 5m0s — far too short for coding tasks
-    # (8-15 min) and there is no documented "disable" sentinel (0s would time out
-    # immediately). Pass a generous 50m ceiling so agy doesn't self-time-out
-    # before AgentShore's own bounds apply; AgentShore owns the dispatch timeout
-    # via the wall-clock budget and the 1800s first-byte watchdog, exactly as it
-    # does for the other CLIs (Claude/Codex have no internal wall-clock). (#216)
-    args += ["--print-timeout", "50m0s"]
+    # Older agy defaulted print-mode wait to 5m0s and timed out immediately on 0s;
+    # newer agy (1.5.x) defaults to 0s = "wait for the turn". Pass an explicit
+    # ceiling far above any play budget so agy never self-times-out before
+    # AgentShore's own bounds apply on either version. AgentShore owns the
+    # dispatch timeout via the per-play wall-clock (issue_pickup: 3h) and the
+    # stream-idle/first-byte watchdogs, exactly as for the other CLIs (#216).
+    # The old 50m value sat *below* the 3h implementation-play budget and
+    # discarded long agy turns (#518).
+    args += ["--print-timeout", "24h0m0s"]
     # ponytail: Windows stays plain text — ConPTY may wrap NDJSON lines; enable
     # once a Windows run confirms stream-json survives the pseudo-console intact.
     if sys.platform != "win32":
