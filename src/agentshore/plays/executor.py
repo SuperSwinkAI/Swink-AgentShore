@@ -12,7 +12,12 @@ import time
 from typing import TYPE_CHECKING
 
 from agentshore.agents._selection import select_agent_for
-from agentshore.beads import BlockingDependencyOutcome, add_blocking_dependency, load_graph
+from agentshore.beads import (
+    BlockingDependencyOutcome,
+    add_blocking_dependency,
+    load_graph,
+    pick_bead_for_issue,
+)
 from agentshore.data.store import (
     ExternalMutationRecord,
     HandoffRecord,
@@ -1265,9 +1270,11 @@ class PlayExecutor:
         blocker_bead: str | None = None
         graph = state.graph
         if graph is not None:
-            by_issue = {t.issue_number: t for t in graph.tasks if t.issue_number is not None}
-            blocked_task = by_issue.get(blocked_issue)
-            blocker_task = by_issue.get(blocker_issue)
+            # pick_bead_for_issue prefers the live bead over a closed duplicate
+            # mirror; a last-wins dict could land the edge on the closed one,
+            # where it never blocks (#521).
+            blocked_task = pick_bead_for_issue(graph.tasks, blocked_issue)
+            blocker_task = pick_bead_for_issue(graph.tasks, blocker_issue)
             if blocked_task is not None and blocker_task is not None:
                 blocked_bead = blocked_task.bead_id or None
                 blocker_bead = blocker_task.bead_id or None
