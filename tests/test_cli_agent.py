@@ -439,13 +439,23 @@ def test_build_argv_antigravity_shape(monkeypatch: pytest.MonkeyPatch) -> None:
         "--add-dir",
         "/wt",
         "--print-timeout",
-        "50m0s",
+        "24h0m0s",
         "--output-format",
         "stream-json",
         "--dangerously-skip-permissions",
         "-p",
         "do the thing",
     ]
+
+
+def test_build_argv_antigravity_print_timeout_exceeds_play_budget() -> None:
+    """#518: agy's self-timeout must sit above AgentShore's own play budget."""
+    from agentshore.config.models import RuntimeConfig
+
+    argv = build_argv(AgentType.ANTIGRAVITY, "x", binary="agy", project_dir="/wt")
+    ceiling = argv[argv.index("--print-timeout") + 1]
+    hours = int(ceiling.split("h", 1)[0])
+    assert hours * 3600 > RuntimeConfig().effective_play_timeout("issue_pickup")
 
 
 def test_build_argv_antigravity_windows_stays_plain_text(monkeypatch: pytest.MonkeyPatch) -> None:
