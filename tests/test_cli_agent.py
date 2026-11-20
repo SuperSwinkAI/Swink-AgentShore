@@ -2542,6 +2542,7 @@ def test_classify_error_codex_ttl_markers_on_stdout_only_are_not_auth(stdout: st
     [
         "failed to refresh available models: timeout waiting for child process to exit",
         "failed to renew cache TTL: EOF while parsing a value at line 1",
+        "failed to renew cache TTL: unknown variant `audio`, expected `text` or `image`",
     ],
 )
 def test_classify_error_transient_cache_blip_is_not_auth(stderr: str) -> None:
@@ -2693,6 +2694,17 @@ def test_stderr_sniffer_feed_flags_auth_tail() -> None:
     assert sniffer.auth_hit is True
     # Subsequent feeds (even more markers) do not re-fire.
     assert sniffer.feed("failed to refresh available models\n") is False
+
+
+def test_stderr_sniffer_ignores_codex_cache_schema_parse_error() -> None:
+    """#519: a serde schema error on cache renewal is not an auth death."""
+    sniffer = _StderrSniffer()
+    line = (
+        "ERROR codex_models_manager::manager: failed to renew cache TTL: unknown "
+        "variant `audio`, expected `text` or `image` at line 129 column 15\n"
+    )
+    assert sniffer.feed(line) is False
+    assert sniffer.auth_hit is False
 
 
 def test_stderr_sniffer_feed_no_match_on_clean_stderr() -> None:

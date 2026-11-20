@@ -96,7 +96,17 @@ __all__ = [
 # These two stay CLI-transport local — they detect a Codex cache-renewal
 # EOF/stdin-hang blip's *shape*, not an error class, so they don't belong in the
 # shared registry.
-_PARSE_EOF_MARKERS = ("eof while parsing", "parsing a value")
+# #519: also covers serde *schema* parse failures — e.g. "failed to renew cache
+# TTL: unknown variant `audio`, expected `text` or `image`" when an older codex
+# CLI meets a newer model-list shape. Same class as the EOF blip: the local
+# cache couldn't decode the response, the credential is fine.
+_PARSE_EOF_MARKERS = (
+    "eof while parsing",
+    "parsing a value",
+    "unknown variant",
+    "missing field",
+    "invalid type:",
+)
 # Codex model-discovery subprocess can also hang (child never exits) rather than
 # returning bad JSON.  The resulting stderr shape is "failed to refresh available
 # models: timeout waiting for child process to exit" — same cache-renewal marker,
