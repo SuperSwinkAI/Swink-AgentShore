@@ -616,6 +616,14 @@ async def run_session_start(
     session_id = str(uuid.uuid4())
     state.session_id = session_id
 
+    # gh-516: the sidecar process outlives sessions, so drop identity token /
+    # keychain / validation / repo-access caches before any phase reads them
+    # (check_agent_auth's token gate is the first). A PAT rotated since the
+    # last session, or a cached 401, must not survive into this one.
+    from agentshore.agents.identity import reset_token_cache
+
+    reset_token_cache()
+
     # Phase 1: config_merge
     cfg: RuntimeConfig | None = None
 

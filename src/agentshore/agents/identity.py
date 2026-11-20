@@ -728,7 +728,12 @@ def resolved_github_login_for_agent(cfg: RuntimeConfig, agent_cfg: AgentConfig) 
 
 
 def reset_token_cache() -> None:
-    """Clear the per-process token caches. Intended for tests."""
+    """Clear the per-process token, keychain, validation and repo-access caches.
+
+    Called at every desktop ``session.start`` (gh-516): the sidecar process
+    outlives sessions, so without this a PAT rotated after app launch, and
+    any cached 401 verdict, would stick until the app was quit.
+    """
     _default_resolver.reset_caches()
 
 
