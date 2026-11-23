@@ -780,3 +780,71 @@ def test_specialization_sort_is_deterministic():
         ("agent-a", "issue_pickup"),
         ("agent-b", "run_qa"),
     ]
+
+
+# ---------------------------------------------------------------------------
+# Flow-block inputs: time since last merge, oldest review wait
+# ---------------------------------------------------------------------------
+
+
+def test_minutes_since_last_merge_never_merged():
+    ctx = _ctx([_FakePlay("issue_pickup", success=True, started_at=_ts(-60), ended_at=_ts(0))])
+    assert ctx.minutes_since_last_merge == pytest.approx(480.0, abs=1e-1)
+
+
+def test_minutes_since_last_merge_counts_merge_pr_and_unblock_merges():
+    history = [
+        _FakePlay("merge_pr", success=True, started_at=_ts(-3700), ended_at=_ts(-3600)),
+        # A failed merge is not a merge.
+        _FakePlay("merge_pr", success=False, started_at=_ts(-2000), ended_at=_ts(-1900)),
+        # unblock_pr that merged in place counts.
+        _FakePlay(
+            "unblock_pr",
+            success=True,
+            started_at=_ts(-700),
+            ended_at=_ts(-600),
+            artifacts=[{"type": "pr_merged", "pr": 7}],
+        ),
+        # unblock_pr that only pushed a fix does not.
+        _FakePlay(
+            "unblock_pr",
+            success=True,
+            started_at=_ts(-300),
+            ended_at=_ts(-200),
+            artifacts=[{"type": "pr_unblock_attempt", "number": 8}],
+        ),
+        _FakePlay("issue_pickup", success=True, started_at=_ts(-100), ended_at=_ts(0)),
+    ]
+    assert _ctx(history).minutes_since_last_merge == pytest.approx(10.0, abs=0.2)
+
+
+def test_oldest_review_wait_uses_only_prs_still_awaiting_review():
+    from types import SimpleNamespace
+
+    def _pr(created_offset_s: float, *, approved: bool) -> SimpleNamespace:
+        return SimpleNamespace(
+            state="open",
+            created_at=_ts(created_offset_s),
+            review_decision="APPROVED" if approved else None,
+            last_review_status=None,
+            last_reviewed_sha=None,
+            head_sha="abc",
+        )
+
+    history = [_FakePlay("issue_pickup", success=True, started_at=_ts(-60), ended_at=_ts(0))]
+    ctx = _build_context(
+        _state(),
+        history,  # type: ignore[arg-type]
+        prs_open=[
+            _pr(-7200, approved=True),  # oldest, but already approved
+            _pr(-3600, approved=False),
+            _pr(-600, approved=False),
+        ],  # type: ignore[list-item]
+        prs_approved=[],
+        learnings=[],
+    )
+    assert ctx.oldest_review_wait_minutes == pytest.approx(60.0, abs=0.2)
+
+
+def test_oldest_review_wait_zero_without_waiting_prs():
+    assert _ctx([]).oldest_review_wait_minutes == 0.0

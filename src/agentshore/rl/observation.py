@@ -1,9 +1,12 @@
 """Observation encoder — builds a fixed-size float32 vector from OrchestratorState
 and ObservationContext.
 
-Slot layout (OBSERVATION_DIM=254, OBSERVATION_VERSION=16):
+Slot layout (OBSERVATION_DIM=254, OBSERVATION_VERSION=17):
   0-1     dependency ( 2)  blocked_task_ratio + ready_task_ratio from beads graph (v13)
-  2-7     retired    ( 6)  permanently zero-filled
+  2-7     flow       ( 6)  pipeline-stage signals (v17; these slots were zero-filled
+                          through v16): planned-backlog, oldest-review-wait,
+                          since-last-merge, review-demand per review-capable agent,
+                          in-flight planning plays, in-flight PR plays
   8-11    epic       ( 4)  global_closure_ratio + top-3 epic closure ratios (Track 5, beads-native)
   12-16   issue      ( 5)  open, closed, created, net-velocity, scope-completion
   17-32   tier-fleet (16)  3 tiers × 5 (idle,busy,avg_success,avg_context,total) + active-count
@@ -46,6 +49,8 @@ from typing import TYPE_CHECKING, Final
 
 import numpy as np
 
+from agentshore.agents._selection import allowed_tiers_for
+from agentshore.github.labels import PLANNED_LABELS
 from agentshore.play_rules import pr_is_approved
 from agentshore.rl.action_space import (
     NUM_ACTIONS,
@@ -122,7 +127,7 @@ _SPEC_NEUTRAL: Final[float] = 0.5
 OBSERVATION_DIM: Final[int] = (
     73 + _CONFIG_BLOCK_SIZE + _PR_AUTHOR_FEATURES + 7 + _SPEC_BLOCK_SIZE
 )  # = 254 with NUM_ACTIONS=22 and a 6-provider PR-author block (#91, #325, copilot)
-OBSERVATION_VERSION: Final[int] = 16
+OBSERVATION_VERSION: Final[int] = 17
 
 # Per-feature saturation points (clip then scale → [0, 1])
 _SAT_DOLLAR_PER_PLAY: Final[float] = 2.0
@@ -139,11 +144,35 @@ _SAT_RAMPUP_MS: Final[float] = 10_000.0
 _SAT_ISSUE_VELOCITY: Final[float] = 10.0
 _LOOP_LEVEL_MAX: Final[float] = 3.0
 _SAT_AGENTS_IN_ERROR: Final[float] = 5.0
+# Flow block (slots 2-7).
+_SAT_PLANNED_BACKLOG: Final[float] = 20.0
+_SAT_MINUTES_FLOW: Final[float] = 240.0  # review wait / since-last-merge
+_SAT_REVIEW_DEMAND: Final[float] = 5.0  # awaiting-review PRs per review-capable agent
+# Plays that produce plans/decompositions (upstream of implementation) and plays
+# that move an open PR toward merge (downstream of it). Counted in flight so the
+# policy can see where the fleet is currently spending itself.
+_PLANNING_PLAYS: Final[frozenset[PlayType]] = frozenset(
+    {PlayType.WRITE_IMPLEMENTATION_PLAN, PlayType.REFINE_TASK_BREAKDOWN}
+)
+_PR_FLOW_PLAYS: Final[frozenset[PlayType]] = frozenset(
+    {PlayType.CODE_REVIEW, PlayType.UNBLOCK_PR, PlayType.MERGE_PR}
+)
 
 # Named slot indices — locked; changing any value bumps OBSERVATION_VERSION
 _S_BLOCKED_TASK_RATIO: Final[int] = 0  # beads: blocked / total tasks
 _S_READY_TASK_RATIO: Final[int] = 1  # beads: ready / total tasks
-# Slots 2-7: retired, permanently zero-filled
+# Slots 2-7 (v17): pipeline-flow signals. Zero-filled through v16, so a v16
+# checkpoint migrates by zeroing these six input columns (see
+# ``checkpoint_store.migrate_previous_observation_canonical``).
+_S_PLANNED_BACKLOG: Final[int] = 2  # planned issues with no PR and no agent on them
+_S_REVIEW_WAIT: Final[int] = 3  # minutes the oldest awaiting-review PR has waited
+_S_SINCE_MERGE: Final[int] = 4  # minutes since the last PR merged this session
+_S_REVIEW_DEMAND: Final[int] = 5  # awaiting-review PRs per live review-capable agent
+_S_INFLIGHT_PLANNING: Final[int] = 6  # in-flight plan/refine plays
+_S_INFLIGHT_PR_FLOW: Final[int] = 7  # in-flight review/unblock/merge plays
+# First retired-then-reused slot and one past the last; the migration zeroes this range.
+FLOW_BLOCK_START: Final[int] = _S_PLANNED_BACKLOG
+FLOW_BLOCK_END: Final[int] = _S_INFLIGHT_PR_FLOW + 1
 # Slots 8-11 repurposed in Track 5 (v7): epic closure ratios from beads graph.
 # Previously: top-2 legacy alignment slots plus legacy mean/count.
 _S_EPIC_GLOBAL_RATIO: Final[int] = 8  # global_closure_ratio from ProjectGraph
@@ -262,6 +291,12 @@ class ObservationContext:
     # tracks tier eligibility rather than ephemeral agent_ids. Defaults to ()
     # so existing callers that build a context by-hand still type-check.
     agent_specialization: tuple[AgentPlaySpecializationSnapshot, ...] = ()
+    # Flow block inputs (slots 3-4). Minutes the oldest open PR still awaiting
+    # review has existed, and minutes since a PR last merged in this session
+    # (max staleness when none has). Both measured against the latest play's
+    # end time, like the other time-since metrics, so encoding stays deterministic.
+    oldest_review_wait_minutes: float = 0.0
+    minutes_since_last_merge: float = 0.0
 
 
 def _clamp(val: float, lo: float = 0.0, hi: float = 1.0) -> float:
@@ -295,7 +330,45 @@ def encode_observation(
     if state.graph is not None and state.graph.tasks_total > 0:
         obs[_S_BLOCKED_TASK_RATIO] = _clamp(state.graph.tasks_blocked / state.graph.tasks_total)
         obs[_S_READY_TASK_RATIO] = _clamp(state.graph.tasks_ready / state.graph.tasks_total)
-    # Slots 2-7 remain zero-filled (formerly cluster data).
+
+    # ---- FLOW (2-7): where work is piling up and where the fleet is spending ----
+    # Planned backlog: issues that already carry a plan but have no open PR and no
+    # agent on them. A growing value means planning is outrunning implementation.
+    open_pr_issue_numbers = {
+        n for pr in state.pull_requests if pr.state == "open" for n in pr.linked_issue_numbers
+    }
+    in_flight_issue_numbers = set(state.in_flight_issues)
+    planned_backlog = sum(
+        1
+        for issue in state.open_issues
+        if (issue.issue_number in state.planned_issues or PLANNED_LABELS & set(issue.labels))
+        and issue.issue_number not in open_pr_issue_numbers
+        and issue.issue_number not in in_flight_issue_numbers
+    )
+    obs[_S_PLANNED_BACKLOG] = _norm(planned_backlog, _SAT_PLANNED_BACKLOG)
+    obs[_S_REVIEW_WAIT] = _norm(ctx.oldest_review_wait_minutes, _SAT_MINUTES_FLOW)
+    obs[_S_SINCE_MERGE] = _norm(ctx.minutes_since_last_merge, _SAT_MINUTES_FLOW)
+    # Review demand vs. supply: awaiting-review PRs per live agent whose tier is
+    # allowed to review. With no such agent the demand is unmet, so it saturates.
+    review_tiers = allowed_tiers_for(PlayType.CODE_REVIEW)
+    review_capable = sum(
+        1
+        for a in state.agents
+        if a.status in (AgentStatus.IDLE, AgentStatus.BUSY)
+        and (review_tiers is None or (a.model_tier or "medium") in review_tiers)
+    )
+    if ctx.prs_awaiting_review <= 0:
+        obs[_S_REVIEW_DEMAND] = 0.0
+    elif review_capable == 0:
+        obs[_S_REVIEW_DEMAND] = 1.0
+    else:
+        obs[_S_REVIEW_DEMAND] = _norm(ctx.prs_awaiting_review / review_capable, _SAT_REVIEW_DEMAND)
+    obs[_S_INFLIGHT_PLANNING] = _norm(
+        sum(1 for pt in state.in_flight_plays if pt in _PLANNING_PLAYS), float(_MAX_TOTAL_AGENTS)
+    )
+    obs[_S_INFLIGHT_PR_FLOW] = _norm(
+        sum(1 for pt in state.in_flight_plays if pt in _PR_FLOW_PLAYS), float(_MAX_TOTAL_AGENTS)
+    )
 
     # ---- EPIC (8-11): live beads closure ratios (Track 5) ----
     # global_closure_ratio (slot 8) + top-3 epic closure ratios sorted by

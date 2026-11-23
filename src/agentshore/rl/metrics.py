@@ -290,6 +290,8 @@ def _build_context(
     now_epoch = _parse_iso_seconds(last.ended_at or last.started_at) if last else 0.0
     minutes_since_alignment = _minutes_since(history, {"calibrate_alignment"}, now_epoch)
     minutes_since_intake = _minutes_since(history, {"seed_project"}, now_epoch)
+    minutes_since_merge = _minutes_since_last_merge(history, now_epoch)
+    oldest_review_wait = _oldest_review_wait_minutes(prs_open, now_epoch)
 
     # Stagnation = whole minutes that ALL agents have been idle.
     # Any BUSY agent resets to 0 — work in progress is not stagnation.
@@ -380,7 +382,46 @@ def _build_context(
         ),
         agent_specialization=tuple(compute_agent_specialization(history)),
         executor_skip_rate_recent_50=executor_skip_rate_recent_50,
+        oldest_review_wait_minutes=oldest_review_wait,
+        minutes_since_last_merge=minutes_since_merge,
     )
+
+
+def _play_merged_pr(play: PlayRecord) -> bool:
+    """True when a successful play merged a PR (merge_pr, or unblock_pr merging in place)."""
+    if not play.success:
+        return False
+    if play.play_type == PlayType.MERGE_PR.value:
+        return True
+    return any(
+        isinstance(artifact, dict) and artifact.get("type") == "pr_merged"
+        for artifact in play.artifacts
+    )
+
+
+def _minutes_since_last_merge(history: list[PlayRecord], now_epoch: float) -> float:
+    """Minutes since a PR last merged this session; max staleness when none has."""
+    for p in reversed(history):
+        if _play_merged_pr(p):
+            ts = _parse_iso_seconds(p.ended_at or p.started_at)
+            if ts > 0.0 and now_epoch > 0.0:
+                return max(0.0, (now_epoch - ts) / 60.0)
+            return 0.0
+    return 480.0
+
+
+def _oldest_review_wait_minutes(prs_open: Sequence[PullRequestRecord], now_epoch: float) -> float:
+    """Minutes the oldest open PR still awaiting review has existed (0.0 when none)."""
+    if now_epoch <= 0.0:
+        return 0.0
+    oldest = 0.0
+    for pr in prs_open:
+        if not pr_is_awaiting_review(pr):
+            continue
+        created = _parse_iso_seconds(pr.created_at)
+        if created > 0.0:
+            oldest = max(oldest, (now_epoch - created) / 60.0)
+    return max(0.0, oldest)
 
 
 def _parse_iso_seconds(ts: str | None) -> float:
