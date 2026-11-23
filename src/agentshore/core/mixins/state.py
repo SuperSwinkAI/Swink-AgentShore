@@ -776,6 +776,9 @@ class StateBuilder:
             human_feedback_count=data.human_feedback_count,
         )
 
+        # Needs the assembled snapshot (it compares each target's current
+        # fingerprint), and must land before the mask is derived from candidates.
+        state.cooled_down_targets = self._runtime.target_attempts.cooled_down(state)
         self.annotate_action_mask(state)
         return state
 

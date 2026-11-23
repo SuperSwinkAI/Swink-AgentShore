@@ -396,6 +396,7 @@ class CompletionProcessor:
         await self._record_unblock_attempt_if_needed(ctx, outcome, completed_play_type)
         self._record_merge_pr_repick_cooldown_if_needed(ctx, outcome, completed_play_type)
         await self._park_unplannable_issue_if_needed(ctx, outcome, completed_play_type)
+        self._record_target_attempt(ctx, outcome, completed_play_type)
         next_state = await self._run_completion_control_checks(outcome)
         await self._record_completion_experience(
             ctx,
@@ -671,6 +672,32 @@ class CompletionProcessor:
             outcome,
             completed_play_type,
         )
+
+    def _record_target_attempt(
+        self,
+        ctx: _DispatchContext,
+        outcome: PlayOutcome,
+        completed_play_type: PlayType,
+    ) -> None:
+        """Feed the shared no-progress ledger (``plays.attempt_ledger``).
+
+        State-keyed and play-agnostic: a repeat of the same play on a target whose
+        snapshot is unchanged arms a short, decaying cooldown for that pair. The
+        text-keyed circuits above stay as they are; this catches the repeats they
+        were never written for.
+        """
+        armed = self._runtime.target_attempts.record(
+            completed_play_type, ctx.params, ctx.state_at_dispatch, outcome
+        )
+        if armed:
+            _logger.info(
+                "target_no_progress_cooldown_armed",
+                session_id=self._session_id,
+                play_type=completed_play_type.value,
+                issue_number=ctx.params.issue_number,
+                pr_number=ctx.params.pr_number,
+                success=outcome.success,
+            )
 
     def _record_merge_pr_repick_cooldown_if_needed(
         self,
