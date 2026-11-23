@@ -57,6 +57,14 @@ _EXPECTED_ISSUES: dict[PlayType, int | None] = {
     PlayType.DESIGN_AUDIT: 5,
     PlayType.CODE_REVIEW: 3,
     PlayType.CLEANUP: 3,
+    # WRITE_IMPLEMENTATION_PLAN / SYSTEMATIC_DEBUGGING (1 -> 2): both skills
+    #   instruct the agent to file an issue for a genuine blocking prerequisite
+    #   (plan) or a distinct additional bug found with evidence (debug) and to
+    #   report it in ``issues_created``. With no entry the allowance was 0, so an
+    #   agent that followed its skill had the whole play rejected as inflation.
+    #   One is the healthy case; more than two means the play is doing triage.
+    PlayType.WRITE_IMPLEMENTATION_PLAN: 1,
+    PlayType.SYSTEMATIC_DEBUGGING: 1,
 }
 
 # ---------------------------------------------------------------------------
