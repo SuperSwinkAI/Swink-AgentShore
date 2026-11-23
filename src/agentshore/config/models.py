@@ -489,6 +489,12 @@ class SkillsConfig:
     install_on_start: bool = True
     path: str = ".agents/skills/"
     context_file: str = ".agentshore/context.json"
+    # Ask CLIs that can enforce a JSON Schema on the final message to enforce the
+    # result envelope (``result_parser.RESULT_ENVELOPE_JSON_SCHEMA``). Applies
+    # only to harnesses verified to support it; every harness keeps the prompt
+    # contract, text parser and retry as fallback. Set False to go back to
+    # prompt-only on all harnesses.
+    enforce_result_schema: bool = True
 
 
 @dataclass(frozen=True)

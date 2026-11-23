@@ -707,6 +707,12 @@ class OrchestratorState:
     # re-selected every tick (the unblock_pr hot-loop, issue #60). Snapshotted
     # each tick from the orchestrator's in-memory park set; empty by default.
     parked_resource_keys: frozenset[str] = field(default_factory=frozenset)
+    # (play_type value, resource key) pairs withheld this tick because the same
+    # play already ran against that target repeatedly and left it unchanged
+    # (``plays.attempt_ledger``). Per-play, unlike ``parked_resource_keys``: a PR
+    # cooled down for unblock_pr stays reviewable and mergeable. Snapshotted each
+    # tick; an entry lapses as soon as the target changes or its window elapses.
+    cooled_down_targets: frozenset[tuple[str, str]] = field(default_factory=frozenset)
     # Agent-type values currently in a transient launch-wedge cooldown (Grok
     # first-byte timeout). This is a
     # DECAYING mask: the state-builder drops each entry once its cooldown expires,

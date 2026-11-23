@@ -200,8 +200,8 @@ def test_observation_vector_size_unchanged() -> None:
     assert OBSERVATION_DIM == 254
 
 
-def test_observation_version_bumped_to_16() -> None:
-    assert OBSERVATION_VERSION == 16
+def test_observation_version_bumped_to_17() -> None:
+    assert OBSERVATION_VERSION == 17
 
 
 def test_observation_vector_size_with_graph() -> None:

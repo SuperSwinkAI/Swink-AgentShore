@@ -30,6 +30,7 @@ from agentshore.play_rules import (
     TERMINAL_SHUTDOWN_EVIDENCE_WINDOW_PLAYS,
     needs_review,
 )
+from agentshore.plays.attempt_ledger import target_key
 from agentshore.plays.base import PlayParams
 from agentshore.plays.candidates.freshness import (
     design_audit_is_fresh,
@@ -380,6 +381,7 @@ class PlayCandidateAnalyzer:
         blocked: dict[PlayType, list[str]] = {}
         active_keys = active_resource_keys(state)
         parked_keys = state.parked_resource_keys
+        cooled_down = state.cooled_down_targets
         wedge_cooldown = state.wedge_cooldown_agent_types
         # agent_id -> agent_type.value, so a target_agent_id candidate can be
         # checked against the launch-wedge cooldown set.
@@ -392,6 +394,16 @@ class PlayCandidateAnalyzer:
             if parked_hit:
                 reasons = blocked.setdefault(candidate.play_type, [])
                 msg = f"resource parked (worktree allocation failed): {', '.join(parked_hit)}"
+                if msg not in reasons:
+                    reasons.append(msg)
+                return
+            # Same play already ran against this target repeatedly without
+            # changing it (plays.attempt_ledger). Withheld per play: the target
+            # stays available to every other play.
+            cooled_key = target_key(candidate.play_type, candidate.params)
+            if cooled_key is not None and cooled_key in cooled_down:
+                reasons = blocked.setdefault(candidate.play_type, [])
+                msg = f"no-progress cooldown: {cooled_key[1]}"
                 if msg not in reasons:
                     reasons.append(msg)
                 return
@@ -743,6 +755,23 @@ class PlayCandidateService:
         *,
         idle_reviewers: list[AgentSnapshot] | None = None,
     ) -> list[PlayCandidate]:
+        candidates = await self._discover_candidates(
+            play_type, state, idle_reviewers=idle_reviewers
+        )
+        if not state.cooled_down_targets:
+            return candidates
+        # The store- and GitHub-backed discovery paths don't go through
+        # ``PlayCandidateAnalyzer.build``, so apply the shared no-progress
+        # cooldown here as well: one rule, every path.
+        return [c for c in candidates if not _on_no_progress_cooldown(c, state)]
+
+    async def _discover_candidates(
+        self,
+        play_type: PlayType,
+        state: OrchestratorState,
+        *,
+        idle_reviewers: list[AgentSnapshot] | None = None,
+    ) -> list[PlayCandidate]:
         if play_type in {
             PlayType.WRITE_IMPLEMENTATION_PLAN,
             PlayType.SYSTEMATIC_DEBUGGING,
@@ -1063,6 +1092,12 @@ class PlayCandidateService:
         except (OSError, TimeoutError, json.JSONDecodeError, KeyError, ValueError) as exc:
             _logger.warning(log_key, error=str(exc))
             return []
+
+
+def _on_no_progress_cooldown(candidate: PlayCandidate, state: OrchestratorState) -> bool:
+    """True when this play/target pair is withheld by ``plays.attempt_ledger``."""
+    key = target_key(candidate.play_type, candidate.params)
+    return key is not None and key in state.cooled_down_targets
 
 
 def _healthy_review_tier_agents(state: OrchestratorState) -> list[AgentSnapshot]:

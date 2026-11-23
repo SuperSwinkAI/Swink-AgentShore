@@ -171,6 +171,8 @@ async def test_issue_inflation_raises_when_exceeds_threshold() -> None:
         (PlayType.DESIGN_AUDIT, 5),
         (PlayType.CODE_REVIEW, 3),
         (PlayType.CLEANUP, 3),
+        (PlayType.WRITE_IMPLEMENTATION_PLAN, 1),
+        (PlayType.SYSTEMATIC_DEBUGGING, 1),
     ],
 )
 @pytest.mark.asyncio
@@ -229,4 +231,26 @@ async def test_refine_tasks_unbounded_issues_no_inflation() -> None:
         session_id="sess-7",
         scope_cfg=_cfg(threshold=2.0),
         store=store,
+    )
+
+
+@pytest.mark.parametrize(
+    "play_type", [PlayType.WRITE_IMPLEMENTATION_PLAN, PlayType.SYSTEMATIC_DEBUGGING]
+)
+@pytest.mark.asyncio
+async def test_plan_and_debug_may_file_the_one_issue_their_skill_asks_for(
+    play_type: PlayType,
+) -> None:
+    """write-plan files a blocking prerequisite and debugging files a distinct bug.
+
+    Both skills tell the agent to record that issue in ``issues_created``; an
+    allowance of 0 rejected a play that followed its own instructions.
+    """
+    await validate_scope(
+        skill_result=_result(issues_created=[10]),
+        play_id=9,
+        play_type=play_type,
+        session_id="sess-9",
+        scope_cfg=_cfg(threshold=2.0),
+        store=_make_store(),
     )

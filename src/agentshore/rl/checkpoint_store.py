@@ -69,6 +69,95 @@ def _prune_local_checkpoints(weights_dir: Path, keep: int = _LOCAL_CHECKPOINT_KE
             stale.unlink()
 
 
+# Observation versions whose checkpoints differ from the current layout only in the
+# flow block (slots 2-7), which was permanently zero-filled before v17. Such a
+# checkpoint is carried forward exactly by zeroing those input columns.
+_FLOW_BLOCK_MIGRATABLE_OBSERVATION_VERSIONS: frozenset[int] = frozenset({16})
+_FIRST_LAYER_WEIGHT_KEY = "trunk.0.weight"
+
+
+def migrate_flow_block_checkpoint(source: Path, dest: Path) -> bool:
+    """Carry a pre-v17 checkpoint forward to the current observation layout.
+
+    v17 reuses slots 2-7, which every earlier compatible version fed as constant
+    zeros. Zeroing the first layer's weights for those columns and re-stamping the
+    version gives a policy that produces the same outputs it did before for any
+    state (the new inputs are multiplied by zero), while leaving those weights
+    free to learn the new signals. Trained behaviour is preserved; nothing is
+    retrained.
+
+    Returns True when *dest* was written. Any other version, shape, or head
+    mismatch returns False and writes nothing — the caller then falls back to the
+    normal seed / cold-start path.
+    """
+    from agentshore.rl.observation import FLOW_BLOCK_END, FLOW_BLOCK_START, OBSERVATION_DIM
+
+    try:
+        payload = torch.load(source, map_location="cpu", weights_only=True)
+    except (OSError, RuntimeError, ValueError) as exc:
+        _logger.warning("flow_block_migration_load_failed", path=str(source), error=str(exc))
+        return False
+    if not isinstance(payload, dict):
+        return False
+    state_dict = payload.get("state_dict")
+    if not isinstance(state_dict, dict):
+        return False
+    weight = state_dict.get(_FIRST_LAYER_WEIGHT_KEY)
+    if (
+        payload.get("observation_version") not in _FLOW_BLOCK_MIGRATABLE_OBSERVATION_VERSIONS
+        or payload.get("action_space_version") != ACTION_SPACE_VERSION
+        or payload.get("policy_version") != POLICY_VERSION
+        or payload.get("obs_dim") != OBSERVATION_DIM
+        or not isinstance(weight, torch.Tensor)
+        or weight.ndim != 2
+        or weight.shape[1] != OBSERVATION_DIM
+    ):
+        return False
+
+    migrated_weight = weight.clone()
+    migrated_weight[:, FLOW_BLOCK_START:FLOW_BLOCK_END] = 0.0
+    migrated = dict(payload)
+    migrated["state_dict"] = {**state_dict, _FIRST_LAYER_WEIGHT_KEY: migrated_weight}
+    migrated["observation_version"] = OBSERVATION_VERSION
+
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=dest.parent, suffix=".tmp")
+    try:
+        os.close(fd)
+        torch.save(migrated, tmp)
+        os.replace(tmp, dest)
+    except (OSError, RuntimeError) as exc:
+        _logger.warning("flow_block_migration_write_failed", path=str(dest), error=str(exc))
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        return False
+    _logger.info(
+        "flow_block_checkpoint_migrated",
+        source=str(source),
+        dest=str(dest),
+        from_observation_version=payload.get("observation_version"),
+        to_observation_version=OBSERVATION_VERSION,
+    )
+    return True
+
+
+def migrate_previous_observation_canonical(weights_dir: Path) -> bool:
+    """Create the current canonical from a migratable previous-version one.
+
+    No-op when the current canonical already exists (never overwrite live
+    weights) or no migratable predecessor is present. The predecessor is left in
+    place for ``_archive_old_canonicals`` to quarantine as usual.
+    """
+    current = weights_dir / canonical_weights_filename()
+    if current.exists():
+        return False
+    for version in sorted(_FLOW_BLOCK_MIGRATABLE_OBSERVATION_VERSIONS, reverse=True):
+        previous = weights_dir / f"policy_a{ACTION_SPACE_VERSION}_o{version}_p{POLICY_VERSION}.pt"
+        if previous.is_file() and migrate_flow_block_checkpoint(previous, current):
+            return True
+    return False
+
+
 def _archive_old_canonicals(weights_dir: Path) -> None:
     """Quarantine canonical weights that don't match the current version triple.
 
@@ -81,6 +170,9 @@ def _archive_old_canonicals(weights_dir: Path) -> None:
     Sibling to cleanup_stale_canonical_weights (which handles the legacy unnamed
     policy.pt). Never deletes — renames so the user can inspect.
     """
+    # Carry a migratable previous-version canonical forward before quarantining it,
+    # so an observation bump that only reuses zero-filled slots keeps its training.
+    migrate_previous_observation_canonical(weights_dir)
     current = weights_dir / canonical_weights_filename()
     for f in sorted(weights_dir.glob("policy_*.pt")):
         if f == current or f.name.startswith("policy_legacy_"):

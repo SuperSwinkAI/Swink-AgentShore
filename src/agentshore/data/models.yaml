@@ -33,8 +33,9 @@ models:
     - claude-haiku-5-5
     - claude-sonnet-5-5
     - claude-opus-5-5
-    - claude-fable-5-1
+    - claude-fable-5-2
     # Pinned model IDs — earlier generations
+    - claude-fable-5-1
     - claude-haiku-4-5
     - claude-sonnet-4-5
     - claude-sonnet-4-6

@@ -39,6 +39,7 @@ from enum import StrEnum
 from typing import TYPE_CHECKING
 
 from agentshore.config import RuntimeConfig
+from agentshore.plays.attempt_ledger import TargetAttemptLedger
 from agentshore.state import NullStateProvider
 
 if TYPE_CHECKING:
@@ -225,6 +226,9 @@ class SessionRuntime:
     )
     resource_failure_counts: dict[str, int] = field(default_factory=dict)
     parked_resource_keys: set[str] = field(default_factory=set)
+    # Repeated same-play attempts that left their target unchanged; the state
+    # builder snapshots its cooled-down pairs into ``state.cooled_down_targets``.
+    target_attempts: TargetAttemptLedger = field(default_factory=TargetAttemptLedger)
     # Agent types that hit a *transient* launch wedge (Grok first-byte timeout).
     # DECAYING suppression: agent_type -> expiry tick. State-builder seeds
     # (tick + _GROK_WEDGE_COOLDOWN_TICKS) and

@@ -448,12 +448,17 @@ class PPOSelector:
                     )
                     continue
 
+            # Store the mask the action was actually sampled under. After a clean
+            # re-pick ``remaining_mask`` is narrower than ``mask``; ``log_prob`` was
+            # computed over the narrower distribution, so replaying the wider mask
+            # in the PPO update would evaluate a different distribution and bias
+            # the importance ratio below 1 on every re-picked step.
             self._pending = _PendingStep(
                 obs=obs,
                 action=action,
                 log_prob=log_prob,
                 value=value,
-                mask=mask,
+                mask=remaining_mask.copy(),
                 config_action=cfg_action,
                 config_log_prob=cfg_log_prob,
                 config_mask=cfg_mask_arr,

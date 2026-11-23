@@ -371,6 +371,7 @@ class AgentManager:
         resume_session_id: str | None = None,
         first_byte_timeout_override: float | None = None,
         disallowed_tools: tuple[str, ...] = (),
+        result_schema: str | None = None,
     ) -> AgentInvocationResult:
         """Route *prompt* to the agent's adapter and return the raw result.
 
@@ -475,6 +476,7 @@ class AgentManager:
                 resume_session_id=resume_session_id,
                 first_byte_timeout_override=first_byte_timeout_override,
                 disallowed_tools=disallowed_tools,
+                result_schema=result_schema,
             )
         except (OrchestratorError, OSError, RuntimeError) as exc:
             cb.record_failure()

@@ -67,6 +67,7 @@ def _build_dispatch_argv(
     prompt_file: str | None = None,
     pinned_session_id: str | None = None,
     disallowed_tools: tuple[str, ...] = (),
+    result_schema: str | None = None,
 ) -> _DispatchArgv:
     """Build the subprocess argv list and log-preview fields for a single dispatch.
 
@@ -81,6 +82,9 @@ def _build_dispatch_argv(
     the pin — IS forwarded on the resume path, since the retry continues the
     same play. The test-shim path ignores it: the shim is a Python mock with no
     tool surface to deny.
+    *result_schema*, when set, asks schema-capable CLIs to enforce it on the
+    final message (see ``cli_argv.with_result_schema``); forwarded on the resume
+    path too, and likewise ignored by the test shim.
     """
     prompt_on_stdin = cli_argv._prompt_on_stdin(python_executable)
     if python_executable is not None:
@@ -134,6 +138,9 @@ def _build_dispatch_argv(
             disallowed_tools=disallowed_tools,
         )
 
+    if python_executable is None:
+        argv = cli_argv.with_result_schema(handle.agent_type, argv, result_schema)
+
     prompt_bytes = len(prompt.encode("utf-8"))
 
     # Clamp argv_preview: the last argv element is the full skill prompt (~7 KB);
@@ -167,6 +174,7 @@ async def dispatch_cli(
     resume_session_id: str | None = None,
     first_byte_timeout_override: float | None = None,
     disallowed_tools: tuple[str, ...] = (),
+    result_schema: str | None = None,
     supervisor: ProcessRunner | None = None,
     driver_registry: CliDriverRegistry = DEFAULT_CLI_DRIVERS,
 ) -> AgentInvocationResult:
@@ -267,6 +275,7 @@ async def dispatch_cli(
         prompt_file=(str(preparation.prompt_file) if preparation.prompt_file is not None else None),
         pinned_session_id=preparation.pinned_session_id,
         disallowed_tools=disallowed_tools,
+        result_schema=result_schema,
     )
     argv, prompt_bytes, argv_str = _argv.argv, _argv.prompt_bytes, _argv.argv_str
 

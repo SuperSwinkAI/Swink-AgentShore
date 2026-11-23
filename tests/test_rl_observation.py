@@ -184,8 +184,9 @@ def test_encode_identical_bytes_same_input():
 # ---------------------------------------------------------------------------
 
 
-def test_dependency_and_retired_slots_zero_without_graph():
-    # Without a graph, dependency slots 0-1 and retired slots 2-7 are 0.0.
+def test_dependency_and_flow_slots_zero_on_empty_state():
+    # Without a graph, dependency slots 0-1 are 0.0; an empty state has no flow
+    # (slots 2-7): nothing planned, no PRs waiting, no merges tracked, nothing in flight.
     obs = encode_observation(_state(), _NULL_CTX)
     assert obs[_S_BLOCKED_TASK_RATIO] == pytest.approx(0.0)
     assert obs[_S_READY_TASK_RATIO] == pytest.approx(0.0)
@@ -458,10 +459,89 @@ def test_obs_version_is_nonzero():
 # ---------------------------------------------------------------------------
 
 
-def test_retired_slots_are_zero_regardless_of_ctx():
-    # Retired slots (2-7) are always 0.0; dependency slots 0-1 are 0.0 without graph.
-    obs = encode_observation(_state(), _NULL_CTX)
-    assert obs[2:8].sum() == pytest.approx(0.0, abs=1e-5)
+def _flow_issue(number: int, labels: list[str]) -> IssueSnapshot:
+    return IssueSnapshot(
+        issue_number=number, title="t", state="OPEN", priority=None, labels=labels, source=None
+    )
+
+
+def _flow_agent(agent_id: str, tier: str, status: AgentStatus = AgentStatus.IDLE) -> AgentSnapshot:
+    return dataclasses.replace(_agent(agent_id, status), model_tier=tier)
+
+
+def test_flow_block_occupies_the_formerly_retired_slots():
+    from agentshore.rl.observation import FLOW_BLOCK_END, FLOW_BLOCK_START
+
+    assert (FLOW_BLOCK_START, FLOW_BLOCK_END) == (2, 8)
+
+
+def test_planned_backlog_counts_plans_nobody_is_implementing():
+    from agentshore.rl.observation import _S_PLANNED_BACKLOG
+
+    pr_for_three = dataclasses.replace(_author_pr(90, "codex"), issue_number=3)
+    state = _state(
+        open_issues=[
+            _flow_issue(1, ["agentshore/planned"]),  # counted
+            _flow_issue(2, []),  # counted via planned_issues
+            _flow_issue(3, ["agentshore/planned"]),  # has an open PR
+            _flow_issue(4, ["agentshore/has-plan"]),  # an agent is on it
+            _flow_issue(5, []),  # never planned
+        ],
+        planned_issues=frozenset({2}),
+        pull_requests=[pr_for_three],
+        in_flight_issues=[4],
+    )
+    obs = encode_observation(state, _NULL_CTX)
+    assert obs[_S_PLANNED_BACKLOG] == pytest.approx(2 / 20.0, abs=1e-5)
+
+
+def test_review_wait_and_since_merge_are_normalised_minutes():
+    from agentshore.rl.observation import _S_REVIEW_WAIT, _S_SINCE_MERGE
+
+    obs = encode_observation(
+        _state(), _ctx(oldest_review_wait_minutes=60.0, minutes_since_last_merge=480.0)
+    )
+    assert obs[_S_REVIEW_WAIT] == pytest.approx(0.25, abs=1e-5)
+    assert obs[_S_SINCE_MERGE] == pytest.approx(1.0, abs=1e-5)  # saturates at 240
+
+
+def test_review_demand_is_waiting_prs_per_review_capable_agent():
+    from agentshore.rl.observation import _S_REVIEW_DEMAND
+
+    ctx = _ctx(prs_awaiting_review=4)
+    # code_review is large-tier only: two live large agents share four PRs.
+    fleet = [
+        _flow_agent("a", "large"),
+        _flow_agent("b", "large", AgentStatus.BUSY),
+        _flow_agent("c", "medium"),
+        _flow_agent("d", "large", AgentStatus.TERMINATED),
+    ]
+    obs = encode_observation(_state(agents=fleet), ctx)
+    assert obs[_S_REVIEW_DEMAND] == pytest.approx((4 / 2) / 5.0, abs=1e-5)
+    # Demand with nobody able to review is fully unmet.
+    obs = encode_observation(_state(agents=[_flow_agent("c", "medium")]), ctx)
+    assert obs[_S_REVIEW_DEMAND] == pytest.approx(1.0)
+    # No waiting PRs means no demand, whatever the fleet.
+    obs = encode_observation(_state(agents=[]), _ctx(prs_awaiting_review=0))
+    assert obs[_S_REVIEW_DEMAND] == pytest.approx(0.0)
+
+
+def test_in_flight_planning_and_pr_flow_counts():
+    from agentshore.rl.observation import _S_INFLIGHT_PLANNING, _S_INFLIGHT_PR_FLOW
+
+    state = _state(
+        in_flight_plays=[
+            PlayType.WRITE_IMPLEMENTATION_PLAN,
+            PlayType.WRITE_IMPLEMENTATION_PLAN,
+            PlayType.REFINE_TASK_BREAKDOWN,
+            PlayType.CODE_REVIEW,
+            PlayType.MERGE_PR,
+            PlayType.ISSUE_PICKUP,
+        ]
+    )
+    obs = encode_observation(state, _NULL_CTX)
+    assert obs[_S_INFLIGHT_PLANNING] == pytest.approx(3 / 10.0, abs=1e-5)
+    assert obs[_S_INFLIGHT_PR_FLOW] == pytest.approx(2 / 10.0, abs=1e-5)
 
 
 def test_budget_remaining_clamps():
@@ -681,7 +761,10 @@ def test_observation_version_is_16():
     # block (8 → 10 slots).
     # v16: bumped 15 → 16 when copilot was appended to the PR-author block
     # (10 → 12 slots).
-    assert OBSERVATION_VERSION == 16
+    # v17: bumped 16 → 17 when the zero-filled slots 2-7 became the flow block
+    # (planned backlog, review wait, since-merge, review demand, in-flight
+    # planning / PR plays). Dimension unchanged; v16 checkpoints migrate.
+    assert OBSERVATION_VERSION == 17
 
 
 # ---------------------------------------------------------------------------
