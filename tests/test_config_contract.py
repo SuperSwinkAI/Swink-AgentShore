@@ -223,7 +223,7 @@ def test_agent_config_has_timeout_and_output_size() -> None:
     assert (
         config.agent_timeout == 10800
     )  # 3h max-runtime backstop; silence (stream_idle) is primary
-    assert config.pricebook.resolve("claude_code", None).cost_per_1k_cached_input == 0.0002
+    assert config.pricebook.resolve("claude_code", None).cost_per_1k_cached_input == 0.0001
     assert config.pricebook.resolve("codex", None).cost_per_1k_cached_input == 0.000175
     assert config.pricebook.resolve("grok", None).cost_per_1k_cached_input == 0.0002
     assert config.skills.path == ".agents/skills/"
