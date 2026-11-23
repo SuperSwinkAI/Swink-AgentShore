@@ -1462,6 +1462,15 @@ def test_confirm_drift_repick_increments_telemetry_and_logs_confirm_repick():
     ]
     assert confirm_repicks, "confirm_repick must be logged for a live-drift re-pick"
 
+    # The recorded step must carry the mask the action was sampled under: the
+    # rejected play is excluded, so the PPO update evaluates the same narrowed
+    # distribution that produced the stored log-prob.
+    pending = sel.consume_pending()
+    assert pending is not None
+    assert pending.action == merge_idx
+    assert not pending.mask[wip_idx]
+    assert pending.mask[merge_idx]
+
 
 # ---------------------------------------------------------------------------
 # update_orchestrator_cfg — mid-session preference reload
