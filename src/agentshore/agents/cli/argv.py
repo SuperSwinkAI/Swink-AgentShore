@@ -132,6 +132,44 @@ _TOOL_DENIAL_CAPABLE_AGENT_TYPES: frozenset[AgentType] = frozenset(
 )
 
 
+# Agent types whose CLI can enforce a JSON Schema on the final message *in the
+# output mode AgentShore already uses*. Claude Code: ``--json-schema`` works with
+# ``-p --output-format stream-json``; the terminal ``result`` event then carries
+# the validated object both as ``structured_output`` and as its ``result`` text
+# (verified live, claude 2.1.330). A capability set, not a policy one — add a CLI
+# here only after confirming on a real dispatch where its structured result
+# lands and that an open (extra-properties-allowed) schema is accepted.
+_RESULT_SCHEMA_CAPABLE_AGENT_TYPES: frozenset[AgentType] = frozenset({AgentType.CLAUDE_CODE})
+
+
+def with_result_schema(
+    agent_type: AgentType, argv: list[str], schema_json: str | None
+) -> list[str]:
+    """Return *argv* with the final-message schema flag added where supported.
+
+    A no-op for agent types outside :data:`_RESULT_SCHEMA_CAPABLE_AGENT_TYPES`
+    and when no schema is requested — those dispatches rely on the prompt's
+    result contract and the text parser, exactly as before. Also a no-op on
+    Windows: the agent CLIs are npm ``.cmd`` shims there, and an inline JSON
+    argument does not survive cmd.exe quoting.
+    """
+    import sys
+
+    if (
+        not schema_json
+        or agent_type not in _RESULT_SCHEMA_CAPABLE_AGENT_TYPES
+        or sys.platform == "win32"
+    ):
+        return argv
+    # Claude: place the flag directly after the output-format pair so it precedes
+    # the positional prompt on both the fresh and the ``--resume`` argv shapes.
+    try:
+        anchor = argv.index("stream-json") + 1
+    except ValueError:
+        return argv
+    return [*argv[:anchor], "--json-schema", schema_json, *argv[anchor:]]
+
+
 def _apply_yolo_default(agent_type: AgentType, extra_flags: tuple[str, ...]) -> tuple[str, ...]:
     """Return YOLO defaults for *agent_type* when the user provided no flags."""
     if extra_flags:

@@ -20,7 +20,7 @@ from agentshore.plays.dispatch import (
     serialize_state_for_skill,
     write_play_context,
 )
-from agentshore.result_parser import parse_skill_result
+from agentshore.result_parser import RESULT_ENVELOPE_SCHEMA_JSON, parse_skill_result
 from agentshore.state import AgentType, PlayOutcome, PlayType, SkillResult
 
 if TYPE_CHECKING:
@@ -735,6 +735,12 @@ class SkillBackedPlay(Play, ABC):
                 failure_kind=FailureKind.AGENT_ERROR,
             )
 
+        # Harness-enforced result envelope where the CLI supports it; the prompt
+        # contract and the parse/retry path below remain the fallback everywhere.
+        result_schema = (
+            RESULT_ENVELOPE_SCHEMA_JSON if ctx.cfg.skills.enforce_result_schema else None
+        )
+
         invocation = await ctx.manager.dispatch(
             agent_id,
             prompt,
@@ -742,6 +748,7 @@ class SkillBackedPlay(Play, ABC):
             play_type=self.play_type.value,
             cwd_override=dispatch_cwd,
             disallowed_tools=self.disallowed_tools,
+            result_schema=result_schema,
         )
 
         # desktop no-op resilience: a clean-exit empty no-op (agy returns an empty
@@ -787,6 +794,7 @@ class SkillBackedPlay(Play, ABC):
                     play_type=self.play_type.value,
                     cwd_override=dispatch_cwd,
                     disallowed_tools=self.disallowed_tools,
+                    result_schema=result_schema,
                 )
                 invocation = _merge_invocation_costs(invocation, retry_invocation)
                 attempt += 1
@@ -948,6 +956,7 @@ class SkillBackedPlay(Play, ABC):
                 # denials must hold across it — otherwise omitting a result
                 # block once would be enough to shed them.
                 disallowed_tools=self.disallowed_tools,
+                result_schema=result_schema,
             )
             retry_result = parse_skill_result(retry_invocation.raw_output)
             _logger.info(

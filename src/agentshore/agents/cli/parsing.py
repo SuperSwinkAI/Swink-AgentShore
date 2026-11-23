@@ -201,9 +201,20 @@ def _extract_text_from_antigravity_stream_json(raw: str) -> tuple[str, _UsageTot
 
 def _extract_text_from_stream_json(raw: str) -> str:
     last_result: str | None = None
+    structured: object = None
     for event in _iter_json_events(raw):
-        if event.get("type") == "result" and "result" in event:
+        if event.get("type") != "result":
+            continue
+        if "result" in event:
             last_result = str(event["result"])
+        if isinstance(event.get("structured_output"), dict):
+            structured = event["structured_output"]
+    # A schema-enforced dispatch (``--json-schema``) reports the validated object
+    # as ``structured_output``. It is the authoritative result: use it whenever the
+    # result text does not already carry that JSON, so prose around or instead of
+    # the envelope can never cost a completed play its result.
+    if structured is not None and (last_result is None or not last_result.lstrip().startswith("{")):
+        return json.dumps(structured)
     if last_result is not None:
         return last_result
 

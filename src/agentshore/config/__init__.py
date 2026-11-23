@@ -310,6 +310,7 @@ skills:
   install_on_start: true
   path: .agents/skills/
   context_file: .agentshore/context.json
+  enforce_result_schema: true
 
 mode: solo
 socket: null

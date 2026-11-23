@@ -24,6 +24,26 @@ _MAX_COMPACTED_ENTRIES = 500
 _ARTIFACT_TYPE_NOISE_SUFFIXES: tuple[str, ...] = ("_result", "_results")
 
 
+# The result envelope every skill ends with, as a JSON Schema. Passed to CLIs that
+# can enforce a schema on the final message (``agents.cli.argv.with_result_schema``)
+# so the envelope is guaranteed by the harness instead of requested in prose. It
+# pins only what ``parse_skill_result`` needs to accept a result — a top-level
+# boolean ``success`` and an ``artifacts`` array of objects — and leaves every
+# play-specific field open (no ``additionalProperties: false``), so one schema
+# serves all skills. Harnesses without schema support, and any run where the
+# schema path yields nothing, still go through the text parser and its retries.
+RESULT_ENVELOPE_JSON_SCHEMA: dict[str, object] = {
+    "type": "object",
+    "properties": {
+        "success": {"type": "boolean"},
+        "artifacts": {"type": "array", "items": {"type": "object"}},
+        "error": {"type": ["string", "null"]},
+    },
+    "required": ["success", "artifacts"],
+}
+RESULT_ENVELOPE_SCHEMA_JSON: str = json.dumps(RESULT_ENVELOPE_JSON_SCHEMA, separators=(",", ":"))
+
+
 def normalize_artifact_type(value: object) -> str | None:
     """Fold an artifact ``type`` to a canonical form for matching, or ``None``.
 

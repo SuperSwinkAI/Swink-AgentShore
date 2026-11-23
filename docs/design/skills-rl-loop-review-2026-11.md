@@ -180,3 +180,13 @@ Recommendation: add no play now. Repair the signal (R1, L1), measure one run, th
 3. Refresh the model catalog and the Claude argv gaps (§4).
 4. Spike schema-enforced results (P1).
 5. Revisit new plays with one post-R1 run as the baseline.
+
+## Status after owner review (2026-11-23)
+
+| Item | Decision | State on this branch |
+|---|---|---|
+| R1, L1 reward and credit assignment | Proceed carefully: earlier testing without the current reward stalled into endless low-cost plays | Not changed. Next step is an offline replay of candidate rewards against recorded `rl_experience`; keep the anti-stall terms, make the concurrency bonus fleet-size-invariant, add attributed merge credit additively |
+| L6 observation signals | Accepted | Done as observation v17. Slots 2–7 carry planned backlog, oldest review wait, minutes since last merge, review demand per review-capable agent, and in-flight planning / PR plays. Dimension unchanged; v16 weights migrate automatically (identical outputs on prior states), bundled seed migrated |
+| P1 schema-enforced results | Do both: schema where supported, prompt contract and retries kept | Done for Claude Code (`--json-schema`, verified live on 2.1.330 with `stream-json`). `skills.enforce_result_schema` switches it off. Codex and Antigravity need a live check on a real dispatch before joining `_RESULT_SCHEMA_CAPABLE_AGENT_TYPES` — in particular whether Codex accepts a schema that leaves extra properties open |
+| Shared no-progress cooldown | Accepted | Done (`plays/attempt_ledger.py`): same play, same target, unchanged snapshot, twice → that pair is withheld for 15 plays, doubling to a cap of 120, lifted when the target changes |
+| Model catalog | Fix the base | Claude done (Fable 5.2 added, cache-read rates corrected). Codex, Grok and Antigravity defaults need ids confirmed from each CLI's live model list |
