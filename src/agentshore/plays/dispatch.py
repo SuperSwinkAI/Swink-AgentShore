@@ -228,6 +228,13 @@ async def render_skill_prompt(
     allow_full_learnings = skill_name in _FULL_LEARNINGS_SKILLS
     if not allow_full_learnings:
         skill_content = _strip_full_learnings_reads(skill_content)
+    # Skill bodies name the shared ``.agentshore/context.json``, which is only a
+    # latest-write copy: with several plays in flight it can hold another play's
+    # params, scoped issues and PR review state. Point every body reference at this
+    # play's own context file so the body agrees with the discipline preamble
+    # instead of contradicting it.
+    if context_path != DEFAULT_CONTEXT_RELATIVE_PATH:
+        skill_content = skill_content.replace(DEFAULT_CONTEXT_RELATIVE_PATH, context_path)
     header = f"$ARGUMENTS: {arg_str}" if arg_str else "$ARGUMENTS: (none)"
     cwd_block = (
         _CWD_DISCIPLINE_TEMPLATE.format(dispatch_cwd=dispatch_cwd)

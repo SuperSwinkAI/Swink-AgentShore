@@ -140,6 +140,37 @@ async def test_render_prompt_omits_cwd_block_when_no_allocation(tmp_path: Path) 
 # ---------------------------------------------------------------------------
 
 
+async def test_render_prompt_rewrites_body_context_references_to_play_file(
+    tmp_path: Path,
+) -> None:
+    """Skill bodies must read this play's context file, not the shared latest copy.
+
+    Templates name ``.agentshore/context.json``; with several plays in flight
+    that file can belong to another play. The renderer points every body
+    reference at the per-play path, so only the preamble's explicit "legacy
+    copy" sentence still names the shared file.
+    """
+    play_context = ".agentshore/contexts/sess/play-7.json"
+    result = await render_skill_prompt(
+        "agentshore-issue-pickup",
+        PlayParams(issue_number=42),
+        project_path=tmp_path,
+        context_path=play_context,
+    )
+
+    assert f'"${{AGENTSHORE_PROJECT_PATH:-$(pwd)}}/{play_context}"' in result
+    assert f"`$AGENTSHORE_PROJECT_PATH/{play_context}`" in result
+    assert result.count(".agentshore/context.json") == 1
+    assert "legacy `.agentshore/context.json` file" in result
+
+
+async def test_render_prompt_keeps_default_context_path_untouched(tmp_path: Path) -> None:
+    result = await render_skill_prompt(
+        "agentshore-issue-pickup", PlayParams(issue_number=42), project_path=tmp_path
+    )
+    assert '"${AGENTSHORE_PROJECT_PATH:-$(pwd)}/.agentshore/context.json"' in result
+
+
 async def test_render_skill_prompt_uses_existing_skill_md(tmp_path: Path) -> None:
     """Happy path: when SKILL.md is already present, its body is embedded directly."""
     skill_dir = tmp_path / ".agents" / "skills" / "agentshore-seed-project"
