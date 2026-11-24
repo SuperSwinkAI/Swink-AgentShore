@@ -190,3 +190,13 @@ Recommendation: add no play now. Repair the signal (R1, L1), measure one run, th
 | P1 schema-enforced results | Do both: schema where supported, prompt contract and retries kept | Done for Claude Code (`--json-schema`, verified live on 2.1.330 with `stream-json`). `skills.enforce_result_schema` switches it off. Codex and Antigravity need a live check on a real dispatch before joining `_RESULT_SCHEMA_CAPABLE_AGENT_TYPES` — in particular whether Codex accepts a schema that leaves extra properties open |
 | Shared no-progress cooldown | Accepted | Done (`plays/attempt_ledger.py`): same play, same target, unchanged snapshot, twice → that pair is withheld for 15 plays, doubling to a cap of 120, lifted when the target changes |
 | Model catalog | Fix the base | Claude done (Fable 5.2 added, cache-read rates corrected). Codex, Grok and Antigravity defaults need ids confirmed from each CLI's live model list |
+
+## Status update (2026-11-24)
+
+| Item | State |
+|---|---|
+| R1 offline replay | `scripts/reward_replay.py` (read-only). Run on the five SuperSwink-Worker sessions; busy/live decode exact on 207/207 rows against `fleet_concurrency.ndjson`. Findings: in 127dcebf successful plans averaged −1.02 and the policy still chose them at p≈1.0 among ~5 unmasked actions, so the plan flood was not paid for by the concurrency term. The candidate (utilisation-only concurrency plus attributed merge credit) does not remove the stall risk: `issue_pickup` still earns less than refine, cleanup and design audit, mainly from its failure rate. Live reward unchanged |
+| L5 config head | Fixed. Load grafts a cold-start config head when widths differ; the shared global canonical is always written head-stripped so projects with different rosters keep sharing. Config-choice learning now resets to the cold-start bias each session |
+| L8 pickup statuses | Fixed. `DONE_WITH_CONCERNS` / `NEEDS_CONTEXT` dropped; partial PRs say `Refs`. Open: `_merge_reconcile` still closes the bead by branch prefix on a `Refs` PR |
+| Claude argv | Code review now passes `--disallowedTools=Write,Edit,MultiEdit,NotebookEdit` (verified live: tools removed from the init event). Bash writes remain possible. Session id not pinned (stream-json reports it on the first event) |
+| #522 worktree disk | Stale worktrees drop gitignored build output each poll tick; `disk_high_water_mb` defaults to max(4 GiB, 10% of volume). The YAML parser had been turning the governor off for every real config; `min_free_disk_mb` and `reap_failed_pr_after_n` still parse to 0 when omitted |
