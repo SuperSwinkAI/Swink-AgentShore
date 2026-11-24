@@ -37,7 +37,7 @@ All branching, rebase, and PR-base operations MUST use `$TARGET_BRANCH`. `$DEFAU
 
 **Create the work branch:** `git switch -c "$BRANCH"`. All subsequent commands run from cwd.
 
-**Implement.** Identify files referenced or related to the component; search the codebase for symbols, imports, patterns; read relevant files, specs, design docs, and the associated tests. Write a short task checklist before editing. If an `AGENTSHORE_IMPLEMENTATION_PLAN` exists, follow it (note in PR body why and use the smallest corrected plan if stale/unsafe); else build a mini-plan covering exact files to modify, tests to add/update, and validation commands. If the work becomes too large for one pass, stop with status `BLOCKED` or `DONE_WITH_CONCERNS` — do not silently broaden scope. Keep the PR reviewable: `agentshore-code-review` blocks any diff over 2500 changed lines, and a later play cannot shrink a blocked oversized PR. When the issue cannot be delivered completely inside that limit, do not open a partial PR (review checks the diff against the whole issue and would block it for missing requirements): stop with `success: false`, status `BLOCKED`, `error: "issue too large for one reviewable PR; needs refinement"`, and the needs-refinement mutation below so `refine_tasks` splits it into slices.
+**Implement.** Identify files referenced or related to the component; search the codebase for symbols, imports, patterns; read relevant files, specs, design docs, and the associated tests. Write a short task checklist before editing. If an `AGENTSHORE_IMPLEMENTATION_PLAN` exists, follow it (note in PR body why and use the smallest corrected plan if stale/unsafe); else build a mini-plan covering exact files to modify, tests to add/update, and validation commands. If the work becomes too large for one pass, stop with status `BLOCKED` (shape below) — do not silently broaden scope. Keep the PR reviewable: `agentshore-code-review` blocks any diff over 2500 changed lines, and a later play cannot shrink a blocked oversized PR. When the issue cannot be delivered completely inside that limit, do not open a partial PR (review checks the diff against the whole issue and would block it for missing requirements): stop with `success: false`, status `BLOCKED`, `error: "issue too large for one reviewable PR; needs refinement"`, and the needs-refinement mutation below so `refine_tasks` splits it into slices.
 
 TDD discipline: for behavior changes, write/update the failing test first, run the narrowest test command, confirm it fails for the expected reason. Implement the smallest complete change advancing the issue; follow existing style; keep edits focused, no unrelated changes. Re-run the narrowest test, confirm pass. Cover one positive case + one edge case when the behavior warrants it.
 
@@ -52,7 +52,7 @@ BASE=$(jq -r '.target_branch // empty' "${AGENTSHORE_PROJECT_PATH:-$(pwd)}/.agen
 gh pr create --base "$BASE" --title "<type>: <summary>" --body "Closes #$ISSUE_NUMBER\n\n## Changes\n- <bullets>\n\n## Test plan\n- <how to verify>"
 ```
 
-Record the URL. **Verify the base:** `gh pr view --json baseRefName,url,state`; if `baseRefName` is not `$BASE`, fix it immediately with `gh pr edit <N> --base "$BASE"`. Confirm the issue is referenced in the body.
+Record the URL. **Verify the base:** `gh pr view --json baseRefName,url,state`; if `baseRefName` is not `$BASE`, fix it immediately with `gh pr edit <N> --base "$BASE"`. Confirm the issue is referenced in the body. If the PR does not fully resolve the issue, use `Refs #$ISSUE_NUMBER` instead of `Closes #$ISSUE_NUMBER`, because `Closes` closes the issue on merge with work still outstanding.
 
 **Forbidden mutations:**
 - Never touch `.github/workflows/**`, `.github/actions/**`, `.gitlab-ci.yml`, `.circleci/**`, `azure-pipelines.yml`, `Jenkinsfile`, `bitbucket-pipelines.yml`, or tests asserting their existence. If CI changes are required, post a comment stating CI config is owned by the human maintainer, request `agentshore/disallowed`, then exit with `success: false`, `error: "ci-change requested but forbidden by skill policy"` and the policy-disallowed mutation shape below.
@@ -78,7 +78,7 @@ Record the URL. **Verify the base:** `gh pr view --json baseRefName,url,state`; 
 }
 ```
 
-`status`: `DONE` | `DONE_WITH_CONCERNS` | `NEEDS_CONTEXT` | `BLOCKED`. `DONE_WITH_CONCERNS` when the change partially advances the issue. Irrecoverable failure → `success: false`.
+`status`: `DONE` (with `success: true`) | `BLOCKED` (with `success: false` and a specific `error`, including when the issue lacks context you need to proceed). Put any concerns about a delivered change in the PR body. Irrecoverable failure → `success: false`.
 
 Optionally include 0–3 `learnings` entries capturing ONLY durable, repo-specific patterns worth reusing in future plays (build/test quirks, conventions, gotchas) — grounded in what actually happened this run, not generic advice. Each entry: `pattern` (the insight), `confidence` 0.0–1.0 (default 0.5), `category` short tag (default `"general"`). Omit the field entirely if nothing reusable was learned. NEVER record secrets, tokens, or one-off details. NEVER record workarounds that violate the Forbidden-mutations rules (e.g. forking).
 
