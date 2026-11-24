@@ -884,6 +884,50 @@ def test_build_resume_argv_grok_forwards_denials_but_never_pins() -> None:
     assert argv[argv.index("--disallowed-tools") + 1] == "write"
 
 
+def test_build_argv_claude_translates_denied_tools_into_one_equals_token() -> None:
+    """claude ``--disallowedTools`` is variadic: a separate value argument would
+    swallow the positional prompt, so the deny list rides one ``=`` token. Each
+    file-mutating tool is named (bare ``Edit`` does not cover ``Write``); unknown
+    names and ``tool(glob)`` specs drop. Claude sessions are never pinned."""
+    argv = build_argv(
+        AgentType.CLAUDE_CODE,
+        "review it",
+        binary="claude",
+        session_id="278771ef-4e14-46ca-8535-39c092b86931",
+        disallowed_tools=("write_file", "edit_file", "write_file(*.md)", "nope"),
+    )
+    assert "--disallowedTools=Write,Edit,MultiEdit,NotebookEdit" in argv
+    assert sum(a.startswith("--disallowedTools") for a in argv) == 1
+    assert "--session-id" not in argv
+    assert argv[-1] == "review it"
+
+
+def test_build_argv_claude_omits_deny_flag_without_denials() -> None:
+    argv = build_argv(AgentType.CLAUDE_CODE, "do it", binary="claude")
+    assert not any(a.startswith("--disallowedTools") for a in argv)
+
+
+def test_build_resume_argv_claude_forwards_denials_alongside_result_schema() -> None:
+    """Deny rules are per-invocation like the permission mode, so the JSON-retry
+    resume must re-assert them; the ``--json-schema`` splice must not disturb them."""
+    from agentshore.agents.cli.argv import with_result_schema
+
+    argv = build_resume_argv(
+        AgentType.CLAUDE_CODE,
+        "emit the block",
+        "claude-sess",
+        binary="claude",
+        disallowed_tools=("write_file", "edit_file"),
+    )
+    if sys.platform != "win32":
+        argv = with_result_schema(AgentType.CLAUDE_CODE, argv, '{"type":"object"}')
+        assert "--json-schema" in argv
+    assert argv[argv.index("--resume") + 1] == "claude-sess"
+    assert "--dangerously-skip-permissions" in argv
+    assert "--disallowedTools=Write,Edit,MultiEdit,NotebookEdit" in argv
+    assert argv[-1] == "emit the block"
+
+
 async def test_dispatch_cli_grok_pins_uuid_session_id(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1170,8 +1214,37 @@ async def test_dispatch_cli_forwards_tool_denials_across_the_json_retry_resume(
 async def test_dispatch_cli_omits_deny_flag_for_agents_that_cannot_express_it(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Claude has no per-dispatch deny flag. The denial is dropped rather than
+    """Codex has no per-dispatch deny flag. The denial is dropped rather than
     passed as an unknown argument that would fail the dispatch at startup."""
+    captured: list[list[str]] = []
+
+    async def fake_create_subprocess_exec(*argv: str, **kwargs: Any) -> _FakeProcess:
+        captured.append(list(argv))
+        return _FakeProcess(_codex_json_lines())
+
+    monkeypatch.setattr(
+        "agentshore.agents.cli.supervisor.asyncio.create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+    monkeypatch.setattr(
+        "agentshore.agents.cli.supervisor.conpty.should_use_conpty", lambda _at: False
+    )
+    cfg = AgentConfig(enabled=True, binary="codex", timeout=10)
+    handle = _make_handle(agent_type=AgentType.CODEX)
+    handle.dispatches = 1
+
+    await dispatch_cli(handle, "review it", cfg=cfg, disallowed_tools=("write_file",))
+
+    assert not any("disallowed" in a.lower() for a in captured[0])
+    assert "write_file" not in captured[0]
+
+
+async def test_dispatch_cli_claude_denies_play_tools_via_disallowed_tools(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Claude's ``--disallowedTools`` deny rules hold under
+    ``--dangerously-skip-permissions``, so the code-review write denial is
+    enforced at the CLI, not merely advisory."""
     captured: list[list[str]] = []
 
     async def fake_create_subprocess_exec(*argv: str, **kwargs: Any) -> _FakeProcess:
@@ -1189,10 +1262,10 @@ async def test_dispatch_cli_omits_deny_flag_for_agents_that_cannot_express_it(
     handle = _make_handle(agent_type=AgentType.CLAUDE_CODE)
     handle.dispatches = 1
 
-    await dispatch_cli(handle, "review it", cfg=cfg, disallowed_tools=("write_file",))
+    await dispatch_cli(handle, "review it", cfg=cfg, disallowed_tools=("write_file", "edit_file"))
 
-    assert "--disallowed-tools" not in captured[0]
-    assert "write_file" not in captured[0]
+    assert "--disallowedTools=Write,Edit,MultiEdit,NotebookEdit" in captured[0]
+    assert "--session-id" not in captured[0]
 
 
 async def test_dispatch_cli_antigravity_resolves_session_id_from_cache(

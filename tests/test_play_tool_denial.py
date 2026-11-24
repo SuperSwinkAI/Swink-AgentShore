@@ -84,6 +84,19 @@ def test_every_declared_denial_reaches_copilot() -> None:
             )
 
 
+def test_every_declared_denial_reaches_claude() -> None:
+    """Claude denies by its own tool names (``--disallowedTools=Write``); a
+    denial with no claude mapping would be silently dropped for claude dispatches."""
+    from agentshore.agents.cli.argv import _CLAUDE_TOOL_NAMES
+
+    registry = build_default_registry()
+    for play_type in registry.covered():
+        for tool in registry.get(play_type).disallowed_tools:
+            assert tool in _CLAUDE_TOOL_NAMES, (
+                f"{play_type.value} denial {tool!r} unmapped for claude"
+            )
+
+
 def test_code_review_is_the_only_play_denying_anything() -> None:
     """Scope guard. Every other play gets the agent's full tool surface; adding
     a denial elsewhere is a deliberate policy decision and should show up here
