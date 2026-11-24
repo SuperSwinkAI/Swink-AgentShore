@@ -175,21 +175,32 @@ def graft_config_head(
     if not config_index or policy.num_configs == len(config_index):
         return policy
     from agentshore.rl.cold_start import apply_cold_start_config_bias
-    from agentshore.rl.policy import ActorCritic
 
-    first = cast("torch.nn.Linear", policy.trunk[0])
-    grafted = ActorCritic(
-        obs_dim=first.in_features,
-        num_actions=policy.actor.out_features,
-        hidden=first.out_features,
-        num_configs=len(config_index),
-    )
-    shared = {k: v for k, v in policy.state_dict().items() if not k.startswith("config_head.")}
-    grafted.load_state_dict(shared, strict=False)
+    grafted = _rebuild(policy, shared_state(policy.state_dict()), len(config_index))
     apply_cold_start_config_bias(grafted, config_index)
     grafted.eval()
     _logger.info("config_head_grafted", saved=policy.num_configs, current=len(config_index))
     return grafted
+
+
+def shared_state(state_dict: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+    """The roster-independent weights: everything except the config head."""
+    return {k: v for k, v in state_dict.items() if not k.startswith("config_head.")}
+
+
+def _rebuild(like: ActorCritic, shared: dict[str, torch.Tensor], num_configs: int) -> ActorCritic:
+    """A policy shaped like *like* with *shared* weights and a fresh config head."""
+    from agentshore.rl.policy import ActorCritic
+
+    first = cast("torch.nn.Linear", like.trunk[0])
+    out = ActorCritic(
+        obs_dim=first.in_features,
+        num_actions=like.actor.out_features,
+        hidden=first.out_features,
+        num_configs=num_configs,
+    )
+    out.load_state_dict(shared, strict=False)
+    return out
 
 
 def _archive_old_canonicals(weights_dir: Path) -> None:
@@ -324,16 +335,21 @@ def write_global_canonical_blocking(
 
     This function performs only synchronous I/O and must be called via
     ``asyncio.to_thread`` from the async ``save_checkpoint`` path.
+
+    The canonical is written head-stripped (``num_configs == 0``), like the
+    bundled seed: the config head is sized and ordered by one project's roster,
+    and the canonical is shared by every project, so only the roster-independent
+    weights go into it. Each session grafts its own head on load.
     """
     from agentshore.rl.policy import ActorCritic, IncompatibleCheckpointError
 
-    current_sd = policy.state_dict()
+    current_sd = shared_state(policy.state_dict())
 
     if reload_base is not None:
         # Compute what this PPO update actually changed.
         try:
             delta: dict[str, torch.Tensor] | None = {
-                k: current_sd[k] - reload_base[k] for k in reload_base
+                k: current_sd[k] - reload_base[k] for k in current_sd
             }
         except (KeyError, RuntimeError):
             # Shape mismatch — architecture changed mid-session; full write.
@@ -342,19 +358,14 @@ def write_global_canonical_blocking(
         delta = None  # No base snapshot; write full weights.
 
     with _exclusive_file_lock(lock_path):
+        merged_sd = current_sd  # no delta or no existing global; full write
         if delta is not None and canonical.exists():
             try:
-                base = ActorCritic.load(canonical)
-                if base.num_configs == policy.num_configs:
-                    merged_sd = {k: base.state_dict()[k] + delta[k] for k in delta}
-                    base.load_state_dict(merged_sd)
-                    to_save = base
-                else:
-                    to_save = policy  # config index mismatch; full write
+                base_sd = shared_state(ActorCritic.load(canonical).state_dict())
+                merged_sd = {k: base_sd[k] + delta[k] for k in delta}
             except (IncompatibleCheckpointError, KeyError, RuntimeError):
-                to_save = policy  # incompatible global; full write
-        else:
-            to_save = policy  # no delta or no existing global; full write
+                merged_sd = current_sd  # incompatible global; full write
+        to_save = _rebuild(policy, merged_sd, 0)
 
         canonical.parent.mkdir(parents=True, exist_ok=True)
         tmp_fd, tmp_path = tempfile.mkstemp(dir=canonical.parent, suffix=".pt.tmp")

@@ -73,12 +73,12 @@ def test_reload_from_headless_canonical_takes_trunk_keeps_head(tmp_path: Path) -
     assert torch.equal(live.actor.weight, seed.actor.weight)
     assert torch.equal(live.config_head.bias, head_before)
 
-    # The next global write upgrades the seed-descended canonical to the roster width.
+    # The shared canonical stays head-stripped: the config head is roster-specific.
     canonical = tmp_path / canonical_weights_filename()
     write_global_canonical_blocking(
         live, outcome.reload_base, canonical, tmp_path / canonical_lock_filename()
     )
-    assert ActorCritic.load(canonical).num_configs == len(_INDEX)
+    assert ActorCritic.load(canonical).num_configs == 0
 
 
 def test_selector_load_from_seed_grafts_head() -> None:
@@ -102,9 +102,29 @@ def test_selector_load_from_seed_grafts_head() -> None:
     assert sel._policy.num_configs == len(_INDEX)
 
 
-def test_reload_still_rejects_nonzero_width_mismatch(tmp_path: Path) -> None:
-    ActorCritic(num_configs=2).save(tmp_path / canonical_weights_filename())
-    live = ActorCritic(num_configs=len(_INDEX))
-    with mock.patch("agentshore.rl.selector_lifecycle._logger"):
-        outcome = reload_shared_weights(live, tmp_path)
-    assert outcome.rejected
+def test_projects_with_different_rosters_keep_sharing(tmp_path: Path) -> None:
+    """Project A's save must not lock project B (other roster width) out of the canonical."""
+    canonical = tmp_path / canonical_weights_filename()
+    lock = tmp_path / canonical_lock_filename()
+    _seed().save(canonical)
+
+    a = graft_config_head(_seed(), _INDEX)
+    a_out = reload_shared_weights(a, tmp_path)
+    with torch.no_grad():
+        a.actor.bias += 1.0
+    write_global_canonical_blocking(a, a_out.reload_base, canonical, lock)
+
+    b = graft_config_head(_seed(), _INDEX[:2])
+    b_head = b.config_head.weight.clone()
+    b_out = reload_shared_weights(b, tmp_path)
+    assert not b_out.rejected
+    assert torch.equal(b.actor.bias, ActorCritic.load(canonical).actor.bias)
+    assert torch.equal(b.config_head.weight, b_head)
+    with torch.no_grad():
+        b.actor.bias += 1.0
+    write_global_canonical_blocking(b, b_out.reload_base, canonical, lock)
+
+    # Both deltas landed (A's +1 then B's +1) and the canonical stayed head-stripped.
+    merged = ActorCritic.load(canonical)
+    assert merged.num_configs == 0
+    assert torch.allclose(merged.actor.bias, _seed().actor.bias + 2.0)
