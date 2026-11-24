@@ -59,7 +59,9 @@ def reload_shared_weights(policy: ActorCritic, global_weights_dir: Path) -> Relo
     session — load failure or config-index mismatch) is reported via
     ``ReloadOutcome.rejected=True`` so the caller's ``save_checkpoint`` skips
     the global canonical write. A missing canonical is NOT a rejection — the
-    first-write / full-overwrite path stays valid.
+    first-write / full-overwrite path stays valid. Nor is a head-stripped
+    (``num_configs == 0``) canonical: its shared weights load and the session's
+    own config head is kept.
     """
     from agentshore.rl.policy import ActorCritic, IncompatibleCheckpointError
 
@@ -74,6 +76,17 @@ def reload_shared_weights(policy: ActorCritic, global_weights_dir: Path) -> Relo
     except (FileNotFoundError, RuntimeError, ValueError) as exc:
         _logger.warning("ppo_selector.reload_failed", path=str(shared), error=str(exc))
         return ReloadOutcome(rejected=True, reload_base=None)
+    if new_policy.num_configs == 0 and policy.num_configs > 0:
+        # Canonical descends from the head-stripped seed: it has no config head
+        # yet. Take its shared weights, keep this session's grafted head; the
+        # next global write's width-mismatch full write gives it one.
+        shared_sd = {
+            k: v for k, v in new_policy.state_dict().items() if not k.startswith("config_head.")
+        }
+        policy.load_state_dict(shared_sd, strict=False)
+        base = {k: v.clone() for k, v in policy.state_dict().items()}
+        _logger.debug("ppo_selector.weights_reloaded_headless", path=str(shared))
+        return ReloadOutcome(rejected=False, reload_base=base)
     if new_policy.num_configs != policy.num_configs:
         _logger.warning(
             "ppo_selector.config_index_changed",

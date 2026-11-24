@@ -158,6 +158,40 @@ def migrate_previous_observation_canonical(weights_dir: Path) -> bool:
     return False
 
 
+def graft_config_head(
+    policy: ActorCritic, config_index: tuple[tuple[str, str], ...]
+) -> ActorCritic:
+    """Resize a loaded policy's config head to this install's roster.
+
+    The shipped seed strips its config head (``num_configs == 0``) because the
+    head is roster-specific; a canonical trained on another roster carries a head
+    of the wrong width. Either way ``ActorCritic.load`` sizes the head from the
+    checkpoint, which leaves agent-config choice unlearnable (width 0) or
+    shape-mismatched against ``config_index``. This keeps the trunk, play head,
+    and value head exactly and replaces only the config head with a fresh
+    cold-start-biased one at the runtime width. Returns *policy* unchanged when
+    the widths already agree or there is no roster.
+    """
+    if not config_index or policy.num_configs == len(config_index):
+        return policy
+    from agentshore.rl.cold_start import apply_cold_start_config_bias
+    from agentshore.rl.policy import ActorCritic
+
+    first = cast("torch.nn.Linear", policy.trunk[0])
+    grafted = ActorCritic(
+        obs_dim=first.in_features,
+        num_actions=policy.actor.out_features,
+        hidden=first.out_features,
+        num_configs=len(config_index),
+    )
+    shared = {k: v for k, v in policy.state_dict().items() if not k.startswith("config_head.")}
+    grafted.load_state_dict(shared, strict=False)
+    apply_cold_start_config_bias(grafted, config_index)
+    grafted.eval()
+    _logger.info("config_head_grafted", saved=policy.num_configs, current=len(config_index))
+    return grafted
+
+
 def _archive_old_canonicals(weights_dir: Path) -> None:
     """Quarantine canonical weights that don't match the current version triple.
 

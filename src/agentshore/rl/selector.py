@@ -33,6 +33,7 @@ from agentshore.rl.checkpoint_store import (
     cleanup_stale_canonical_weights as cleanup_stale_canonical_weights,
 )
 from agentshore.rl.checkpoint_store import (
+    graft_config_head,
     write_global_canonical_blocking,
 )
 from agentshore.rl.cold_start import apply_cold_start_bias, apply_cold_start_config_bias
@@ -934,6 +935,9 @@ class PPOSelector:
         # off the event loop so the TUI startup checklist keeps repainting
         # instead of freezing on a partial frame (the save path already threads).
         policy = await asyncio.to_thread(ActorCritic.load, Path(weights_path))
+        # Seed/other-roster checkpoints carry a config head of the wrong width;
+        # graft a cold-start one before the optimizer binds the parameters.
+        policy = graft_config_head(policy, config_index)
         buffer = RolloutBuffer(capacity=256)
         updater = _build_updater(policy, cfg)
         return cls(
