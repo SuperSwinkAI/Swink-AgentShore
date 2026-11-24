@@ -255,35 +255,62 @@ def report(plays: list[Play], cfg: RewardConfig, scale: float, window: int) -> N
             f"current {fmt(rc)}  candidate {fmt(rk)}"
         )
 
-        prog = [i for i, p in enumerate(ps) if p.play_type in _PROGRESS]
-        cheap = [i for i, p in enumerate(ps) if p.play_type not in _PROGRESS]
-        if prog and cheap:
-            for name, rs in (("current", cur), ("candidate", cand)):
-                mp = statistics.fmean(rs[i] for i in prog)
-                mc = statistics.fmean(rs[i] for i in cheap)
-                verdict = "ok" if mp > mc else "STALL RISK: cheap plays pay more"
-                print(f"stall check {name:9s}: progress {mp:+.2f}  other {mc:+.2f}  -> {verdict}")
+        # Per play type, dispatch plays only: a pooled mean hides one cheap play
+        # out-earning pickup behind lifecycle plays (end_agent etc.) dragging "other" down.
+        for name, rs in (("current", cur), ("candidate", cand)):
+            means = {
+                t: statistics.fmean(rs[i] for i in idx)
+                for t, idx in groups.items()
+                if len(idx) >= 5 and PlayType(t) in _DISPATCH_PLAYS
+            }
+            prog = {t: m for t, m in means.items() if t in _PROGRESS}
+            cheap = {t: m for t, m in means.items() if t not in _PROGRESS}
+            if not prog or not cheap:
+                continue
+            floor_t = min(prog, key=lambda t: prog[t])
+            beats = sorted((t for t in cheap if cheap[t] >= prog[floor_t]), key=lambda t: -cheap[t])
+            verdict = (
+                "ok"
+                if not beats
+                else "STALL RISK: " + ", ".join(f"{t} {cheap[t]:+.2f}" for t in beats)
+            )
+            print(
+                f"stall check {name:9s}: weakest progress play {floor_t} "
+                f"{prog[floor_t]:+.2f}  -> {verdict}"
+            )
 
 
 def validate(plays: list[Play], ndjson: str) -> None:
-    """Compare decoded counts with the fleet_concurrency.ndjson ground truth."""
+    """Compare decoded counts with the fleet_concurrency.ndjson ground truth.
+
+    The reward adds the completing agent to the busy count only when it is
+    back to idle (``core.helpers._build_reward_signals``); the ndjson roster
+    says whether it was, the state vector does not, so ``load`` always adds it.
+    """
     truth = {}
     with open(ndjson, encoding="utf-8") as fh:
         for line in fh:
             rec = json.loads(line)
-            truth[rec["play_id"]] = (rec["busy_total"], rec["live_total"])
+            agent = next(
+                (a for a in rec["roster"] if a["agent_id"] == rec["completed_agent_id"]), None
+            )
+            plus = 1 if agent is not None and agent["status"] == "idle" else 0
+            truth[rec["play_id"]] = (rec["busy_total"] + plus, rec["live_total"])
     by_id = {p.play_id: p for p in plays}
     n = busy_ok = live_ok = 0
+    err = 0.0
+    cfg = RewardConfig()
     for pid, (busy, live) in truth.items():
         p = by_id.get(pid)
         if p is None:
             continue
         n += 1
         live_ok += p.live == live
-        busy_ok += p.busy == min(busy + 1, live)
+        busy_ok += p.busy == busy
+        err += abs(current_concurrency(p.busy, p.live, cfg) - current_concurrency(busy, live, cfg))
     print(
-        f"validate: {n} plays matched; live exact {live_ok}/{n}; "
-        f"busy (+completing agent) exact {busy_ok}/{n}"
+        f"validate: {n} plays matched; live exact {live_ok}/{n}; reward-time busy exact "
+        f"{busy_ok}/{n}; mean concurrency-term error {err / max(n, 1):.3f}"
     )
 
 
