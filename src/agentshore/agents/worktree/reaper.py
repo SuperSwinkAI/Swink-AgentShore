@@ -405,10 +405,56 @@ def free_disk_mb(path: Path) -> int:
     root still reports its eventual filesystem's free space. Build-agnostic —
     measures bytes, not what produced them.
     """
+    return shutil.disk_usage(_existing_ancestor(path)).free // (1024 * 1024)
+
+
+def _existing_ancestor(path: Path) -> Path:
     probe = path
     while not probe.exists() and probe != probe.parent:
         probe = probe.parent
-    return shutil.disk_usage(probe).free // (1024 * 1024)
+    return probe
+
+
+_HIGH_WATER_FLOOR_MB = 4096
+
+
+def resolve_high_water_mb(configured: int | None, path: Path) -> int:
+    """Effective disk-pressure target (MiB): explicit value, else relative default.
+
+    ``None`` resolves to ``max(4096, 10% of the volume backing path)`` (#522);
+    an explicit int (``0`` = disabled) is returned verbatim.
+    """
+    if configured is not None:
+        return configured
+    total_mb = shutil.disk_usage(_existing_ancestor(path)).total // (1024 * 1024)
+    return max(_HIGH_WATER_FLOOR_MB, total_mb // 10)
+
+
+async def strip_ignored_build_output(worktree_path: Path) -> bool:
+    """``git clean -ffdX`` a worktree: drop gitignored files, keep the checkout.
+
+    Frees build trees (``target/``, ``node_modules/``, ``.venv/`` …) from a
+    ``stale`` worktree without knowing the build system, while the checkout and
+    ``.git`` link stay for #243's re-dispatch path protection (#522). Refuses
+    unless ``.git`` is a worktree link *file*: without it git would resolve to
+    the main repo, where the whole worktree dir is ignored, and delete the
+    checkout itself. Best-effort; returns True only on a clean exit.
+    """
+    if not (worktree_path / ".git").is_file():
+        return False
+    try:
+        rc, _, stderr = await _run_git(
+            "clean", "-ffdX", cwd=worktree_path, check=False, timeout=600.0
+        )
+    except (WorktreeAllocationFailed, OSError) as exc:
+        log.warning("worktree_build_output_strip_failed", path=str(worktree_path), error=str(exc))
+        return False
+    if rc != 0:
+        log.warning(
+            "worktree_build_output_strip_failed", path=str(worktree_path), error=stderr.strip()
+        )
+        return False
+    return True
 
 
 async def reap_for_disk_pressure(
@@ -507,6 +553,8 @@ __all__ = [
     "reap_for_closed_prs",
     "reap_for_disk_pressure",
     "reap_git_orphans",
+    "resolve_high_water_mb",
+    "strip_ignored_build_output",
     "strip_non_origin_remotes",
     "sweep_session_start",
 ]

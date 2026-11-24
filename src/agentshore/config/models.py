@@ -532,7 +532,11 @@ class WorktreeConfig:
     # High-water free-disk target (MiB) for the periodic disk-pressure reaper.
     # When free disk drops below this, idle worktrees are reaped LRU (stale
     # first, then oldest ``active``) until back above it. ``0`` disables.
-    disk_high_water_mb: int = 4096
+    # ``None`` (default) = relative: ``max(4096, 10% of the worktree volume)``
+    # (``reaper.resolve_high_water_mb``). A flat 4096 only fired at the edge of a
+    # full disk on large volumes (17 GiB free on 460 GiB never tripped it, #522);
+    # the 4096 floor keeps small disks from sitting permanently under pressure.
+    disk_high_water_mb: int | None = None
 
     # Consecutive-failure cap for a PR-scoped worktree before it is dropped to
     # ``stale`` (and reclaimed by the TTL reaper) instead of kept warm. The

@@ -253,7 +253,8 @@ def test_worktrees_disk_knobs_have_conservative_defaults() -> None:
     # Disk-pressure governance ships on by default (#180): fresh installs protected.
     cfg = RuntimeConfig()
     assert cfg.worktrees.min_free_disk_mb == 2048
-    assert cfg.worktrees.disk_high_water_mb == 4096
+    # None = relative default, max(4096, 10% of volume) (#522).
+    assert cfg.worktrees.disk_high_water_mb is None
     assert cfg.worktrees.reap_failed_pr_after_n == 2
     assert cfg.worktrees.max_active_worktrees is None
 

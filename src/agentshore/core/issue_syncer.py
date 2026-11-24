@@ -358,6 +358,12 @@ class IssueSyncer:
                 failed=len(report.failed),
                 ttl_seconds=self._runtime.cfg.worktrees.reap_ttl_seconds,
             )
+        # Survivors keep their checkout until the TTL but drop gitignored build
+        # output now (#522); in-flight/aliased rows are skipped and retried.
+        try:
+            await self._runtime.worktrees.strip_stale_build_output()
+        except (OSError, aiosqlite.Error) as exc:
+            _logger.warning("worktree_stale_build_output_strip_failed", error=str(exc))
 
     async def _sweep_disk_pressure_worktrees(self) -> None:
         """Reap idle worktrees LRU when free disk is below the high-water mark.
@@ -369,7 +375,16 @@ class IssueSyncer:
         """
         if self._runtime.worktrees is None:
             return
-        target_mb = self._runtime.cfg.worktrees.disk_high_water_mb
+        from agentshore.agents.worktree.reaper import resolve_high_water_mb  # noqa: PLC0415
+
+        try:
+            target_mb = resolve_high_water_mb(
+                self._runtime.cfg.worktrees.disk_high_water_mb,
+                self._runtime.worktrees.worktree_root,
+            )
+        except OSError as exc:
+            _logger.warning("worktree_disk_pressure_reap_failed", error=str(exc))
+            return
         if target_mb <= 0:
             return
         try:

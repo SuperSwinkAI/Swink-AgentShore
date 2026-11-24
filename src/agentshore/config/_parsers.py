@@ -791,7 +791,11 @@ def _parse_worktrees(raw: WireMapping) -> WorktreeConfig:
         return val
 
     min_free_disk_mb = _nonneg_int("min_free_disk_mb", 0)
-    disk_high_water_mb = _nonneg_int("disk_high_water_mb", 0)
+    # Omitted/null → ``None`` (relative default, #522). Falling back to 0 here left
+    # the governor silently disabled for every YAML-loaded config.
+    disk_high_water_mb = (
+        None if raw.get("disk_high_water_mb") is None else _nonneg_int("disk_high_water_mb", 0)
+    )
     reap_failed_pr_after_n = _nonneg_int("reap_failed_pr_after_n", 0)
     max_active = raw.get("max_active_worktrees")
     if max_active is not None and (
