@@ -71,7 +71,9 @@ async def _fetch_pr_links(pr_number: int, project_path: Path) -> tuple[int, ...]
     ``closingIssuesReferences`` (populated even when the PR targets a
     non-default branch), then delegates to ``infer_pr_issue_links`` which
     understands closing keywords, bare #N refs on keyword lines, AgentShore
-    branch prefixes, and GitHub API closing references.
+    branch prefixes, and GitHub API closing references. A branch-prefix issue
+    that the body only mentions without a closing keyword (``Refs #N``) is
+    dropped: the PR declared it partial work.
 
     Returns an empty tuple on any fetch failure — callers fall back to the
     skill-reported ``issues_closed`` list.
@@ -103,12 +105,20 @@ async def _fetch_pr_links(pr_number: int, project_path: Path) -> tuple[int, ...]
     except (json.JSONDecodeError, ValueError) as exc:
         _logger.warning("merge_pr_links_parse_failed", pr_number=pr_number, error=str(exc))
         return ()
+    body = data.get("body")
     links = infer_pr_issue_links(
         closing_issue_references=data.get("closingIssuesReferences"),
-        body=data.get("body"),
+        body=body,
         branch=data.get("headRefName"),
     )
-    return links.issue_numbers
+    mentioned = (
+        {int(m.group(1)) for m in _BARE_ISSUE_RE.finditer(body)} if isinstance(body, str) else set()
+    )
+    return tuple(
+        n
+        for n in links.issue_numbers
+        if not (links.provenance[n] == ("agentshore_branch_prefix",) and n in mentioned)
+    )
 
 
 def _validated_issue_set(

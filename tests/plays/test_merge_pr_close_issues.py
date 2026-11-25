@@ -486,6 +486,44 @@ async def test_fetch_pr_links_parses_body_and_branch() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        ("Refs #23\n\nPartial: parser only.", (17,)),
+        ("Closes #23", (23, 17)),
+        ("No references.", (17, 23)),
+    ],
+)
+async def test_fetch_pr_links_refs_body_overrides_branch_prefix(
+    body: str, expected: tuple[int, ...]
+) -> None:
+    import json as _json
+    from pathlib import Path
+    from unittest.mock import MagicMock
+
+    from agentshore.command import CommandResult
+
+    payload = _json.dumps(
+        {
+            "body": body,
+            "headRefName": "agentshore/23-some-feature",
+            "closingIssuesReferences": [{"number": 17}],
+        }
+    )
+    mock_result = MagicMock(spec=CommandResult)
+    mock_result.returncode = 0
+    mock_result.stdout = payload
+
+    with patch(
+        "agentshore.plays.skill_backed.merge_pr.run_command",
+        new=AsyncMock(return_value=mock_result),
+    ):
+        numbers = await _fetch_pr_links(42, Path("/fake/project"))
+
+    assert sorted(numbers) == sorted(expected)
+
+
+@pytest.mark.asyncio
 async def test_fetch_pr_links_returns_empty_on_command_failure() -> None:
     """_fetch_pr_links returns () when gh is unavailable."""
     from pathlib import Path
