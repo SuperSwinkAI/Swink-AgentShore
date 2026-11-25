@@ -280,6 +280,15 @@ def test_worktrees_disk_knobs_yaml_round_trip(tmp_path: Path) -> None:
     assert cfg.worktrees.max_active_worktrees == 8
 
 
+def test_worktrees_omitted_knobs_keep_model_defaults(tmp_path: Path) -> None:
+    yaml_path = tmp_path / "agentshore.yaml"
+    yaml_path.write_text("worktrees:\n  reap_ttl_seconds: 60\n", encoding="utf-8")
+    cfg = load_config(yaml_path)
+    assert cfg.worktrees.min_free_disk_mb == 2048
+    assert cfg.worktrees.disk_high_water_mb is None
+    assert cfg.worktrees.reap_failed_pr_after_n == 2
+
+
 def test_worktrees_rejects_negative_disk_floor(tmp_path: Path) -> None:
     yaml_path = tmp_path / "agentshore.yaml"
     yaml_path.write_text("worktrees:\n  min_free_disk_mb: -1\n", encoding="utf-8")
