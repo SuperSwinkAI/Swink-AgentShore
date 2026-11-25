@@ -765,15 +765,19 @@ def _parse_worktrees(raw: WireMapping) -> WorktreeConfig:
     if root is not None and not (isinstance(root, str) and root.strip()):
         raise ConfigError(f"worktrees.root must be a non-empty string or omitted, got {root!r}")
 
-    def _nonneg_int(key: str, default: int) -> int:
-        val = raw.get(key, default)
+    defaults = WorktreeConfig()
+
+    def _nonneg_int(key: str) -> int:
+        val = raw.get(key, getattr(defaults, key))
         if not isinstance(val, int) or isinstance(val, bool) or val < 0:
             raise ConfigError(f"worktrees.{key} must be a non-negative integer, got {val!r}")
         return val
 
-    min_free_disk_mb = _nonneg_int("min_free_disk_mb", 0)
-    disk_high_water_mb = _nonneg_int("disk_high_water_mb", 0)
-    reap_failed_pr_after_n = _nonneg_int("reap_failed_pr_after_n", 0)
+    min_free_disk_mb = _nonneg_int("min_free_disk_mb")
+    disk_high_water_mb = (
+        None if raw.get("disk_high_water_mb") is None else _nonneg_int("disk_high_water_mb")
+    )
+    reap_failed_pr_after_n = _nonneg_int("reap_failed_pr_after_n")
     max_active = raw.get("max_active_worktrees")
     if max_active is not None and (
         not isinstance(max_active, int) or isinstance(max_active, bool) or max_active < 1

@@ -24,6 +24,7 @@ from agentshore.rl.checkpoint_store import (
     _prune_local_checkpoints,
     canonical_lock_filename,
     canonical_weights_filename,
+    shared_state,
     write_global_canonical_blocking,
 )
 
@@ -56,10 +57,12 @@ def reload_shared_weights(policy: ActorCritic, global_weights_dir: Path) -> Relo
 
     Mutates *policy* in place via ``load_state_dict`` on success. A rejected
     reload (the on-disk canonical exists but is incompatible with this
-    session — load failure or config-index mismatch) is reported via
+    session — version drift or load failure) is reported via
     ``ReloadOutcome.rejected=True`` so the caller's ``save_checkpoint`` skips
     the global canonical write. A missing canonical is NOT a rejection — the
-    first-write / full-overwrite path stays valid.
+    first-write / full-overwrite path stays valid. The config head never comes
+    from the canonical (it is roster-specific and written stripped), so a
+    different roster width is not a rejection either.
     """
     from agentshore.rl.policy import ActorCritic, IncompatibleCheckpointError
 
@@ -74,16 +77,9 @@ def reload_shared_weights(policy: ActorCritic, global_weights_dir: Path) -> Relo
     except (FileNotFoundError, RuntimeError, ValueError) as exc:
         _logger.warning("ppo_selector.reload_failed", path=str(shared), error=str(exc))
         return ReloadOutcome(rejected=True, reload_base=None)
-    if new_policy.num_configs != policy.num_configs:
-        _logger.warning(
-            "ppo_selector.config_index_changed",
-            saved=new_policy.num_configs,
-            current=policy.num_configs,
-        )
-        return ReloadOutcome(rejected=True, reload_base=None)
-    new_sd = new_policy.state_dict()
-    reload_base = {k: v.clone() for k, v in new_sd.items()}
-    policy.load_state_dict(new_sd)
+    shared_sd = shared_state(new_policy.state_dict())
+    policy.load_state_dict(shared_sd, strict=False)
+    reload_base = {k: v.clone() for k, v in shared_sd.items()}
     _logger.debug("ppo_selector.weights_reloaded", path=str(shared))
     return ReloadOutcome(rejected=False, reload_base=reload_base)
 

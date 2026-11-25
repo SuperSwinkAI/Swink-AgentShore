@@ -433,7 +433,7 @@ class WorktreeConfig:
 
     min_free_disk_mb: int = 2048
 
-    disk_high_water_mb: int = 4096
+    disk_high_water_mb: int | None = None
 
     reap_failed_pr_after_n: int = 2
 

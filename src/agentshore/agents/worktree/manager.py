@@ -49,6 +49,7 @@ from agentshore.agents.worktree.reaper import (
     free_disk_mb,
     reap_for_closed_prs,
     reap_for_disk_pressure,
+    strip_ignored_build_output,
     sweep_session_start,
 )
 from agentshore.agents.worktree.registry import (
@@ -220,6 +221,7 @@ class WorktreeManager:
         self._fetch_overlay_resolved = False
         self._pr_failure_counts: dict[int, int] = {}
         self._inflight: dict[int, str] = {}
+        self._build_output_stripped: set[int] = set()
 
     def register_dispatch(self, allocation: WorktreeAllocation) -> None:
         """Mark a worktree in-flight for the duration of a dispatch.
@@ -751,6 +753,39 @@ class WorktreeManager:
         )
         await self._prune_locks()
         return report
+
+    async def strip_stale_build_output(self) -> list[int]:
+        """``git clean -ffdX`` every ``stale`` row still waiting out its TTL (#522).
+
+        A merged/closed PR's worktree keeps its checkout for ``reap_ttl_seconds``
+        (#243 path protection) but not its build tree. Same protection as
+        :meth:`reap_closed_prs` — in-flight ids/paths plus every live row's path,
+        so a stale row aliasing a running ``pickup-<N>`` dir is never cleaned.
+        A skipped row is retried next tick; a cleaned one is not revisited.
+        Returns the cleaned worktree_ids. ``last_used_at`` is not touched, so the
+        TTL clock is unchanged.
+        """
+        from agentshore.agents.worktree.registry import list_stale  # noqa: PLC0415
+
+        rows = await list_stale(self._store, session_id=self._session_id, before_iso=now_iso())
+        cleaned: list[int] = []
+        for row in rows:
+            if row.status != "stale" or row.worktree_id in self._build_output_stripped:
+                continue
+            protected_paths = self._protected_paths() | await self._live_alias_paths()
+            if (
+                row.worktree_id in self._protected_ids()
+                or _canon_path(row.worktree_path) in protected_paths
+            ):
+                continue
+            self._build_output_stripped.add(row.worktree_id)
+            if await strip_ignored_build_output(Path(row.worktree_path)):
+                cleaned.append(row.worktree_id)
+            else:
+                self._build_output_stripped.discard(row.worktree_id)
+        if cleaned:
+            log.info("worktree_stale_build_output_stripped", worktree_ids=cleaned)
+        return cleaned
 
     def free_disk_mb(self) -> int:
         """Free space (MiB) on the filesystem backing the worktree root."""

@@ -128,14 +128,6 @@ select:focus-visible {
   padding: 5px 30px 5px 10px;
 }
 
-.desktop-select--readonly {
-  display: inline-flex;
-  align-items: center;
-  background: var(--fm-hover);
-  color: var(--muted);
-  cursor: default;
-}
-
 .desktop-screen-header {
   margin-bottom: 24px;
 }

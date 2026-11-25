@@ -41,11 +41,11 @@ def test_default_model_tiers_for_codex() -> None:
     tiers = default_model_tiers_for(AgentType.CODEX)
 
     assert set(tiers) == {"small", "medium", "large"}
-    assert tiers["small"].model == "gpt-5.6-luna"
+    assert tiers["small"].model == "gpt-6-luna"
     assert tiers["small"].reasoning_effort == "low"
-    assert tiers["medium"].model == "gpt-5.6-terra"
+    assert tiers["medium"].model == "gpt-6.1-terra"
     assert tiers["medium"].reasoning_effort == "medium"
-    assert tiers["large"].model == "gpt-5.6-sol"
+    assert tiers["large"].model == "gpt-6.2-sol"
     assert tiers["large"].reasoning_effort == "high"
 
 
@@ -53,11 +53,11 @@ def test_default_model_tiers_for_grok() -> None:
     tiers = default_model_tiers_for(AgentType.GROK)
 
     assert set(tiers) == {"small", "medium", "large"}
-    assert tiers["small"].model == "grok-4.5"
+    assert tiers["small"].model == "grok-4.7-build-fast"
     assert tiers["small"].reasoning_effort == "low"
-    assert tiers["medium"].model == "grok-4.5"
+    assert tiers["medium"].model == "grok-4.7"
     assert tiers["medium"].reasoning_effort == "medium"
-    assert tiers["large"].model == "grok-4.5"
+    assert tiers["large"].model == "grok-4.7"
     assert tiers["large"].reasoning_effort == "high"
 
 
@@ -66,8 +66,8 @@ def test_default_model_tiers_for_antigravity() -> None:
 
     assert set(tiers) == {"small", "medium", "large"}
     assert tiers["small"].model == "GPT-OSS 120B (Medium)"
-    assert tiers["medium"].model == "Gemini 3.8 Flash (High)"
-    assert tiers["large"].model == "Gemini 3.1 Pro (High)"
+    assert tiers["medium"].model == "Gemini 4 Hydrogen (Medium)"
+    assert tiers["large"].model == "Gemini 4 Argon (High)"
     assert tiers["small"].reasoning_effort is None
     assert tiers["medium"].reasoning_effort is None
     assert tiers["large"].reasoning_effort is None

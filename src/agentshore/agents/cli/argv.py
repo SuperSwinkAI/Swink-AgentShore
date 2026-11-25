@@ -92,8 +92,31 @@ _PINNABLE_SESSION_AGENT_TYPES: frozenset[AgentType] = frozenset(
 
 
 _TOOL_DENIAL_CAPABLE_AGENT_TYPES: frozenset[AgentType] = frozenset(
-    {AgentType.SWINK_CODING, AgentType.GROK, AgentType.COPILOT}
+    {AgentType.CLAUDE_CODE, AgentType.SWINK_CODING, AgentType.GROK, AgentType.COPILOT}
 )
+
+
+_CLAUDE_TOOL_NAMES: dict[str, tuple[str, ...]] = {
+    "write_file": ("Write",),
+    "edit_file": ("Edit", "MultiEdit", "NotebookEdit"),
+    "bash": ("Bash",),
+    "shell": ("Bash",),
+}
+
+
+def _claude_disallowed_tools(disallowed_tools: tuple[str, ...]) -> list[str]:
+    """Return one ``--disallowedTools=<a,b>`` token for the play's denials, or ``[]``.
+
+    Unmapped names (including ``tool(glob)`` specs) are dropped. The ``=`` form is
+    required: the flag is variadic and, given as a separate argument, would
+    swallow the positional prompt that follows it.
+    """
+    names: list[str] = []
+    for spec in disallowed_tools:
+        for name in _CLAUDE_TOOL_NAMES.get(spec, ()):
+            if name not in names:
+                names.append(name)
+    return [f"--disallowedTools={','.join(names)}"] if names else []
 
 
 _RESULT_SCHEMA_CAPABLE_AGENT_TYPES: frozenset[AgentType] = frozenset({AgentType.CLAUDE_CODE})
@@ -189,11 +212,14 @@ def _build_argv_claude_code(
     session_id: str | None,
     disallowed_tools: tuple[str, ...],
 ) -> list[str]:
-    """Claude Code argv. ``project_dir``, ``prompt_file``, ``model_tier``,
-    ``session_id``, and ``disallowed_tools`` are accepted only for
-    ``_ArgvBuilder`` signature parity and ignored: Claude has no
-    working-directory flag, no prompt-file mode, no tier_map concept, no
-    caller-pinned session id, and no per-dispatch tool deny flag.
+    """Claude Code argv. *disallowed_tools* become ``--disallowedTools`` deny
+    rules (see ``_CLAUDE_TOOL_NAMES``).
+
+    ``project_dir``, ``prompt_file``, ``model_tier``, and ``session_id`` are
+    accepted only for ``_ArgvBuilder`` signature parity and ignored: Claude has
+    no working-directory flag, no prompt-file mode, and no tier_map concept; it
+    does have ``--session-id`` but AgentShore does not pin Claude sessions (see
+    ``_PINNABLE_SESSION_AGENT_TYPES``).
     """
     binary = binary or "claude"
     args = [binary, "-p", "--verbose", "--output-format", "stream-json"]
@@ -202,6 +228,7 @@ def _build_argv_claude_code(
     if reasoning_effort:
         args += ["--effort", reasoning_effort]
     args.extend(extra_flags)
+    args += _claude_disallowed_tools(disallowed_tools)
     if context_path:
         args += ["--append-system-prompt", f"Context file: {context_path}"]
     if not prompt_on_stdin:
@@ -263,12 +290,13 @@ def _build_resume_argv_claude_code(
     disallowed_tools: tuple[str, ...],
 ) -> list[str]:
     """Claude Code resume argv. ``model``, ``reasoning_effort``, ``project_dir``,
-    ``prompt_file``, ``model_tier``, ``session_id``, and ``disallowed_tools``
-    are accepted only for ``_ResumeArgvBuilder`` signature parity and ignored:
-    ``--resume`` re-enters the prior session verbatim. ``extra_flags`` IS
-    forwarded — permission mode is per-invocation, not restored by
-    ``--resume``, so dropping the YOLO ``--dangerously-skip-permissions``
-    default would run the retry in ``auto`` permission mode.
+    ``prompt_file``, ``model_tier``, and ``session_id`` are accepted only for
+    ``_ResumeArgvBuilder`` signature parity and ignored: ``--resume`` re-enters
+    the prior session verbatim. ``extra_flags`` IS forwarded — permission mode
+    is per-invocation, not restored by ``--resume``, so dropping the YOLO
+    ``--dangerously-skip-permissions`` default would run the retry in ``auto``
+    permission mode. ``disallowed_tools`` is forwarded for the same reason: deny
+    rules are per-invocation too, and the retry finishes the same play.
     """
     binary = binary or "claude"
     argv = [
@@ -280,6 +308,7 @@ def _build_resume_argv_claude_code(
         "--output-format",
         "stream-json",
         *extra_flags,
+        *_claude_disallowed_tools(disallowed_tools),
     ]
     if not prompt_on_stdin:
         argv.append(prompt)
@@ -374,7 +403,8 @@ def build_argv(
     *session_id* pins the new run's durable session id so the caller knows it
     before spawn (swink-coding ``--session-id``, SuperSwink-Coding#300; grok
     and copilot ``--session-id <uuid>``). Honoured only by
-    :data:`_PINNABLE_SESSION_AGENT_TYPES`; ignored by every other agent type.
+    :data:`_PINNABLE_SESSION_AGENT_TYPES`; ignored by every other agent type
+    (Claude Code included — it has the flag, but AgentShore does not pin it).
 
     *disallowed_tools* is the executing play's tool-denial policy
     (``Play.disallowed_tools``) — tool names the play must not be able to reach,

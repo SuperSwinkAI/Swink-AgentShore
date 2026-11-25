@@ -13,7 +13,11 @@ from unittest.mock import MagicMock
 
 import torch
 
-from agentshore.rl.checkpoint_store import canonical_lock_filename, canonical_weights_filename
+from agentshore.rl.checkpoint_store import (
+    canonical_lock_filename,
+    canonical_weights_filename,
+    shared_state,
+)
 from agentshore.rl.policy import ActorCritic
 from agentshore.rl.selector import _archive_old_canonicals, _prune_local_checkpoints
 
@@ -220,7 +224,8 @@ def test_delta_full_write_when_no_base(tmp_path: Path) -> None:
 
     assert canonical.exists()
     loaded = ActorCritic.load(canonical)
-    for k in original_sd:
+    assert loaded.num_configs == 0  # config head is roster-specific; never shared
+    for k in shared_state(original_sd):
         assert torch.allclose(loaded.state_dict()[k], original_sd[k])
 
 
@@ -242,7 +247,7 @@ def test_delta_accumulates_onto_existing_global(tmp_path: Path) -> None:
     stub._write_global_canonical_blocking(canonical, lock)
 
     merged = ActorCritic.load(canonical)
-    for k in global_sd:
+    for k in shared_state(global_sd):
         expected = global_sd[k] + (after_update_sd[k] - global_sd[k])
         assert torch.allclose(merged.state_dict()[k], expected, atol=1e-5), (
             f"delta not applied correctly for {k}"
@@ -271,7 +276,7 @@ def test_delta_concurrent_sessions_both_preserved(tmp_path: Path) -> None:
     stub_b._write_global_canonical_blocking(canonical, lock)
 
     final = ActorCritic.load(canonical)
-    for k, base_v in base_sd.items():
+    for k, base_v in shared_state(base_sd).items():
         expected = base_v + 0.3
         assert torch.allclose(final.state_dict()[k], expected, atol=1e-5), (
             f"concurrent deltas not both preserved for {k}"
