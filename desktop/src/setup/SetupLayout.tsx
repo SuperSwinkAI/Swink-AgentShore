@@ -65,8 +65,8 @@ export function SetupLayout({
       "target-branch": missingTargetBranch,
       identities: missingIdentities,
       agents: missingAgents,
-      // Budget is never a hard blocker — Unlimited is a valid choice and
-      // the default — so the rail never flags it as "needs input".
+
+
       budget: false,
       readiness: false,
       start: !canStart,
@@ -233,7 +233,7 @@ export function SetupLayout({
                       try {
                         await setTrustedIssueEnforcement(checked);
                       } catch (error) {
-                        // Non-fatal: localStorage already tracks the choice.
+
                         console.error(
                           "project.set_trusted_issue_enforcement failed",
                           error,
@@ -286,9 +286,9 @@ export function SetupLayout({
                 });
               }}
               onSave={async (next) => {
-                // Persist to agentshore.yaml via project.set_budget. localStorage
-                // already tracks the selection (the onChange path above) so
-                // this is the per-project canonical store (issue #571 follow-up).
+
+
+
                 await setBudget(budgetSelectionToConfig(next));
               }}
             />
@@ -315,10 +315,10 @@ export function SetupLayout({
                   persistSetup(merged);
                   return merged;
                 });
-                // Persist the seed to agentshore.yaml (intake.seed_paths) so
-                // Quick Start / CLI / TUI honor it via the engine's
-                // _resolve_seed_path fallback — seed is no longer a transient,
-                // drop-prone parameter. An empty list clears it.
+
+
+
+
                 void setSeedPaths(next.seedInputPath ? [next.seedInputPath] : []).catch(
                   () => undefined,
                 );

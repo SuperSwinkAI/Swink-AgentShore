@@ -176,7 +176,7 @@ describe("EndSessionReportScreen", () => {
   it("does not open anything when no timelapse path is present", async () => {
     const openPathImpl = vi.fn(async () => undefined);
     renderScreen(ESR_PAYLOAD, { openPathImpl });
-    // Give effects a tick to run.
+
     await new Promise((r) => setTimeout(r, 0));
     expect(openPathImpl).not.toHaveBeenCalled();
     expect(screen.queryByTestId("esr-open-timelapse")).not.toBeInTheDocument();
@@ -190,7 +190,7 @@ describe("EndSessionReportScreen", () => {
     );
     const user = userEvent.setup();
     await user.click(await screen.findByTestId("esr-open-timelapse"));
-    // Auto-open (1) + button click (1).
+
     expect(openPathImpl).toHaveBeenCalledTimes(2);
   });
 });

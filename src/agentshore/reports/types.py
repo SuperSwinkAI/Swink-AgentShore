@@ -104,8 +104,6 @@ class FleetConcurrencyTimelineHarnessEntry(TypedDict):
     color: str
     fill: str
     area_points: str
-    # Configured spawn capacity (sum of enabled model-tier maxes) for the
-    # capacity bar rendered alongside the timeline; 0 when not configured.
     capacity_max: int
     capacity_bar_y: float
     capacity_bar_height: float
@@ -120,8 +118,6 @@ class FleetConcurrencyTimelineData(TypedDict):
     total_points: str
     duration_label: str
     note: str
-    # Total configured fleet capacity (sum of all harnesses' capacity_max) and
-    # the pixel span of the capacity bar, shared with the harness entries above.
     capacity_total: int
     capacity_bar_left: float
     capacity_bar_right: float
@@ -153,7 +149,7 @@ class PlayLogRowEntry(TypedDict):
     play_type: str
     agent_name: str
     success: bool
-    status: str  # "ok" | "fail" — gated skips are excluded from the play log entirely
+    status: str
     started_at: str
     duration_seconds: float
     dollar_cost: float
@@ -170,7 +166,7 @@ class ClosedIssueEntry(TypedDict):
 class CostBreakdownData(TypedDict):
     by_play_type: dict[str, float]
     by_agent: dict[str, float]
-    cumulative: list[tuple[int, float]]  # (play_index, cumulative_cost)
+    cumulative: list[tuple[int, float]]
 
 
 class AgentPerformanceData(TypedDict):
@@ -181,8 +177,6 @@ class AgentPerformanceData(TypedDict):
     success_rate: float
     total_cost: float
     avg_duration: float
-    # dispatch_share = dispatch_count / fleet dispatch total (0.0 when none yet);
-    # surfaces agents starved of plays while work is available.
     dispatch_count: int
     dispatch_share: float
 
@@ -206,8 +200,8 @@ class ClusterAlignmentData(TypedDict):
 class IssueInflationData(TypedDict):
     total_opened: int
     total_closed: int
-    ratio: float  # opened / max(closed, 1)
-    per_play: list[tuple[int, int, int, int]]  # (play_index, opened_count, closed_count, net_open)
+    ratio: float
+    per_play: list[tuple[int, int, int, int]]
     warnings_triggered: int
     by_source: dict[str, int]
     recovery: dict[str, bool | list[int]]
@@ -256,7 +250,7 @@ class ReviewPatternEntry(TypedDict):
 class LoopIncidentEntry(TypedDict):
     play_type: str
     peak_streak: int
-    tier: str  # "warning" | "force_switch" | "escalation"
+    tier: str
     start_play_id: int | None
     end_play_id: int | None
     start_play_index: int
@@ -302,7 +296,7 @@ class SessionSummaryData(TypedDict):
     trajectory_snapshots: list[TrajectorySnapshotEntry]
     trajectory_analysis: TrajectoryAnalysisData
     learnings_count: int
-    revert_count: int  # count of CLEANUP plays (slot was formerly REVERT_COMMIT)
+    revert_count: int
     loop_incidents: list[LoopIncidentEntry]
     review_patterns: list[ReviewPatternEntry]
     recommendations: list[str]
@@ -321,8 +315,6 @@ class EndSessionReportData(TypedDict):
     play_log_rows: list[PlayLogRowEntry]
     play_log_unique_agents: int
     play_log_plays_in_use: int
-    # Denominator in "<plays_in_use> / <total_slots>"; derived (registry minus
-    # internal heartbeats), not hardcoded.
     play_log_total_slots: int
 
 
@@ -337,13 +329,13 @@ class ProgressReportData(TypedDict):
 class IssueThroughputData(TypedDict):
     opened: int
     closed: int
-    net_velocity: int  # closed - opened
+    net_velocity: int
 
 
 class LearningsDiffData(TypedDict):
-    added: list[str]  # patterns only in session_b
-    removed: list[str]  # patterns only in session_a
-    shared: list[str]  # patterns in both
+    added: list[str]
+    removed: list[str]
+    shared: list[str]
 
 
 class AlignmentTrajectoryEntry(TypedDict):

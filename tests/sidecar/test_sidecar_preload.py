@@ -39,10 +39,8 @@ def test_run_preloads_native_libraries_before_serve(monkeypatch: pytest.MonkeyPa
 
 
 def test_preload_is_noop_off_win32(monkeypatch: pytest.MonkeyPatch) -> None:
-    # On POSIX there is no loader-lock hazard and torch's import cost should not
-    # be forced onto every sidecar boot — the function must short-circuit.
     monkeypatch.setattr(server.sys, "platform", "linux")
-    server._preload_native_libraries()  # must not raise
+    server._preload_native_libraries()
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="win32-only loader-lock guard")

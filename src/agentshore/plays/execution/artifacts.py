@@ -116,9 +116,6 @@ async def _confirm_and_record_pr(
         enriched = None
     if enriched is None:
         return None
-    # GitHub is source of truth; stamp session, carry issue when closing-refs
-    # missed it, overlay locally-resolved authorship for code_review
-    # anti-confirmation until the next refresh fills github_author.
     enriched.session_id = session_id
     if enriched.issue_number is None:
         enriched.issue_number = issue_number
@@ -126,10 +123,6 @@ async def _confirm_and_record_pr(
     enriched.author_agent_type = author_agent_type
     if author_github_login is not None:
         enriched.github_author = author_github_login
-    # Base correction at creation: agents skip the skill's base step ~1-in-6
-    # times, opening against the wrong base. Retarget using the fresh enriched
-    # base_ref (not a stale snapshot — the gap in _maybe_retarget_pr_base).
-    # Idempotent; pairs with the merge-side gate so a wrong-base PR never lands.
     retargeted = await _retarget_pr_to_target(
         github,
         cfg,
@@ -173,8 +166,6 @@ async def _record_pr_artifact(
         return
 
     if not branch:
-        # PR artifact lacked a branch and params had no fallback. GitHub's
-        # headRefName is authoritative, but the miss is worth logging (#567).
         _logger.warning(
             "pr_record_missing_branch",
             pr_number=pr_number,
@@ -198,8 +189,6 @@ async def _record_pr_artifact(
         author_github_login,
     )
     if confirmed is None:
-        # Unconfirmed: record/enqueue/label nothing. Branch still surfaces via
-        # the publish reconciler; next refresh adopts the PR if it lands later.
         _logger.warning(
             "pr_publish_unconfirmed",
             pr_number=pr_number,

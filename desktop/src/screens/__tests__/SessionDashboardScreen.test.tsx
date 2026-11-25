@@ -183,7 +183,7 @@ describe("SessionDashboardScreen", () => {
     ).toBeInTheDocument();
     expect(adjustBudgetDialogMock).toHaveBeenCalled();
 
-    // Closing via the dialog's onClose unmounts it.
+
     await act(async () => {
       screen.getByRole("button", { name: "close" }).click();
     });

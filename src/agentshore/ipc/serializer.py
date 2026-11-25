@@ -41,13 +41,7 @@ from agentshore.state import (
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
-# Monotonic sequence counter, incremented once per outbound message.
 _seq: itertools.count[int] = itertools.count(1)
-
-
-# Wire payload TypedDicts: single source of truth for per-message field sets.
-# Mirrored in dashboard/src/types.ts (PlayEventStarted/PlayEventCompleted/
-# ActivePlay) — keep all three in sync.
 
 
 class PlayStartedPayload(TypedDict):
@@ -101,9 +95,6 @@ class ActivePlayPayload(TypedDict):
     trigger_error_class: str | None
 
 
-# Internal helpers
-
-
 def _serialize_agent(agent: AgentSnapshot) -> dict[str, object]:
     return {
         "agent_id": agent.agent_id,
@@ -118,14 +109,9 @@ def _serialize_agent(agent: AgentSnapshot) -> dict[str, object]:
         "total_tokens": agent.total_tokens,
         "tasks_completed": agent.tasks_completed,
         "tasks_failed": agent.tasks_failed,
-        # desktop-31h2: per-agent dispatch count + fleet share; dashboard
-        # surfaces a "Dispatch share" badge so operators can spot idling agents.
         "dispatch_count": agent.dispatch_count,
         "dispatch_share": agent.dispatch_share,
         "last_error_class": agent.last_error_class,
-        # TNQA critical: these three were silently dropped from the wire
-        # payload (state.py:342-379 has them, this dict didn't) — nothing
-        # asserted parity until the guard below.
         "timeout_count": agent.timeout_count,
         "consecutive_timeouts": agent.consecutive_timeouts,
         "github_identity": agent.github_identity,
@@ -246,7 +232,6 @@ def _serialize_graph_task(task: GraphTask) -> dict[str, object]:
         "external_ref": task.external_ref,
         "issue_number": task.issue_number,
         "ready": task.ready,
-        # Sorted for wire determinism — the source fields are frozensets.
         "depends_on_ids": sorted(task.depends_on_ids),
         "blocked_by_ids": sorted(task.blocked_by_ids),
         "closed_at": task.closed_at,
@@ -335,20 +320,6 @@ def _serialize_session_stats(stats: SessionStatsSnapshot) -> dict[str, object]:
     }
 
 
-# Wire-field parity guards
-#
-# Every _serialize_* function above hand-enumerates a source dataclass's fields
-# instead of deriving them, so nothing stopped a new/renamed dataclass field
-# from silently never reaching the wire (TNQA critical: this is exactly how
-# AgentSnapshot.timeout_count/consecutive_timeouts/github_identity and five
-# PullRequestSnapshot review/merge fields went missing). Each guard below
-# builds a minimal probe instance, calls the real serializer, and diffs the
-# emitted key set against ``dataclasses.fields()`` minus an explicit
-# ``_WIRE_OMITTED_*`` allowlist — same pattern as
-# ``reports/_aggregations.py``'s ``_EXPECTED_PLAY_LOG_KEYS`` guard. A drifted
-# dataclass fails import instead of silently dropping data.
-
-
 def _assert_field_parity(
     dataclass_type: type[Any],
     emitted_keys: set[str],
@@ -368,8 +339,6 @@ def _assert_field_parity(
         raise ValueError(msg)
 
 
-# AgentSnapshot's current_play_* fields are folded into the nested
-# "current_play" sub-object rather than emitted as top-level keys.
 _AGENT_CURRENT_PLAY_FIELDS: frozenset[str] = frozenset(
     {
         "current_play_type",
@@ -380,7 +349,7 @@ _AGENT_CURRENT_PLAY_FIELDS: frozenset[str] = frozenset(
         "current_play_branch",
     }
 )
-_WIRE_OMITTED_AGENT_FIELDS: frozenset[str] = frozenset()  # nothing omitted
+_WIRE_OMITTED_AGENT_FIELDS: frozenset[str] = frozenset()
 
 
 def _agent_parity_probe() -> AgentSnapshot:
@@ -393,7 +362,7 @@ def _agent_parity_probe() -> AgentSnapshot:
         total_tokens=0,
         tasks_completed=0,
         tasks_failed=0,
-        current_play_type=PlayType.RUN_QA,  # force the nested current_play branch
+        current_play_type=PlayType.RUN_QA,
         current_play_id=0,
         current_play_started_at="t",
         current_play_issue_number=0,
@@ -410,7 +379,7 @@ _assert_field_parity(
     label="_serialize_agent",
 )
 
-_WIRE_OMITTED_ISSUE_FIELDS: frozenset[str] = frozenset()  # nothing omitted
+_WIRE_OMITTED_ISSUE_FIELDS: frozenset[str] = frozenset()
 _assert_field_parity(
     IssueSnapshot,
     set(
@@ -424,7 +393,7 @@ _assert_field_parity(
     label="_serialize_issue",
 )
 
-_WIRE_OMITTED_PR_FIELDS: frozenset[str] = frozenset()  # nothing omitted
+_WIRE_OMITTED_PR_FIELDS: frozenset[str] = frozenset()
 _assert_field_parity(
     PullRequestSnapshot,
     set(
@@ -448,7 +417,7 @@ _assert_field_parity(
     label="_serialize_pull_request",
 )
 
-_WIRE_OMITTED_BUDGET_FIELDS: frozenset[str] = frozenset()  # nothing omitted
+_WIRE_OMITTED_BUDGET_FIELDS: frozenset[str] = frozenset()
 _assert_field_parity(
     BudgetSnapshot,
     set(
@@ -460,7 +429,7 @@ _assert_field_parity(
     label="_serialize_budget",
 )
 
-_WIRE_OMITTED_EPIC_FIELDS: frozenset[str] = frozenset()  # nothing omitted
+_WIRE_OMITTED_EPIC_FIELDS: frozenset[str] = frozenset()
 _assert_field_parity(
     EpicStatus,
     set(
@@ -472,9 +441,7 @@ _assert_field_parity(
     label="_serialize_epic_status",
 )
 
-# depends_on_ids/blocked_by_ids default to empty frozensets, which is enough
-# for a key-existence check (the guard diffs keys, not values).
-_WIRE_OMITTED_GRAPH_TASK_FIELDS: frozenset[str] = frozenset()  # nothing omitted
+_WIRE_OMITTED_GRAPH_TASK_FIELDS: frozenset[str] = frozenset()
 _assert_field_parity(
     GraphTask,
     set(_serialize_graph_task(GraphTask(bead_id="b", title="t", status=BeadStatus.OPEN))),
@@ -482,7 +449,7 @@ _assert_field_parity(
     label="_serialize_graph_task",
 )
 
-_WIRE_OMITTED_PROJECT_GRAPH_FIELDS: frozenset[str] = frozenset()  # nothing omitted
+_WIRE_OMITTED_PROJECT_GRAPH_FIELDS: frozenset[str] = frozenset()
 _assert_field_parity(
     ProjectGraph,
     set(_serialize_graph(ProjectGraph())),
@@ -490,7 +457,7 @@ _assert_field_parity(
     label="_serialize_graph",
 )
 
-_WIRE_OMITTED_TRAJECTORY_FIELDS: frozenset[str] = frozenset()  # nothing omitted
+_WIRE_OMITTED_TRAJECTORY_FIELDS: frozenset[str] = frozenset()
 _assert_field_parity(
     TrajectorySnapshot,
     set(
@@ -506,7 +473,7 @@ _assert_field_parity(
     label="_serialize_trajectory",
 )
 
-_WIRE_OMITTED_ACTIVE_PLAY_FIELDS: frozenset[str] = frozenset()  # nothing omitted
+_WIRE_OMITTED_ACTIVE_PLAY_FIELDS: frozenset[str] = frozenset()
 _assert_field_parity(
     ActivePlay,
     set(
@@ -516,7 +483,7 @@ _assert_field_parity(
     label="_serialize_active_play",
 )
 
-_WIRE_OMITTED_PLAY_TYPE_STATS_FIELDS: frozenset[str] = frozenset()  # nothing omitted
+_WIRE_OMITTED_PLAY_TYPE_STATS_FIELDS: frozenset[str] = frozenset()
 _assert_field_parity(
     PlayTypeStatsSnapshot,
     set(
@@ -536,7 +503,7 @@ _assert_field_parity(
     label="_serialize_play_type_stats",
 )
 
-_WIRE_OMITTED_AGENT_SPECIALIZATION_FIELDS: frozenset[str] = frozenset()  # nothing omitted
+_WIRE_OMITTED_AGENT_SPECIALIZATION_FIELDS: frozenset[str] = frozenset()
 _assert_field_parity(
     AgentPlaySpecializationSnapshot,
     set(
@@ -556,7 +523,7 @@ _assert_field_parity(
     label="_serialize_agent_specialization",
 )
 
-_WIRE_OMITTED_SESSION_STATS_FIELDS: frozenset[str] = frozenset()  # nothing omitted
+_WIRE_OMITTED_SESSION_STATS_FIELDS: frozenset[str] = frozenset()
 _assert_field_parity(
     SessionStatsSnapshot,
     set(
@@ -576,9 +543,6 @@ _assert_field_parity(
     omitted=_WIRE_OMITTED_SESSION_STATS_FIELDS,
     label="_serialize_session_stats",
 )
-
-
-# Public serialization functions
 
 
 def serialize_state(state: OrchestratorState) -> dict[str, object]:
@@ -624,7 +588,6 @@ def serialize_state(state: OrchestratorState) -> dict[str, object]:
         },
         "action_mask": list(state.action_mask),
         "mask_reasons": {pt.value: str(reason) for pt, reason in state.mask_reasons.items()},
-        # V1_CONTRACT.md §"AgentShore State Snapshot"
         "run_mode": state.run_mode.value,
         "action_space_version": state.action_space_version,
         "policy_version": state.policy_version,

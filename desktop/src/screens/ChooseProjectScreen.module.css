@@ -165,8 +165,6 @@
 }
 
 .quickStartButton {
-  /* Tighter than the page-level primary button so it fits inline with
-     the row's badge cluster. Inherits the colors from .buttonPrimary. */
   padding: 4px 10px;
   font-size: 12px;
   line-height: 1.2;

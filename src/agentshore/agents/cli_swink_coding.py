@@ -67,9 +67,6 @@ from agentshore.agents._jsonl import (
     _UsageTotals,
 )
 
-# The three tier aliases the installed binary's ``--model`` flag accepts
-# directly. Any other value must be a ``provider:model[@endpoint]`` tier_map
-# override — see :func:`classify_swink_model`.
 TIER_ALIASES: frozenset[str] = frozenset({"small", "medium", "large"})
 
 _INVALID_MODEL_MSG = (
@@ -110,8 +107,6 @@ def classify_swink_model(value: str) -> Literal["alias", "tier_map"]:
         candidate_model, _, candidate_endpoint = rest.partition("@")
         if "://" in candidate_endpoint:
             model_part = candidate_model
-        # else: no URL scheme after '@' — it's part of the model id, not an
-        # endpoint suffix; model_part stays as the full `rest`.
 
     if not model_part:
         raise ValueError(_INVALID_MODEL_MSG.format(value=value))
@@ -272,7 +267,6 @@ def build_resume_argv(
         model_tier=model_tier,
         disallowed_tools=disallowed_tools,
     )
-    # argv[0] is the binary; inject --resume <id> directly after it.
     return [argv[0], "--resume", resume_session_id, *argv[1:]]
 
 
@@ -344,19 +338,9 @@ def parse_swink_coding_jsonl(raw: str) -> tuple[str, _UsageTotals, str | None]:
                 error_text = message
             continue
 
-        # session.started / tool_use / tool_result: session id (if any) is
-        # already captured above; these carry no text or usage of their own.
-
     if result_seen and (terminal_text or result_flagged_empty):
-        # Nonempty terminal text wins outright; an empty one wins only when the
-        # CLI explicitly flagged the run as empty.
         text_out = terminal_text if terminal_text is not None else ""
     elif result_seen:
-        # Unflagged empty terminal text (#415): the terminal event is missing
-        # its text rather than reporting a silent run, so the streamed deltas
-        # are the best evidence of what the run produced. Without this a run
-        # that streamed a complete result block is handed back as "" and scored
-        # a no-op, which then burns the whole no-op retry budget re-running it.
         text_out = "".join(text_chunks) or error_text or raw
     elif error_text is not None:
         text_out = error_text

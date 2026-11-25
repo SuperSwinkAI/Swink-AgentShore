@@ -47,10 +47,6 @@ if TYPE_CHECKING:
 
 _logger = get_logger(__name__)
 
-# Synthetic resource key acquired by all trunk-scoped plays so they
-# serialize against each other. Without this, cleanup + merge_pr (and
-# other trunk-scoped pairs) could run simultaneously, leaving the main
-# checkout dirty and failing merges with dirty_trunk.
 _TRUNK_RESOURCE_KEY = "trunk:main_repo"
 
 
@@ -63,23 +59,10 @@ _ISSUE_WORK_PLAY_TYPES = frozenset(
     }
 )
 
-# Trunk-scoped plays that do NOT mutate trunk and are not issue/PR-scoped
-# (run_qa, design_audit, calibrate_alignment, groom_backlog, seed_project).
-# They still serialize against *themselves* via a session-scoped key — so two
-# of the same metadata play can't race on beads/issue writes — but they no
-# longer take the exclusive trunk:main_repo writer lock, which used to starve
-# merge_pr for 10–20 min at a stretch (issue #17). The issue-scoped planning
-# plays (write_implementation_plan, refine_task_breakdown) are excluded: they
-# serialize per-issue via their issue:<n> key and must stay parallel.
 _SELF_SERIALIZED_TRUNK_PLAYS = (TRUNK_SCOPED_PLAYS - TRUNK_MUTATING_PLAYS) - _ISSUE_WORK_PLAY_TYPES
 
 _idle_can_review_agents = idle_can_review_agents
 _pick_reviewer_for_pr = pick_reviewer_for_pr
-
-
-# ---------------------------------------------------------------------------
-# Override-resolution dispatch table (mirrors _SkillSpec in dispatch.py)
-# ---------------------------------------------------------------------------
 
 
 @dataclasses.dataclass(frozen=True)
@@ -100,11 +83,8 @@ class _OverrideSpec:
 
 
 _OVERRIDE_SPECS: dict[PlayType, _OverrideSpec] = {
-    # PR-work plays require pr_number; missing → fresh resolve.
     **{pt: _OverrideSpec("pr_number", use_specific_pr=True) for pt in _PR_WORK_PLAY_TYPES},
-    # Issue-work plays require issue_number; missing → fresh resolve.
     **{pt: _OverrideSpec("issue_number") for pt in _ISSUE_WORK_PLAY_TYPES},
-    # SYSTEMATIC_DEBUGGING: issue_number primary; branch-only path bypasses preconditions.
     PlayType.SYSTEMATIC_DEBUGGING: _OverrideSpec("issue_number", branch_bypass=True),
 }
 
@@ -119,9 +99,6 @@ def _review_queue_id(params: PlayParams) -> int | None:
     return raw if isinstance(raw, int) else None
 
 
-# After this many failed unblock_pr plays on the same PR in a single session,
-# the resolver stops dispatching that PR — the skill has already diagnosed it
-# as irresolvable (superseded, perpetual conflict, etc.).
 _UNBLOCK_PR_EXHAUSTION_THRESHOLD = 3
 
 
@@ -147,30 +124,8 @@ class ParameterResolver:
         self._cfg = cfg
         self._github = github
         self._project_path = project_path
-        # Per-PR unblock_pr failure count for the current session (in-memory).
-        # PRs reaching _UNBLOCK_PR_EXHAUSTION_THRESHOLD are excluded from dispatch
-        # so irresolvable-conflict PRs don't keep consuming agent time.
         self._unblock_pr_failures: dict[int, int] = {}
-        # Fast, short-window down-weight for a PR that just failed unblock_pr
-        # (merge_conflicts) or merge_pr (dirty_trunk) with a non-mechanical,
-        # provably-not-retryable-right-now reason (#312). Distinct from
-        # ``_unblock_pr_failures`` above: that is a permanent, clockless
-        # terminal backstop that only bites after
-        # ``_UNBLOCK_PR_EXHAUSTION_THRESHOLD`` attempts; this cooldown arms on
-        # the FIRST such failure (``PR_REPICK_COOLDOWN_SPEC.threshold == 1``)
-        # and expires after a short play window, so the PR stops being
-        # re-picked immediately without waiting for the exhaustion grind.
-        # Shared by both play types (keyed on pr_number only) since either
-        # failure means "don't touch this PR again for a bit."
         self._pr_repick_cooldown: Cooldown[int] = Cooldown(PR_REPICK_COOLDOWN_SPEC)
-        # pr_number -> whether the cooldown re-arms early when its blocking
-        # condition clears (mirrors issue_pickup's ``_skip_rearmable``). True
-        # for merge_conflicts: the PR's live ``mergeable`` field is already in
-        # every state snapshot at zero extra cost, so
-        # ``PlayCandidateService`` can re-check it each resolve. False for
-        # dirty_trunk: there is no equivalently cheap live "trunk is clean
-        # now" signal at this layer, so it rides out the full window (mirrors
-        # issue_pickup's non-rearmable timeout/crash case, #222).
         self._pr_repick_cooldown_rearmable: dict[int, bool] = {}
         self._candidate_service = PlayCandidateService(
             store=store,
@@ -281,7 +236,6 @@ class ParameterResolver:
             return await self._resolve_override(play_type, state, override)
 
         match play_type:
-            # -- internal plays (synchronous) ---------------------------------
             case PlayType.INSTANTIATE_AGENT:
                 return self._resolve_instantiate_agent(
                     state,
@@ -291,7 +245,6 @@ class ParameterResolver:
                 return self._resolve_end_agent(state)
             case PlayType.TAKE_BREAK:
                 return self._resolve_take_break(state)
-            # -- skill-backed plays (candidate-loop resolution) --------------
             case (
                 PlayType.REFINE_TASK_BREAKDOWN
                 | PlayType.UNBLOCK_PR
@@ -307,16 +260,8 @@ class ParameterResolver:
                 )
             case PlayType.RUN_QA:
                 return await self._resolve_run_qa(state)
-            # -- no-arg plays -------------------------------------------------
             case _:
-                # END_SESSION, CLEANUP, TAKE_BREAK, GROOM_BACKLOG,
-                # CALIBRATE_ALIGNMENT, DESIGN_AUDIT, RECONCILE_STATE, PRUNE,
-                # FUTURE_4/7/8
                 return PlayParams()
-
-    # -------------------------------------------------------------------------
-    # Internal play resolvers
-    # -------------------------------------------------------------------------
 
     def _resolve_take_break(self, state: OrchestratorState) -> PlayParams:
         """Attach the agent/error that made TAKE_BREAK eligible.
@@ -374,9 +319,6 @@ class ParameterResolver:
                 target_agent_type=override_agent_type,
                 target_model_tier=override_model_tier,
             )
-        # Count every non-terminated agent, mirroring instantiate_agent.execute()
-        # and the eligibility config mask. ERROR agents still occupy their tier
-        # slot until recovery or end_agent terminates them.
         existing = Counter(
             (s.agent_type.value, s.model_tier or DEFAULT_MODEL_TIER)
             for s in state.agents
@@ -440,20 +382,11 @@ class ParameterResolver:
         precondition enforces the same gate, so this is a defense-in-depth
         check. During drain the gate is bypassed so any idle agent can be ended.
         """
-        # A recovery-exhausted agent is wedged (typically ERROR state). The mask
-        # re-enables END_AGENT for it (``_stage_wedged_end_agent``); target it
-        # directly and bypass the min-plays / two-agent precondition the mask
-        # already lifted, so the PPO's choice to retire it actually dispatches.
         if state.recovery_exhausted_agent_ids:
             wedged = [s for s in state.agents if s.agent_id in state.recovery_exhausted_agent_ids]
             if wedged:
                 return PlayParams(agent_id=wedged[0].agent_id, bypass_preconditions=True)
 
-        # A non-recoverable ERROR agent (auth/invalid_model/crash_*/timeout/...)
-        # has no recovery path; the mask unmasks END_AGENT for it
-        # (``has_terminal_error_agent``). Target it directly and bypass the
-        # min-plays / two-agent precondition so the PPO's retire choice
-        # dispatches instead of resolving to no target (#20).
         terminal_error = [
             s
             for s in state.agents
@@ -463,12 +396,6 @@ class ParameterResolver:
             return PlayParams(agent_id=terminal_error[0].agent_id, bypass_preconditions=True)
 
         if state.session_state == SessionState.DRAINING:
-            # During drain, recovery (take_break) is masked, so a recoverable-
-            # ERROR agent (e.g. a BUSY agent reaped mid-play -> exit 143 ->
-            # ERROR/"unknown") never reaches IDLE or recovery_exhausted. Left
-            # alone it wedges drain forever, since should_terminate requires all
-            # agents TERMINATED (#30). Retire any ERROR agent immediately —
-            # clear() tears it down whatever status it is in.
             errored = [s for s in state.agents if s.status == AgentStatus.ERROR]
             if errored:
                 return PlayParams(agent_id=errored[0].agent_id, bypass_preconditions=True)
@@ -491,10 +418,6 @@ class ParameterResolver:
 
         worst = max(idle, key=_score)
         return PlayParams(agent_id=worst.agent_id)
-
-    # -------------------------------------------------------------------------
-    # Durable work claims
-    # -------------------------------------------------------------------------
 
     async def _resolve_override(
         self, play_type: PlayType, state: OrchestratorState, override: PlayParams
@@ -524,7 +447,6 @@ class ParameterResolver:
             field_val = getattr(override, spec.required_field)
             if field_val is None:
                 if spec.branch_bypass and override.branch is not None:
-                    # SYSTEMATIC_DEBUGGING with branch-only: bypass preconditions.
                     override = dataclasses.replace(override, bypass_preconditions=True)
                     return await self._claim_params(play_type, state, override)
                 return await self.resolve(play_type, state, override=PlayParams())
@@ -541,22 +463,12 @@ class ParameterResolver:
         if pr_number is None:
             return None
         pr = await self._find_pr(state, pr_number)
-        # Target enumeration only: locate the PR so claim resource keys can be
-        # derived. PR validity (merge-ready, unblockable, review-needed, draft)
-        # is owned by the EligibilityAuthority's confirm(); the resolver no
-        # longer re-decides it here.
         if pr is None:
             return None
 
-        # CODE_REVIEW pins a cross-identity reviewer into the claim key; MERGE_PR
-        # and UNBLOCK_PR claim the PR directly with no reviewer selection.
         if play_type != PlayType.CODE_REVIEW:
             return await self._claim_params(play_type, state, params)
 
-        # Reviewer selection is target enumeration for the claim key, not an
-        # eligibility decision; the executor's _select_skill_agent remains
-        # the anti-confirmation backstop. Returning None on no idle reviewer
-        # is a clean re-pick, not an eligibility rejection.
         idle_reviewers = idle_can_review_agents(state)
         reviewer = pick_reviewer_for_pr(pr.github_author, idle_reviewers)
         if reviewer is None:
@@ -674,13 +586,6 @@ class ParameterResolver:
         elif play_type in _SELF_SERIALIZED_TRUNK_PLAYS:
             keys.append(f"session:{play_type.value}")
 
-        # Trunk-*mutating* plays (merge_pr, cleanup, reconcile_state) serialize
-        # on a synthetic trunk:main_repo key — prevents concurrent mutations
-        # that leave trunk dirty/half-merged. Read-only trunk-scoped plays
-        # (run_qa, design_audit, calibrate_alignment, groom_backlog,
-        # seed_project) deliberately do NOT claim it: they only read the
-        # checkout / update beads + issues, and holding the writer lock for
-        # their multi-minute duration starved merge_pr (issue #17).
         if play_type in TRUNK_MUTATING_PLAYS and _TRUNK_RESOURCE_KEY not in keys:
             keys.append(_TRUNK_RESOURCE_KEY)
         return keys
@@ -702,10 +607,6 @@ class ParameterResolver:
             if row.pr_number == pr_number:
                 return row
         return None
-
-    # -------------------------------------------------------------------------
-    # Skill-backed play resolvers
-    # -------------------------------------------------------------------------
 
     async def _claim_candidate(
         self,

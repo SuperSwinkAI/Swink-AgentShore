@@ -28,24 +28,24 @@ function makeAdapter(entries: RecentEntry[]): ChooseProjectAdapter & {
     remove: vi.fn().mockResolvedValue(undefined),
     select: vi.fn().mockResolvedValue({ path: "" }),
     openDirectory: vi.fn().mockResolvedValue(null),
-    // Default Quick Start stub resolves successfully and would
-    // normally navigate; tests that care override it.
+
+
     quickStart: vi.fn().mockResolvedValue(undefined),
-    // Default Quick Start eligibility: all rows qualify so individual
-    // tests can opt rows out by overriding the mock.
+
+
     hasPersistedSetup: vi.fn().mockReturnValue(true),
-    // Default ``project.set_budget`` stub — Quick Start fires this
-    // BEFORE the shared helper, so most tests need the call to
-    // succeed; the explicit "setBudget fails" test overrides it.
+
+
+
     setBudgetImpl: vi
       .fn()
       .mockResolvedValue({
         budget: { enabled: true, total: 25, warning_threshold: 0.2 },
         yaml_path: "/tmp/agentshore.yaml",
       }),
-    // Default persisted budget — capped at $25 so the setBudget
-    // round-trip fires. Tests that need the "no budget persisted"
-    // path override this to return null.
+
+
+
     readPersistedBudgetImpl: vi
       .fn()
       .mockReturnValue({ mode: "capped", total: 25 }),
@@ -214,8 +214,8 @@ describe("ChooseProjectScreen", () => {
     const NEVER_STARTED_ENTRY: RecentEntry = {
       path: "/Users/example/never-run",
       label: "never-run",
-      // Empty last_started simulates a Ready-by-config row that was
-      // never actually launched (the third gate from the issue spec).
+
+
       last_started: "",
       last_exit_reason: null,
       has_valid_config: true,
@@ -277,18 +277,18 @@ describe("ChooseProjectScreen", () => {
       ];
       expect(pathArg).toBe("/Users/user/example-repo");
       expect(typeof opts.navigate).toBe("function");
-      // Quick Start now calls select() early to activate the project
-      // before setBudget (which requires an active project).
+
+
       expect(adapter.select).toHaveBeenCalledWith("/Users/user/example-repo");
       expect(screen.queryByTestId("readiness")).not.toBeInTheDocument();
     });
 
     it("persists the localStorage budget via setBudget BEFORE invoking the helper", async () => {
-      // Codex #578 review: the helper depends on agentshore.yaml carrying
-      // the up-to-date budget (``session.start`` itself only forwards
-      // ``progress_token`` + ``seed_input_path`` on the wire), so
-      // Quick Start MUST round-trip through ``project.set_budget``
-      // first or any user-edited budget change is silently dropped.
+
+
+
+
+
       const adapter = makeAdapter([READY_ENTRY]);
       adapter.readPersistedBudgetImpl = vi
         .fn()
@@ -311,8 +311,8 @@ describe("ChooseProjectScreen", () => {
         time_enabled: false,
         time_total_minutes: 0,
       });
-      // setBudget must fire BEFORE the helper — otherwise the
-      // helper's ``project.inspect`` reads stale yaml.
+
+
       const budgetOrder =
         adapter.setBudgetImpl.mock.invocationCallOrder[0];
       const helperOrder = adapter.quickStart.mock.invocationCallOrder[0];
@@ -320,9 +320,9 @@ describe("ChooseProjectScreen", () => {
     });
 
     it("skips setBudget when no budget was persisted but still calls the helper", async () => {
-      // Backwards-compat: snapshots written before PR #576 have no
-      // ``budget`` slice. Quick Start should still proceed, letting
-      // ``agentshore.yaml``'s existing budget stand.
+
+
+
       const adapter = makeAdapter([READY_ENTRY]);
       adapter.readPersistedBudgetImpl = vi.fn().mockReturnValue(null);
       renderScreen(adapter);
@@ -361,8 +361,8 @@ describe("ChooseProjectScreen", () => {
       expect(err).toBeInstanceOf(Error);
       expect((err as Error).message).toBe("yaml write failed");
       expect(step).toBe("budget");
-      // The helper must NOT fire when the pre-step failed —
-      // otherwise we'd run with a stale agentshore.yaml budget.
+
+
       expect(adapter.quickStart).not.toHaveBeenCalled();
     });
 
@@ -433,8 +433,8 @@ describe("ChooseProjectScreen", () => {
       expect(alert.textContent).toContain("backend unreachable");
     });
 
-    // Track the public type so a regression in the local ``QuickStartSetupStep``
-    // alias trips the build (the App.tsx banner state shares this shape).
+
+
     it("exports the QuickStartSetupStep union with the budget step", () => {
       const sample: QuickStartSetupStep = "budget";
       expect(sample).toBe("budget");
@@ -456,9 +456,9 @@ describe("ChooseProjectScreen", () => {
     await waitFor(() => {
       expect(screen.queryByTestId("recent-row-/Users/user/example-repo")).not.toBeInTheDocument();
     });
-    // The other row stays.
+
     expect(screen.getByTestId("recent-row-/Users/example/sample-project")).toBeInTheDocument();
-    // Row click was not also triggered.
+
     expect(adapter.touch).not.toHaveBeenCalled();
     expect(adapter.select).not.toHaveBeenCalled();
   });

@@ -39,8 +39,6 @@ from agentshore.state import (
     SessionState,
 )
 
-# --- agentshore-owned filter ---------------------------------------------------
-
 
 def test_agentshore_owned_filter_matches_exact_yaml() -> None:
     assert _path_is_agentshore_owned("agentshore.yaml") is True
@@ -57,19 +55,12 @@ def test_agentshore_owned_filter_passes_user_paths() -> None:
     assert _path_is_agentshore_owned("src/foo.py") is False
     assert _path_is_agentshore_owned("tests/test_foo.py") is False
     assert _path_is_agentshore_owned("README.md") is False
-    # ``.agentshoreX`` is not the same as ``.agentshore/`` — must require the slash.
     assert _path_is_agentshore_owned(".agentshoreX/foo") is False
-
-
-# --- collect_dirty_trunk_paths: error paths ---------------------------------
 
 
 def test_dirty_paths_returns_empty_for_non_git_dir(tmp_path: Path) -> None:
     """A non-git directory yields ``[]`` (git status fails) — never raises."""
     assert collect_dirty_trunk_paths(tmp_path) == []
-
-
-# --- collect_orphan_worktree_paths: error paths -----------------------------
 
 
 def test_orphan_worktrees_returns_empty_without_session(tmp_path: Path) -> None:
@@ -82,18 +73,12 @@ def test_orphan_worktrees_returns_empty_without_db(tmp_path: Path) -> None:
     assert collect_orphan_worktree_paths(tmp_path, session_id="sess-x") == []
 
 
-# --- collect_recent_failed_plays: error paths -------------------------------
-
-
 def test_recent_fails_returns_empty_without_session(tmp_path: Path) -> None:
     assert collect_recent_failed_plays(tmp_path, session_id=None) == []
 
 
 def test_recent_fails_returns_empty_without_db(tmp_path: Path) -> None:
     assert collect_recent_failed_plays(tmp_path, session_id="sess-x") == []
-
-
-# --- collect_recent_worktree_paths -----------------------------------------
 
 
 def test_recent_worktrees_returns_paths_created_inside_age_guard(tmp_path: Path) -> None:
@@ -138,9 +123,6 @@ def test_recent_worktrees_returns_empty_without_db(tmp_path: Path) -> None:
     assert collect_recent_worktree_paths(tmp_path, session_id="sess-x") == []
 
 
-# --- build_recent_wedge_signals: structure ----------------------------------
-
-
 def _bare_state(failure_streak: int = 0) -> OrchestratorState:
     return OrchestratorState(
         session_id="sess",
@@ -179,9 +161,6 @@ def test_build_signals_carries_failure_streak() -> None:
     assert signals["same_type_failure_streak"] == 7
 
 
-# --- collect_dirty_trunk_paths: live git filter (integration) ---------------
-
-
 def _init_repo_with_dirty_state(tmp_path: Path) -> Path:
     """Create a real git repo with mixed user/agentshore-owned dirty paths."""
     subprocess.run(
@@ -194,13 +173,11 @@ def _init_repo_with_dirty_state(tmp_path: Path) -> Path:
             "HOME": str(tmp_path),
         },
     )
-    # Local committer so seed commit works without a global git config.
     for key, val in [("user.email", "t@t"), ("user.name", "t"), ("commit.gpgsign", "false")]:
         subprocess.run(["git", "config", "--local", key, val], cwd=str(tmp_path), check=True)
     (tmp_path / "src.py").write_text("a = 1\n")
     subprocess.run(["git", "add", "src.py"], cwd=str(tmp_path), check=True)
     subprocess.run(["git", "commit", "-q", "-m", "seed"], cwd=str(tmp_path), check=True)
-    # Tracked modification + AgentShore-owned untracked sidecars.
     (tmp_path / "src.py").write_text("a = 2\n")
     (tmp_path / ".agentshore").mkdir()
     (tmp_path / ".agentshore" / "context.json").write_text("{}")
@@ -212,14 +189,10 @@ def test_dirty_paths_excludes_agentshore_owned_sidecars(tmp_path: Path) -> None:
     repo = _init_repo_with_dirty_state(tmp_path)
     entries = collect_dirty_trunk_paths(repo)
     paths = {e.path for e in entries}
-    assert "src.py" in paths  # tracked modification stays
-    # AgentShore-owned untracked sidecars are filtered out.
+    assert "src.py" in paths
     assert ".agentshore/" not in paths
     assert ".agentshore/context.json" not in paths
     assert "agentshore.yaml" not in paths
-
-
-# --- write_session_start_dirty_baseline -------------------------------------
 
 
 def test_baseline_returns_none_without_agentshore_dir(tmp_path: Path) -> None:
@@ -264,13 +237,12 @@ def test_baseline_captures_pre_session_dirt_with_mtime_clustering(
 ) -> None:
     """Pre-session dirty files are enriched with mtime + size + cluster stats."""
     repo = _init_repo_with_dirty_state(tmp_path)
-    (repo / ".agentshore").exists()  # established by _init_repo_with_dirty_state
+    (repo / ".agentshore").exists()
 
-    # Backdate the modified file so mtime predates the session start timestamp.
-    src_mtime = 1779570000  # 2026-05-23T20:20:00 UTC
+    src_mtime = 1779570000
     os.utime(repo / "src.py", (src_mtime, src_mtime))
 
-    session_start = "2026-05-23T23:00:00Z"  # well after the file mtime
+    session_start = "2026-05-23T23:00:00Z"
     dest = write_session_start_dirty_baseline(
         repo, session_id="s2", session_start_utc=session_start
     )
@@ -299,11 +271,10 @@ def test_baseline_pre_session_false_when_file_modified_after_start(
 ) -> None:
     """If a dirty file's mtime is newer than session_start, pre_session=False."""
     repo = _init_repo_with_dirty_state(tmp_path)
-    # Touch the dirty file forward to simulate an in-session write.
-    future_mtime = 1779600000  # 2026-05-24T04:40:00 UTC
+    future_mtime = 1779600000
     os.utime(repo / "src.py", (future_mtime, future_mtime))
 
-    session_start = "2026-05-23T20:00:00Z"  # before the mtime
+    session_start = "2026-05-23T20:00:00Z"
     dest = write_session_start_dirty_baseline(
         repo, session_id="s3", session_start_utc=session_start
     )
@@ -325,9 +296,6 @@ def test_baseline_overwrites_prior_sidecar(tmp_path: Path) -> None:
     payload = json.loads(dest.read_text())
     assert payload["session_id"] == "s4-new"
     assert payload["session_start_utc"] == "2026-05-23T02:00:00Z"
-
-
-# --- owned_by_active_play annotation (#162) ---------------------------------
 
 
 def _agent_running(play_type: PlayType, started_at: str) -> AgentSnapshot:
@@ -366,7 +334,7 @@ def test_untracked_root_owned_by_active_trunk_play(tmp_path: Path) -> None:
     repo = _init_repo_with_dirty_state(tmp_path)
     artifact = repo / "in_flight.json"
     artifact.write_text("{}")
-    os.utime(artifact, (2_000_000_000, 2_000_000_000))  # 2033 — newer than play start
+    os.utime(artifact, (2_000_000_000, 2_000_000_000))
     agent = _agent_running(PlayType.WRITE_IMPLEMENTATION_PLAN, "2030-01-01T00:00:00Z")
     signals = build_recent_wedge_signals(_state_with_agent(agent), repo, session_id="sess")
     assert _dirty_entry(signals, "in_flight.json")["owned_by_active_play"] is True
@@ -378,7 +346,7 @@ def test_untracked_root_not_owned_when_no_active_trunk_play(tmp_path: Path) -> N
     artifact = repo / "orphan.json"
     artifact.write_text("{}")
     os.utime(artifact, (2_000_000_000, 2_000_000_000))
-    agent = _agent_running(PlayType.ISSUE_PICKUP, "2030-01-01T00:00:00Z")  # not trunk-scoped
+    agent = _agent_running(PlayType.ISSUE_PICKUP, "2030-01-01T00:00:00Z")
     signals = build_recent_wedge_signals(_state_with_agent(agent), repo, session_id="sess")
     assert _dirty_entry(signals, "orphan.json")["owned_by_active_play"] is False
 
@@ -388,7 +356,7 @@ def test_untracked_root_not_owned_when_predates_active_play(tmp_path: Path) -> N
     repo = _init_repo_with_dirty_state(tmp_path)
     artifact = repo / "older.json"
     artifact.write_text("{}")
-    os.utime(artifact, (1_000_000_000, 1_000_000_000))  # 2001 — older than play start
+    os.utime(artifact, (1_000_000_000, 1_000_000_000))
     agent = _agent_running(PlayType.CLEANUP, "2030-01-01T00:00:00Z")
     signals = build_recent_wedge_signals(_state_with_agent(agent), repo, session_id="sess")
     assert _dirty_entry(signals, "older.json")["owned_by_active_play"] is False
@@ -408,7 +376,7 @@ def _add_untracked_under_tracked_subdir(repo: Path, rel: str) -> Path:
         ["git", "add", str(artifact.parent / ".keep")], cwd=str(repo), check=True, env=env
     )
     subprocess.run(["git", "commit", "-q", "-m", "nested"], cwd=str(repo), check=True, env=env)
-    artifact.write_text("{}")  # now untracked beneath a tracked dir
+    artifact.write_text("{}")
     return artifact
 
 
@@ -420,7 +388,7 @@ def test_untracked_subtree_owned_by_active_trunk_play(tmp_path: Path) -> None:
     """
     repo = _init_repo_with_dirty_state(tmp_path)
     artifact = _add_untracked_under_tracked_subdir(repo, "pkgs/Sub/Package.resolved")
-    os.utime(artifact, (2_000_000_000, 2_000_000_000))  # 2033 — newer than play start
+    os.utime(artifact, (2_000_000_000, 2_000_000_000))
     agent = _agent_running(PlayType.MERGE_PR, "2030-01-01T00:00:00Z")
     signals = build_recent_wedge_signals(_state_with_agent(agent), repo, session_id="sess")
     assert _dirty_entry(signals, "pkgs/Sub/Package.resolved")["owned_by_active_play"] is True
@@ -432,7 +400,7 @@ def test_untracked_subtree_not_owned_when_predates_active_play(tmp_path: Path) -
     """
     repo = _init_repo_with_dirty_state(tmp_path)
     artifact = _add_untracked_under_tracked_subdir(repo, "pkgs/Sub/Package.resolved")
-    os.utime(artifact, (1_000_000_000, 1_000_000_000))  # 2001 — older than play start
+    os.utime(artifact, (1_000_000_000, 1_000_000_000))
     agent = _agent_running(PlayType.MERGE_PR, "2030-01-01T00:00:00Z")
     signals = build_recent_wedge_signals(_state_with_agent(agent), repo, session_id="sess")
     assert _dirty_entry(signals, "pkgs/Sub/Package.resolved")["owned_by_active_play"] is False
@@ -441,8 +409,8 @@ def test_untracked_subtree_not_owned_when_predates_active_play(tmp_path: Path) -
 def test_tracked_modification_owned_by_active_trunk_play(tmp_path: Path) -> None:
     """#224: a tracked (M) file newer than an active trunk play's start is in-flight
     work too — not just untracked root artifacts."""
-    repo = _init_repo_with_dirty_state(tmp_path)  # src.py is tracked + modified (status M)
-    os.utime(repo / "src.py", (2_000_000_000, 2_000_000_000))  # 2033 — newer than play start
+    repo = _init_repo_with_dirty_state(tmp_path)
+    os.utime(repo / "src.py", (2_000_000_000, 2_000_000_000))
     agent = _agent_running(PlayType.WRITE_IMPLEMENTATION_PLAN, "2030-01-01T00:00:00Z")
     signals = build_recent_wedge_signals(_state_with_agent(agent), repo, session_id="sess")
     assert _dirty_entry(signals, "src.py")["owned_by_active_play"] is True
@@ -451,7 +419,7 @@ def test_tracked_modification_owned_by_active_trunk_play(tmp_path: Path) -> None
 def test_tracked_modification_not_owned_when_predates_active_play(tmp_path: Path) -> None:
     """A tracked file older than the active trunk play's start is not its in-flight output."""
     repo = _init_repo_with_dirty_state(tmp_path)
-    os.utime(repo / "src.py", (1_000_000_000, 1_000_000_000))  # 2001 — older than play start
+    os.utime(repo / "src.py", (1_000_000_000, 1_000_000_000))
     agent = _agent_running(PlayType.WRITE_IMPLEMENTATION_PLAN, "2030-01-01T00:00:00Z")
     signals = build_recent_wedge_signals(_state_with_agent(agent), repo, session_id="sess")
     assert _dirty_entry(signals, "src.py")["owned_by_active_play"] is False

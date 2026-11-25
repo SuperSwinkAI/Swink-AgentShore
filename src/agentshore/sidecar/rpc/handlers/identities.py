@@ -59,9 +59,6 @@ def _dispatch_identities_rpc(
             return _error(req_id, INVALID_PARAMS, "identities.check_keychain requires login")
         keychain_login: str = login
 
-        # Off the serve loop: keychain_status spawns a child subprocess that can
-        # take seconds (Windows Cred Manager under AV); returning a coroutine lets
-        # concurrent setup-screen RPCs run as tasks instead of serializing.
         async def _run_check_keychain() -> JsonRpcResponse:
             try:
                 return _result(req_id, await asyncio.to_thread(keychain_status, keychain_login))
@@ -79,8 +76,6 @@ def _dispatch_identities_rpc(
         access_login: str = login
         _project_path = active_project_path
 
-        # Off the serve loop (see check_keychain): async, threads its blocking
-        # gh/keyring/repo calls internally so per-identity checks run in parallel.
         async def _run_check_access() -> JsonRpcResponse:
             try:
                 return _result(

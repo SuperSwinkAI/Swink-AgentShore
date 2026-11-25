@@ -11,7 +11,7 @@ interface TopBarHudState {
 const store = createNotifyStore<TopBarHudState | null>(null);
 
 export function notifyTopBarHud(state: StateUpdate): void {
-  // Bridge can report 0/0 availability despite a populated open_issues; fall back to list size.
+
   const availability = state.work_availability;
   const openFromState = state.open_issues?.length ?? 0;
   const totalReported = availability?.github_open_issue_count ?? 0;

@@ -20,9 +20,6 @@ from agentshore.paths import GLOBAL_WEIGHTS_DIR as _GLOBAL_WEIGHTS_DIR
 from agentshore.plays.base import PlayParams
 from agentshore.plays.candidates import PlayCandidatePlan, build_candidate_plan
 from agentshore.rl.action_space import INDEX_TO_PLAY, NUM_ACTIONS
-
-# Re-exported from checkpoint_store so agentshore.core.phases import sites keep
-# resolving them through the selector module.
 from agentshore.rl.checkpoint_store import (
     _archive_old_canonicals as _archive_old_canonicals,
 )
@@ -50,9 +47,6 @@ from agentshore.rl.mask import (
 from agentshore.rl.mask_reason import MaskReason
 from agentshore.rl.observation import encode_observation
 from agentshore.rl.policy import ActorCritic
-
-# Re-exported from selector_diagnostics so existing imports of these
-# formerly-module-local helpers keep resolving through this module.
 from agentshore.rl.selector_diagnostics import (
     _is_capacity_wait as _is_capacity_wait,
 )
@@ -111,9 +105,6 @@ _REVERSE_FAILSAFE_BYPASS_PRECONDITION_PLAYS = frozenset(
     }
 )
 
-# Pure fleet-management plays. A mask leaving only these means "no real work" —
-# the auto reverse-failsafe must keep counting idle ticks, else lifecycle-only
-# churn pins the counter below threshold and END_SESSION never opens (#166).
 _LIFECYCLE_PLAY_TYPES = frozenset({PlayType.INSTANTIATE_AGENT, PlayType.END_AGENT})
 
 
@@ -148,7 +139,6 @@ class _PendingStep:
     log_prob: float
     value: float
     mask: NDArray[np.bool_]
-    # Config-head state, set only when the play was INSTANTIATE_AGENT.
     config_action: int | None = None
     config_log_prob: float | None = None
     config_mask: NDArray[np.bool_] | None = None
@@ -191,23 +181,9 @@ class PPOSelector:
         self._config_index = config_index
         self._pending: _PendingStep | None = None
         self._no_available_play_ticks: int = 0
-        # Dedup key for the verbose per-play mask map (see _masked_plays_log_field).
-        # An all-masked wedge re-emits its diagnostic every selector tick with an
-        # identical mask map; we log the full map only when it changes so a frozen
-        # wedge doesn't flood the log with repeated ~20-entry dumps.
         self._last_masked_plays_digest: str | None = None
-        # Confirm-rejection clean re-picks during the last select(); drained by
-        # consume_repick_count() into the executor_skip_rate_recent_50 window.
-        # Reset at the top of every select().
         self._last_select_repick_count: int = 0
-        # Global-weights snapshot at last reload; the delta base for
-        # concurrent-safe canonical updates.
         self._reload_base: dict[str, torch.Tensor] | None = None
-        # Set when the last reload found a canonical incompatible with this
-        # session (load failure or config-index mismatch). save_checkpoint must
-        # then NOT write back — we'd overwrite a good on-disk checkpoint with
-        # stale local weights. A missing canonical is NOT a rejection (it's the
-        # legitimate first-write / full-overwrite case).
         self._reload_rejected: bool = False
 
     def update_orchestrator_cfg(self, cfg: RuntimeConfig) -> None:
@@ -225,12 +201,7 @@ class PPOSelector:
         """
         self._orchestrator_cfg = cfg
 
-    # ------------------------------------------------------------------
-    # PlaySelector protocol
-    # ------------------------------------------------------------------
-
     async def select(self, state: OrchestratorState) -> tuple[PlayType, PlayParams] | None:
-        # Fresh confirm-repick tally for this cycle.
         self._last_select_repick_count = 0
 
         ctx = await self._metrics.snapshot(state)
@@ -282,9 +253,6 @@ class PPOSelector:
             self._log_all_masked(state)
             return None
 
-        # Single source of truth for play validity, built from the snapshot
-        # candidate plan above. confirm() does the one live read (fresh beads
-        # reload) against the *resolved* target after the resolver claims it.
         live_loader = self._build_live_graph_loader()
         authority = EligibilityAuthority(
             state,
@@ -297,9 +265,6 @@ class PPOSelector:
 
         obs_tensor = torch.tensor(obs, dtype=torch.float32)
         remaining_mask = mask.copy()
-        # Every non-returning iteration masks its sampled action, so the loop is
-        # self-bounded by the valid-action count. Cap at NUM_ACTIONS so a run of
-        # clean re-picks exhausts the valid plays without livelocking.
         max_attempts = NUM_ACTIONS
         attempted_plays: list[str] = []
         for attempt in range(max_attempts):
@@ -321,9 +286,6 @@ class PPOSelector:
             play_type = INDEX_TO_PLAY[action]
             attempted_plays.append(play_type.value)
 
-            # If the play head picked INSTANTIATE_AGENT and the config head is
-            # active, sample a config and pass it to the resolver. Otherwise
-            # the resolver falls back to its priority/round-robin logic.
             config_override: tuple[str, str] | None = None
             cfg_action: int | None = None
             cfg_log_prob: float | None = None
@@ -360,16 +322,11 @@ class PPOSelector:
                         cfg_log_prob = None
                     config_override = self._config_index[cfg_action]
                 else:
-                    # Config mask all-zero despite play mask allowing it — log
-                    # and fall through to resolver fallback. compute_action_mask
-                    # should have prevented this, so this is a safety net.
                     _logger.warning(
                         "ppo_selector.no_eligible_config",
                         agents=len(state.agents),
                     )
 
-            # Resolve + claim FIRST: the resolver picks the concrete target and
-            # acquires its work-claim (the atomic CAS that detects a lost race).
             params = await self._resolver.resolve(
                 play_type, state, config_index_override=config_override
             )
@@ -377,11 +334,6 @@ class PPOSelector:
                 params = self._resolve_reverse_failsafe_end_agent(state)
 
             if params is None:
-                # No claimable target (pool drained or the claim CAS was lost to
-                # a sibling). Clean re-pick: re-mask + resample, no self._pending,
-                # no plays-table skip row, no RL experience sample. (The confirm-
-                # repick counter tracks live-confirm rejections specifically, so a
-                # lost CAS is logged but not counted there.)
                 remaining_mask[action] = False
                 self._log_clean_repick(
                     "claim_lost_repick",
@@ -389,9 +341,6 @@ class PPOSelector:
                     attempt=attempt,
                     reason=None,
                 )
-                # No early break: a clean re-pick masks this action, so the loop
-                # is bounded by remaining_mask / max_attempts. Breaking on a small
-                # budget could idle (None) while other valid actions remain.
                 continue
 
             if terminal_no_work is not None and play_type in (
@@ -410,9 +359,6 @@ class PPOSelector:
             if reverse_failsafe:
                 rf_params = self._prepare_reverse_failsafe_params(play_type, params, state)
                 if rf_params is None:
-                    # The failsafe-precondition retry discards this candidate, so
-                    # release the work-claim resolve() just acquired before we
-                    # drop the params handle — otherwise the resource leaks held.
                     await self._resolver.release_claim(state, params)
                     remaining_mask[action] = False
                     _logger.debug(
@@ -423,17 +369,6 @@ class PPOSelector:
                     continue
                 params = rf_params
 
-            # Live confirm the RESOLVED target before committing to dispatch. One
-            # live read (fresh beads-graph reload) decides whether the specific
-            # issue/PR we just claimed is still valid — catching a sibling that
-            # flipped its bead in_progress between selection and now. A rejection
-            # is pure drift: release the claim we took and cleanly re-pick (no
-            # self._pending, no skip row, no RL sample).
-            #
-            # Reverse failsafe is the explicit escape hatch that DELIBERATELY
-            # lifts the A-type validity gates to break an all-masked deadlock, so
-            # confirm is bypassed while it's active (the failsafe params already
-            # carry the precondition-bypass contract downstream).
             if not reverse_failsafe and not params.bypass_preconditions:
                 decision = await authority.confirm(play_type, params, state)
                 if not decision.valid:
@@ -448,11 +383,6 @@ class PPOSelector:
                     )
                     continue
 
-            # Store the mask the action was actually sampled under. After a clean
-            # re-pick ``remaining_mask`` is narrower than ``mask``; ``log_prob`` was
-            # computed over the narrower distribution, so replaying the wider mask
-            # in the PPO update would evaluate a different distribution and bias
-            # the importance ratio below 1 on every re-picked step.
             self._pending = _PendingStep(
                 obs=obs,
                 action=action,
@@ -464,8 +394,6 @@ class PPOSelector:
                 config_mask=cfg_mask_arr,
             )
             self._no_available_play_ticks = 0
-            # A play dispatched → the all-masked streak (if any) ended; clear the
-            # dedup digest so the next distinct wedge re-emits its full map.
             self._last_masked_plays_digest = None
             return play_type, params
 
@@ -493,10 +421,6 @@ class PPOSelector:
 
         async def _load() -> ProjectGraph | None:
             try:
-                # max_age_seconds=0.0: this is the drift check itself — it
-                # must observe the live graph, not a TTL-cached one, or it
-                # can't catch a sibling that flipped a bead in_progress since
-                # selection (see the docstring above ``confirm()``).
                 return await load_graph(project_path, max_age_seconds=0.0)
             except GraphReadError:
                 return None
@@ -516,9 +440,6 @@ class PPOSelector:
         A clean re-pick re-masks the action and resamples; it contributes zero
         RL steps (no self._pending) and is never a plays-table skip row.
         """
-        # ``reason`` is typed ``MaskReason | None``; guard against a malformed
-        # non-typed reason leaking through so a clean re-pick can never crash the
-        # selector (the re-pick must stay a pure resample, not raise).
         classification = reason.classification.value if isinstance(reason, MaskReason) else None
         _logger.info(
             f"ppo_selector.{event}",
@@ -568,9 +489,6 @@ class PPOSelector:
             agent.status == AgentStatus.BUSY and agent.current_play_type != PlayType.TAKE_BREAK
             for agent in active_agents
         )
-        # A mask that only leaves lifecycle plays (INSTANTIATE_AGENT / END_AGENT)
-        # selectable still means "no dispatchable work" — keep counting so the
-        # failsafe can arm and lift END_SESSION even while a reap slips through.
         has_real_play = any(
             bool(mask[i]) and INDEX_TO_PLAY[i] not in _LIFECYCLE_PLAY_TYPES
             for i in range(NUM_ACTIONS)
@@ -642,12 +560,6 @@ class PPOSelector:
         self._last_masked_plays_digest = digest
         return {"masked_plays": mapping}
 
-    # The four methods below are thin wrappers over rl/selector_diagnostics.py
-    # (TNQA wave-2 selector.py split): they supply this selector's registry/cfg/
-    # config-index and the stateful masked-plays digest cache, and the module
-    # does the candidate-plan/mask-reasons/Counter field building and the
-    # actual structured log call. Event names and field sets are unchanged.
-
     def _log_all_masked(self, state: OrchestratorState) -> None:
         """Emit an actionable all-masked diagnostic with severity based on capacity."""
         _diag_log_all_masked(
@@ -709,10 +621,6 @@ class PPOSelector:
             masked_plays_log_field=self._masked_plays_log_field,
         )
 
-    # ------------------------------------------------------------------
-    # Experience collection
-    # ------------------------------------------------------------------
-
     async def on_play_completed(
         self,
         *,
@@ -764,10 +672,6 @@ class PPOSelector:
         n = self._last_select_repick_count
         self._last_select_repick_count = 0
         return n
-
-    # ------------------------------------------------------------------
-    # Update / checkpoint scheduling
-    # ------------------------------------------------------------------
 
     def should_update(self) -> bool:
         return (
@@ -853,10 +757,6 @@ class PPOSelector:
             total_plays=total_plays,
         )
 
-    # ------------------------------------------------------------------
-    # Properties
-    # ------------------------------------------------------------------
-
     @property
     def buffer(self) -> RolloutBuffer:
         return self._buffer
@@ -873,10 +773,6 @@ class PPOSelector:
     def set_entropy_coef(self, entropy_coef: float) -> None:
         """Update entropy coefficient for subsequent PPO updates."""
         self._updater.set_entropy_coef(entropy_coef)
-
-    # ------------------------------------------------------------------
-    # Construction helpers
-    # ------------------------------------------------------------------
 
     @classmethod
     def from_cold_start(
@@ -930,9 +826,6 @@ class PPOSelector:
         config_index: tuple[ConfigKey, ...] = (),
     ) -> PPOSelector:
         """Load weights from *weights_path* and build a PPOSelector."""
-        # #247: torch.load is a synchronous, multi-second blocking call; run it
-        # off the event loop so the TUI startup checklist keeps repainting
-        # instead of freezing on a partial frame (the save path already threads).
         policy = await asyncio.to_thread(ActorCritic.load, Path(weights_path))
         buffer = RolloutBuffer(capacity=256)
         updater = _build_updater(policy, cfg)

@@ -87,7 +87,7 @@ async def test_fresh_db_has_all_expected_tables(tmp_path) -> None:
     finally:
         await store.close()
 
-    assert tables == EXPECTED_TABLES  # 21 tables (schema version 5)
+    assert tables == EXPECTED_TABLES
 
 
 @pytest.mark.asyncio
@@ -185,7 +185,6 @@ async def test_partial_unique_index_enforces_active_only(tmp_path) -> None:
         )
         await store._conn.commit()
 
-        # Second active row on same branch must fail.
         try:
             await store._conn.execute(
                 """
@@ -201,7 +200,6 @@ async def test_partial_unique_index_enforces_active_only(tmp_path) -> None:
         except sqlite3.IntegrityError:
             await store._conn.rollback()
 
-        # Reap the first; second active insert now succeeds.
         await store._conn.execute(
             "UPDATE worktrees SET status = 'reaped' WHERE worktree_path = '/p1'"
         )

@@ -60,7 +60,6 @@ async def test_probe_sets_available_false_on_nonzero(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_probe_sets_available_false_when_gh_missing(tmp_path: Path) -> None:
     adapter, _ = _make_adapter(tmp_path)
-    # gh missing now surfaces as a normal return value (127, ...), not an exception.
     with patch("agentshore.github.adapter._run_gh", new_callable=AsyncMock) as run_gh:
         run_gh.return_value = (127, "", "gh not found")
         await adapter.probe()
@@ -81,7 +80,7 @@ async def test_list_issues_returns_records(tmp_path: Path) -> None:
     assert records[0].title == "Captured contract issue"
     assert records[0].url == "https://github.com/example/contract-fixture/issues/416"
     assert records[0].labels == ["bug", "priority:medium"]
-    assert records[0].priority is None  # live label uses priority:medium, not priority/medium
+    assert records[0].priority is None
 
 
 def _issue_json(
@@ -122,9 +121,9 @@ async def test_list_issues_extracts_priority_from_labels(tmp_path: Path) -> None
 
     assert records is not None
     by_num = {r.issue_number: r for r in records}
-    assert by_num[1].priority == 0  # critical
-    assert by_num[2].priority == 3  # low
-    assert by_num[3].priority == 2  # medium
+    assert by_num[1].priority == 0
+    assert by_num[2].priority == 3
+    assert by_num[3].priority == 2
 
 
 @pytest.mark.asyncio
@@ -219,8 +218,8 @@ async def test_list_issues_filters_pull_requests(tmp_path: Path) -> None:
 async def test_list_issues_paginates_until_short_page(tmp_path: Path) -> None:
     """Pages of 25 are requested in sequence until a page returns < 25 items."""
     adapter, _ = _make_adapter(tmp_path)
-    page1 = json.dumps([_issue_json(i) for i in range(1, 26)])  # full page
-    page2 = json.dumps([_issue_json(i) for i in range(26, 30)])  # short → last
+    page1 = json.dumps([_issue_json(i) for i in range(1, 26)])
+    page2 = json.dumps([_issue_json(i) for i in range(26, 30)])
     call_count = {"n": 0}
 
     async def fake(args: object, *a: object, **k: object) -> tuple[int, str, str]:
@@ -252,7 +251,6 @@ async def test_list_issues_passes_since_in_query(tmp_path: Path) -> None:
         records = await adapter.list_issues(since="2026-05-23T22:00:00+00:00")
 
     assert records == []
-    # gh argv (no leading "gh"): ["api", "repos/{owner}/{repo}/issues?...&since=..."]
     argv = captured["args"]
     assert any("since=2026-05-23T22:00:00+00:00" in str(a) for a in argv)
     assert any(str(a) == "api" for a in argv)
@@ -302,7 +300,6 @@ async def test_mutation_dedup_on_existing_key(tmp_path: Path) -> None:
         labels=[],
         idempotency_key="key1",
     )
-    # dedup short-circuits before gh runs
     assert result is None
 
 
@@ -318,7 +315,6 @@ async def test_create_issue_records_mutation(tmp_path: Path) -> None:
             idempotency_key="create-abc",
         )
 
-    # Should have recorded a pre-flight "pending" row then updated to "ok"
     mock_store.record_external_mutation.assert_called_once()
     mock_store.update_external_mutation_status.assert_called_once()
     _, call_kwargs = mock_store.update_external_mutation_status.call_args

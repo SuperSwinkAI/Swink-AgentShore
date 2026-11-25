@@ -35,27 +35,12 @@ if TYPE_CHECKING:
 
 _logger = structlog.get_logger(__name__)
 
-# Resume-retry nudge (#223): agent finished work but omitted the JSON envelope. The resumed
-# session still holds full context, so re-sending the ~10 KB prompt risks redoing work; ask
-# only for the missing block and forbid redoing.
 _JSON_RETRY_PROMPT = (
     "Your previous turn completed work but did not emit the required JSON result block. "
     "Do not redo or repeat any work. Output only the fenced JSON result block for what "
     "you already did, matching the schema in your instructions."
 )
 
-# Near-miss variant (#229/#313): JSON emitted but missing the top-level boolean ``success``
-# (``SkillResult.missing_success_envelope``). Naming the exact defect recovers far more than
-# the generic nudge, which the agent answers by re-emitting the same shape.
-#
-# #313: the original wording ("re-emit the exact same JSON, adding success; do not invent
-# other keys") was calibrated for a true near-miss — an otherwise-correct envelope one field
-# short. agy's dominant mode is not that: it finishes the work and then reports it in an
-# ad-hoc shape of its own ({"result": "completed", "pr": "<url>"}), or as a bare payload
-# array with no envelope at all. Against that shape the old prompt was actively harmful —
-# "do not invent other keys" forbids the very keys the envelope requires, so the retry
-# faithfully re-emitted the same unusable object and a real, merged-able PR was discarded.
-# It must therefore restate the FULL envelope, not just the one missing field.
 _JSON_RETRY_MISSING_SUCCESS_PROMPT = (
     "Your previous turn emitted JSON, but not the result envelope required by your skill "
     "instructions. Do not redo or repeat any work — everything you already did still "
@@ -96,9 +81,6 @@ def _missing_envelope_retry_prompt(required_artifact_types: Sequence[str]) -> st
     )
 
 
-# #236: agy async/background-handoff variant — agent deferred work to an async task instead
-# of finishing it. Unlike the generic nudge, the work is unfinished, so it must re-run
-# synchronously; this redirects execution style, not scope.
 _JSON_RETRY_ASYNC_HANDOFF_PROMPT = (
     "Your previous turn ended by deferring a command to an async or background task and "
     "waiting on it, instead of running it to completion. Do not use manage_task, do not "
@@ -108,22 +90,12 @@ _JSON_RETRY_ASYNC_HANDOFF_PROMPT = (
     "JSON block is emitted."
 )
 
-# First-byte deadline for the no-JSON resume-retry (#232). A re-emission should stream in
-# seconds; without this it inherits agy's 1800s default (cli_agent._FIRST_BYTE_DEADLINE_BY_TYPE),
-# turning a silent resume hang into 30 min of dead slot. Short budget fast-fails (recoverable
-# TIMEOUT_STREAM_IDLE). Not applied to async handoffs (#236) — those do real work.
 _JSON_RETRY_FIRST_BYTE_S = 120.0
 
-# Why an agent produced output but no usable result envelope. Drives both the retry prompt
-# and — when no retry is possible — the classification recorded on the failure (#313).
 _ENVELOPE_DEFECT_ASYNC_HANDOFF = "async_handoff"
 _ENVELOPE_DEFECT_MISSING_ENVELOPE = "missing_success_envelope"
 _ENVELOPE_DEFECT_NO_JSON = "no_json_block"
 
-# Operator-facing diagnosis per defect, appended to the play error when the retry could not
-# run. Without this a 19-min dispatch that ended in a textbook async handoff reported only
-# the generic "no valid result block", so the session's costliest failure carried neither
-# mitigation nor classification (#313, session 16515f9b).
 _ENVELOPE_DEFECT_DIAGNOSIS: dict[str, str] = {
     _ENVELOPE_DEFECT_ASYNC_HANDOFF: (
         "diagnosis: agent deferred work to an async/background task and ended the turn "
@@ -150,20 +122,8 @@ def _classify_envelope_defect(raw_output: str, skill_result: SkillResult) -> str
     return _ENVELOPE_DEFECT_NO_JSON
 
 
-# Max consecutive clean-exit empty no-op dispatches before failing the play and routing the
-# agent into take_break. First dispatch is attempt 1, so this bounds it at 1 initial + 2
-# re-dispatches. Re-dispatches are FRESH (no --resume): an empty agy session resumes empty
-# (verified), so only a fresh turn recovers.
 _NOOP_STREAK_LIMIT = 3
 
-# Cumulative wall-clock a no-op streak may spend before retries stop, regardless of
-# how many of _NOOP_STREAK_LIMIT remain (#416). The streak retry exists because a
-# clean-exit empty no-op is presumed a *transient* backend flake — and a flake
-# returns fast. Once a streak has burned this much wall-clock the flake story is
-# already falsified: the agent genuinely ran and produced nothing, so re-running an
-# identical prompt just repeats a deterministic failure at full cost. Backend-agnostic
-# by construction: it keys on measured attempt duration, so any slow backend benefits
-# and no agent type is singled out.
 _NOOP_RETRY_TIME_BUDGET_MS = 15 * 60 * 1000
 
 
@@ -178,8 +138,6 @@ def _worktree_cwd_override(params: PlayParams) -> Path | None:
     """
     from agentshore.agents.worktree import TrunkAllocation, WorktreeAllocation
 
-    # #565: allocation moved off ``params.extras`` (JSON-serializes) onto private
-    # ``_runtime_allocation``.
     allocation = params._runtime_allocation
     if isinstance(allocation, (WorktreeAllocation, TrunkAllocation)):
         return allocation.path
@@ -193,9 +151,6 @@ _REVIEW_PATTERN_INJECTION_PLAYS: frozenset[PlayType] = frozenset(
         PlayType.SYSTEMATIC_DEBUGGING,
     }
 )
-# Min worktree age before any destructive sweep may delete it. Shared by PRUNE and
-# RECONCILE_STATE; load-bearing guard against the allocate-then-delete race (#189, #218) —
-# a worktree created inside this window is protected however stale a claim query looks.
 _WORKTREE_MIN_AGE_HOURS = 3
 
 
@@ -226,28 +181,16 @@ class SkillBackedPlay(Play, ABC):
       5. Maps the result to a ``PlayOutcome``.
     """
 
-    # Declarative preconditions. Subclasses override to declare the gates that
-    # mask this play. Empty tuple == no preconditions (eligible whenever the
-    # cross-cutting masks in ``rl/mask.py`` permit).
     gates: Sequence[Gate] = ()
 
-    # Declarative executor-behavior flags (see ``Play`` for semantics). Inert by
-    # default; the handful of plays that opt in override the relevant flag.
     authors_prs: bool = False
     retarget_pr_base: bool = False
     is_handoff: bool = False
     is_observation: bool = False
     requeue_on_anti_confirmation: bool = False
 
-    # Tool names this play must not be able to reach (see ``Play``). Empty by
-    # default: a play gets the agent's full tool surface unless it says
-    # otherwise, so adding a denial is always a deliberate narrowing.
     disallowed_tools: tuple[str, ...] = ()
 
-    # Artifact ``type`` strings this play's result validator requires, if any. Purely
-    # advisory: restated verbatim in the missing-envelope retry nudge so a re-emission
-    # uses the exact spelling the validator matches on (#313). Plays with no artifact
-    # contract leave this empty and get the generic envelope nudge.
     required_artifact_types: Sequence[str] = ()
 
     @property
@@ -301,14 +244,9 @@ class SkillBackedPlay(Play, ABC):
         return reasons
 
     def _capability_check(self, state: OrchestratorState) -> list[MaskReason]:
-        """Return a non-empty list if no IDLE non-rate-limited agent has this play's capability.
-
-        Delegates to :class:`CapabilityGate` so the precondition-override helper
-        and the gate apply the *same* filter — including the circuit-breaker
-        exclusion (#22). A hand-rolled copy here previously omitted the
-        circuit-broken check, so issue_pickup / groom_backlog could be deemed
-        eligible on an agent the breaker had marked dead.
-        """
+        """Return a non-empty list when no idle, non-rate-limited agent has the
+        play capability. Delegates to CapabilityGate, including its circuit-breaker
+        exclusion."""
         from agentshore.plays.skill_backed.gates import CapabilityGate  # noqa: PLC0415
 
         cap_key = self.capability
@@ -525,7 +463,6 @@ class SkillBackedPlay(Play, ABC):
     def estimated_cost(self, state: OrchestratorState) -> float:
         return 0.10
 
-    # The executor reads this attribute to access requested_mutations.
     _last_skill_result: SkillResult | None = None
 
     async def execute(
@@ -540,7 +477,6 @@ class SkillBackedPlay(Play, ABC):
         if agent_id is None:
             return PlayOutcome.failed(self.play_type, "agent_id not resolved before execute")
 
-        # Load top-k learnings for context.json injection
         top_learnings: list[dict[str, object]] = []
         learnings_count = 0
         if ctx.cfg.learnings.inject_into_prompts and ctx.cfg.learnings.enabled:
@@ -589,7 +525,6 @@ class SkillBackedPlay(Play, ABC):
         extra_context: dict[str, object] = {"review_patterns": review_patterns}
         await self._extra_context(extra_context, ctx, state)
 
-        # Write isolated context so concurrent plays cannot read each other's state.
         payload = serialize_state_for_skill(
             session_id=ctx.session_id,
             play_id=ctx.play_id,
@@ -629,8 +564,6 @@ class SkillBackedPlay(Play, ABC):
                 context_path=context_relative_path,
                 dispatch_cwd=dispatch_cwd,
             )
-            # Vendor-specific initial-prompt decoration (currently only agy's
-            # synchronous-execution directive, #242); no-op for other agent types.
             prompt = cli_antigravity.decorate_initial_prompt(prompt, dispatch_agent_type)
 
         claim_group_id_raw = params.extras.get("claim_group_id")
@@ -645,20 +578,12 @@ class SkillBackedPlay(Play, ABC):
                 branch=params.branch,
             )
 
-        # Worktree-isolation guard for PR-scoped / branch-creating plays. Their
-        # agent creates/switches branches, which MUST happen inside an allocated
-        # worktree — never the main checkout, where ``git switch -c`` moves the
-        # main repo's HEAD onto a feature branch and wedges the trunk-dispatch
-        # guard (the contamination behind the #175 wedge).
         from agentshore.agents.worktree.manager import requires_isolated_worktree
 
         if requires_isolated_worktree(self.play_type):
             if dispatch_cwd is not None and self._cwd_is_main_checkout(
                 dispatch_cwd, ctx.project_path
             ):
-                # Unambiguous misroute: a main/trunk allocation was handed to an
-                # isolation-requiring play. The allocator never does this today,
-                # so refuse loudly rather than contaminate trunk if it regresses.
                 _logger.error(
                     "play_misrouted_to_main_checkout",
                     play_type=self.play_type.value,
@@ -684,14 +609,6 @@ class SkillBackedPlay(Play, ABC):
                     failure_kind=None,
                 )
             if dispatch_cwd is None:
-                # No allocation reached us — the dispatcher's ``_runtime_allocation``
-                # stamp was lost (a replay/retry rebuilt ``PlayParams``, or a legacy
-                # caller). ``dispatch_cli`` will fall back to ``handle.working_dir``
-                # (the main checkout), so surface the hypothesized contamination
-                # vector for telemetry. We do not hard-fail here — ``None`` is the
-                # documented legacy fallback of ``_worktree_cwd_override`` — and
-                # ``restore_default_branch`` (#175) now recovers any HEAD move this
-                # causes instead of latching a permanent dispatch pause.
                 _logger.warning(
                     "play_dispatch_no_worktree_allocation",
                     play_type=self.play_type.value,
@@ -699,9 +616,6 @@ class SkillBackedPlay(Play, ABC):
                     agent_id=agent_id,
                 )
 
-        # Snapshot untracked root files before a trunk-scoped dispatch so we can
-        # reclaim any the agent leaves behind (#162/#164). Only meaningful when
-        # the play runs in the main checkout, not an isolated worktree.
         trunk_artifact_pre: set[str] | None = None
         if self._is_trunk_scoped_dispatch(dispatch_cwd, ctx.project_path):
             from agentshore.core.trunk_artifacts import snapshot_untracked_root_artifacts
@@ -713,12 +627,6 @@ class SkillBackedPlay(Play, ABC):
                     "trunk_artifact_presnapshot_failed", error=str(exc), play_id=ctx.play_id
                 )
 
-        # Graceful guard for the worktree-reclaim TOCTOU race (#176): the
-        # allocated worktree can be removed by reconcile / collision-reclaim
-        # churn between allocation and this dispatch. If the resolved cwd is gone,
-        # short-circuit to a recoverable failure rather than letting the spawn
-        # raise (which ``cli_agent`` now maps to AgentProcessCrashed anyway — this
-        # is the cheaper, no-spawn path). PPO re-picks cleanly on the next tick.
         if dispatch_cwd is not None and not dispatch_cwd.exists():
             _logger.warning(
                 "play_dispatch_cwd_reclaimed",
@@ -735,8 +643,6 @@ class SkillBackedPlay(Play, ABC):
                 failure_kind=FailureKind.AGENT_ERROR,
             )
 
-        # Harness-enforced result envelope where the CLI supports it; the prompt
-        # contract and the parse/retry path below remain the fallback everywhere.
         result_schema = (
             RESULT_ENVELOPE_SCHEMA_JSON if ctx.cfg.skills.enforce_result_schema else None
         )
@@ -751,15 +657,6 @@ class SkillBackedPlay(Play, ABC):
             result_schema=result_schema,
         )
 
-        # desktop no-op resilience: a clean-exit empty no-op (agy returns an empty
-        # task envelope — exit 0, no output) is a transient agy/backend flake, not
-        # real work. Re-dispatch FRESH (no --resume; an empty session resumes empty)
-        # up to _NOOP_STREAK_LIMIT times, or until the streak's cumulative wall-clock
-        # crosses _NOOP_RETRY_TIME_BUDGET_MS — whichever comes first (#416), since a
-        # streak that has already burned real time is not the fast flake this retry
-        # is for. Any attempt that produces output recovers the play; exhausting
-        # either bound is treated like a quota limit — the agent takes a standard
-        # break and the play fails for re-pick.
         if is_noop_invocation(invocation):
             attempt = 1
             noop_elapsed_ms = invocation.duration_ms
@@ -775,7 +672,6 @@ class SkillBackedPlay(Play, ABC):
                 and attempt < _NOOP_STREAK_LIMIT
                 and noop_elapsed_ms < _NOOP_RETRY_TIME_BUDGET_MS
             ):
-                # Same worktree-reclaim TOCTOU window the json-retry guards below.
                 if dispatch_cwd is not None and not dispatch_cwd.exists():
                     return PlayOutcome.failed(
                         self.play_type,
@@ -823,10 +719,6 @@ class SkillBackedPlay(Play, ABC):
                 budget_exhausted=budget_exhausted,
             )
             if not recovered:
-                # Streak over: either _NOOP_STREAK_LIMIT dispatches in a row, or the
-                # streak's time budget went first (#416). Either way, route the agent
-                # into the standard take_break via a recoverable NO_OP error, then
-                # fail for re-pick.
                 stop_reason = (
                     f" after {noop_elapsed_ms // 60000}m (retry time budget)"
                     if budget_exhausted
@@ -851,23 +743,8 @@ class SkillBackedPlay(Play, ABC):
                     failure_kind=FailureKind.AGENT_ERROR,
                 )
 
-        # Parse the raw result block emitted by the skill
         skill_result = parse_skill_result(invocation.raw_output)
 
-        # desktop-dy2j: single bounded retry when the agent produced output but
-        # omitted the structured JSON envelope. Covers both a clean exit that
-        # forgot the envelope and a post-response idle kill (exit_code None) that
-        # salvaged a non-envelope line — both leave a resumable session, which is
-        # the only real prerequisite. This is the narrow exception to the
-        # --resume ban — see feedback_persistent_sessions for the general rule.
-        #
-        # #313: the session-id prerequisite is now checked *inside* the branch, not as
-        # part of its trigger. Guarding the whole branch on it meant an unresolvable
-        # conversation id (agy's ``resolve_conversation_id`` returning None) skipped the
-        # retry *and* the classification, so a 19-min dispatch that ended in a textbook
-        # async handoff fell through to a bare "no valid result block" with no retry
-        # event logged at all. The retry still cannot run without a resumable session —
-        # we do not fabricate one — but the failure is now named.
         missing_envelope = (
             not skill_result.success
             and skill_result.error is not None
@@ -896,8 +773,6 @@ class SkillBackedPlay(Play, ABC):
                 ),
             )
         elif missing_envelope and invocation.session_id is not None:
-            # Worktree may be reclaimed between initial dispatch return and here
-            # (same TOCTOU window the pre-dispatch guard at line 437 covers).
             if dispatch_cwd is not None and not dispatch_cwd.exists():
                 _logger.warning(
                     "play_dispatch_cwd_reclaimed",
@@ -914,12 +789,6 @@ class SkillBackedPlay(Play, ABC):
                     retry_requested=True,
                     failure_kind=FailureKind.AGENT_ERROR,
                 )
-            # #236: agy async/background handoff — agent deferred work to an async
-            # task and ended the turn waiting on it instead of completing it; the
-            # work is unfinished so we cannot ask for re-emission.
-            # #229/#313: near-miss — JSON present but no top-level boolean ``success``;
-            # ask for the FULL envelope, naming this play's artifact types.
-            # Otherwise: generic "emit the JSON block" nudge.
             defect = _classify_envelope_defect(invocation.raw_output, skill_result)
             is_async_handoff = defect == _ENVELOPE_DEFECT_ASYNC_HANDOFF
             if is_async_handoff:
@@ -945,16 +814,9 @@ class SkillBackedPlay(Play, ABC):
                 play_type=self.play_type.value,
                 cwd_override=dispatch_cwd,
                 resume_session_id=invocation.session_id,
-                # #232: a re-emission should stream promptly — don't inherit agy's
-                # 1800s fresh-task first-byte deadline; fast-fail instead.
-                # #236: async/background handoffs require completing real work, not
-                # just re-printing — let them inherit the full per-agent-type deadline.
                 first_byte_timeout_override=(
                     None if is_async_handoff else _JSON_RETRY_FIRST_BYTE_S
                 ),
-                # The retry finishes the same unit of work, so the play's tool
-                # denials must hold across it — otherwise omitting a result
-                # block once would be enough to shed them.
                 disallowed_tools=self.disallowed_tools,
                 result_schema=result_schema,
             )
@@ -968,18 +830,13 @@ class SkillBackedPlay(Play, ABC):
             )
             if retry_result.success or "no valid result block" not in (retry_result.error or ""):
                 skill_result = retry_result
-            # Accumulate retry cost into total
             invocation = _merge_invocation_costs(invocation, retry_invocation)
 
         self._last_skill_result = skill_result
 
-        # Play-specific post-hoc validation (e.g. PRUNE's protected-worktree-
-        # removal backstop, #311). Identity for every other play.
         skill_result, post_process_failure_kind = await self._post_process_result(ctx, skill_result)
         self._last_skill_result = skill_result
 
-        # Reclaim untracked root files this trunk-scoped play introduced and left
-        # behind, so they don't wedge merge_pr / reconcile_state (#162/#164).
         if trunk_artifact_pre is not None:
             await _reclaim_trunk_artifacts_for_play(ctx, self.play_type, trunk_artifact_pre)
 
@@ -1093,11 +950,5 @@ def _merge_invocation_costs(
 
 
 def _looks_like_auth_failure(error: str | None) -> bool:
-    # Skill error strings are work-product-adjacent free text, so this stays on
-    # the high-precision GITHUB_AUTH_ERROR_MARKERS view (phrased forms like
-    # "http 403", not the bare "403"/"forbidden" tokens in the broad AUTH_MARKERS
-    # superset) to avoid false positives — the same precision rationale as the
-    # stdout-vs-stderr split. The view is pinned ⊆ AUTH_MARKERS in
-    # tests/test_error_markers.py.
     text = (error or "").lower()
     return any(marker in text for marker in GITHUB_AUTH_ERROR_MARKERS)

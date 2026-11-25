@@ -57,8 +57,6 @@ class SessionEndScreen(Screen[None]):
         yield Static("", id="agents")
         yield Static("", id="teardown")
 
-    # ---- public API ----
-
     def set_drain_reason(self, reason: str) -> None:
         """Set the drain reason and update the title."""
         import contextlib
@@ -90,8 +88,6 @@ class SessionEndScreen(Screen[None]):
     def set_complete(self, reason: str) -> None:
         self._complete = reason
 
-    # ---- actions ----
-
     async def action_generate_report(self) -> None:
         await cast("_ReportCapableApp", self.app).action_generate_report()
 
@@ -100,8 +96,6 @@ class SessionEndScreen(Screen[None]):
             await self.app.action_hard_quit()
         else:
             self.app.exit()
-
-    # ---- watchers ----
 
     def watch__agents(self, agents: list[AgentSnapshot]) -> None:
         from textual.css.query import QueryError

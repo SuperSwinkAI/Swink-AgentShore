@@ -81,9 +81,7 @@ async def test_pty_adapter_stderr_is_immediately_eof() -> None:
     proc = conpty.PtyProcess(_FakePty(["x\n"]), loop=loop, limit=65536)
     assert proc.stderr is not None
     assert proc.stderr.at_eof()
-    # stdin is never used (agy has no stdin prompt mode).
     assert proc.stdin is None
-    # transport is absent so _close_process_transport is a no-op.
     assert proc._transport is None
     await asyncio.wait_for(proc.wait(), timeout=5.0)
 

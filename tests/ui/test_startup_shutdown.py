@@ -8,18 +8,9 @@ from textual.widgets import Static
 from agentshore.ui.screens.shutdown import SessionEndScreen
 from agentshore.ui.screens.startup import SessionStartupScreen
 
-# ---------------------------------------------------------------------------
-# Test app
-# ---------------------------------------------------------------------------
-
 
 class ScreenTestApp(App[None]):
     """Minimal host app for screen tests."""
-
-
-# ---------------------------------------------------------------------------
-# SessionStartupScreen tests
-# ---------------------------------------------------------------------------
 
 
 async def test_startup_screen_has_banner() -> None:
@@ -64,11 +55,6 @@ async def test_startup_mark_ready() -> None:
         assert "abc-123" in rendered
         assert "/my/project" in rendered
         assert "solo" in rendered
-
-
-# ---------------------------------------------------------------------------
-# SessionEndScreen tests
-# ---------------------------------------------------------------------------
 
 
 async def test_shutdown_screen_composes() -> None:

@@ -43,8 +43,6 @@ if TYPE_CHECKING:
 
 SHUTDOWN_GRACE_PERIOD_SECONDS = 5.0
 
-# Watchdog (#180) deadline re-check interval. Coarse poll suffices — the
-# deadline is a minutes-scale backstop.
 _GRACEFUL_DRAIN_CHECK_INTERVAL_SECONDS = 15.0
 
 
@@ -101,14 +99,8 @@ class DrainController:
         self._session_id = session_id
         self._repo_root = repo_root
         self._state_builder = state_builder
-        # One-shot guard so ``_on_drain_complete`` can never double-emit per session.
         self._drain_complete_warned = False
-        # Bounded graceful-drain watchdog (#180): escalates to the hard stop if
-        # drain exceeds ``feedback.graceful_drain_timeout_seconds``. Runs OFF the
-        # core loop so a drain whose only in-flight play never finishes is reaped.
         self._graceful_drain_watchdog_task: asyncio.Task[None] | None = None
-
-    # ------------------------------------------------------------------
 
     def _on_drain_complete(self, state: OrchestratorState) -> None:
         """Emit the drain-complete defensive-visibility warning at most once.
@@ -142,7 +134,7 @@ class DrainController:
         """
         self._runtime.lifecycle.request_stop(reason)
         self._runtime.pause_reason = None
-        self._runtime.pause_event.set()  # wake loop if paused
+        self._runtime.pause_event.set()
 
     def request_drain(self, reason: str = "signal_sigterm") -> None:
         """Schedule a graceful drain from a sync context (e.g. signal handler).
@@ -201,8 +193,6 @@ class DrainController:
             return
         self.request_end_session_report(open_browser=True)
         self._runtime.pause_reason = None
-        # IMPORTANT: ``begin_drain`` above atomically claims the transition before
-        # the first await, preventing concurrent drain initialization.
         await self._host._safe_call(
             self._store.update_session_state(self._session_id, "draining"),
             "update_session_state",
@@ -223,8 +213,6 @@ class DrainController:
                 )
         self._runtime.pause_event.set()
         _logger.info("session_draining", reason=reason, session_id=self._session_id)
-        # Arm the bounded graceful-drain deadline (#180) so a stuck in-flight
-        # play can no longer hang ``agentshore stop`` for hours.
         self._start_graceful_drain_watchdog()
 
     def graceful_drain_timeout_seconds(self) -> float | None:
@@ -289,8 +277,6 @@ class DrainController:
             await asyncio.sleep(min(interval, max(0.0, deadline - time.monotonic())))
             if self._runtime.stop_requested or self._runtime.stopped:
                 return
-            # Drain reversed (e.g. a raised budget cap un-drained the session) or
-            # already finished — the deadline no longer applies.
             if not self._runtime.draining:
                 return
             if time.monotonic() < deadline:
@@ -309,16 +295,12 @@ class DrainController:
                     "bounded hard stop (cancelling in-flight plays)"
                 ),
             )
-            # ``stop`` is re-entrancy safe and shielded, and bounds the in-flight
-            # wait by the shutdown grace period, so it cannot itself hang.
             await self._host._safe_call(self.stop(), "graceful_drain_deadline_stop")
             return
 
     async def hard_stop(self) -> None:
         """Immediate forced shutdown — cancels in-flight plays and kills agents."""
         await self.stop()
-
-    # Live budget control (Feature B: #41 sidecar RPC, #42 CLI add-budget)
 
     async def set_budget(
         self,
@@ -425,10 +407,7 @@ class DrainController:
         never abandons work or releases claims.
         """
         budget = await self._state_builder.build_budget_only()
-        # A pure read never resumes/reverses anything.
         return self._applied_from_budget(budget, resumed=False)
-
-    # live-budget helpers
 
     @staticmethod
     def _validate_dollar(enabled: bool, dollars: float | None) -> None:
@@ -514,7 +493,6 @@ class DrainController:
         ``session_resumed`` event are always updated consistently. Returns
         ``True`` when the cap change actually un-paused or reversed a drain.
         """
-        # Case 1: paused on budget exhaustion → resume when no longer reserve-bound.
         paused_on_budget = (
             not self._runtime.draining
             and not self._runtime.stop_requested
@@ -524,7 +502,6 @@ class DrainController:
         if paused_on_budget and not await self._reserve_still_reached():
             await self._host.resume()
             return True
-        # Case 2: draining on a budget/time reserve → reverse when back in-bounds.
         if (
             self._runtime.draining
             and not self._runtime.stop_requested
@@ -555,12 +532,9 @@ class DrainController:
 
     async def _exit_drain(self) -> None:
         """Reverse a budget/time reserve drain, returning the session to running."""
-        # A reversed drain must not be reaped by the bounded-drain watchdog (#180).
         self._stop_graceful_drain_watchdog()
         self._runtime.lifecycle.resume_from_drain()
         self._runtime.pause_reason = None
-        # Cancel the end-session report queued by begin_drain so a resumed
-        # session does not surface a premature report.
         self._runtime.end_session_report_requested = False
         self._runtime.pause_event.set()
         await self._host._safe_call(
@@ -580,21 +554,10 @@ class DrainController:
         if not self._runtime.lifecycle.begin_stop():
             await self._runtime.stop_done.wait()
             return
-        # Cancel the bounded-drain watchdog (#180) now that a stop is underway so
-        # it cannot re-enter ``stop`` after this body completes. Deliberate no-op
-        # when the watchdog itself initiated this stop — self-cancellation would
-        # land a ``CancelledError`` at the completion-gate await below and skip
-        # teardown (see ``_stop_graceful_drain_watchdog``).
         self._stop_graceful_drain_watchdog()
         self._runtime.pause_reason = None
-        self._runtime.pause_event.set()  # wake paused loop to recheck _stop_requested
+        self._runtime.pause_event.set()
         completion_idle = self._runtime.completion_processing_idle
-        # Invariant: once ``stopped`` is committed above, ``do_stop`` MUST run — it
-        # is the only path that cancels in-flight agents, checkpoints the WAL,
-        # marks the session stopped, and sets ``stop_done`` (which any concurrent
-        # second caller is blocked on). The pre-teardown completion-gate await is
-        # cancellable, so drive ``do_stop`` from a ``finally`` to guarantee it runs
-        # even if that await is cancelled (self-cancel or an external caller).
         try:
             if self._runtime.completion_processing_count > 0:
                 try:
@@ -646,11 +609,6 @@ class DrainController:
             self._runtime.health.stop()
         _logger.info("shutdown_step", step="health_stop", elapsed_ms=_ms(t))
 
-        # Loop-liveness watchdog (#9): cancel before the rest of teardown so it
-        # cannot re-trigger a drain mid-shutdown. Safe even when this stop() was
-        # initiated by the watchdog itself — cancelling a task from within its
-        # own awaited call is a no-op until it next suspends, and the watchdog
-        # returns immediately after awaiting stop().
         self._host.stop_loop_liveness_watchdog()
 
         t = time.perf_counter()
@@ -686,9 +644,6 @@ class DrainController:
             n_pending_after=n_pending_after,
         )
 
-        # Clear all agent handles concurrently.  force=True because in-flight
-        # asyncio tasks were cancelled above; the active-play guard in clear()
-        # must not block teardown.
         t = time.perf_counter()
         agent_ids = list(self._manager.handles)
         if agent_ids:
@@ -719,8 +674,6 @@ class DrainController:
         _logger.info("shutdown_step", step="abandon_orphaned_work", elapsed_ms=_ms(t))
 
         t = time.perf_counter()
-        # Tests patch ``agentshore.core.phases._clear_session_scoped_bead_progress``
-        # (its binding home) to intercept this.
         from agentshore.core import phases
 
         reset_count = await phases._clear_session_scoped_bead_progress(
@@ -776,10 +729,6 @@ class DrainController:
                     exc_info=True,
                 )
 
-        # Persist a final policy checkpoint so short sessions (below
-        # checkpoint_interval) still warm-start the next run. The end_session
-        # play path already saves when PPO selects shutdown; this is the
-        # safety net for user-initiated stops and natural exits.
         t = time.perf_counter()
         try:
             selector = self._runtime.selector
@@ -814,10 +763,6 @@ class DrainController:
         )
 
         if end_session_report_path is not None and self._runtime.end_session_report_open_browser:
-            # Embedded mode (#561): desktop shell renders the ESR in-app at
-            # ``/session/esr``. Skip ``webbrowser.open`` (it yanks the user out
-            # of the app right before the next session); fire the esr_ready
-            # callback so the sidecar emits ``$/esr_ready`` to the Tauri shell.
             esr_callback = self._runtime.esr_ready_callback
             if self._runtime.embedded_mode:
                 if esr_callback is not None:

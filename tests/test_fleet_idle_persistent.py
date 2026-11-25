@@ -81,14 +81,12 @@ async def test_threshold_crossing_emits_one_entered_event(
     orch = _orch(tmp_path)
     state = _StateStub()
 
-    # Below threshold — no event.
     for streak in range(orch._runtime.cfg.rl.loop_detection.fleet_idle_threshold):
         orch._runtime.idle_streak = streak
         await _run_check(orch, state, reason="selector_returned_none")
     assert _events_named(info_calls, "fleet_idle_persistent") == []
     assert orch._loop._fleet_idle_persistent_active is False
 
-    # First tick at threshold — exactly one event, then activated.
     orch._runtime.idle_streak = orch._runtime.cfg.rl.loop_detection.fleet_idle_threshold
     await _run_check(orch, state, reason="selector_returned_none")
     events = _events_named(info_calls, "fleet_idle_persistent")
@@ -105,7 +103,6 @@ async def test_no_per_tick_storm_inside_window(info_calls: MagicMock, tmp_path: 
     state = _StateStub()
     orch._runtime.idle_streak = orch._runtime.cfg.rl.loop_detection.fleet_idle_threshold
 
-    # 50 ticks inside the window — should produce ONE event (entry), not 50.
     for _ in range(50):
         orch._runtime.idle_streak += 1
         await _run_check(orch, state, reason="selector_returned_none")
@@ -122,15 +119,12 @@ async def test_exit_transition_emits_one_event_when_in_flight_appears(
     state = _StateStub()
     orch._runtime.idle_streak = orch._runtime.cfg.rl.loop_detection.fleet_idle_threshold
 
-    # Enter the window.
     await _run_check(orch, state, reason="selector_returned_none")
     assert orch._loop._fleet_idle_persistent_active is True
 
-    # Simulate in-flight work arriving.
     orch._runtime.in_flight = {"dispatch-1": asyncio.Future()}  # type: ignore[dict-item]
     await _run_check(orch, state, reason="selector_returned_none")
 
-    # Two events total: one entered, one exited. Per-tick storm would push 3+.
     events = _events_named(info_calls, "fleet_idle_persistent")
     assert len(events) == 2
     assert events[0]["transition"] == "entered"
@@ -150,7 +144,6 @@ async def test_exit_transition_emits_one_event_when_streak_collapses(
     await _run_check(orch, state, reason="selector_returned_none")
     assert orch._loop._fleet_idle_persistent_active is True
 
-    # Selector picked a play → streak resets to 0.
     orch._runtime.idle_streak = 0
     await _run_check(orch, state, reason="selector_returned_none")
     assert orch._loop._fleet_idle_persistent_active is False
@@ -165,19 +158,15 @@ async def test_window_can_rearm_after_exit(info_calls: MagicMock, tmp_path: Path
     orch = _orch(tmp_path)
     state = _StateStub()
 
-    # Enter
     orch._runtime.idle_streak = orch._runtime.cfg.rl.loop_detection.fleet_idle_threshold
     await _run_check(orch, state, reason="selector_returned_none")
 
-    # Exit
     orch._runtime.idle_streak = 0
     await _run_check(orch, state, reason="selector_returned_none")
 
-    # Re-enter
     orch._runtime.idle_streak = orch._runtime.cfg.rl.loop_detection.fleet_idle_threshold
     await _run_check(orch, state, reason="selector_returned_none")
 
-    # entered, exited, entered = 3 events total.
     events = _events_named(info_calls, "fleet_idle_persistent")
     assert len(events) == 3
     assert [e["transition"] for e in events] == ["entered", "exited", "entered"]

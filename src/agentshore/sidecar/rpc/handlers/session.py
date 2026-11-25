@@ -1,10 +1,7 @@
-"""Handler for the ``session.*`` method family.
+"""Handlers for session.start and session.stop.
 
-Covers ``session.start`` and ``session.stop``.
-The ``session.{get,set}_budget`` sub-family lives in :mod:`.session_budget`
-because it operates against the live orchestrator instance rather than
-lifecycle state.
-"""
+The session.{get,set}_budget methods live in .session_budget and operate
+on the live orchestrator instance."""
 
 from __future__ import annotations
 
@@ -115,14 +112,9 @@ async def _build_session_stop_response(
         if isinstance(param_code, int):
             exit_code = param_code
 
-    # orchestrator_task is the supervised run_until_idle task from _start_orchestrator.
     orch = state.orchestrator
     orch_task = state.orchestrator_task
     if orch is not None:
-        # Run-loop teardown FIRST so abandoned-play and final-alignment writes
-        # land in the DB. orch.stop() (which closes the DataStore) is deferred
-        # until after the ESR payload is built — else the collector hits
-        # "Session not found" on a torn-down SQLite handle.
         if mode == "hard":
             if orch_task is not None and not orch_task.done():
                 orch_task.cancel()
@@ -132,8 +124,6 @@ async def _build_session_stop_response(
             with contextlib.suppress(Exception):
                 orch.request_drain("session_stop_drain")
             if orch_task is not None and not orch_task.done():
-                # No deadline by default: in-flight plays finish on their own.
-                # Bounded wait via drain_timeout_seconds; immediate kill is mode="hard".
                 drain_timeout: float | None = None
                 if isinstance(raw_params, dict):
                     param = raw_params.get("drain_timeout_seconds")
@@ -145,7 +135,6 @@ async def _build_session_stop_response(
                     else:
                         await asyncio.wait_for(asyncio.shield(orch_task), timeout=drain_timeout)
                 except TimeoutError:
-                    # Drain timed out — fall back to hard-cancel.
                     orch_task.cancel()
                     with contextlib.suppress(asyncio.CancelledError, Exception):
                         await orch_task
@@ -163,20 +152,12 @@ async def _build_session_stop_response(
     )
 
     if orch is not None:
-        # Track store teardown (#283) so a racing session.start waits for
-        # agentshore.db's close (snapshot + os.replace under the writer lock).
-        # Null orchestrator/orchestrator_task here, ahead of the shared
-        # _clear_session_state call below, so a concurrent RPC arriving
-        # during the (possibly slow) timelapse-render wait never dials an
-        # orchestrator whose store is already closed.
         with contextlib.suppress(Exception):
             await stop_orchestrator_tracked(state, orch)
         state.orchestrator = None
         state.orchestrator_task = None
         payload["report_path"] = context.report_path
         payload["log_path"] = context.log_path
-    # Stop timelapse capture (triggers render) before bridge teardown; attach
-    # the rendered MP4 path for the desktop to open.
     from agentshore.sidecar.session_lifecycle import _clear_session_state, stop_timelapse_capture
 
     payload["timelapse_output_path"] = await stop_timelapse_capture(state)
@@ -184,8 +165,6 @@ async def _build_session_stop_response(
     if state.bridge is not None:
         await state.bridge.stop()
         state.bridge = None
-    # Drop the agentshore.pid + info.json the desktop wrote at session.start so a
-    # stale endpoint doesn't linger for `agentshore stop` (desktop-r3o6).
     if state.active_project_path:
         from pathlib import Path as _Path
 
@@ -208,7 +187,6 @@ def _dispatch_session(
     if raw_params is not None and not isinstance(raw_params, dict):
         return _error(req_id, INVALID_REQUEST, "params must be an object")
 
-    # Validate session.stop's ``mode`` before any side effects (DESIGN §5.1).
     stop_mode = "drain"
     if method == "session.stop":
         try:
@@ -220,16 +198,12 @@ def _dispatch_session(
     if isinstance(raw_params, dict) and "progress_token" in raw_params:
         progress_token = raw_params["progress_token"]
 
-    # #5: desktop wizard's seed file → orchestrator seed-bootstrap path (else
-    # silent open-start). Shell sends seed_input_path; seed_path is an alias.
     seed_path: str | None = None
     if isinstance(raw_params, dict):
         raw_seed = raw_params.get("seed_input_path") or raw_params.get("seed_path")
         if isinstance(raw_seed, str) and raw_seed:
             seed_path = raw_seed
 
-    # Per-session timelapse override from the desktop Start toggle; None defers
-    # to cfg.timelapse.enabled.
     timelapse_enabled: bool | None = None
     if isinstance(raw_params, dict):
         raw_timelapse = raw_params.get("timelapse")
@@ -256,10 +230,7 @@ def _dispatch_session(
 
     was_active = state.session_active
     if method == "session.start":
-        # Real bringup via run_session_start so each phase validates and signals
-        # failure via $/progress + JSON-RPC error (DESIGN §10.2). Async (start_bridge
-        # boots an EmbeddedBridge task), so we return an awaitable. start_orchestrator
-        # only takes effect with an active_project_path; else legacy stub-mode bringup.
+
         async def _run_session_start_async() -> JsonRpcResponse:
             try:
                 outcome = await run_session_start(
@@ -291,8 +262,6 @@ def _dispatch_session(
     if method == "session.stop":
         state.session_id = None
         state.started_at = None
-        # Tear down a bridge started without a SessionContext (start ran but the
-        # orchestrator never published).
         if state.bridge is not None:
 
             async def _stop_with_bridge() -> JsonRpcResponse:

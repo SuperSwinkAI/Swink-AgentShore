@@ -22,10 +22,6 @@ if TYPE_CHECKING:
 _DUPLICATE_BEAD_TITLE_RE = re.compile(r"^Duplicate bead", re.IGNORECASE)
 _PR_LIMIT = 50
 
-# Signatures meaning issue_pickup found the issue already CLOSED on GH while our
-# cache still listed it open. Incremental ``since=`` has been seen missing
-# close-state transitions for 30+ cycles ($0.10–0.20 per phantom pickup); this
-# forces a full sync next refresh so the cache self-heals (#966, 2026-05-28).
 _ALREADY_CLOSED_SIGNATURES: tuple[str, ...] = (
     "is already closed",
     "already CLOSED",
@@ -101,12 +97,8 @@ class IssueSyncer:
                 )
                 since = None if full_sync else last_sync
 
-                # Capture the cutoff *before* the fetch so mid-fetch updates are
-                # picked up next time; lookback absorbs gh/local clock skew.
                 new_cutoff = sync_cursor_now()
 
-                # ``state="all"`` so close/reopen transitions surface — the
-                # cache_github_issues upsert flips local state to match.
                 issues = await syncer.fetch_issues(state="all", since=since)
                 if issues is None:
                     _logger.warning(
@@ -123,8 +115,6 @@ class IssueSyncer:
                         cursor=new_cutoff,
                     )
 
-                # Duplicate-bead close sweep runs only on full sync — needs the
-                # complete open-issue set to find issues whose only beads are closed dups.
                 if full_sync and issues is not None:
                     open_issues = [iss for iss in issues if iss.state == "open"]
                     from agentshore.beads import (  # noqa: PLC0415
@@ -187,9 +177,6 @@ class IssueSyncer:
                 if pull_requests:
                     await syncer.cache_pull_requests(pull_requests)
                     _logger.info("github_pull_requests_refreshed", changed_count=len(pull_requests))
-                # Absence reconciliation (#279): mark locally-open PRs GitHub has no
-                # object for (phantoms/hallucinated numbers) ``absent`` — drops them
-                # from code_review eligibility and drains their review-queue rows.
                 for pr_number in resync.absent:
                     await self._store.mark_pull_request_absent(self._session_id, pr_number)
                 if resync.absent:
@@ -198,22 +185,11 @@ class IssueSyncer:
                         count=len(resync.absent),
                         pr_numbers=resync.absent,
                     )
-                # Review-queue reconciliation (reaper + sweep), against the
-                # freshly-cached store state so it sees the latest labels/SHAs.
                 await self._reconcile_review_queue()
-                # Mark worktree rows ``stale`` for PRs that went MERGED/CLOSED (from
-                # ``refetched``), then run the TTL reaper (``stale`` rows older than
-                # ``reap_ttl_seconds``).
                 await self._mark_worktrees_stale_for_closed_prs(refetched)
                 await self._sweep_closed_pr_worktrees()
                 await self._sweep_disk_pressure_worktrees()
             else:
-                # #369: a failed probe silently dropped the whole tick — issue
-                # sync, PR sync/resync, absence reconciliation, review-queue
-                # reaper/sweep, and the worktree sweeps — with only the probe's
-                # own warning as evidence. Make the skip explicit and carry the
-                # probe's diagnosis so a github.com blip is distinguishable
-                # from a real credential problem in the log.
                 _logger.error(
                     "github_refresh_skipped",
                     reason=gh.probe_failure_reason,

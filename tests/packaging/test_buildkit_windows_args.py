@@ -24,7 +24,6 @@ _BUILDKIT = _REPO / "scripts" / "buildkit"
 
 
 def _load_windows() -> ModuleType:
-    # Register the package so windows.py's relative imports (`from . import ...`) resolve.
     pkg_spec = importlib.util.spec_from_file_location(
         "scripts_buildkit_pkg3",
         _BUILDKIT / "__init__.py",
@@ -53,7 +52,7 @@ def test_default_flags_full_signed_release_build() -> None:
     assert ctx.skip_dashboard is False
     assert args.self_sign is False
     assert args.certificate_thumbprint == ""
-    windows.assert_signing_options(args)  # no exception
+    windows.assert_signing_options(args)
 
 
 def test_all_flags_map_through() -> None:
@@ -99,25 +98,25 @@ def test_self_sign_and_certificate_thumbprint_is_rejected() -> None:
 def test_self_sign_alone_is_accepted() -> None:
     windows = _load_windows()
     _, args = windows.parse_args(["--self-sign"])
-    windows.assert_signing_options(args)  # no exception
+    windows.assert_signing_options(args)
 
 
 def test_self_sign_with_trust_self_signed_is_accepted() -> None:
     windows = _load_windows()
     _, args = windows.parse_args(["--self-sign", "--trust-self-signed-certificate"])
-    windows.assert_signing_options(args)  # no exception
+    windows.assert_signing_options(args)
 
 
 def test_self_sign_with_setup_self_signed_only_is_accepted() -> None:
     windows = _load_windows()
     _, args = windows.parse_args(["--self-sign", "--setup-self-signed-certificate-only"])
-    windows.assert_signing_options(args)  # no exception
+    windows.assert_signing_options(args)
 
 
 def test_certificate_thumbprint_alone_is_accepted() -> None:
     windows = _load_windows()
     _, args = windows.parse_args(["--certificate-thumbprint", "ABCDEF"])
-    windows.assert_signing_options(args)  # no exception
+    windows.assert_signing_options(args)
 
 
 def test_signing_params_reflects_flags() -> None:

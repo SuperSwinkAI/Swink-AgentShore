@@ -16,7 +16,6 @@ from agentshore.state import RECOVERABLE_ERROR_CLASSES
 
 
 def test_routing_domain_equals_recoverable_set() -> None:
-    # A class is recoverable for eligibility iff it routes to a take_break kind.
     assert set(_RECOVERY_OVERRIDE_KIND) == RECOVERABLE_ERROR_CLASSES
 
 
@@ -37,10 +36,7 @@ def test_recoverable_set_is_exactly_the_expected_classes() -> None:
 
 
 def test_routing_kinds_match_the_pre_collapse_frozensets() -> None:
-    # Reproduces the three original frozensets' routing exactly (plus codex_rollout
-    # now consistently recoverable).
     assert _RECOVERY_OVERRIDE_KIND[ErrorClass.RATE_LIMIT] is OverrideKind.RATE_LIMIT_RECOVERY
-    # AUTH reuses the quota recovery path — break, then back to work.
     assert _RECOVERY_OVERRIDE_KIND[ErrorClass.AUTH] is OverrideKind.RATE_LIMIT_RECOVERY
     assert _RECOVERY_OVERRIDE_KIND[ErrorClass.NO_OP] is OverrideKind.NOOP_RECOVERY
     for ec in (ErrorClass.UNKNOWN, ErrorClass.CODEX_ROLLOUT, ErrorClass.TRANSIENT_NETWORK):

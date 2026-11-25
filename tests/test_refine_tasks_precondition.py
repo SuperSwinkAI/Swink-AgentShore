@@ -1,10 +1,4 @@
-"""Tests for the refine_task_breakdown precondition tightening.
-
-Regression for the 2026-05-07 run where this play returned the no-op
-"all issues already refined" 25 times (18% of all plays). The fix adds a
-agentshore/needs-refinement label check so PPO doesn't see the play as eligible
-when there's nothing to refine.
-"""
+"""Tests for the refine_task_breakdown precondition tightening."""
 
 from __future__ import annotations
 
@@ -73,8 +67,6 @@ def test_eligible_when_label_appears_alone():
 
 
 def test_masked_when_only_issue_is_already_refined():
-    # An issue carrying both needs-refinement and refined must not re-trigger
-    # the play — refine already processed it (agentshore/refined).
     play = RefineTaskBreakdownPlay()
     reasons = play.preconditions(
         _state([_issue(1, ["agentshore/needs-refinement", "agentshore/refined"])])
@@ -83,7 +75,6 @@ def test_masked_when_only_issue_is_already_refined():
 
 
 def test_re_armed_when_refined_label_removed():
-    # Removing agentshore/refined (e.g. by groom/design-audit) re-enables refine.
     play = RefineTaskBreakdownPlay()
     reasons = play.preconditions(_state([_issue(1, ["agentshore/needs-refinement"])]))
     assert reasons == []

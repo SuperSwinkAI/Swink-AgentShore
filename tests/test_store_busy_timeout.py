@@ -40,12 +40,9 @@ async def test_second_writer_waits_instead_of_erroring(tmp_path: Path) -> None:
     store = DataStore(db_path)
     await store.initialize()
     try:
-        # Independent rw connection with the same busy_timeout.
         other = await aiosqlite.connect(str(db_path))
         try:
             await other.execute("PRAGMA busy_timeout=5000")
-            # Second connection's write should wait out any momentary lock rather
-            # than raise. Scratch table avoids depending on schema specifics.
             await other.execute("CREATE TABLE IF NOT EXISTS _race (id INTEGER)")
             await other.execute("INSERT INTO _race (id) VALUES (1)")
             await other.commit()
@@ -77,7 +74,7 @@ async def test_initialize_retries_transient_db_locked_then_succeeds(
 
         monkeypatch.setattr(store._db, "executescript", flaky)
         await store._apply_schema_with_lock_retry(_load_schema_sql())
-        assert calls["n"] == 3  # failed twice, succeeded on the third attempt
+        assert calls["n"] == 3
     finally:
         await store.close()
 
@@ -92,7 +89,6 @@ async def test_initialize_raises_after_persistent_db_locked(
 
     monkeypatch.setattr(DataStore, "_INIT_LOCK_RETRY_BASE_DELAY", 0.0)
     monkeypatch.setattr(DataStore, "_INIT_LOCK_RETRY_MAX_DELAY", 0.0)
-    # Zero budget: give up on the first persistent lock, not the full window.
     monkeypatch.setattr(DataStore, "_INIT_LOCK_RETRY_BUDGET_SECONDS", 0.0)
     store = DataStore(tmp_path / "locked.db")
     await store.initialize()
@@ -125,7 +121,6 @@ async def test_initialize_closes_connection_when_schema_apply_fails(
     store = DataStore(tmp_path / "init_fail.db")
     with pytest.raises(DatabaseLockedError, match="could not acquire the database lock"):
         await store.initialize()
-    # The connection opened before the schema apply must be closed + cleared.
     assert store._db is None
 
 
@@ -145,7 +140,6 @@ async def test_close_releases_connection_when_backup_raises_unexpected(
     monkeypatch.setattr(store._db, "backup", _boom)  # type: ignore[union-attr]
     with pytest.raises(RuntimeError, match="unexpected backup failure"):
         await store.close()
-    # Despite the unexpected backup exception, the main connection was closed.
     assert store._db is None
 
 
@@ -167,6 +161,6 @@ async def test_initialize_does_not_retry_non_lock_errors(
         monkeypatch.setattr(store._db, "executescript", boom)
         with pytest.raises(sqlite3.OperationalError, match="no such table"):
             await store._apply_schema_with_lock_retry(_load_schema_sql())
-        assert calls["n"] == 1  # no retry on a non-lock error
+        assert calls["n"] == 1
     finally:
         await store.close()

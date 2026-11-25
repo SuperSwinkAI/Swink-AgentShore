@@ -95,11 +95,11 @@ export function StartScreen({
   const [error, setError] = useState<string | null>(null);
   const [timelapseBusy, setTimelapseBusy] = useState(false);
   const [timelapseError, setTimelapseError] = useState<string | null>(null);
-  // Latches true the moment the user clicks Start so the button itself
-  // shows immediate feedback ("Starting...") on the click frame, even
-  // before the full-screen overlay has a chance to paint. Without this
-  // the user sees a dead button for the brief window between click and
-  // overlay paint and assumes the click didn't register.
+
+
+
+
+
   const [starting, setStarting] = useState(false);
 
   const gateBlocked = blockers.targetBranch || blockers.agents || blockers.identities;
@@ -138,11 +138,11 @@ export function StartScreen({
     onChange({ ...selection, seedInputPath: null });
   }, [onChange, selection]);
 
-  // Checking the box when the toolchain is absent kicks off the install
-  // (Homebrew ffmpeg/Node + the timelapse-capture CLI). The box latches
-  // checked+disabled for the duration so the click registers immediately —
-  // the previous Readiness-screen control only flipped on success minutes
-  // later, which read as an unselectable checkbox.
+
+
+
+
+
   const onInstallTimelapse = useCallback(async () => {
     if (adapter.installTimelapse === undefined) return;
     setTimelapseError(null);
@@ -163,8 +163,8 @@ export function StartScreen({
   }, [adapter, onChange, onTimelapseInstalled, selection]);
 
   const hasSeed = selection.seedInputPath !== null;
-  // Default the toggle on whenever the feature is installed; an explicit
-  // per-session choice (selection.timelapse) wins.
+
+
   const timelapseOn = selection.timelapse ?? true;
 
   return (

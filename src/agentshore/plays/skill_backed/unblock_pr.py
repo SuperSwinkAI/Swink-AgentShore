@@ -38,8 +38,6 @@ class UnblockPrPlay(SkillBackedPlay):
 
     gates = (CapabilityGate("can_implement"),)
 
-    # PR-scoped: self-heal the PR base before unblocking so code_review/merge_pr
-    # downstream see the right base.
     retarget_pr_base = True
 
     @property
@@ -63,16 +61,11 @@ class UnblockPrPlay(SkillBackedPlay):
     ) -> PlayOutcome:
         outcome = await super().execute(state, params, ctx=ctx)
 
-        # Reconcile any sibling PR merged in place. Runs even on failure: a stacked
-        # blocker can merge while the target keeps an independent blocker, and the
-        # merged sibling must propagate either way.
         await self._reconcile_merged_blockers(outcome, ctx, state)
 
         if not outcome.success:
             return outcome
 
-        # Record a review PASS for every PR unblocked (target + siblings we pushed
-        # to): a successful unblock counts as AgentShore's code review.
         reviewed_pr_numbers: list[int] = []
         seen: set[int] = set()
         for artifact in outcome.artifacts:

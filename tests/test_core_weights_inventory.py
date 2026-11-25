@@ -57,7 +57,6 @@ def _events_from_caplog(records: list[logging.LogRecord]) -> list[dict[str, obje
         if isinstance(msg, dict):
             out.append(msg)
             continue
-        # Fallback: attribute-based payload.
         if hasattr(r, "event"):
             ev: dict[str, object] = {
                 k: v for k, v in r.__dict__.items() if k not in std_fields and not k.startswith("_")
@@ -122,9 +121,8 @@ async def test_weights_dir_inventory_fires_at_start_and_shutdown(tmp_path: Path)
     orch = await Orchestrator.bootstrap(cfg=_cfg(), repo_root=tmp_path)
     sid = orch._session_id
     async with orch:
-        pass  # immediate exit triggers stop()
+        pass
 
-    # Flush stdlib log handlers so the NDJSON file is fully written.
     for handler in logging.getLogger().handlers:
         handler.flush()
 

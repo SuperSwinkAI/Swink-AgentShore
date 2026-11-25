@@ -37,9 +37,6 @@ if TYPE_CHECKING:
 
 _logger = get_logger(__name__)
 
-# _AUTH_ERROR_MARKERS (narrow PUBLISH_AUTH_MARKERS) only scopes the publish-related
-# gate below. Auth *classification* uses the broad AUTH_MARKERS, so a publish failure
-# with a wider GitHub-auth spelling ("repository not found", …) is still marked auth.
 
 _PR_PUBLISH_ERROR_MARKERS = (
     "pull request",
@@ -166,11 +163,6 @@ class IssuePickupPublishReconciler:
         try:
             identity_env = self._identity_env_for_agent(params.agent_id)
         except PreconditionFailed:
-            # Assigned agent torn down (e.g. end_agent during wind-down) before this
-            # reconcile ran — no handle for an identity overlay. Degrade to branch
-            # evidence; next GitHub refresh adopts the branch/PR. Without this,
-            # get_handle's PreconditionFailed escaped as play_task_failed, losing
-            # completion bookkeeping (#18).
             _logger.info(
                 "issue_pickup_publish_reconcile_agent_gone",
                 issue_number=issue_number,
@@ -194,8 +186,6 @@ class IssuePickupPublishReconciler:
 
         if await self._remote_branch_exists(branch):
             issue_title = _issue_title(issue_number, state)
-            # Honor configured project.target_branch; fall back to the repo's GitHub
-            # default when unset (preserves pre-field projects). See desktop-53m0.
             base = self._cfg.project.target_branch or await self._github.default_branch(
                 identity_env=identity_env
             )
@@ -239,10 +229,6 @@ class IssuePickupPublishReconciler:
         return resolve_identity_env(self._cfg, agent_cfg, strict=True)
 
     async def _remote_branch_exists(self, branch: str) -> bool:
-        # Hardened git layer + default-identity auth overlay, same probe the
-        # worktree allocator uses (#179): the ambient credential helper is not
-        # available headless, so an unauthenticated ls-remote on a private HTTPS
-        # remote would misread a live branch as missing.
         return await _allocator_remote_branch_exists(
             self._project_path,
             f"refs/heads/{branch}",

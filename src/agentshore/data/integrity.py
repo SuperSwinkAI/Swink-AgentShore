@@ -143,7 +143,6 @@ def recover_via_sqlite_recover(
             capture_output=True,
             check=False,
             timeout=timeout_seconds,
-            # Don't inherit sidecar stdin (live Tauri JSON-RPC pipe) — probing wedges caller (#155).
             stdin=subprocess.DEVNULL,
         )
     except FileNotFoundError:
@@ -173,8 +172,6 @@ def recover_via_sqlite_recover(
         return False, [f".recover load OSError: {exc}"]
 
     if load.returncode != 0:
-        # SQLite returns nonzero on any INSERT error but most rows still land;
-        # validate the result instead of bailing.
         _logger.warning(
             "db_recovery_load_returned_nonzero",
             returncode=load.returncode,
@@ -207,12 +204,9 @@ def restore_from_snapshot_ring(db_path: Path, snapshots_dir: Path) -> Path | Non
     if ok:
         return None
 
-    # Missing file — first run; let store.initialize() create the schema fresh.
     if not db_path.exists():
         return None
 
-    # Capture corruption evidence before recovery — best-effort, never raises;
-    # the embedded ``corruption_event_id`` lets post-mortems correlate symptoms.
     try:
         from agentshore.data.corruption_evidence import capture_corruption_evidence
 
@@ -225,7 +219,6 @@ def restore_from_snapshot_ring(db_path: Path, snapshots_dir: Path) -> Path | Non
     except Exception as exc:  # noqa: BLE001 — evidence capture must not raise
         _logger.warning("db_corruption_evidence_capture_failed", error=str(exc))
 
-    # 1. Try snapshot ring.
     candidates = _list_existing_snapshots(snapshots_dir)
     chosen: Path | None = None
     for snap in candidates:
@@ -236,11 +229,8 @@ def restore_from_snapshot_ring(db_path: Path, snapshots_dir: Path) -> Path | Non
 
     if chosen is not None:
         corrupt_dest = db_path.with_name(f"{_CORRUPT_PREFIX}{int(time.time())}")
-        # Atomic rename preserves the corrupt file for post-mortem inspection.
         if db_path.exists():
             os.replace(db_path, corrupt_dest)
-        # Copy (not rename) so the snapshot stays in the ring as a known-good
-        # fallback if this restore itself proves bad on first write.
         shutil.copy2(chosen, db_path)
         _logger.warning(
             "db_auto_restored",
@@ -251,8 +241,6 @@ def restore_from_snapshot_ring(db_path: Path, snapshots_dir: Path) -> Path | Non
         )
         return chosen
 
-    # 2. Snapshot ring is empty or every snapshot is also corrupt — try
-    #    ``sqlite3 .recover`` to salvage what we can from the live file.
     _logger.warning(
         "db_attempting_sqlite_recover",
         db_path=str(db_path),
@@ -275,10 +263,6 @@ def restore_from_snapshot_ring(db_path: Path, snapshots_dir: Path) -> Path | Non
         )
         return db_path
 
-    # 3. Recovery failed. Move the corrupt file aside so store.initialize()
-    #    creates a fresh empty DB. Only session history is lost — weights,
-    #    learnings.json, reports, contexts/, and project state live outside
-    #    agentshore.db and are untouched.
     if recovered_path.exists():
         recovered_path.unlink()
     corrupt_dest = db_path.with_name(f"{_CORRUPT_PREFIX}{int(time.time())}")
@@ -342,7 +326,6 @@ class IntegrityMonitor:
         return self._task is not None and not self._task.done()
 
     async def _run(self) -> None:
-        # Tick at the smallest interval so no timer is overslept.
         tick = max(
             1.0,
             min(
@@ -402,7 +385,6 @@ class IntegrityMonitor:
             _logger.debug("db_integrity_check", status="ok")
             return
         _logger.error("db_integrity_failed", errors=errors)
-        # Capture surrounding state for root-cause attribution. Best-effort; never raises.
         if self._db_path is not None:
             try:
                 from agentshore.data.corruption_evidence import (
@@ -417,7 +399,6 @@ class IntegrityMonitor:
                 )
             except Exception as exc:  # noqa: BLE001 — evidence capture must not raise
                 _logger.warning("db_corruption_evidence_capture_failed", error=str(exc))
-        # Snapshot immediately so the next startup has a fresh known-good image.
         await self._rotate_snapshot()
 
     async def _rotate_snapshot(self) -> None:

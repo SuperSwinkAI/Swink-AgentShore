@@ -92,7 +92,6 @@ def compute_loop_incidents(plays: list[PlayRecord]) -> list[LoopIncidentEntry]:
             if p.play_type == streak_type:
                 streak_count += 1
             else:
-                # Finalize any prior active streak ended by a different-type play.
                 if streak_type is not None and streak_count >= 3:
                     _emit(_classify_terminated_by_other(streak_count))
                 streak_type = p.play_type
@@ -102,7 +101,6 @@ def compute_loop_incidents(plays: list[PlayRecord]) -> list[LoopIncidentEntry]:
                 streak_start_started_at = p.started_at
             last_failure = p
         else:
-            # Success: terminates any active streak.
             if streak_type is not None and streak_count >= 3:
                 if p.play_type == streak_type:
                     _emit(_classify_same_type_success(streak_count))
@@ -115,7 +113,6 @@ def compute_loop_incidents(plays: list[PlayRecord]) -> list[LoopIncidentEntry]:
             streak_start_started_at = ""
             last_failure = None
 
-    # Finalize a trailing active streak.
     if streak_type is not None and streak_count >= 3 and last_failure is not None:
         fc = last_failure.failure_category
         if fc == "human_override":

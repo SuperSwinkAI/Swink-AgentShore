@@ -1,5 +1,3 @@
--- AgentShore database schema — agentshore_dev_v1
--- Applied by DataStore on first run; versioned via schema_info + schema_version tables.
 
 PRAGMA journal_mode=WAL;
 
@@ -19,7 +17,6 @@ CREATE TABLE IF NOT EXISTS sessions (
     started_at          TEXT NOT NULL,
     ended_at            TEXT,
     status              TEXT NOT NULL DEFAULT 'running',
-    -- Valid values: 'initializing' | 'running' | 'paused' | 'draining' | 'shutting_down' | 'completed'
     seed_path           TEXT,
     initial_issue_count INTEGER,
     total_cost          REAL NOT NULL DEFAULT 0.0,
@@ -64,16 +61,8 @@ CREATE TABLE IF NOT EXISTS agents (
     total_cost       REAL NOT NULL DEFAULT 0.0,
     tasks_completed  INTEGER NOT NULL DEFAULT 0,
     tasks_failed     INTEGER NOT NULL DEFAULT 0,
-    -- desktop-j8b: persisted so the ESR play log can render a human-readable
-    -- agent name (e.g. "Claude/large: Ember Raven") instead of a raw UUID.
-    -- Nullable for old rows; new rows populate from the AgentHandle.
     model_tier       TEXT,
     display_name     TEXT,
-    -- desktop-31h2: count of plays dispatched to this agent across the session,
-    -- regardless of success/failure. Surfaced as `dispatch_share` in agent
-    -- performance rollups so operators can spot fleet-utilisation imbalance
-    -- (some agents getting 0 plays for long stretches while work is available).
-    -- Distinct from tasks_completed/tasks_failed which gate on outcome.
     dispatch_count   INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_agents_session ON agents(session_id);
@@ -111,15 +100,14 @@ CREATE TABLE IF NOT EXISTS pull_requests (
     status_check_summary TEXT,
     is_draft          INTEGER,
     author_agent_id   TEXT,
-    author_agent_type TEXT,    -- "claude_code" | "codex" | "api_*" — used by code_review
+    author_agent_type TEXT,
     created_at        TEXT NOT NULL,
     merged_at         TEXT,
-    head_sha          TEXT,    -- current PR HEAD commit SHA (headRefOid from GitHub)
-    mergeable         TEXT,    -- "MERGEABLE" | "CONFLICTING" | "UNKNOWN" from GitHub API
-    base_ref          TEXT,    -- baseRefName from GitHub API; NULL for legacy rows
-    last_reviewed_sha TEXT,    -- HEAD SHA at time of last successful code_review play
-    last_review_status TEXT,   -- "PASS" | "BLOCK" | NULL — AgentShore's verdict at last_reviewed_sha;
-                               -- lapses automatically when head_sha advances past last_reviewed_sha
+    head_sha          TEXT,
+    mergeable         TEXT,
+    base_ref          TEXT,
+    last_reviewed_sha TEXT,
+    last_review_status TEXT,
     PRIMARY KEY (pr_number, session_id)
 );
 CREATE INDEX IF NOT EXISTS idx_pull_requests_session ON pull_requests(session_id);
@@ -310,17 +298,11 @@ CREATE INDEX IF NOT EXISTS idx_review_patterns_session ON review_feedback_patter
 CREATE UNIQUE INDEX IF NOT EXISTS idx_review_patterns_unique
     ON review_feedback_patterns(session_id, pattern, category);
 
--- desktop-8qa5: AgentShore-managed git worktrees. One row per AgentShore-owned
--- worktree on disk; the partial unique indexes guard against concurrent
--- allocations for the same PR branch (or the same pre-branch key for
--- branch-creating plays). Status transitions:
---   active --> stale | reaping --> reaped
---   active --> failed (terminal)
 CREATE TABLE IF NOT EXISTS worktrees (
     worktree_id        INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id         TEXT    NOT NULL REFERENCES sessions(session_id),
-    branch_name        TEXT,           -- NULL until rekey (branch-creating plays)
-    pre_branch_key     TEXT,           -- e.g. "pickup-bd-123"; NULL for PR-scoped
+    branch_name        TEXT,
+    pre_branch_key     TEXT,
     worktree_path      TEXT    NOT NULL,
     status             TEXT    NOT NULL DEFAULT 'active'
                           CHECK (status IN ('active','stale','reaping','reaped','failed')),
@@ -341,10 +323,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_worktrees_active_prebranch
 CREATE INDEX IF NOT EXISTS idx_worktrees_status
     ON worktrees(status, last_used_at);
 
--- Seed the schema namespace for startup validation.
 INSERT OR IGNORE INTO schema_info (key, value)
 VALUES ('schema_namespace', 'agentshore_dev_v1');
 
--- Current schema version for the agentshore_dev_v1 generation.
 INSERT OR IGNORE INTO schema_version (version, applied_at)
 VALUES (5, datetime('now'));

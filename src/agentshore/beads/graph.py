@@ -116,13 +116,8 @@ def _graph_task_from_bead(
 
 
 _GRAPH_READ_RETRIES = 3
-_GRAPH_READ_RETRY_DELAY = 0.5  # seconds between attempts
+_GRAPH_READ_RETRY_DELAY = 0.5
 
-# The full-graph dump (``bd list --all --json --limit 0``) is O(graph size) and
-# legitimately needs more headroom than a point mutation like ``bd close`` on a
-# large beads graph. Keep mutations at bd()'s tight 120s ceiling; give the dump
-# its own larger budget so a big-but-completable graph succeeds instead of
-# timing out (#237).
 _BD_GRAPH_TIMEOUT_SECONDS = 300.0
 
 
@@ -154,8 +149,6 @@ async def _read_graph_raw(project_path: Path) -> list[RawBead]:
             )
             return _as_json_list(raw)
         except BdTimeoutError as exc:
-            # Fail fast — a timeout means "too big to dump in budget", not a
-            # transient blip; retrying only multiplies the wasted wall-clock.
             _logger.warning(
                 "beads_graph_load_timed_out",
                 project_path=str(project_path),
@@ -167,14 +160,6 @@ async def _read_graph_raw(project_path: Path) -> list[RawBead]:
             ) from exc
         except BdError as exc:
             if is_schema_drift_error(str(exc)):
-                # Fail fast — same rationale as the BdTimeoutError branch above:
-                # this is a structural refusal (bd's #4259 remote-migration
-                # gate), not a transient blip, so retrying 3x just re-pays the
-                # same deterministic failure. Raising a distinct exception type
-                # (rather than falling through to the generic GraphReadError
-                # below) lets callers tell "graph unreadable due to schema
-                # drift" apart from "graph load failed" / "graph is empty" —
-                # conflating those previously caused a bogus seed_project.
                 _logger.warning(
                     "beads_graph_load_schema_drift",
                     project_path=str(project_path),
@@ -207,20 +192,6 @@ async def _read_graph_raw(project_path: Path) -> list[RawBead]:
         f"bd list failed after {_GRAPH_READ_RETRIES} attempts for {project_path}"
     ) from last_exc
 
-
-# ---------------------------------------------------------------------------
-# Graph snapshot cache + request coalescing
-# ---------------------------------------------------------------------------
-#
-# ``load_graph`` runs at least once per orchestrator tick (build_state),
-# again after every play completes (post-play alignment reload), again on
-# the selector's live-drift confirm, and again on every issue_syncer full
-# sync — each historically a fresh ``bd list --all --json --limit 0``
-# subprocess behind the bd lock. A short TTL cache plus in-flight
-# coalescing collapses concurrent/back-to-back callers onto one subprocess
-# without hiding a genuinely stale graph for long: the callers that need a
-# guaranteed-live read (selector confirm, post-play alignment — both drift
-# checks right after a mutation) pass ``max_age_seconds=0.0`` to force one.
 
 _GRAPH_CACHE_TTL_SECONDS = 2.0
 

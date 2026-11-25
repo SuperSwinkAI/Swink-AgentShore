@@ -31,10 +31,6 @@ from agentshore.state import (
     SessionState,
 )
 
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
-
 
 def _make_snapshot(
     agent_id: str,
@@ -181,11 +177,6 @@ def _make_pr_record(
     )
 
 
-# ---------------------------------------------------------------------------
-# Override validation
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_override_claims_target_without_revalidating_eligibility() -> None:
     """The resolver claims the override target; it no longer re-decides validity.
@@ -205,11 +196,6 @@ async def test_override_claims_target_without_revalidating_eligibility() -> None
 
     assert result is not None
     assert result.issue_number == 99
-
-
-# ---------------------------------------------------------------------------
-# UNBLOCK_PR
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -376,18 +362,12 @@ async def test_resolve_unblock_pr_skips_exhausted_pr() -> None:
     store.get_most_recent_branch = AsyncMock(return_value=None)
     resolver = ParameterResolver(store=store, manager=MagicMock(), cfg=_make_cfg())
 
-    # Drive the per-PR failure counter to exhaustion; the last call returns True.
     assert resolver.record_unblock_pr_failure(9) is False
     assert resolver.record_unblock_pr_failure(9) is False
     assert resolver.record_unblock_pr_failure(9) is True
 
     result = await resolver.resolve(PlayType.UNBLOCK_PR, _make_state())
     assert result is None
-
-
-# ---------------------------------------------------------------------------
-# #312 — fast per-PR repick cooldown (merge_conflicts / dirty_trunk)
-# ---------------------------------------------------------------------------
 
 
 def _cooldown_pr(
@@ -424,7 +404,6 @@ async def test_resolve_unblock_pr_skips_pr_on_repick_cooldown() -> None:
     resolver = ParameterResolver(store=store, manager=MagicMock(), cfg=_make_cfg())
 
     state = _make_state(pull_requests=[pr])
-    # Sanity: the PR is a candidate before the cooldown is armed.
     assert (await resolver.resolve(PlayType.UNBLOCK_PR, state)) is not None
 
     resolver.record_pr_repick_cooldown(9, state.total_plays, rearmable=True)
@@ -463,8 +442,6 @@ async def test_resolve_unblock_pr_repick_cooldown_rearms_when_no_longer_conflict
     flips away from CONFLICTING — mirrors issue_pickup's bead-readiness rearm
     (``_rearm_ready_issues``), well before the fixed window elapses."""
     store = AsyncMock()
-    # mergeable has already recovered (e.g. a rebase landed), but the PR is
-    # still blocked for an unrelated reason so it stays a real candidate.
     pr = _cooldown_pr(9, mergeable="MERGEABLE", review_decision="CHANGES_REQUESTED")
     store.list_open_pull_requests = AsyncMock(return_value=[pr])
     store.list_approved_pull_requests = AsyncMock(return_value=[])
@@ -474,7 +451,7 @@ async def test_resolve_unblock_pr_repick_cooldown_rearms_when_no_longer_conflict
     resolver.record_pr_repick_cooldown(9, 0, rearmable=True)
 
     state = _make_state(pull_requests=[pr])
-    state.total_plays = 1  # well inside the 15-play window
+    state.total_plays = 1
     result = await resolver.resolve(PlayType.UNBLOCK_PR, state)
     assert result is not None
     assert result.pr_number == 9
@@ -518,11 +495,6 @@ async def test_clear_pr_repick_cooldown_unparks_immediately() -> None:
     result = await resolver.resolve(PlayType.UNBLOCK_PR, state)
     assert result is not None
     assert result.pr_number == 9
-
-
-# ---------------------------------------------------------------------------
-# WRITE_IMPLEMENTATION_PLAN
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -582,11 +554,6 @@ async def test_resolve_write_plan_returns_none_when_all_planned() -> None:
     result = await resolver.resolve(PlayType.WRITE_IMPLEMENTATION_PLAN, state)
 
     assert result is None
-
-
-# ---------------------------------------------------------------------------
-# SYSTEMATIC_DEBUGGING
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -686,11 +653,6 @@ async def test_override_systematic_debugging_allows_explicit_branch() -> None:
     assert result.bypass_preconditions
 
 
-# ---------------------------------------------------------------------------
-# ISSUE_PICKUP
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_resolve_issue_pickup_returns_first_issue() -> None:
     resolver = _make_resolver()
@@ -761,7 +723,6 @@ async def test_resolve_issue_pickup_skips_closed_issues() -> None:
 
 @pytest.mark.asyncio
 async def test_resolve_issue_pickup_skips_issues_with_open_pr() -> None:
-    # Open PR in state.pull_requests pointing to issue 7 — should be skipped.
     resolver = _make_resolver()
     pr = _make_pr_snapshot(100, issue_number=7)
     state = _make_state(issues=[_make_issue(7), _make_issue(12)], pull_requests=[pr])
@@ -872,7 +833,6 @@ async def test_resolve_issue_pickup_skips_needs_refinement_label() -> None:
 @pytest.mark.asyncio
 async def test_resolve_issue_pickup_prefers_higher_priority() -> None:
     resolver = _make_resolver()
-    # Issue 12 (low) and 7 (critical) — 7 should win despite higher number
     issues = [
         _make_issue(12, priority=3, labels=["priority/low"]),
         _make_issue(7, priority=0, labels=["priority/critical"]),
@@ -888,7 +848,6 @@ async def test_resolve_issue_pickup_prefers_higher_priority() -> None:
 @pytest.mark.asyncio
 async def test_resolve_issue_pickup_prefers_smaller_size_within_priority() -> None:
     resolver = _make_resolver()
-    # Both medium priority; smaller size wins.
     issues = [
         _make_issue(7, priority=2, labels=["priority/medium", "size/L"]),
         _make_issue(12, priority=2, labels=["priority/medium", "size/S"]),
@@ -931,11 +890,6 @@ async def test_resolve_issue_pickup_returns_none_when_all_ineligible() -> None:
     assert result is None
 
 
-# ---------------------------------------------------------------------------
-# CODE_REVIEW
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_resolve_code_review_returns_oldest_pending() -> None:
     from agentshore.data.models import ReviewQueueRecord
@@ -968,7 +922,6 @@ async def test_resolve_code_review_returns_oldest_pending() -> None:
         blocked_reasons=[],
     )
     state = _make_state(
-        # code_review is large-only (#254).
         agents=[_make_snapshot("a-codex", agent_type=AgentType.CODEX, model_tier="large")],
         pull_requests=[pr_snap],
     )
@@ -1040,7 +993,6 @@ async def test_resolve_code_review_picks_pr_with_cross_identity_reviewer() -> No
     result = await resolver.resolve(PlayType.CODE_REVIEW, state)
     assert result is not None
     assert result.pr_number == 42
-    # Only a-codex has a different identity from the PR author "user_a".
     assert result.target_agent_id == "a-codex"
 
 
@@ -1093,7 +1045,7 @@ async def test_resolve_code_review_skips_pr_when_only_same_identity_reviewer() -
                 "a-codex",
                 agent_type=AgentType.CODEX,
                 model_tier="medium",
-                github_identity="user_a",  # same as PR author
+                github_identity="user_a",
             ),
         ],
         open_issues=[],
@@ -1235,9 +1187,9 @@ async def test_resolve_code_review_uses_state_pull_requests_when_queue_empty() -
             head_sha=head,
         )
 
-    pr_current = _pr(10, last_sha="abc", head="abc")  # unchanged reviewed head — excluded
-    pr_never = _pr(20, last_sha=None, head="def")  # never reviewed — eligible
-    pr_stale = _pr(30, last_sha="old", head="new")  # stale (sha advanced) — eligible
+    pr_current = _pr(10, last_sha="abc", head="abc")
+    pr_never = _pr(20, last_sha=None, head="def")
+    pr_stale = _pr(30, last_sha="old", head="new")
 
     state = OrchestratorState(
         session_id="sess-test",
@@ -1259,11 +1211,8 @@ async def test_resolve_code_review_uses_state_pull_requests_when_queue_empty() -
         ),
     )
     result = await resolver.resolve(PlayType.CODE_REVIEW, state)
-    # Both pr_never and pr_stale are eligible; pr_stale has _STALE_VERDICT_RANK when
-    # last_review_status is set — but in this fixture it's None, so both get NEVER_REVIEWED
-    # rank. PR 20 comes first in the list and is picked.
     assert result is not None
-    assert result.pr_number in (20, 30)  # either eligible PR is acceptable
+    assert result.pr_number in (20, 30)
     assert result.target_agent_id == "a-codex"
 
 
@@ -1356,11 +1305,6 @@ async def test_resolve_code_review_skips_manual_required_prs_in_state_fallback()
     assert result is None
 
 
-# ---------------------------------------------------------------------------
-# MERGE_PR
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_resolve_run_qa_returns_empty_params_for_default_branch() -> None:
     """run_qa now targets the merged default branch — no specific branch lookup.
@@ -1382,11 +1326,6 @@ async def test_resolve_run_qa_returns_empty_params_for_default_branch() -> None:
     resolver._store.acquire_work_claims.assert_awaited_once_with(
         "sess-test", "run_qa", ["session:run_qa"]
     )
-
-
-# ---------------------------------------------------------------------------
-# MERGE_PR
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -1436,21 +1375,6 @@ async def test_resolve_merge_pr_returns_none_when_pr_claimed() -> None:
     )
 
 
-# ---------------------------------------------------------------------------
-# Trunk-claim split (#17): only trunk-*mutating* plays take trunk:main_repo;
-# read-only trunk plays self-serialize on a session key instead, so they can't
-# starve merge_pr.
-# ---------------------------------------------------------------------------
-
-
-# ``_resource_keys_for_params`` is the chokepoint every play-type→claim-key
-# decision flows through: no-arg trunk plays reach it via _claim_candidate →
-# _claim_params (empty candidate keys → ``keys = [] or _resource_keys_for_params``),
-# and run_qa via _resolve_run_qa. The DB evidence for #17 — a design_audit
-# claim whose only key was ``trunk:main_repo`` — is exactly this function's
-# output, so testing it directly pins the fix.
-
-
 @pytest.mark.parametrize(
     "play_type",
     [
@@ -1487,9 +1411,6 @@ async def test_trunk_mutating_plays_keep_trunk_lock(play_type: PlayType) -> None
 
 @pytest.mark.asyncio
 async def test_resolve_merge_pr_skips_unmergeable_approved_pr() -> None:
-    # Regression for the example-repo burn: resolver returned the first
-    # approved PR even when it was CONFLICTING, causing the executor to
-    # spin on a merge that could never succeed.
     store = AsyncMock()
     bad = MagicMock()
     bad.pr_number = 103
@@ -1547,11 +1468,9 @@ async def test_resolve_merge_pr_skips_pr_on_repick_cooldown() -> None:
     state = _make_state(pull_requests=[pr])
     assert (await resolver.resolve(PlayType.MERGE_PR, state)) is not None
 
-    # dirty_trunk arms non-rearmable: no cheap "trunk clean" signal here.
     resolver.record_pr_repick_cooldown(20, state.total_plays, rearmable=False)
     assert await resolver.resolve(PlayType.MERGE_PR, state) is None
 
-    # Rides out the full window regardless of the PR's own (fine) mergeable state.
     still_cooling = _make_state(pull_requests=[pr])
     still_cooling.total_plays = 14
     assert await resolver.resolve(PlayType.MERGE_PR, still_cooling) is None
@@ -1677,7 +1596,6 @@ async def test_resolve_merge_pr_skips_pr_already_being_merged() -> None:
     store.get_most_recent_branch = AsyncMock(return_value=None)
     resolver = ParameterResolver(store=store, manager=MagicMock(), cfg=_make_cfg())
 
-    # Agent A is already merging PR 77
     busy_agent = AgentSnapshot(
         agent_id="agent-a",
         agent_type=AgentType.CLAUDE_CODE,
@@ -1732,20 +1650,13 @@ async def test_resolve_merge_pr_live_fallback_skips_pr_already_being_merged() ->
     assert result is None
 
 
-# ---------------------------------------------------------------------------
-# END_AGENT
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_resolve_end_agent_picks_highest_failure_rate() -> None:
     """Among agents past the play-count gate (>10), pick the worst performer."""
     resolver = _make_resolver()
     agents = [
-        # Both agents have >10 plays (gate satisfied); agent-b has higher
-        # failure rate (50%) so it should be the termination target.
-        _make_snapshot("agent-a", tasks_completed=20, tasks_failed=2),  # ~9% fail
-        _make_snapshot("agent-b", tasks_completed=10, tasks_failed=10),  # 50% fail
+        _make_snapshot("agent-a", tasks_completed=20, tasks_failed=2),
+        _make_snapshot("agent-b", tasks_completed=10, tasks_failed=10),
     ]
     state = _make_state(agents=agents)
 
@@ -1811,11 +1722,6 @@ async def test_resolve_end_agent_skips_recoverable_error_agent() -> None:
     result = await resolver.resolve(PlayType.END_AGENT, state)
 
     assert result is None
-
-
-# ---------------------------------------------------------------------------
-# INSTANTIATE_AGENT
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -2068,11 +1974,6 @@ async def test_resolve_instantiate_agent_returns_none_when_no_enabled_configs() 
     assert result is None
 
 
-# ---------------------------------------------------------------------------
-# TAKE_BREAK
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_resolve_take_break_attributes_rate_limit_trigger() -> None:
     resolver = _make_resolver()
@@ -2142,11 +2043,6 @@ async def test_resolve_take_break_skips_agent_already_cooling_down() -> None:
     assert result.extras["trigger_agent_id"] == "codex-unknown"
 
 
-# ---------------------------------------------------------------------------
-# No-arg plays
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_no_arg_plays_return_empty_params() -> None:
     resolver = _make_resolver()
@@ -2159,11 +2055,6 @@ async def test_no_arg_plays_return_empty_params() -> None:
     ):
         result = await resolver.resolve(play_type, state)
         assert result == PlayParams(), f"{play_type} should return empty PlayParams"
-
-
-# ---------------------------------------------------------------------------
-# Timing — <100ms across 50 issues + 50 PR mocks
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -2209,14 +2100,7 @@ async def test_resolve_timing_under_100ms() -> None:
         await resolver.resolve(play_type, state)
     elapsed_ms = (time.monotonic() - start) * 1000
 
-    # Pathological-slowness guard, not a benchmark: 7 resolves over 50 issues/PRs
-    # take ~10ms idle, but a 100ms cap flaked at 125ms under xdist load on CI.
     assert elapsed_ms < 1000, f"Resolution took {elapsed_ms:.1f}ms, expected <1000ms"
-
-
-# ---------------------------------------------------------------------------
-# Loop B fix — resolver tier-aware filter
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -2261,7 +2145,6 @@ async def test_resolve_code_review_skips_when_only_small_tier_idle() -> None:
     ):
         result = await resolver.resolve(PlayType.CODE_REVIEW, state)
 
-    # No large reviewer is idle; small-tier never qualifies for code_review.
     assert result is None
 
 
@@ -2332,11 +2215,6 @@ async def test_resolve_code_review_uses_large_cross_identity_reviewer() -> None:
     assert result is not None
     assert result.pr_number == 88
     assert result.target_agent_id == "a-codex-lg"
-
-
-# ---------------------------------------------------------------------------
-# _pick_reviewer_for_pr unit tests
-# ---------------------------------------------------------------------------
 
 
 def _candidate(agent_id: str, github_identity: str | None) -> AgentSnapshot:
@@ -2442,14 +2320,8 @@ async def test_resolve_code_review_pr_106_pattern() -> None:
     result = await resolver.resolve(PlayType.CODE_REVIEW, state)
     assert result is not None
     assert result.pr_number == 106
-    # Sorted by (agent_type, agent_id): "claude_code:a-claude" sorts first.
     assert result.target_agent_id == "a-claude"
     assert result.target_agent_type is None
-
-
-# ---------------------------------------------------------------------------
-# END_AGENT resolution during drain (#30)
-# ---------------------------------------------------------------------------
 
 
 async def test_resolve_end_agent_during_drain_retires_recoverable_error_agent() -> None:
@@ -2464,7 +2336,7 @@ async def test_resolve_end_agent_during_drain_retires_recoverable_error_agent() 
     errored = _make_snapshot(
         "wedged",
         status=AgentStatus.ERROR,
-        last_error_class=ErrorClass.UNKNOWN,  # IS in RECOVERABLE_ERROR_CLASSES
+        last_error_class=ErrorClass.UNKNOWN,
     )
     state = dataclasses.replace(_make_state(agents=[errored]), session_state=SessionState.DRAINING)
 
@@ -2488,7 +2360,7 @@ async def test_resolve_end_agent_outside_drain_leaves_recoverable_error_for_take
         status=AgentStatus.ERROR,
         last_error_class=ErrorClass.UNKNOWN,
     )
-    state = _make_state(agents=[errored])  # session_state defaults to RUNNING
+    state = _make_state(agents=[errored])
 
     result = await resolver.resolve(PlayType.END_AGENT, state)
 

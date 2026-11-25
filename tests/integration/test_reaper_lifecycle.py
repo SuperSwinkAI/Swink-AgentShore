@@ -149,9 +149,6 @@ async def test_session_start_sweep_phase_reaps_orphans_only(
         dir_name="current-wt",
     )
 
-    # Minimal orchestrator stub — _phase_session_start_worktree_sweep only
-    # touches ``orch._runtime.worktrees``, so we don't need a fully bootstrapped
-    # orchestrator.
     class _OrchStub:
         pass
 
@@ -185,7 +182,6 @@ async def test_session_start_sweep_phase_is_noop_when_disabled(
     class _OrchStub:
         _runtime = SimpleNamespace(worktrees=None)
 
-    # Should not raise.
     await _phase_session_start_worktree_sweep(orch=_OrchStub(), sid="sess-current")  # type: ignore[arg-type]
 
 
@@ -286,8 +282,6 @@ async def test_mark_worktrees_stale_transitions_active_to_stale_on_pr_close(
         cfg=RuntimeConfig(),
     )
 
-    # _mark_worktrees_stale_for_closed_prs reads ``_worktrees`` via the host and
-    # ``_store``/``_session_id`` as constructor deps on the processor itself.
     completion_stub = SimpleNamespace(
         _runtime=SimpleNamespace(worktrees=wm),
         _store=store,

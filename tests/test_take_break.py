@@ -242,7 +242,6 @@ async def test_execute_target_agent_cleared_during_break_returns_clean_outcome()
     outcome with no recovery attempted."""
     play = TakeBreakPlay()
 
-    # "err1" is the trigger but is absent from state.agents (already cleared).
     state = OrchestratorState(
         session_id="s1",
         session_state=SessionState.RUNNING,
@@ -302,15 +301,9 @@ async def test_execute_artifact_contains_duration():
     assert "duration_s" in artifact
 
 
-# ---------------------------------------------------------------------------
-# Drain-aware break interruption (#30)
-# ---------------------------------------------------------------------------
-
-
 def _make_draining_ctx(is_draining, break_duration_minutes: int = 30) -> PlayExecutionContext:
     ctx = _make_ctx(break_duration_minutes=break_duration_minutes)
     ctx.manager.attempt_recovery = AsyncMock(return_value=True)
-    # Rebuild with the drain signal (PlayExecutionContext is a slotted dataclass).
     import dataclasses
 
     return dataclasses.replace(ctx, is_draining=is_draining)
@@ -336,9 +329,9 @@ async def test_execute_aborts_break_immediately_when_already_draining():
             ctx=ctx,
         )
 
-    mock_sleep.assert_not_awaited()  # no 30-min sleep
-    ctx.manager.attempt_recovery.assert_not_awaited()  # no recovery during drain
-    assert outcome.success is True  # intentional skip, not a failed retry
+    mock_sleep.assert_not_awaited()
+    ctx.manager.attempt_recovery.assert_not_awaited()
+    assert outcome.success is True
     assert outcome.partial is True
     assert outcome.agent_id == "err1"
     assert outcome.artifacts[0]["event"] == "break_skipped_draining"
@@ -355,7 +348,6 @@ async def test_execute_aborts_break_when_drain_begins_mid_sleep():
         total_cost=0.0,
         agents=[_make_error_agent("err1")],
     )
-    # False on the first poll, True on the second → exactly one chunk slept.
     draining_flags = iter([False, True])
     ctx = _make_draining_ctx(lambda: next(draining_flags), break_duration_minutes=30)
 
@@ -366,7 +358,6 @@ async def test_execute_aborts_break_when_drain_begins_mid_sleep():
             ctx=ctx,
         )
 
-    # One short poll chunk, NOT the full 30-minute duration.
     assert mock_sleep.await_count == 1
     ctx.manager.attempt_recovery.assert_not_awaited()
     assert outcome.artifacts[0]["event"] == "break_skipped_draining"
@@ -383,7 +374,7 @@ async def test_execute_without_drain_signal_uses_single_sleep():
         total_cost=0.0,
         agents=[_make_idle_agent(), _make_error_agent("err1")],
     )
-    ctx = _make_ctx(break_duration_minutes=1)  # is_draining defaults to None
+    ctx = _make_ctx(break_duration_minutes=1)
     ctx.manager.attempt_recovery = AsyncMock(return_value=True)
 
     with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
@@ -412,9 +403,6 @@ async def test_execute_aborts_when_drain_flips_during_final_chunk():
         total_cost=0.0,
         agents=[_make_error_agent("err1")],
     )
-    # Drain stays False for every pre-sleep check (one per chunk), then flips
-    # True for the post-sleep guard call — exercising the final-chunk guard, not
-    # the per-chunk check. chunks = ceil(duration / poll) for a 1-minute break.
     import math
 
     from agentshore.plays.internal.take_break import _DRAIN_POLL_SECONDS
@@ -450,16 +438,12 @@ async def test_execute_returns_early_when_break_recovery_is_cancelled():
         total_cost=0.0,
         agents=[_make_error_agent("err1")],
     )
-    # A 30-minute break with real sleeps: only the cancel signal can end it fast.
     ctx = _make_ctx(break_duration_minutes=30)
     ctx.manager.attempt_recovery = AsyncMock(return_value=False)
-    # Hand out a single, inspectable event so the "clear" can fire it.
     event = asyncio.Event()
     ctx.manager.register_break_recovery.side_effect = lambda _agent_id: event
 
     async def _clear_agent() -> None:
-        # Wait until the play has registered its signal, then fire it as
-        # AgentManager.clear() does.
         for _ in range(500):
             if ctx.manager.register_break_recovery.call_args is not None:
                 break
@@ -481,7 +465,6 @@ async def test_execute_returns_early_when_break_recovery_is_cancelled():
     assert outcome.success is True
     assert outcome.agent_id == "err1"
     assert outcome.artifacts[0]["event"] == "break_skipped_agent_cleared"
-    # The signal is de-registered so a later break can register its own.
     ctx.manager.unregister_break_recovery.assert_called_once_with("err1", event)
 
 

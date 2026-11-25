@@ -21,7 +21,7 @@ test("IN_PROGRESS_PLAYS is non-empty and contains known-correct members", async 
       hasWriteImplementationPlan: IN_PROGRESS_PLAYS.has(
         "write_implementation_plan",
       ),
-      // code_review and lifecycle plays must NOT be in IN_PROGRESS_PLAYS
+
       hasCodeReview: IN_PROGRESS_PLAYS.has("code_review"),
       hasEndAgent: IN_PROGRESS_PLAYS.has("end_agent"),
       hasEndSession: IN_PROGRESS_PLAYS.has("end_session"),
@@ -87,8 +87,8 @@ test("M2: deriveColumns picks highest pr_number when multiple open PRs target th
       author_agent_type: null,
     });
 
-    // Three open PRs targeting issue 42: 100 (old), 101 (mid), 102 (newest).
-    // The kanban should pick PR 102.
+
+
     const issues = [makeIssue(42)];
     const prs = [makePr(100, 42), makePr(101, 42), makePr(102, 42)];
     const cols = deriveColumns(issues, [], prs, undefined);
@@ -101,9 +101,9 @@ test("M2: deriveColumns picks highest pr_number when multiple open PRs target th
     };
   });
 
-  // Issue 42 should be in REVIEWING (open PR with no reviewer agent).
+
   expect(result.columnCount).toBeGreaterThanOrEqual(1);
-  // Must pick the newest (highest pr_number) open PR.
+
   expect(result.prNumber).toBe(102);
 });
 
@@ -155,8 +155,8 @@ test("M2: closed PR loses to any open PR regardless of pr_number order", async (
       author_agent_type: null,
     });
 
-    // Old high-numbered closed PR + newer lower-numbered open PR.
-    // The open PR should always win.
+
+
     const issues = [makeIssue(7)];
     const prs = [makePr(999, 7, "merged"), makePr(5, 7, "open")];
     const cols = deriveColumns(issues, [], prs, undefined);
@@ -274,7 +274,7 @@ test("H7: deriveColumns returns cached result when hash unchanged", async ({
 
     const issues = [makeIssue(1)];
     const first = deriveColumns(issues, [], [], undefined);
-    // Call with a NEW array reference but identical content — must hit the cache.
+
     const second = deriveColumns([...issues], [], [], undefined);
     return { sameReference: first === second };
   });

@@ -36,8 +36,6 @@ impl SessionState {
         heartbeat.esr_ready.store(false, Ordering::SeqCst);
         heartbeat.draining.store(false, Ordering::SeqCst);
 
-        // dashboardUrl shape: http://{host}:{port}/ (mirrors
-        // StartingProgressRoute.tsx dashboardUrlFromEndpoint ~58-69).
         let dashboard_url = rpc_value.get("ipc_endpoint").and_then(|ep| {
             let host = ep.get("host").and_then(Value::as_str)?;
             let port = ep.get("port").and_then(Value::as_u64)?;

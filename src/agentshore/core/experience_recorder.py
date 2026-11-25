@@ -62,7 +62,6 @@ class ExperienceRecorder:
         self._cfg = cfg
         self._host = host
         self._velocity = velocity
-        # Phase 1 fleet-concurrency log; no-op when unwired (headless / non-PPO).
         self._concurrency_log: ConcurrencyLog | NullConcurrencyLog = (
             concurrency_log or NullConcurrencyLog()
         )
@@ -110,7 +109,6 @@ class ExperienceRecorder:
         Each sub-step is independently guarded — a failure logs a structured
         ERROR and continues; nothing propagates to the caller / loop.
         """
-        # Step 1 — reward. A failure skips the whole experience+learning for this play.
         try:
             ctx_after = await self._metrics.snapshot(next_state)
             reward, _ = compute_reward(
@@ -138,11 +136,8 @@ class ExperienceRecorder:
             )
             return
 
-        # Step 1b — fleet-concurrency sample. Self-guarding; whole next_state
-        # passed so even field reads stay inside its guard.
         await self._concurrency_log.record(next_state=next_state, outcome=outcome, reward=reward)
 
-        # Step 2 — persist the experience row (independent of policy learning).
         if outcome.play_id is not None and pending_step is not None:
             await self._persist_experience(
                 play_id=outcome.play_id,
@@ -154,7 +149,6 @@ class ExperienceRecorder:
                 done=done,
             )
 
-        # Step 3 — feed the rollout buffer (runs even when no row was persisted).
         try:
             await self._selector.on_play_completed(
                 state_before=state_before,
@@ -171,7 +165,6 @@ class ExperienceRecorder:
                 exc_info=True,
             )
 
-        # Step 4 — policy-update cadence.
         try:
             if self._selector.should_update():
                 bootstrap_v = 0.0 if done else await self._selector.value_of(next_state)
@@ -184,7 +177,6 @@ class ExperienceRecorder:
                 exc_info=True,
             )
 
-        # Step 5 — checkpoint + WAL cadence.
         total_plays = next_state.total_plays
         try:
             if self._selector.should_checkpoint(total_plays):

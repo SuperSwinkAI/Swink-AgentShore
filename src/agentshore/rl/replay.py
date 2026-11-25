@@ -48,8 +48,8 @@ class ReplayLoader:
         Steps whose blob dimensions don't match are skipped with a warning.
         """
         buf = RolloutBuffer()
-        expected_bytes = OBSERVATION_DIM * 4  # float32
-        mask_bytes = NUM_ACTIONS  # bool stored as uint8
+        expected_bytes = OBSERVATION_DIM * 4
+        mask_bytes = NUM_ACTIONS
 
         n_loaded = 0
         n_skipped = 0
@@ -58,7 +58,6 @@ class ReplayLoader:
             self._action_space_version,
             self._config_hash,
         ):
-            # Validate blob sizes
             if len(rec.state_vector) != expected_bytes:
                 n_skipped += 1
                 continue

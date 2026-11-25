@@ -57,10 +57,6 @@ class LearningsHarvester:
         entries = await asyncio.to_thread(load, learnings_path)
         changed = False
 
-        # Groom re-distillation: wholesale store replacement from the agent's
-        # compacted set. Numeric metadata is folded deterministically from each
-        # entry's merged source ids (agent never invents confidence). Guarded:
-        # a payload that would empty a non-empty store is rejected.
         if (
             self._learnings_cfg.redistill_in_groom
             and outcome.success
@@ -97,7 +93,6 @@ class LearningsHarvester:
                         )
                     )
                 else:
-                    # No resolvable provenance: treat as a net-new insight.
                     rebuilt.append(
                         Learning(
                             id=str(_uuid.uuid4()),
@@ -110,7 +105,6 @@ class LearningsHarvester:
                             category=category,
                         )
                     )
-            # Guard: never let a compaction empty a non-empty store.
             if entries and not rebuilt:
                 _logger.warning(
                     "learnings_compaction_rejected",
@@ -141,7 +135,6 @@ class LearningsHarvester:
                     continue
                 existing = next((i for i, e in enumerate(entries) if e.pattern == pattern), None)
                 if existing is not None:
-                    # Re-harvest of a known pattern: reinforce in place.
                     prior = entries[existing]
                     entries[existing] = replace(
                         prior,
@@ -168,7 +161,6 @@ class LearningsHarvester:
                 )
                 changed = True
 
-        # Trim to max_entries keeping highest confidence
         if len(entries) > self._learnings_cfg.max_entries:
             entries = top_k(entries, k=self._learnings_cfg.max_entries)
             changed = True

@@ -91,7 +91,6 @@ from agentshore.reports.types import (
 if TYPE_CHECKING:
     from agentshore.data.store import DataStore
 
-# Re-export all TypedDicts so existing collector imports keep working.
 __all__ = [
     "ActiveAgentEntry",
     "AgentPerformanceData",

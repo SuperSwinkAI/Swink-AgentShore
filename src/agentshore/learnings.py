@@ -46,14 +46,12 @@ def load(path: Path) -> list[Learning]:
         return []
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
-        # Handle agent-written format: {"version": N, "patterns": [...]}
         if isinstance(raw, dict):
             raw = raw.get("patterns", [])
         entries: list[Learning] = []
         for item in raw:
             if not isinstance(item, dict):
                 continue
-            # Accept "description" as a fallback for "pattern" (agent skill format)
             pattern = item.get("pattern") or item.get("description", "")
             entries.append(
                 Learning(

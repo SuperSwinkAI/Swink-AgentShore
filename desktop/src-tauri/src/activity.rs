@@ -1,25 +1,8 @@
-//! NSProcessInfo activity assertion to suppress macOS App Nap.
+//! Suppress macOS App Nap with an NSProcessInfo activity assertion.
 //!
-//! While a AgentShore session is active, the user may background the AgentShore
-//! Desktop window (or another app may obscure it for several minutes). macOS
-//! App Nap then throttles the Tauri main process's event loop, timer
-//! callbacks, and CPU scheduling — the sidecar runs fine in a separate
-//! process, but the UI itself becomes sluggish to refresh kanban/agents/cost
-//! state from the IPC stream.
-//!
-//! Fix: hold an `NSProcessInfo activity` with `userInitiated | latencyCritical`
-//! for the lifetime of the session. macOS guarantees the process is treated
-//! as foreground-priority work for the duration of the assertion. Released
-//! when the session ends or the app quits — pmset will confirm the
-//! assertion is gone after release.
-//!
-//! Non-macOS platforms: every public function is a no-op. App Nap is an
-//! Apple-specific feature; Windows / Linux don't have a direct analog at
-//! this layer. (AgentShore's defense against system-level idle sleep / I/O
-//! throttling is handled separately by the Python sidecar's IOKit
-//! IOPMAssertion + SetThreadExecutionState — see desktop-gkku.)
-//!
-//! desktop-bzr2.
+//! Hold userInitiated | latencyCritical while a session is active; release
+//! when the session ends or the app quits. Public functions are no-ops on
+//! other platforms. System sleep prevention is owned by the Python sidecar.
 
 use std::sync::Mutex;
 
@@ -111,22 +94,11 @@ mod platform_macos {
         token: Retained<ProtocolObject<dyn NSObjectProtocol>>,
     }
 
-    // SAFETY: The retained NSObject activity token is managed by
-    // NSProcessInfo and may be ended from the thread that owns the desktop
-    // shutdown/session callback. Keeping it Send lets ActivityHolder release
-    // the token from Tauri command/event paths without moving the underlying
-    // Cocoa object into Rust-managed interior mutation.
     unsafe impl Send for ActivityToken {}
 
-    // SAFETY: ActivityToken is an opaque retained token whose only operation
-    // is handoff back to NSProcessInfo::endActivity. ActivityHolder guards it
-    // with a Mutex, and the token itself has no Rust-visible mutable state.
     unsafe impl Sync for ActivityToken {}
 
     pub fn begin_activity(reason: &str) -> Option<ActivityToken> {
-        // userInitiated already implies idle-sleep/termination-disabled +
-        // background; latencyCritical adds the "treat as foreground" hint that
-        // suppresses App Nap specifically.
         let options = NSActivityOptions::UserInitiated | NSActivityOptions::LatencyCritical;
         let reason_ns = NSString::from_str(reason);
         let info = NSProcessInfo::processInfo();
@@ -136,9 +108,6 @@ mod platform_macos {
 
     pub fn end_activity(token: ActivityToken) {
         let info = NSProcessInfo::processInfo();
-        // SAFETY: `token` came from beginActivityWithOptions_reason on
-        // the same NSProcessInfo singleton, so endActivity:'s "correct
-        // type" precondition is satisfied by construction.
         unsafe {
             info.endActivity(&token.token);
         }
@@ -168,8 +137,6 @@ mod tests {
     fn acquire_then_release_clears_holder() {
         let h = ActivityHolder::new();
         let acquired = h.acquire("test-reason");
-        // On non-macOS the platform stub still returns Some() so acquire
-        // succeeds vacuously — the holder records the no-op token.
         assert!(acquired);
         h.release();
     }
@@ -195,6 +162,6 @@ mod tests {
     #[test]
     fn release_without_acquire_is_safe() {
         let h = ActivityHolder::new();
-        h.release(); // must not panic / deadlock
+        h.release();
     }
 }

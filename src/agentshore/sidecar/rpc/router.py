@@ -49,11 +49,6 @@ def _active_project_path(state: ServerState) -> Path:
     return Path.cwd()
 
 
-# ---------------------------------------------------------------------------
-# Route dataclass
-# ---------------------------------------------------------------------------
-
-
 @dataclass(frozen=True)
 class Route:
     """One entry in the :data:`HANDLERS` dispatch table.
@@ -69,15 +64,6 @@ class Route:
 
     fn: RouteHandler
     notify_ok: bool = False
-
-
-# ---------------------------------------------------------------------------
-# Adapter wrappers — inject computed extra args for handlers that need them
-# ---------------------------------------------------------------------------
-# Handlers for identities/agents need ``active_project_path``; the
-# recents handler needs ``recents_path_fn``.  We wrap them here in thin
-# callables that have the *same* uniform signature as every other RouteHandler
-# so ``handle_request`` can call every route with a single pattern.
 
 
 def _wrap_identities(
@@ -120,12 +106,6 @@ def _wrap_agents(
     )
 
 
-# ---------------------------------------------------------------------------
-# Dispatch table
-# ---------------------------------------------------------------------------
-
-# Exact-match dispatch table. Prefix families (``identities.*``, ``agents.*``)
-# fan out from one entry each via _ROUTE_GROUPS below.
 HANDLERS: dict[str, Route] = {
     "app.handshake": Route(_dispatch_app_handshake),
     "session.start": Route(_dispatch_session, notify_ok=True),
@@ -148,8 +128,6 @@ HANDLERS: dict[str, Route] = {
     "beads.designate_migrator": Route(_dispatch_beads_rpc),
 }
 
-# Prefix-matched dispatch groups, tried after the exact table. Each family
-# keeps its single fan-out function and resolves the concrete method itself.
 _ROUTE_GROUPS: tuple[tuple[str, Route], ...] = (
     ("identities.", Route(_wrap_identities)),
     ("agents.", Route(_wrap_agents)),

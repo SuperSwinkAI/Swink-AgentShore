@@ -59,7 +59,6 @@ async def test_budget_reserve_allows_work_below_threshold(tmp_path: Path) -> Non
     ) -> object:
         nonlocal call_count
         call_count += 1
-        # Record a play row so _build_state tallies the cost correctly
         from agentshore.data.store import PlayRecord
 
         await orch._store.record_play(

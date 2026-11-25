@@ -55,17 +55,14 @@ def _init_repo(tmp_path: Path) -> Path:
     return tmp_path
 
 
-# --- snapshot ----------------------------------------------------------------
-
-
 def test_snapshot_catches_depth1_untracked_and_ignores_the_rest(tmp_path: Path) -> None:
     repo = _init_repo(tmp_path)
-    (repo / "scratch.json").write_text("{}")  # depth-1 untracked -> caught
-    (repo / "src.py").write_text("a = 2\n")  # tracked modification -> ignored
+    (repo / "scratch.json").write_text("{}")
+    (repo / "src.py").write_text("a = 2\n")
     (repo / "sub").mkdir()
-    (repo / "sub" / "deep.json").write_text("{}")  # subdir untracked -> ignored
+    (repo / "sub" / "deep.json").write_text("{}")
     (repo / ".agentshore").mkdir()
-    (repo / ".agentshore" / "context.json").write_text("{}")  # owned -> ignored
+    (repo / ".agentshore" / "context.json").write_text("{}")
 
     assert snapshot_untracked_root_artifacts(repo) == {"scratch.json"}
 
@@ -75,11 +72,7 @@ def test_snapshot_empty_for_clean_repo(tmp_path: Path) -> None:
 
 
 def test_snapshot_empty_for_non_git_dir(tmp_path: Path) -> None:
-    # git status fails outside a repo -> empty, never raises.
     assert snapshot_untracked_root_artifacts(tmp_path) == set()
-
-
-# --- attribute_orphan_artifacts ----------------------------------------------
 
 
 def _set_mtime(path: Path, epoch: float) -> None:
@@ -103,7 +96,7 @@ def test_attribute_skips_file_an_active_window_could_own(tmp_path: Path) -> None
     f.write_text("{}")
     _set_mtime(f, 1000.0)
     owners = [PlayWindow(play_id=42, started_at=990.0, ended_at=1010.0)]
-    active = [PlayWindow(play_id=99, started_at=995.0, ended_at=None)]  # in-flight
+    active = [PlayWindow(play_id=99, started_at=995.0, ended_at=None)]
     assert attribute_orphan_artifacts(repo, owner_windows=owners, active_windows=active) == {}
 
 
@@ -111,7 +104,7 @@ def test_attribute_leaves_pre_window_user_wip(tmp_path: Path) -> None:
     repo = _init_repo(tmp_path)
     f = repo / "user_notes.json"
     f.write_text("{}")
-    _set_mtime(f, 500.0)  # older than every play window
+    _set_mtime(f, 500.0)
     owners = [PlayWindow(play_id=42, started_at=990.0, ended_at=1010.0)]
     assert attribute_orphan_artifacts(repo, owner_windows=owners, active_windows=[]) == {}
 
@@ -123,7 +116,7 @@ def test_attribute_latest_starting_owner_wins(tmp_path: Path) -> None:
     _set_mtime(f, 1000.0)
     owners = [
         PlayWindow(play_id=1, started_at=900.0, ended_at=1100.0),
-        PlayWindow(play_id=2, started_at=995.0, ended_at=1100.0),  # latest start that brackets
+        PlayWindow(play_id=2, started_at=995.0, ended_at=1100.0),
     ]
     assert attribute_orphan_artifacts(repo, owner_windows=owners, active_windows=[]) == {
         "out.json": 2
@@ -135,14 +128,10 @@ def test_attribute_killed_play_open_window_brackets(tmp_path: Path) -> None:
     f = repo / "killed.json"
     f.write_text("{}")
     _set_mtime(f, 2000.0)
-    # ended_at None == killed/never-completed; open-ended [started, +inf).
     owners = [PlayWindow(play_id=7, started_at=1900.0, ended_at=None)]
     assert attribute_orphan_artifacts(repo, owner_windows=owners, active_windows=[]) == {
         "killed.json": 7
     }
-
-
-# --- reclaim_artifacts / reap_quarantine -------------------------------------
 
 
 def test_reclaim_moves_file_to_quarantine_and_cleans_trunk(tmp_path: Path) -> None:
@@ -153,7 +142,6 @@ def test_reclaim_moves_file_to_quarantine_and_cleans_trunk(tmp_path: Path) -> No
     quarantined = repo / ".agentshore" / "reclaimed" / "5" / "debris.json"
     assert quarantined.read_text() == "payload"
     assert not (repo / "debris.json").exists()
-    # Trunk is clean again (quarantine lives under the owned .agentshore/ prefix).
     assert snapshot_untracked_root_artifacts(repo) == set()
 
 
@@ -170,7 +158,7 @@ def test_reap_quarantine_honours_ttl(tmp_path: Path) -> None:
     fresh = repo / ".agentshore" / "reclaimed" / "fresh"
     old.mkdir(parents=True)
     fresh.mkdir(parents=True)
-    _set_mtime(old, 1000.0)  # far in the past -> reaped
+    _set_mtime(old, 1000.0)
     assert reap_quarantine(repo, ttl_seconds=3600) == 1
     assert not old.exists()
     assert fresh.exists()
@@ -180,9 +168,6 @@ def test_reap_quarantine_disabled_for_nonpositive_ttl(tmp_path: Path) -> None:
     repo = _init_repo(tmp_path)
     (repo / ".agentshore" / "reclaimed" / "x").mkdir(parents=True)
     assert reap_quarantine(repo, ttl_seconds=0) == 0
-
-
-# --- force_quarantine_wedge_paths (#330 dirty_trunk wedge escalation) --------
 
 
 def test_force_quarantine_moves_unattributable_file_and_cleans_trunk(tmp_path: Path) -> None:
@@ -199,7 +184,6 @@ def test_force_quarantine_moves_unattributable_file_and_cleans_trunk(tmp_path: P
     quarantined = repo / ".agentshore" / "reclaimed" / WEDGE_QUARANTINE_SUBDIR / "scratch_plan.md"
     assert quarantined.read_text() == "agent notes"
     assert not (repo / "scratch_plan.md").exists()
-    # Trunk is clean again (quarantine lives under the owned .agentshore/ prefix).
     assert snapshot_untracked_root_artifacts(repo) == set()
 
 
@@ -213,7 +197,6 @@ def test_force_quarantine_distinct_from_play_id_reclaim_dir(tmp_path: Path) -> N
     force_quarantine_wedge_paths(repo, ["orphan.md"])
 
     assert (repo / ".agentshore" / "reclaimed" / "wedge" / "orphan.md").exists()
-    # No numeric play_id directory was created for this file.
     reclaimed_root = repo / ".agentshore" / "reclaimed"
     assert [p.name for p in reclaimed_root.iterdir()] == ["wedge"]
 
@@ -228,9 +211,6 @@ def test_force_quarantine_empty_paths_is_noop(tmp_path: Path) -> None:
     repo = _init_repo(tmp_path)
     assert force_quarantine_wedge_paths(repo, []) == []
     assert not (repo / ".agentshore" / "reclaimed").exists()
-
-
-# --- store helpers -----------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -269,9 +249,7 @@ async def test_count_running_trunk_plays_counts_open_siblings(tmp_path: Path) ->
             )
         )
         types = [pt.value for pt in TRUNK_SCOPED_PLAY_TYPES]
-        # Excluding myself, only the still-open MERGE_PR counts; the RUN_QA is closed.
         assert await store.count_running_trunk_plays("s", exclude_play_id=me, play_types=types) == 1
-        # Sanity: the closed row really is closed.
         assert closed != running
     finally:
         await store.close()
@@ -302,7 +280,7 @@ async def test_list_trunk_play_windows_spans_sessions(tmp_path: Path) -> None:
         await store.record_play(
             PlayRecord(
                 session_id="s2",
-                play_type=PlayType.ISSUE_PICKUP.value,  # not trunk-scoped -> excluded
+                play_type=PlayType.ISSUE_PICKUP.value,
                 started_at="2026-06-12T00:02:00+00:00",
                 success=False,
             )
@@ -316,9 +294,6 @@ async def test_list_trunk_play_windows_spans_sessions(tmp_path: Path) -> None:
         assert ended_at == "2026-06-12T00:01:30+00:00"
     finally:
         await store.close()
-
-
-# --- per-play reclaim hook ---------------------------------------------------
 
 
 class _FakeCtx:
@@ -355,7 +330,7 @@ async def test_per_play_hook_reclaims_solo_completion(tmp_path: Path) -> None:
         )
         ctx = _FakeCtx(store, repo, play_id=play_id)
         pre = snapshot_untracked_root_artifacts(repo)
-        (repo / "agent_left_this.json").write_text("{}")  # the play's debris
+        (repo / "agent_left_this.json").write_text("{}")
 
         await _reclaim_trunk_artifacts_for_play(ctx, PlayType.CLEANUP, pre)
 
@@ -366,9 +341,6 @@ async def test_per_play_hook_reclaims_solo_completion(tmp_path: Path) -> None:
         assert mutation is not None
     finally:
         await store.close()
-
-
-# --- sweep_and_reclaim_orphans (#330 shared bootstrap/mid-session core) ------
 
 
 @pytest.mark.asyncio
@@ -471,13 +443,12 @@ async def test_sweep_reclaims_killed_play_open_ended_window(tmp_path: Path) -> N
                 session_id="s",
                 play_type=PlayType.CLEANUP.value,
                 started_at="2026-06-12T00:01:00+00:00",
-                success=False,  # killed mid-flight: never stamped ended_at
+                success=False,
             )
         )
         f = repo / "killed_debris.json"
         f.write_text("{}")
         _set_mtime(f, 2000.0)
-        # ended_at None == killed/never-completed; open-ended [started, +inf).
         owner_windows = [PlayWindow(play_id=owner, started_at=1900.0, ended_at=None)]
 
         reclaimed = await sweep_and_reclaim_orphans(
@@ -513,7 +484,6 @@ async def test_per_play_hook_defers_when_concurrent_trunk_play(tmp_path: Path) -
                 session_id="s", project_path=str(repo), started_at="2026-06-12T00:00:00+00:00"
             )
         )
-        # A sibling trunk-scoped play is still running (ended_at NULL).
         await store.record_play(
             PlayRecord(
                 session_id="s",
@@ -536,7 +506,6 @@ async def test_per_play_hook_defers_when_concurrent_trunk_play(tmp_path: Path) -
 
         await _reclaim_trunk_artifacts_for_play(ctx, PlayType.CLEANUP, pre)
 
-        # Deferred: file stays put (the sweep resolves it deterministically later).
         assert (repo / "ambiguous.json").exists()
     finally:
         await store.close()

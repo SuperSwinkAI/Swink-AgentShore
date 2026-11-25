@@ -57,7 +57,6 @@ def main_repo(tmp_path: Path) -> Path:
     _git(["remote", "add", "origin", str(upstream)], repo)
     _git(["push", "-u", "origin", "main"], repo)
 
-    # Second branch — simulates the agentshore/<issue> branch agents land on.
     _git(["checkout", "-b", "agentshore/153-implement-alerting-hooks-and-runbook"], repo)
     (repo / "alert.txt").write_text("alerting\n")
     _git(["add", "alert.txt"], repo)
@@ -154,7 +153,6 @@ def test_find_path_escape_siblings_returns_empty_when_clean(tmp_path: Path) -> N
 
 
 def test_path_escape_marker_constant() -> None:
-    # Catch-and-rename guard: the marker is load-bearing for the sweeper.
     assert PATH_ESCAPE_MARKER == "\\ "
 
 
@@ -212,7 +210,6 @@ async def test_code_review_mutating_main_triggers_warning_and_restore(
     dispatch_id = "d-code-review-mutates"
     harness.orch._main_repo.record_pre_play_branch(dispatch_id, "refs/heads/main")
 
-    # Agent mutated the repo during the play.
     _git(["checkout", "agentshore/153-implement-alerting-hooks-and-runbook"], main_repo)
     assert current_head_ref(main_repo) == (
         "refs/heads/agentshore/153-implement-alerting-hooks-and-runbook"
@@ -231,17 +228,13 @@ async def test_code_review_mutating_main_triggers_warning_and_restore(
         )
     captured = captured_raw if captured_raw else _events_from_caplog(list(caplog.records))
 
-    # Auto-restore happened.
     assert current_head_ref(main_repo) == "refs/heads/main"
-    # Snapshot consumed.
     assert dispatch_id not in harness.orch._main_repo._pre_play_branches
     event_names = _event_names(captured)
     assert "main_repo_branch_mutated" in event_names
     assert "main_repo_branch_restored" in event_names
     assert "main_repo_auto_restore_failed" not in event_names
-    # Dispatch should NOT be paused on a successful restore.
     assert harness.orch._main_repo.dispatch_paused is False
-    # The mutated event carries identity for the operator.
     mutated_event = next(e for e in captured if e.get("event") == "main_repo_branch_mutated")
     assert mutated_event["play_type"] == "code_review"
     assert mutated_event["agent_id"] == "claude-1"
@@ -304,7 +297,6 @@ async def test_detached_head_post_play_is_treated_as_mutation(
     assert current_head_ref(main_repo) == "refs/heads/main"
     assert "main_repo_branch_mutated" in _event_names(captured)
     mutated_event = next(e for e in captured if e.get("event") == "main_repo_branch_mutated")
-    # Detached HEAD post-play is signalled as post_play_branch = None.
     assert mutated_event["post_play_branch"] is None
 
 
@@ -346,6 +338,5 @@ async def test_auto_restore_failure_pauses_dispatch(
 
     assert harness.orch._main_repo.dispatch_paused is True
     assert "main_repo_auto_restore_failed" in _event_names(captured)
-    # #175 observability: git stderr is threaded onto the event so operators see why.
     failure_event = next(e for e in captured if e.get("event") == "main_repo_auto_restore_failed")
     assert failure_event.get("reason") == git_stderr

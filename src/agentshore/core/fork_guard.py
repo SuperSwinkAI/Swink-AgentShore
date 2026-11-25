@@ -19,7 +19,7 @@ if TYPE_CHECKING:
 class ForkFinding:
     """A single detection hit from the fork-guard detectors."""
 
-    kind: str  # "cross_fork_pr" | "non_origin_remote"
+    kind: str
     detail: str
 
 
@@ -38,13 +38,11 @@ def parse_origin_owner(remote_or_nwo: str) -> str | None:
     if not value:
         return None
 
-    # SSH short form: git@github.com:owner/repo
     if value.startswith("git@github.com:"):
         path = value.removeprefix("git@github.com:").removesuffix(".git").strip("/")
         owner, sep, _ = path.partition("/")
         return owner if sep else None
 
-    # HTTPS / HTTP URL
     parsed = urllib.parse.urlparse(value)
     host = (parsed.hostname or "").casefold()
     if host == "github.com":
@@ -52,7 +50,6 @@ def parse_origin_owner(remote_or_nwo: str) -> str | None:
         owner, sep, _ = path.partition("/")
         return owner if sep else None
 
-    # Plain "owner/repo" string (no scheme, no host)
     if "/" in value and not value.startswith("http"):
         owner, sep, _ = value.partition("/")
         return owner if sep else None

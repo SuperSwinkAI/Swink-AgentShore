@@ -80,8 +80,6 @@ def _agent_default(name: str, key: str, fallback: float | int | None) -> float |
 def _parse_project(raw: WireMapping) -> ProjectConfig:
     parsed = structure(ProjectConfig, raw, "project")
     target_branch = parsed.target_branch
-    # Whitespace-only → None so callers can rely on ``target_branch or <fallback>``;
-    # an explicit empty string in YAML means "unset".
     if isinstance(target_branch, str):
         target_branch = target_branch.strip() or None
     return dataclasses.replace(parsed, target_branch=target_branch)
@@ -141,10 +139,6 @@ def _parse_agent(
     )
 
 
-# ssh_key_path is interpolated into a GIT_SSH_COMMAND shell string at dispatch
-# (agents.identity._build_overlay); whitespace splits the ``ssh -i`` arg and
-# shell metacharacters enable command injection from a malicious agentshore.yaml.
-# Rejected at parse time so GitHubIdentity is trustworthy by construction.
 _SSH_KEY_PATH_FORBIDDEN_CHARS = frozenset(
     " \t\n\r;&|$`\\\"'(){}<>*?!#",
 )
@@ -173,8 +167,6 @@ def _validate_ssh_key_path(name: str, value: str) -> str:
             f"{rendered}: {value!r}. Whitespace and shell metacharacters are "
             "rejected because the path is interpolated into GIT_SSH_COMMAND."
         )
-    # Exercise the same expanduser normalization the env overlay uses later,
-    # confirming the string is a syntactically valid path.
     Path(value).expanduser()
     return value
 
@@ -382,17 +374,15 @@ def _validate_agent_reasoning_efforts(agents: dict[str, AgentConfig]) -> None:
     Top-level ``reasoning_effort`` and per-tier ``reasoning_effort`` entries are
     both checked.
     """
-    from agentshore.agents.model_tiers import REASONING_EFFORTS  # local to avoid circular
+    from agentshore.agents.model_tiers import REASONING_EFFORTS
 
     for agent_name, agent_cfg in agents.items():
-        # Unsupported agents already stripped upstream; this None guard is defensive.
         resolved = _resolve_agent_type(agent_cfg, agent_name)
         if resolved is None:
             continue
         if REASONING_EFFORTS.get(resolved):
             continue
 
-        # Empty effort vocabulary (e.g. Antigravity) → reject any effort field.
         if agent_cfg.reasoning_effort:
             raise ConfigError(
                 f"agents.{agent_name}.reasoning_effort is not supported for "
@@ -416,7 +406,7 @@ def _validate_swink_coding_models(agents: dict[str, AgentConfig]) -> None:
     ``model`` entry. Other agent types are untouched — their model strings are
     opaque to AgentShore.
     """
-    from agentshore.agents.cli_swink_coding import classify_swink_model  # local to avoid circular
+    from agentshore.agents.cli_swink_coding import classify_swink_model
     from agentshore.state import AgentType
 
     for agent_name, agent_cfg in agents.items():
@@ -566,10 +556,6 @@ def _parse_agents(
     return agents, fresh, prefs
 
 
-# NOTE: kept hand-written, rather than directly structured —
-# `issue_inflation_penalty` falls back to the legacy `scope_creep_penalty` key
-# when unset, a cross-key aliasing rule the generic defaults-only shape can't
-# express.
 def _parse_reward(raw: WireMapping) -> RewardConfig:
     reject_unknown_fields(RewardConfig, raw, "rl.reward", allow=frozenset({"scope_creep_penalty"}))
     return RewardConfig(
@@ -743,11 +729,6 @@ def _parse_timelapse(raw: WireMapping) -> TimelapseConfig:
     return structure(TimelapseConfig, raw, "timelapse")
 
 
-# NOTE: kept hand-written, rather than directly structured — the wire schema
-# deliberately omits `consolidate_overlap_threshold` and `redistill_in_groom`
-# (internal-only LearningsConfig knobs, never exposed to agentshore.yaml). A
-# fields()-driven helper would start honoring those keys from raw YAML, which
-# is a behavior change, not a dedup.
 def _parse_learnings(raw: WireMapping) -> LearningsConfig:
     reject_unknown_fields(
         LearningsConfig,
@@ -864,11 +845,6 @@ def _parse_play_timeouts(raw: object) -> dict[str, int]:
     return parsed
 
 
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
-
-
 def _build_config(data: WireMapping) -> RuntimeConfig:
     from agentshore.agents.pricing import load_pricebook
 
@@ -882,7 +858,6 @@ def _build_config(data: WireMapping) -> RuntimeConfig:
         ),
     )
 
-    # Migration: legacy agent_spawn block → per-tier max
     legacy_max_default: int | None = None
     agent_spawn_raw = data.get("agent_spawn")
     if isinstance(agent_spawn_raw, dict):

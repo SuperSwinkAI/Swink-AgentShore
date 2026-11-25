@@ -108,7 +108,6 @@ async def test_on_state_update_publishes_to_wired_server() -> None:
     parsed = json.loads(stub.cached)
     assert parsed["type"] == "state_update"
     assert parsed["payload"]["session_id"] == "test"
-    # The writer received the same envelope so on-disk and in-memory stay in sync.
     assert _last_state_msg(writer) == parsed
 
 
@@ -284,7 +283,6 @@ async def test_state_update_carries_session_id_when_provider_has_one() -> None:
     writer = _mock_writer()
     provider = IpcStateProvider(writer, session_id="sess-xyz")
 
-    # Provider id wins over the snapshot's (they match in practice).
     await provider.on_state_update(_make_state(session_id="test"))
     assert _last_state_msg(writer)["payload"]["session_id"] == "sess-xyz"
 

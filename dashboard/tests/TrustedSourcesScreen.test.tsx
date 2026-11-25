@@ -16,7 +16,7 @@ import {
   type TrustedSourcesSidecar,
 } from "../src/components/TrustedSourcesScreen";
 
-// ---- helpers ---------------------------------------------------------------
+
 
 function makeSidecar(logins: string[] = []): TrustedSourcesSidecar & {
   _logins: string[];
@@ -55,7 +55,7 @@ function requireTestId(container: HTMLElement, id: string): HTMLElement {
   return el;
 }
 
-// ---- test setup ------------------------------------------------------------
+
 
 let container: HTMLDivElement;
 let root: Root;
@@ -96,7 +96,7 @@ function setInputValue(el: HTMLInputElement, value: string): void {
   el.dispatchEvent(new Event("input", { bubbles: true }));
 }
 
-// ---- tests -----------------------------------------------------------------
+
 
 describe("TrustedSourcesScreen", () => {
   it("resolves to the empty message when no sources are configured", async () => {
@@ -174,9 +174,9 @@ describe("TrustedSourcesScreen", () => {
   });
 
   it("pre-paints hydrated initialLogins before the sidecar list() resolves", async () => {
-    // A sidecar whose list() never settles during the assertion window —
-    // proves the seeded rows paint from the hydrated SetupState mirror, not
-    // from the self-load.
+
+
+
     let resolveList!: (logins: string[]) => void;
     const lazySidecar: TrustedSourcesSidecar = {
       list: () =>
@@ -196,8 +196,8 @@ describe("TrustedSourcesScreen", () => {
       );
     });
 
-    // list() is still pending, yet the seeded rows are on screen and there
-    // is no blank loading flash.
+
+
     expect(getTestId(container, "trusted-sources-loading")).toBeNull();
     expect(getTestId(container, "trusted-sources-list")).not.toBeNull();
     expect(
@@ -207,7 +207,7 @@ describe("TrustedSourcesScreen", () => {
       getTestId(container, "trusted-source-row-renovate[bot]"),
     ).not.toBeNull();
 
-    // When the sidecar finally resolves, the panel reconciles to its truth.
+
     await act(async () => {
       resolveList(["octocat"]);
     });

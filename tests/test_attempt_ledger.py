@@ -86,7 +86,6 @@ def test_target_key_only_for_targeted_plays() -> None:
         "issue_pickup",
         "issue:7",
     )
-    # Untargeted plays and missing targets are never tracked.
     assert target_key(PlayType.RUN_QA, PlayParams(branch="main")) is None
     assert target_key(PlayType.ISSUE_PICKUP, PlayParams()) is None
     assert target_key(PlayType.GROOM_BACKLOG, PlayParams(issue_number=7)) is None
@@ -105,7 +104,6 @@ def test_second_attempt_at_an_unchanged_target_arms_the_cooldown() -> None:
     _unblock(ledger, state)
     assert _unblock(ledger, state) is True
     assert ledger.cooled_down(state) == frozenset({_UNBLOCK_42})
-    # Still withheld one play before the window closes, released at the boundary.
     late = _state(total_plays=10 + BASE_COOLDOWN_PLAYS - 1, pull_requests=[_pr()])
     assert ledger.cooled_down(late) == frozenset({_UNBLOCK_42})
     after = _state(total_plays=10 + BASE_COOLDOWN_PLAYS, pull_requests=[_pr()])
@@ -113,7 +111,6 @@ def test_second_attempt_at_an_unchanged_target_arms_the_cooldown() -> None:
 
 
 def test_a_reported_success_that_changes_nothing_still_counts() -> None:
-    # #167: unblock_pr "succeeded" without changing the PR and was re-picked forever.
     ledger = TargetAttemptLedger()
     state = _state(pull_requests=[_pr()])
     ok = PlayOutcome(
@@ -139,7 +136,6 @@ def test_a_changed_target_lifts_the_cooldown_immediately() -> None:
     _unblock(ledger, state)
     rebased = _state(pull_requests=[_pr(head_sha="sha-2", mergeable="MERGEABLE")])
     assert ledger.cooled_down(rebased) == frozenset()
-    # ...and the count starts over: one new attempt does not re-arm.
     assert _unblock(ledger, rebased) is False
     assert ledger.cooled_down(rebased) == frozenset()
 
@@ -183,7 +179,6 @@ def test_window_doubles_on_each_rearm_up_to_the_cap() -> None:
         state = _state(total_plays=now, pull_requests=[_pr()])
         _unblock(ledger, state)
         _unblock(ledger, state)
-        # Find the first play count at which the pair is released.
         window = 1
         while ledger.cooled_down(_state(total_plays=now + window, pull_requests=[_pr()])):
             window += 1
@@ -227,7 +222,6 @@ def test_candidate_plan_withholds_only_the_cooled_down_play() -> None:
     assert plan.blocked_reasons_by_play_type[PlayType.UNBLOCK_PR] == (
         "no-progress cooldown: pr:42",
     )
-    # The same PR is still a review candidate: the cooldown is per play.
     assert [c.params.pr_number for c in plan.candidates_for(PlayType.CODE_REVIEW)] == [42]
 
 

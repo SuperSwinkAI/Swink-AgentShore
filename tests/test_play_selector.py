@@ -8,10 +8,6 @@ from agentshore.plays.base import PlayParams
 from agentshore.plays.selector import FixedPlanSelector, PlaySelector
 from agentshore.state import OrchestratorState, PlayType, SessionState
 
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
-
 
 def _state() -> OrchestratorState:
     return OrchestratorState(
@@ -22,19 +18,9 @@ def _state() -> OrchestratorState:
     )
 
 
-# ---------------------------------------------------------------------------
-# PlaySelector is a runtime-checkable Protocol
-# ---------------------------------------------------------------------------
-
-
 def test_fixed_plan_selector_satisfies_protocol() -> None:
     selector = FixedPlanSelector([])
     assert isinstance(selector, PlaySelector)
-
-
-# ---------------------------------------------------------------------------
-# FixedPlanSelector
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -59,7 +45,7 @@ async def test_fixed_yields_plays_in_order() -> None:
 async def test_fixed_returns_none_after_exhaustion() -> None:
     selector = FixedPlanSelector([(PlayType.END_SESSION, PlayParams())])
 
-    await selector.select(_state())  # consume the one item
+    await selector.select(_state())
     result = await selector.select(_state())
     assert result is None
 

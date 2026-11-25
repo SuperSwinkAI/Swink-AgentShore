@@ -46,11 +46,6 @@ from agentshore.agents._jsonl import (
 
 _logger = structlog.get_logger(__name__)
 
-# Play-declared tool names (swink-coding's vocabulary, see
-# ``plays/skill_backed/code_review.py``) -> grok 1.0.50 built-in tool names, as
-# listed in the ``available_commands`` event. ``--disallowed-tools`` removes the
-# tool from the session entirely, so the denial holds under
-# ``--permission-mode bypassPermissions``.
 _GROK_TOOL_NAMES: dict[str, str] = {
     "write_file": "write",
     "edit_file": "search_replace",
@@ -132,10 +127,6 @@ def build_argv(
         "--no-auto-update",
         "--no-subagents",
         "--verbatim",
-        # Dispatches are ephemeral/single-turn (fresh worktree per task): memory
-        # risks cross-dispatch state bleed and raised TTFB (~50s vs ~35s); plan
-        # mode adds an unwanted planning round. Both off to keep TTFB inside the
-        # 600s budget (#213). Web search stays enabled.
         "--no-memory",
         "--no-plan",
     ]
@@ -196,7 +187,6 @@ def build_resume_argv(
         model_tier=model_tier,
         disallowed_tools=disallowed_tools,
     )
-    # argv[0] is the binary; inject -r <id> directly after it.
     return [argv[0], "-r", resume_session_id, *argv[1:]]
 
 
@@ -332,7 +322,6 @@ def parse_grok_jsonl(raw: str) -> tuple[str, _UsageTotals, str | None]:
             continue
 
         if event_type == "result":
-            # Fallback terminal: some API-relay shapes emit ``result`` not ``end``.
             result_field = event.get("result")
             message_field = event.get("message")
             if isinstance(result_field, dict):
@@ -349,9 +338,6 @@ def parse_grok_jsonl(raw: str) -> tuple[str, _UsageTotals, str | None]:
             if usage_raw is not None:
                 usage_totals = _max_usage(usage_totals, _grok_usage_from_dict(usage_raw))
             continue
-
-        # Other event types (session.started, assistant echoes) carry only the
-        # session id, already captured above.
 
     assembled = "".join(text_chunks)
     return (terminal_text or assembled or error_text or raw), usage_totals, session_id

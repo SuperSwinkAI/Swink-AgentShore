@@ -20,11 +20,6 @@ def _make_orch(tmp_path: Path, cfg: RuntimeConfig | None = None) -> Any:
     return make_test_orchestrator(tmp_path, cfg)
 
 
-# ---------------------------------------------------------------------------
-# _safe_call: errors are logged, not propagated
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_safe_call_does_not_propagate_exception(tmp_path: Path) -> None:
     """_safe_call swallows exceptions so the caller always continues."""
@@ -33,7 +28,6 @@ async def test_safe_call_does_not_propagate_exception(tmp_path: Path) -> None:
     async def boom() -> None:
         raise RuntimeError("simulated db failure")
 
-    # Must not raise — any exception is swallowed and logged
     await orch._safe_call(boom(), "test_label")
 
 
@@ -47,11 +41,6 @@ async def test_safe_call_succeeds_silently(tmp_path: Path) -> None:
 
     await orch._safe_call(ok(), "label")
     assert called == [True]
-
-
-# ---------------------------------------------------------------------------
-# DataStore failure resilience: loop continues after store error
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -96,13 +85,7 @@ async def test_datastore_failure_loop_continues(tmp_path: Path) -> None:
 
     await orch.run_until_idle()
 
-    # One play executed despite store errors.
     assert executed == [PlayType.ISSUE_PICKUP]
-
-
-# ---------------------------------------------------------------------------
-# Override queue: masked override falls back to selector
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -113,7 +96,6 @@ async def test_override_masked_falls_back_to_selector(tmp_path: Path) -> None:
 
     orch = _make_orch(tmp_path)
 
-    # Registry whose preconditions_met always returns False
     mock_registry = MagicMock(spec=PlayRegistry)
 
     def preconditions_met(play_type: PlayType, state: Any) -> bool:
@@ -138,7 +120,6 @@ async def test_override_masked_falls_back_to_selector(tmp_path: Path) -> None:
     orch._store.get_open_issues = AsyncMock(return_value=[])
     orch._store.get_latest_trajectory = AsyncMock(return_value=None)
 
-    # Enqueue CODE_REVIEW which will be masked (preconditions_met returns False)
     if PlayType.CODE_REVIEW in V1_ACTION_ORDER:
         from agentshore.plays.override import OverrideEntry, OverrideKind
 
@@ -253,14 +234,6 @@ async def test_masked_override_requeues_transient_staffing_gap(tmp_path: Path) -
     orch._store.release_work_claim_group.assert_not_awaited()
 
 
-# ---------------------------------------------------------------------------
-# _mask_reason_is_indefinite_wait: classifies deterministic-clear mask reasons
-# so the override stays queued (no counter bump, no drop) until the wait lifts.
-# Driven by MaskReason.classification (the single source of truth) — the legacy
-# string-substring fallback was deleted.
-# ---------------------------------------------------------------------------
-
-
 def _mask(text: str, classification: MaskClassification) -> MaskReason:
     return MaskReason(
         text=text,
@@ -360,10 +333,8 @@ async def test_override_confirm_reuses_selector_live_loader(
     """
     orch = _make_orch(tmp_path)
 
-    # Default test selector is a MagicMock (not a real PPO selector) -> no loader.
     assert orch._dispatcher._override_confirm_live_loader() is None
 
-    # A real PPO selector -> reuse its loader verbatim (single source of truth).
     sentinel_loader = AsyncMock()
     ppo_selector = MagicMock()
     ppo_selector._build_live_graph_loader = MagicMock(return_value=sentinel_loader)

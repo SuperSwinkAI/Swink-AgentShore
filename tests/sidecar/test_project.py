@@ -71,7 +71,6 @@ def git_repo(tmp_path: Path) -> Path:
     _git(["remote", "add", "origin", str(upstream)], repo)
     _git(["push", "-u", "origin", "main"], repo)
 
-    # Second branch on origin
     _git(["checkout", "-b", "feature/x"], repo)
     (repo / "f.txt").write_text("f\n")
     _git(["add", "f.txt"], repo)
@@ -80,14 +79,8 @@ def git_repo(tmp_path: Path) -> Path:
     _git(["checkout", "main"], repo)
     _git(["fetch", "origin"], repo)
 
-    # Point origin/HEAD so default-branch detection works.
     _git(["remote", "set-head", "origin", "main"], repo)
     return repo
-
-
-# ---------------------------------------------------------------------------
-# project.select / deselect / current
-# ---------------------------------------------------------------------------
 
 
 def test_capabilities_advertises_project_methods() -> None:
@@ -146,11 +139,6 @@ def test_deselect_clears_active(tmp_path: Path) -> None:
 def test_deselect_is_noop_when_unset() -> None:
     project_rpc.deselect()
     assert project_rpc.current() is None
-
-
-# ---------------------------------------------------------------------------
-# project.inspect
-# ---------------------------------------------------------------------------
 
 
 def test_inspect_without_active_raises() -> None:
@@ -212,7 +200,6 @@ def test_inspect_handles_non_git_path(tmp_path: Path) -> None:
 def test_run_git_times_out_instead_of_hanging(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # Fixed fake git path keeps the probe hermetic; then force the spawn to time out.
     monkeypatch.setattr(
         "agentshore.subprocess_env.resolve_tool",
         lambda name: "/usr/bin/git" if name == "git" else None,
@@ -284,11 +271,6 @@ def test_inspect_times_out_slow_readiness_probe(
     assert "timed out" in cast("str", identity["probe_error"])
 
 
-# ---------------------------------------------------------------------------
-# project.branches
-# ---------------------------------------------------------------------------
-
-
 def test_branches_lists_local_and_remote(git_repo: Path) -> None:
     project_rpc.select(str(git_repo))
     rows = asyncio.run(project_rpc.branches())
@@ -318,7 +300,6 @@ def test_branches_passive_load_returns_null_ahead_behind(git_repo: Path) -> None
 
 
 def test_branches_refresh_reports_ahead_behind(git_repo: Path) -> None:
-    # Extra local commit on main so an explicit refresh computes real ahead/behind via rev-list.
     (git_repo / "extra.txt").write_text("e\n")
     _git(["add", "extra.txt"], git_repo)
     _git(["commit", "-m", "extra"], git_repo)
@@ -398,17 +379,11 @@ def test_branches_refresh_fetches_and_bounds_git_probes(
     assert rows[0]["name"] == "main"
     assert calls[0][0] == ["fetch", "--prune", "origin"]
     assert 0 < calls[0][1] <= project_rpc.BRANCH_LIST_TIMEOUT_SECONDS
-    # Only the network fetch carries the default-identity auth overlay (#151).
     assert overlays["fetch"] is auth
     assert overlays["for-each-ref"] is None
     called_args = [call[0] for call in calls]
     assert ["for-each-ref", "--format=%(refname:short)", "refs/heads/"] in called_args
     assert ["for-each-ref", "--format=%(refname:short)", "refs/remotes/origin/"] in called_args
-
-
-# ---------------------------------------------------------------------------
-# project.set_target_branch
-# ---------------------------------------------------------------------------
 
 
 def test_set_target_branch_writes_yaml(git_repo: Path) -> None:
@@ -421,7 +396,6 @@ def test_set_target_branch_writes_yaml(git_repo: Path) -> None:
 
     new_text = yaml_path.read_text()
     assert "target_branch: feature/x" in new_text
-    # Pre-existing keys preserved (ruamel round-trip).
     assert "path: ." in new_text
     assert "goals: ship it" in new_text
 
@@ -515,7 +489,6 @@ def test_set_target_branch_round_trips_through_config_loader(git_repo: Path) -> 
 
     cfg = load_config(yaml_path)
     assert cfg.project.target_branch == "feature/x"
-    # Goals + path round-trip too — ruamel preserved them through the write.
     assert cfg.project.goals == "ship it"
     assert cfg.project.path == "."
 
@@ -552,11 +525,6 @@ def test_project_config_target_branch_blank_string_normalized_to_none(
     assert cfg.project.target_branch is None
 
 
-# ---------------------------------------------------------------------------
-# project.set_budget (issue #571 follow-up)
-# ---------------------------------------------------------------------------
-
-
 def test_set_budget_writes_capped_block(tmp_path: Path) -> None:
     yaml_path = tmp_path / "agentshore.yaml"
     yaml_path.write_text("project:\n  path: .\n  goals: ship it\n")
@@ -572,7 +540,6 @@ def test_set_budget_writes_capped_block(tmp_path: Path) -> None:
     assert "budget:" in new_text
     assert "enabled: true" in new_text
     assert "total: 250" in new_text
-    # Pre-existing keys preserved by ruamel.yaml round-trip.
     assert "path: ." in new_text
     assert "goals: ship it" in new_text
 
@@ -621,7 +588,7 @@ def test_set_budget_preserves_other_top_level_keys(tmp_path: Path) -> None:
     assert "path: ." in text
     assert "agents:" in text
     assert "claude_code:" in text
-    assert "enabled: true" in text  # only one row that's true is set on budget
+    assert "enabled: true" in text
     assert "total: 400" in text
 
 
@@ -695,7 +662,6 @@ def test_set_budget_rejection_below_min_does_not_modify_yaml(tmp_path: Path) -> 
     with pytest.raises(project_rpc.ProjectError):
         project_rpc.set_budget({"enabled": True, "total": 5})
 
-    # YAML untouched — atomic-write must not have run.
     assert yaml_path.read_text() == initial
 
 
@@ -848,11 +814,6 @@ def test_set_budget_rejects_bool_time_total(tmp_path: Path) -> None:
         )
 
 
-# ---------------------------------------------------------------------------
-# project.set_trusted_issue_enforcement
-# ---------------------------------------------------------------------------
-
-
 def test_set_trusted_issue_enforcement_writes_block(tmp_path: Path) -> None:
     yaml_path = tmp_path / "agentshore.yaml"
     yaml_path.write_text("project:\n  path: .\n  goals: ship it\n")
@@ -865,7 +826,6 @@ def test_set_trusted_issue_enforcement_writes_block(tmp_path: Path) -> None:
     new_text = yaml_path.read_text()
     assert "trusted_ids:" in new_text
     assert "restrict_issues_to_trusted_authors: true" in new_text
-    # Pre-existing keys preserved by ruamel.yaml round-trip.
     assert "path: ." in new_text
     assert "goals: ship it" in new_text
 
@@ -900,7 +860,6 @@ def test_set_trusted_issue_enforcement_preserves_other_top_level_keys(tmp_path: 
     assert "path: ." in text
     assert "agents:" in text
     assert "claude_code:" in text
-    # Existing trusted_ids sub-keys preserved; only the flag is added.
     assert "github_logins:" in text
     assert "- alice" in text
     assert "restrict_issues_to_trusted_authors: true" in text
@@ -988,11 +947,6 @@ def test_set_budget_capabilities_advertised() -> None:
     """``project.set_budget`` must appear in the handshake capabilities list."""
     caps = capabilities()
     assert "project.set_budget" in caps
-
-
-# ---------------------------------------------------------------------------
-# JSON-RPC dispatcher integration
-# ---------------------------------------------------------------------------
 
 
 def test_dispatch_project_select_returns_result_envelope(tmp_path: Path) -> None:
@@ -1172,7 +1126,6 @@ def test_dispatch_set_budget_rejects_negative_total_via_dispatcher(tmp_path: Pat
     )
     assert response is not None
     assert "error" in response
-    # Validation errors use the project_rpc default code (-32000).
     assert response["error"]["code"] == -32000
 
 
@@ -1194,8 +1147,6 @@ def test_dispatch_set_budget_rejects_extra_fields_via_dispatcher(tmp_path: Path)
 
 
 def test_dispatch_project_notification_returns_none(tmp_path: Path) -> None:
-    # Notifications (no id) are dropped without side-effects, per app.handshake convention;
-    # the desktop always sends ids for project.* since it needs the result.
     response = handle_request(
         {"jsonrpc": "2.0", "method": "project.select", "params": {"path": str(tmp_path)}}
     )
@@ -1215,11 +1166,6 @@ def test_request_payload_is_json_serialisable(git_repo: Path) -> None:
     json.dumps(response)
 
 
-# ---------------------------------------------------------------------------
-# project.select — DESIGN §1.3 side-effects
-# ---------------------------------------------------------------------------
-
-
 def test_dispatch_project_select_response_includes_inspect_envelope(git_repo: Path) -> None:
     """§1.3 requires re-running ``project.inspect`` on select; return it inline."""
     response = _drive(
@@ -1237,7 +1183,6 @@ def test_dispatch_project_select_response_includes_inspect_envelope(git_repo: Pa
     assert inspect_payload["path"] == str(git_repo.resolve())
     identity = cast("dict[str, object]", inspect_payload["repo_identity"])
     assert identity["is_git"] is True
-    # ``inspect`` must reflect the just-selected project, not any prior slot.
     assert inspect_payload["branch"] == "main"
 
 
@@ -1356,11 +1301,6 @@ def test_dispatch_project_select_session_active_preserves_data_store(tmp_path: P
     assert state.active_project_path == str(old_project)
 
 
-# ---------------------------------------------------------------------------
-# project.set_seed_paths (intake.seed_paths persistence)
-# ---------------------------------------------------------------------------
-
-
 def test_set_seed_paths_writes_yaml(git_repo: Path) -> None:
     (git_repo / "PRD.md").write_text("# seed\n")
     yaml_path = git_repo / "agentshore.yaml"
@@ -1373,7 +1313,6 @@ def test_set_seed_paths_writes_yaml(git_repo: Path) -> None:
     new_text = yaml_path.read_text()
     assert "seed_paths" in new_text
     assert "PRD.md" in new_text
-    # Pre-existing intake key preserved (ruamel round-trip).
     assert "label_prefix" in new_text
 
 
@@ -1407,11 +1346,6 @@ def test_set_seed_paths_rejects_non_string_entry(git_repo: Path) -> None:
         project_rpc.set_seed_paths([123])
 
 
-# ---------------------------------------------------------------------------
-# project.set_timelapse / project.install_timelapse (timelapse feature)
-# ---------------------------------------------------------------------------
-
-
 def test_set_timelapse_writes_block(tmp_path: Path) -> None:
     yaml_path = tmp_path / "agentshore.yaml"
     yaml_path.write_text("project:\n  path: .\n  goals: ship it\n")
@@ -1426,7 +1360,6 @@ def test_set_timelapse_writes_block(tmp_path: Path) -> None:
     assert "timelapse:" in text
     assert "enabled: true" in text
     assert "installed: true" in text
-    # Pre-existing keys preserved by ruamel.yaml round-trip.
     assert "path: ." in text
     assert "goals: ship it" in text
 

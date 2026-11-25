@@ -1,10 +1,4 @@
-"""Logging + subprocess helpers shared by every build phase.
-
-Mirrors the `log()/info()/die()` banners of the original shell scripts so the
-build output looks identical, and centralises subprocess invocation so failures
-abort loudly (no pipe-swallowed exit codes — the class of bug where a build
-"passed" because `tee | tail` returned 0).
-"""
+"""Logging + subprocess helpers shared by every build phase."""
 
 from __future__ import annotations
 

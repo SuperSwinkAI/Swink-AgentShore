@@ -250,7 +250,6 @@ async def test_unblock_pr_resolver_github_fallback_excludes_exhausted() -> None:
     fallback, producing an infinite retry cycle.
     """
     resolver = _make_resolver(open_prs=[_make_pr_record(187)])
-    # Simulate 3 failures (exhaustion threshold).
     for _ in range(3):
         resolver.record_unblock_pr_failure(187)
 

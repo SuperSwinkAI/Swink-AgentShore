@@ -8,11 +8,6 @@ SEED_PROJECT_COOLDOWN_PLAYS = 50
 DESIGN_AUDIT_FRESHNESS_WINDOW_PLAYS = 20
 TERMINAL_SHUTDOWN_EVIDENCE_WINDOW_PLAYS = 50
 
-# Play types whose validity is gated on a concrete candidate target existing in
-# the snapshot candidate plan. Single source of truth for the candidate-required
-# taxonomy, imported by both ``rl.eligibility`` (the authority that confirms a
-# play) and ``rl.mask`` (the pipeline that gates one) so the two surfaces can
-# never drift.
 CANDIDATE_REQUIRED_PLAY_TYPES: frozenset[PlayType] = frozenset(
     {
         PlayType.UNBLOCK_PR,
@@ -26,10 +21,6 @@ CANDIDATE_REQUIRED_PLAY_TYPES: frozenset[PlayType] = frozenset(
     }
 )
 
-# Candidate-bearing target plays that ``EligibilityAuthority.confirm`` re-checks
-# against the live candidate plan (the candidate-required set minus the backlog
-# play GROOM_BACKLOG, which has no pinned issue/PR target). Internal and control
-# plays are not target-confirmed.
 LIVE_CONFIRM_PLAY_TYPES: frozenset[PlayType] = CANDIDATE_REQUIRED_PLAY_TYPES - {
     PlayType.GROOM_BACKLOG
 }
@@ -51,8 +42,6 @@ def needs_review(pr: object) -> bool:
     head_sha = getattr(pr, "head_sha", None)
     last_reviewed_sha = getattr(pr, "last_reviewed_sha", None)
     if review_decision == "APPROVED":
-        # GH approval at any sha counts; if we know the heads disagree,
-        # fall through to the usual heads-changed re-review path.
         if last_reviewed_sha is None or head_sha is None:
             return False
         return bool(head_sha != last_reviewed_sha)

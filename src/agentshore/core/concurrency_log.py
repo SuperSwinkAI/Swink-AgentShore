@@ -38,8 +38,6 @@ if TYPE_CHECKING:
 _logger = structlog.get_logger(__name__)
 
 CONCURRENCY_FILENAME = "fleet_concurrency.ndjson"
-# Bump when the line shape changes so downstream readers (ESR, graph, ad-hoc
-# analysis) can branch on it instead of guessing.
 RECORD_VERSION = 1
 
 _LIVE_STATUSES = (AgentStatus.IDLE, AgentStatus.BUSY)
@@ -123,22 +121,18 @@ def build_concurrency_record(
         "success": outcome.success,
         "skipped": outcome.skipped,
         "reward": reward,
-        # Context of the dispatch that just finished (what changed the fleet).
         "completed_agent_id": outcome.agent_id,
         "completed_agent_type": completed.agent_type.value if completed is not None else None,
         "completed_model_tier": completed.model_tier if completed is not None else None,
         "completed_error_class": (
             _enum_value(completed.last_error_class) if completed is not None else None
         ),
-        # Aggregates (busy = simultaneously dispatched; the concurrency that
-        # presses on provider rate limits + RAM, per the design rationale).
         "busy_total": busy_total,
         "live_total": live_total,
         "busy_by_type": busy_by_type,
         "live_by_type": live_by_type,
         "busy_by_type_tier": busy_by_type_tier,
         "status_totals": status_totals,
-        # Source of truth — any other slice is recomputable from here.
         "roster": roster,
     }
 
@@ -157,10 +151,6 @@ class ConcurrencyLog:
         self._session_id = session_id
         self._lock = asyncio.Lock()
         self._seq = 0
-        # Per-session artifact, but the session dir is keyed by a stable project
-        # hash — a prior run's samples would otherwise linger and the ESR/graph
-        # would read two runs. Drop on construction; nothing tails this file, so
-        # no reader lock to fight (unlike the dashboard state/event files).
         with contextlib.suppress(OSError):
             self._path.unlink()
 
@@ -193,7 +183,7 @@ class ConcurrencyLog:
             )
             line = json.dumps(record, separators=(",", ":")) + "\n"
             await asyncio.to_thread(self._append, line)
-        except Exception as exc:  # observability must not crash the loop
+        except Exception as exc:
             _logger.warning("concurrency_log_record_failed", error=str(exc))
 
     def _append(self, line: str) -> None:

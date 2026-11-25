@@ -140,7 +140,6 @@ def test_run_sync_command_never_inherits_stdin(monkeypatch: pytest.MonkeyPatch) 
     command.run_sync_command("git", "status", resolve_executable=False)
     assert captured.get("stdin") is subprocess.DEVNULL
 
-    # When input_text is supplied, subprocess.run wires stdin itself via input=.
     command.run_sync_command(
         "git", "hash-object", "--stdin", input_text="x", resolve_executable=False
     )

@@ -18,18 +18,9 @@ from agentshore.ui.screens.goals import GoalsScreen
 from agentshore.ui.screens.help import HelpOverlay
 from agentshore.ui.screens.issues import IssueWorkQueueScreen
 
-# ---------------------------------------------------------------------------
-# Minimal host app
-# ---------------------------------------------------------------------------
-
 
 class ModalTestApp(App[None]):
     """A minimal app that can push modal screens."""
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 
 def _make_graph(closure_ratio: float = 0.7) -> ProjectGraph:
@@ -78,11 +69,6 @@ def _make_agent(
     )
 
 
-# ---------------------------------------------------------------------------
-# HelpOverlay tests
-# ---------------------------------------------------------------------------
-
-
 async def test_help_overlay_composes() -> None:
     """HelpOverlay renders and contains help text."""
     app = ModalTestApp()
@@ -101,15 +87,10 @@ async def test_help_overlay_dismiss_escape() -> None:
     async with app.run_test() as pilot:
         app.push_screen(HelpOverlay())
         await pilot.pause()
-        assert len(app.screen_stack) == 2  # default + modal
+        assert len(app.screen_stack) == 2
         await pilot.press("escape")
         await pilot.pause()
         assert len(app.screen_stack) == 1
-
-
-# ---------------------------------------------------------------------------
-# GoalsScreen tests
-# ---------------------------------------------------------------------------
 
 
 async def test_goals_screen_renders_graph() -> None:
@@ -149,11 +130,6 @@ async def test_goals_screen_dismiss() -> None:
         assert len(app.screen_stack) == 1
 
 
-# ---------------------------------------------------------------------------
-# IssueWorkQueueScreen tests
-# ---------------------------------------------------------------------------
-
-
 async def test_issue_work_queue_renders_issue_metadata() -> None:
     """Issue queue shows URL and timestamps from the richer IPC/state contract."""
     state = OrchestratorState(
@@ -187,11 +163,6 @@ async def test_issue_work_queue_renders_issue_metadata() -> None:
         assert "TO DO (1)" in rendered
         assert "https://github.com/org/repo/issues/47" in rendered
         assert "created=2026-01-01" in rendered
-
-
-# ---------------------------------------------------------------------------
-# AgentDetailScreen tests
-# ---------------------------------------------------------------------------
 
 
 async def test_agent_detail_renders_agent() -> None:

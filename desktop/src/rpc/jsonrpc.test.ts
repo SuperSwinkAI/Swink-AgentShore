@@ -33,7 +33,7 @@ describe("callJsonRpc", () => {
 
   it("rejects with a timeout JsonRpcError when the bridge never responds", async () => {
     vi.useFakeTimers();
-    // A bridge call that never settles — the backstop timeout must fire.
+
     vi.mocked(invoke).mockReturnValueOnce(new Promise<unknown>(() => {}));
     const promise = callJsonRpc("project.inspect");
     void promise.catch(() => undefined);
@@ -50,7 +50,7 @@ describe("callJsonRpc", () => {
       }),
     );
     const promise = callJsonRpc<{ session_id: string }>("session.start");
-    // Advance far past any setup/default cap; session.start must NOT time out.
+
     await vi.advanceTimersByTimeAsync(600_000);
     resolveCall({ session_id: "s1" });
     await expect(promise).resolves.toEqual({ session_id: "s1" });

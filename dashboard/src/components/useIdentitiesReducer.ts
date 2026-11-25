@@ -3,7 +3,7 @@ import type { Dispatch } from "react";
 
 import type { AgentAuthRow, IdentityRow } from "./IdentitiesScreen";
 
-// state machine
+
 
 export interface ScreenState {
   rows: IdentityRow[];
@@ -124,7 +124,7 @@ export function reducer(state: ScreenState, action: ScreenAction): ScreenState {
         addKeychainChecking: false,
       };
     case "set_add_login":
-      // Editing the login invalidates any prior keychain probe result.
+
       return {
         ...state,
         addLogin: action.value,

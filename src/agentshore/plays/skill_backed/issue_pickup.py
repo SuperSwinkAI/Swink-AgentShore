@@ -21,25 +21,7 @@ if TYPE_CHECKING:
 
 _logger = structlog.get_logger(__name__)
 
-# Backpressure: at MAX_OPEN_PRS open PRs, mask issue_pickup so the policy drains
-# review/merge before opening more (else the queue grows unbounded burning budget
-# on PRs that never merge). Threshold lives in ``plays.candidates`` so the
-# END_SESSION human-jam escape hatch stays coupled to it.
 
-# Per-issue cost breaker (not a correctness gate). Three failure classes flip the
-# same streak:
-#   (1) EligibilityAuthority live ``confirm`` rejects an issue whose bead left the
-#       candidate set → selector re-picks. Historical race guard.
-#   (2) ``execute()`` outcome ``success=False`` — typically a body-declared dep
-#       block; without this PPO re-dispatches it every few plays (~$0.10–0.20/cycle).
-#   (3) Timeout/crash (``AgentTimeout``/``AgentProcessCrashed``) raise past the
-#       streak accounting; counted in the ``except`` (#222 — previously invisible,
-#       re-dispatched every tick with no backoff).
-# After ``_SKIP_CIRCUIT_THRESHOLD`` failures the issue cools down for
-# ``_SKIP_CIRCUIT_COOLDOWN_PLAYS`` plays; a success or close clears the streak.
-# Dependency-block cooldowns re-arm the moment the bead is ready
-# (``_rearm_ready_issues``); timeout/crash cooldowns are non-rearmable and ride
-# out the full window (bead-readiness is irrelevant to a timeout, #222).
 _SKIP_CIRCUIT_THRESHOLD = 3
 _SKIP_CIRCUIT_COOLDOWN_PLAYS = 20
 
@@ -58,15 +40,10 @@ class IssuePickupPlay(SkillBackedPlay):
       is no longer treated as on cooldown (see ``_rearm_ready_issues``).
     """
 
-    # Only issue_pickup legitimately authors PRs; the executor stamps PR
-    # authorship from its ``pr`` / ``pull_request`` artifacts.
     authors_prs = True
 
     def __init__(self) -> None:
         super().__init__()
-        # Per-issue failure→cooldown circuit on the PLAYS clock. Explicit
-        # ``Clock.PLAYS`` distinguishes it from the like-valued grok-wedge
-        # cooldown, which counts ``last_play_id`` ticks.
         self._skip: Cooldown[int] = Cooldown(
             CooldownSpec(
                 threshold=_SKIP_CIRCUIT_THRESHOLD,
@@ -74,10 +51,6 @@ class IssuePickupPlay(SkillBackedPlay):
                 clock=Clock.PLAYS,
             )
         )
-        # issue_number → re-arms when the bead is ready again. True for dep-block
-        # failures; False for timeout/crash (readiness irrelevant, re-arming would
-        # defeat the cooldown, #222). Held only while on cooldown (reconciled in
-        # ``_issues_on_cooldown``).
         self._skip_rearmable: dict[int, bool] = {}
 
     @property
@@ -127,8 +100,6 @@ class IssuePickupPlay(SkillBackedPlay):
         }
         for issue_number in ready_issue_numbers & on_cooldown:
             if not self._skip_rearmable.get(issue_number, True):
-                # Timeout/crash cooldown: bead-readiness never blocked it, so a
-                # ready bead must not clear it — ride out the window (#222).
                 continue
             self._skip.clear(issue_number)
             self._skip_rearmable.pop(issue_number, None)
@@ -136,7 +107,6 @@ class IssuePickupPlay(SkillBackedPlay):
     def _issues_on_cooldown(self, total_plays: int) -> set[int]:
         """Return the set of issue_numbers still inside their skip cooldown."""
         on_cooldown = self._skip.armed_keys(now=total_plays)
-        # Keep the rearmability sidecar aligned: drop tags for expired windows.
         for issue_number in set(self._skip_rearmable) - on_cooldown:
             del self._skip_rearmable[issue_number]
         return on_cooldown
@@ -160,8 +130,6 @@ class IssuePickupPlay(SkillBackedPlay):
         issues: list[MaskReason] = []
         open_numbers = {issue.issue_number for issue in state.open_issues}
         self._purge_closed_issues(open_numbers)
-        # Re-arm before reading the cooldown set: a cooled-down issue whose
-        # blocker has cleared must be selectable this same tick.
         self._rearm_ready_issues(state)
         on_cooldown = self._issues_on_cooldown(state.total_plays)
         if not state.open_issues:
@@ -204,7 +172,6 @@ class IssuePickupPlay(SkillBackedPlay):
                 )
             )
         if state.graph is not None and state.graph.has_epics and not state.graph.has_ready_tasks:
-            # M8: Be explicit that the policy does not auto-promote groom_backlog.
             issues.append(
                 MaskReason(
                     text=(

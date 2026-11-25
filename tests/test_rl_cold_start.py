@@ -19,11 +19,6 @@ def _policy() -> ActorCritic:
     return m
 
 
-# ---------------------------------------------------------------------------
-# Bias applied correctly
-# ---------------------------------------------------------------------------
-
-
 def test_actor_weight_zeroed():
     m = _policy()
     assert m.actor.weight.abs().sum().item() == 0.0
@@ -36,15 +31,9 @@ def test_actor_bias_set():
 
 def test_bias_sum_consistent():
     m = _policy()
-    # bias = log(w) - mean(log(w)) → sum of exp(bias) ≈ num_actions (before renorm)
     b = m.actor.bias.detach().numpy()
     assert np.all(np.isfinite(b))
     assert b.max() > b.min()
-
-
-# ---------------------------------------------------------------------------
-# Cold-start semantics
-# ---------------------------------------------------------------------------
 
 
 def test_argmax_zero_obs_selects_issue_pickup():
@@ -75,19 +64,13 @@ def test_all_play_types_covered():
 
 def test_weights_sum_to_approximately_1():
     total = sum(DEFAULT_PLAY_WEIGHTS.values())
-    assert abs(total - 1.0) < 0.02  # allow small floating-point slack (20 actions)
-
-
-# ---------------------------------------------------------------------------
-# Config-head cold-start
-# ---------------------------------------------------------------------------
+    assert abs(total - 1.0) < 0.02
 
 
 def test_apply_config_bias_no_op_when_num_configs_zero():
     from agentshore.rl.cold_start import apply_cold_start_config_bias
 
     p = ActorCritic(num_configs=0)
-    # Silent no-op even when config_index is empty.
     apply_cold_start_config_bias(p, ())
 
 

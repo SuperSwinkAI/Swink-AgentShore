@@ -52,7 +52,6 @@ class PackageManager:
     def command(self, version: str) -> list[str]:
         if self.name == "npm":
             return [self.executable, "install", "-g", f"@beads/bd@{version}"]
-        # Homebrew cannot pin a version; `upgrade` only works for a brew-owned bd.
         return [self.executable, "upgrade" if self.owns_bd else "install", "beads"]
 
 

@@ -1,15 +1,5 @@
 """Tests for ensure_bd_on_agent_path — pinning agent-dispatched ``bd`` to the
-same binary AgentShore's own orchestrator resolves (#315).
-
-Regression coverage: agent subprocesses (Claude Code, Codex, Grok,
-Antigravity) run literal ``bd ...`` commands from skill templates. Those
-resolve via the subprocess's own PATH, independent of resolve_bd_binary(),
-which the orchestrator's own writes go through. A live session hit this: the
-desktop app pinned bd 1.1.0 via AGENTSHORE_BD_BIN for its own writes while an
-agent's inherited PATH still resolved the user's stale 1.0.4 install,
-producing "schema defects in the dependencies and events tables" the moment
-an agent tried a bd write against a store already migrated by 1.1.0.
-"""
+same binary AgentShore's own orchestrator resolves (#315)."""
 
 from __future__ import annotations
 
@@ -31,8 +21,6 @@ def _make_executable(path: Path, marker: str) -> Path:
     return path
 
 
-# shutil.which on Windows only resolves PATHEXT names, so a bare ``bd`` file
-# is invisible there; give it an executable suffix on that host.
 _BD_NAME = "bd.exe" if sys.platform == "win32" else "bd"
 
 
@@ -56,7 +44,7 @@ def test_returns_env_unchanged_when_already_matching(
     with patch.object(shutil, "which", wraps=shutil.which) as which_spy:
         result = ensure_bd_on_agent_path(env)
 
-    assert result is env  # unchanged object — no shim work happened
+    assert result is env
     which_spy.assert_called_once_with("bd", path=str(bin_dir))
 
 
@@ -84,13 +72,10 @@ def test_creates_shim_and_prepends_path_on_mismatch(
     resolved = shutil.which("bd", path=new_env["PATH"])
     assert resolved is not None
     if sys.platform == "win32":
-        # The Windows shim is a batch wrapper, not a link — it must live in the
-        # shim dir and forward to the orchestrator binary.
         assert Path(resolved).parent == shim_dir
         assert str(orchestrator_bd) in Path(resolved).read_text(encoding="utf-8")
     else:
         assert os.path.samefile(resolved, orchestrator_bd)
-    # The stale binary is still reachable further down PATH, just not first.
     assert stale_bd.exists()
 
 
@@ -128,9 +113,6 @@ def test_windows_shim_is_a_batch_wrapper(tmp_path: Path, monkeypatch: pytest.Mon
     monkeypatch.setattr(sys, "platform", "win32")
 
     env = {"PATH": str(stale_bd.parent)}
-    # shutil.which's real Windows-only branch needs _winapi, unavailable when
-    # sys.platform is spoofed on a non-Windows test host — stub the lookup
-    # result directly rather than exercising that OS-specific internal path.
     with patch("shutil.which", return_value=str(stale_bd)):
         new_env = ensure_bd_on_agent_path(env)
 

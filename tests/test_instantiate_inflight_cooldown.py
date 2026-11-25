@@ -19,8 +19,6 @@ def _state(in_flight: tuple[PlayType, ...]) -> OrchestratorState:
         total_cost=0.0,
         agents=[],
         in_flight_plays=list(in_flight),
-        # A non-instantiate key satisfies the bootstrap-first-play gate so we
-        # isolate the in-flight-instantiate reason.
         plays_since_last_play_type={PlayType.SEED_PROJECT: 0},
     )
 

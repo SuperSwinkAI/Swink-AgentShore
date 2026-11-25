@@ -70,22 +70,12 @@ def _state(
     )
 
 
-# ---------------------------------------------------------------------------
-# Registry
-# ---------------------------------------------------------------------------
-
-
 def test_cleanup_play_registered() -> None:
     registry = build_default_registry()
     play = registry.get(PlayType.CLEANUP)
     assert isinstance(play, CleanupPlay)
     assert play.skill_name == "agentshore-cleanup"
     assert play.play_type == PlayType.CLEANUP
-
-
-# ---------------------------------------------------------------------------
-# Preconditions
-# ---------------------------------------------------------------------------
 
 
 def test_cleanup_preconditions_met() -> None:
@@ -141,11 +131,6 @@ def test_cleanup_not_blocked_by_large_open_issue_backlog() -> None:
     assert CleanupPlay().preconditions(_state(issues=many_issues)) == []
 
 
-# ---------------------------------------------------------------------------
-# Issue #564: first-run floor only applies when seed_project actually ran
-# ---------------------------------------------------------------------------
-
-
 def test_cleanup_allowed_on_existing_project_with_low_total_plays() -> None:
     """seed_project masked (existing project) → cleanup can fire as first play."""
     errors = CleanupPlay().preconditions(
@@ -176,10 +161,6 @@ def test_cleanup_allowed_after_warmup_completes_on_fresh_project() -> None:
     assert errors == []
 
 
-# ---------------------------------------------------------------------------
-# Skill template
-# ---------------------------------------------------------------------------
-
 _TEMPLATE_ROOT = (
     Path(__file__).parent.parent
     / "src"
@@ -199,7 +180,6 @@ def test_cleanup_skill_template_bundled() -> None:
 
 def test_cleanup_skill_includes_forbidden_mutations() -> None:
     content = (_TEMPLATE_ROOT / "SKILL.md").read_text()
-    # Forbidden section exists in some form (heading or bold inline).
     import re as _re
 
     assert _re.search(r"(?:^|\n)(?:#+\s*Forbidden|\*\*Forbidden)", content), (

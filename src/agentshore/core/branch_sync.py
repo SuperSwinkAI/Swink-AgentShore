@@ -1,24 +1,8 @@
-"""Deterministic fast-forward sync of a local branch to its remote tracking ref.
+"""Fast-forward a local branch to its remote tracking ref.
 
-After a PR merges (on the remote), the *local* target branch in the primary
-checkout does not advance on its own — only the remote moves. Nothing in the
-per-worktree path needs the local branch (worktrees base off ``origin/<ref>``),
-but the local target branch otherwise drifts arbitrarily far behind the remote,
-which is a latent footgun for any code, dashboard, or human that reads it.
-
-This module advances a local branch to match ``<remote>/<branch>`` using a
-**fast-forward-only** update that works whether or not the branch is currently
-checked out. It is purely deterministic housekeeping — a backstop, never a
-driver — and it never raises: every failure is captured in the returned
-``FFSyncResult`` so a caller inside a play's ``execute()`` can fire-and-forget.
-
-Correctness note: the primary checkout is frequently on a *different* branch
-than the target (e.g. ``main`` checked out while the session targets
-``integration``). A naive ``git merge --ff-only origin/<target>`` in that
-checkout would fast-forward the *wrong* branch. So when the target is not the
-current checkout we advance the ref directly via ``git update-ref`` (an atomic
-compare-and-swap, guarded by an explicit ancestor check) instead of merging.
-"""
+Works for checked-out and other branches. Failures are captured in
+FFSyncResult; this helper never raises. Non-current branches use an atomic
+git update-ref compare-and-swap guarded by an ancestor check."""
 
 from __future__ import annotations
 
@@ -52,8 +36,6 @@ def resolve_ff_fetch_overlay(cfg: RuntimeConfig) -> Mapping[str, str] | None:
     identities, no token) yields ``None`` — the fetch stays unauthenticated, its
     historical best-effort behavior.
     """
-    # Lazy import: ``agentshore.agents`` package init pulls AgentManager, which
-    # reaches back into ``core`` — a top-level import here would cycle.
     from agentshore.agents.identity import (
         resolve_identity_env_by_name,
         select_default_git_identity,
@@ -76,12 +58,12 @@ def resolve_ff_fetch_overlay(cfg: RuntimeConfig) -> Mapping[str, str] | None:
 class FFSyncStatus(StrEnum):
     """Outcome of a fast-forward sync attempt."""
 
-    SYNCED = "synced"  # local branch advanced to <remote>/<branch>
-    ALREADY_CURRENT = "already_current"  # local already at <remote>/<branch>
-    NO_LOCAL_BRANCH = "no_local_branch"  # no local ref to advance toward
-    DIVERGED = "diverged"  # local not an ancestor of remote — left untouched
-    FETCH_FAILED = "fetch_failed"  # could not update the remote-tracking ref
-    ERROR = "error"  # unexpected failure (captured, never raised)
+    SYNCED = "synced"
+    ALREADY_CURRENT = "already_current"
+    NO_LOCAL_BRANCH = "no_local_branch"
+    DIVERGED = "diverged"
+    FETCH_FAILED = "fetch_failed"
+    ERROR = "error"
 
 
 @dataclass(frozen=True, slots=True)
@@ -144,9 +126,6 @@ async def _fast_forward_impl(
     timeout: float,
     fetch_env_overlay: Mapping[str, str] | None = None,
 ) -> FFSyncResult:
-    # 1. Update the remote-tracking ref (refs/remotes/<remote>/<branch>). This
-    #    form never touches the local branch, so it is safe even when <branch>
-    #    is the current checkout.
     rc, _, stderr = await _git(
         "fetch", remote, branch, cwd=repo, timeout=timeout, env_overlay=fetch_env_overlay
     )
@@ -163,10 +142,8 @@ async def _fast_forward_impl(
     rc, remote_sha, _ = await _git("rev-parse", "--verify", "--quiet", remote_ref, cwd=repo)
     remote_sha = remote_sha.strip()
     if rc != 0 or not remote_sha:
-        # Remote branch vanished/renamed — nothing to advance toward.
         return FFSyncResult(FFSyncStatus.NO_LOCAL_BRANCH, branch, f"{remote_ref} missing")
 
-    # 2. Resolve the local branch ref (may legitimately not exist).
     rc, local_sha, _ = await _git(
         "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}", cwd=repo
     )
@@ -177,7 +154,6 @@ async def _fast_forward_impl(
     if local_sha == remote_sha:
         return FFSyncResult(FFSyncStatus.ALREADY_CURRENT, branch)
 
-    # 3. Fast-forward safety: local must be an ancestor of the remote tip.
     rc, _, _ = await _git("merge-base", "--is-ancestor", local_sha, remote_sha, cwd=repo)
     if rc != 0:
         _logger.warning(
@@ -189,10 +165,6 @@ async def _fast_forward_impl(
         )
         return FFSyncResult(FFSyncStatus.DIVERGED, branch)
 
-    # 4. Advance — pick the primitive by checkout state. ``merge --ff-only``
-    #    updates the working tree when <branch> is checked out; ``update-ref``
-    #    (atomic compare-and-swap, ff already verified) advances a branch that
-    #    is *not* the current checkout — the case a plain merge gets wrong.
     rc, current, _ = await _git("branch", "--show-current", cwd=repo)
     current = current.strip()
     if current == branch:

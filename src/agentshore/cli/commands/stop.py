@@ -62,10 +62,6 @@ def stop(project: str, hard: bool) -> None:
         click.echo("No running AgentShore session found for this project.")
         raise SystemExit(0)
 
-    # Capture the timelapse handle before stopping: a graceful drain lets the
-    # orchestrator finalise and clear the sidecar on its way out, so read it now
-    # and finalise as a backstop (mainly for --hard, where the orchestrator is
-    # killed before it can run its own shutdown).
     timelapse_info = read_timelapse_info(project_path)
 
     if hard:
@@ -85,8 +81,6 @@ def stop(project: str, hard: bool) -> None:
             click.echo("(Press Ctrl+C to force-stop now.)")
             outcome = _wait_for_session_exit(project_path)
             if outcome is None:
-                # Escalated to hard stop but the process is still alive (#31) —
-                # don't claim a clean stop.
                 click.echo(
                     "Error: AgentShore session is still running after hard stop.",
                     err=True,
@@ -133,9 +127,6 @@ def _wait_for_session_exit(project_path: Path) -> bool | None:
     if pid is None:
         return True
 
-    # NB: probe via _process_alive, never a bare ``os.kill(pid, 0)`` — on Windows
-    # signal 0 is CTRL_C_EVENT, so that "probe" delivers a Ctrl+C and its result
-    # reflects console-group membership, not liveness (see _process_alive_windows).
     interrupted = False
     try:
         while _process_alive(pid):

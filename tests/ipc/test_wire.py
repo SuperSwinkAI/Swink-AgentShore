@@ -21,7 +21,6 @@ def test_json_safe_recurses_into_containers() -> None:
 
 
 def test_json_safe_preserves_bools_and_scalars() -> None:
-    # bool must pass through untouched, not be coerced like a number.
     assert json_safe(True) is True
     assert json_safe(False) is False
     assert json_safe("x") == "x"
@@ -44,12 +43,9 @@ def test_frame_emits_valid_json_for_non_finite_floats() -> None:
     text = frame({"value": float("inf"), "ratio": float("nan")})
     assert "Infinity" not in text
     assert "NaN" not in text
-    # Strict parse would raise on bare Infinity/NaN tokens.
     assert json.loads(text) == {"value": None, "ratio": None}
 
 
 def test_frame_rejects_non_finite_via_allow_nan_false_after_sanitizing() -> None:
-    # json_safe nulls non-finite floats, so the allow_nan=False dumps never
-    # needs to reject — but a finite float survives untouched.
     assert math.isfinite(1.25)
     assert json.loads(frame({"x": 1.25})) == {"x": 1.25}

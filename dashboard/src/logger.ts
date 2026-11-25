@@ -29,7 +29,7 @@ export const dashboardLogger = {
     message: string,
     context: DashboardLogContext = {},
   ): void {
-    // Always surfaced (unlike warn): infrequent broken-invariant signals; add a token bucket here if that changes.
+
     console.error("[agentshore-dashboard]", { channel, message, ...context });
   },
 };

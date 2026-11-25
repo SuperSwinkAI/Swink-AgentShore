@@ -151,11 +151,9 @@ async def test_comparison_new_fields_populated(store):
     collector = ReportDataCollector(store)
     cmp = await collector.collect_comparison("s-a", "s-b")
 
-    # existing scalars still present. cost_diff is the play-sum overview (H4):
-    # s-b (3×0.8 + 0.2 = 2.6) minus s-a (2×1.0 + 0.5 = 2.5).
     assert cmp["cost_diff"] == pytest.approx(0.1)
     assert cmp["alignment_diff"] == pytest.approx(0.2)
-    assert cmp["play_count_diff"] == 1  # 4 - 3
+    assert cmp["play_count_diff"] == 1
 
     cb_a = cmp["cost_breakdown_a"]
     assert "issue_pickup" in cb_a["by_play_type"]
@@ -188,12 +186,12 @@ async def test_comparison_issue_throughput(store):
     tp_a = cmp["issue_throughput_a"]
     assert tp_a["opened"] == 2
     assert tp_a["closed"] == 3
-    assert tp_a["net_velocity"] == 1  # 3 - 2
+    assert tp_a["net_velocity"] == 1
 
     tp_b = cmp["issue_throughput_b"]
     assert tp_b["opened"] == 5
     assert tp_b["closed"] == 1
-    assert tp_b["net_velocity"] == -4  # 1 - 5
+    assert tp_b["net_velocity"] == -4
 
 
 async def test_comparison_learnings_diff_is_empty(store):
@@ -225,7 +223,6 @@ async def test_comparison_alignment_trajectory(store):
     assert traj_a[1]["alignment"] == pytest.approx(0.3)
     assert traj_a[2]["alignment"] == pytest.approx(0.25)
 
-    # session_b has no plays — empty trajectory
     assert cmp["alignment_trajectory_b"] == []
 
 

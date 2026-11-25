@@ -114,7 +114,6 @@ async def test_archive_fetch_report_missing_report_raises_err_report_not_found(
 ) -> None:
     archive_dir = tmp_path / "archive"
     archive_dir.mkdir()
-    # Deliberately do not write report.html — archive row exists, report file does not.
     store, archive_id = await _seed_store(tmp_path / "db.sqlite", archive_dir)
     try:
         with pytest.raises(ArchiveError) as exc_info:

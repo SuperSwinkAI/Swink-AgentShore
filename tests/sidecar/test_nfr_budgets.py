@@ -71,14 +71,10 @@ agents:
         enabled: true
 """
 
-# Target band from DESIGN §8.
 HANDSHAKE_TARGET_MS = 1000.0
 IDLE_RSS_TARGET_MB = 250.0
 ACTIVE_RSS_TARGET_MB = 1500.0
 
-# Warning band (3× target) — what we hard-assert to keep CI green while
-# real-world noise is being characterised. Bump down once we have a
-# baseline.
 HANDSHAKE_WARN_MS = 3000.0
 IDLE_RSS_WARN_MB = 750.0
 ACTIVE_RSS_WARN_MB = 4500.0
@@ -190,8 +186,6 @@ def test_idle_sidecar_rss_under_warning_band(capsys: pytest.CaptureFixture[str])
     child = _spawn_sidecar()
     try:
         _send_handshake(child)
-        # Let allocation reach steady-state; RSS undercounts while imports
-        # are still resolving.
         time.sleep(0.5)
         rss_kb = _read_rss_kb(child.pid)
     finally:
@@ -229,8 +223,6 @@ def _send_rpc(
         request["params"] = params
     child.stdin.write(json.dumps(request) + "\n")
     child.stdin.flush()
-    # ``session.start`` emits 12 ``$/progress`` notifications before the
-    # final result; skip them so callers see the response envelope.
     while True:
         line = child.stdout.readline()
         if not line:
@@ -252,7 +244,6 @@ def test_active_sidecar_rss_under_warning_band(
     orchestrator integration lands and agents are spawned, this test
     will widen to include their RSS.
     """
-    # session.start accepts a skeleton with agentshore.yaml + .beads/ present.
     project_path = tmp_path / "nfr-project"
     project_path.mkdir()
     (project_path / "agentshore.yaml").write_text(VALID_TIERED_CONFIG, encoding="utf-8")
@@ -265,7 +256,6 @@ def test_active_sidecar_rss_under_warning_band(
         assert "result" in select_response, select_response
         start_response = _send_rpc(child, 3, "session.start")
         assert "result" in start_response, start_response
-        # Allow uvicorn worker threads to reach steady-state.
         time.sleep(0.5)
         rss_kb = _read_rss_kb(child.pid)
     finally:

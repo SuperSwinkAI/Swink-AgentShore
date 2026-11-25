@@ -86,9 +86,6 @@ async def _insert_row_at(
     return row.worktree_id
 
 
-# --- bare reaper: path-aware protection --------------------------------------
-
-
 async def test_reap_closed_prs_skips_stale_row_sharing_live_path(
     store: DataStore, main_repo: Path, worktree_root: Path
 ) -> None:
@@ -102,7 +99,6 @@ async def test_reap_closed_prs_skips_stale_row_sharing_live_path(
     _git("worktree", "add", "-b", "pickup-7-wt", str(target), "HEAD", cwd=main_repo)
 
     old_ts = (datetime.now(UTC) - timedelta(hours=2)).isoformat()
-    # Stale OLD-id row at the shared path (a prior attempt's row).
     stale_old_id = await _insert_row_at(
         store,
         session_id="sess-1",
@@ -112,8 +108,6 @@ async def test_reap_closed_prs_skips_stale_row_sharing_live_path(
         last_used_at=old_ts,
     )
 
-    # The LIVE row uses the same directory under a different id — protected via
-    # its canonical path, NOT its id.
     report = await reap_for_closed_prs(
         store,
         session_id="sess-1",
@@ -172,9 +166,6 @@ async def test_reap_closed_prs_reaps_unprotected_stale_row(
     assert protected.exists()
 
 
-# --- manager wrapper: id differs, path protected -----------------------------
-
-
 async def test_manager_reap_closed_prs_skips_dup_path_alias(
     store: DataStore, main_repo: Path, worktree_root: Path
 ) -> None:
@@ -208,8 +199,6 @@ async def test_manager_reap_closed_prs_skips_dup_path_alias(
         worktree_root=worktree_root,
         cfg=RuntimeConfig(),
     )
-    # A LIVE new-id dispatch (id 9999) shares this path; registering it protects
-    # the stale old-id row at the same path by its canonical path alone (#203).
     wm.register_dispatch(
         WorktreeAllocation(
             worktree_id=9999,
@@ -248,7 +237,6 @@ async def test_manager_reap_closed_prs_skips_stale_alias_of_active_db_row(
     _git("worktree", "add", "-b", "pickup-82-wt", str(target), "HEAD", cwd=main_repo)
 
     old_ts = (datetime.now(UTC) - timedelta(hours=4)).isoformat()
-    # Stale OLD-id row at the shared path (a prior attempt whose PR closed).
     stale_old_id = await _insert_row_at(
         store,
         session_id="sess-1",
@@ -257,8 +245,6 @@ async def test_manager_reap_closed_prs_skips_stale_alias_of_active_db_row(
         status="stale",
         last_used_at=old_ts,
     )
-    # LIVE new-id row sharing the same directory — active, but NOT registered
-    # in the in-flight registry (the exact #243 gap).
     await _insert_row_at(
         store,
         session_id="sess-1",
@@ -274,7 +260,6 @@ async def test_manager_reap_closed_prs_skips_stale_alias_of_active_db_row(
         worktree_root=worktree_root,
         cfg=RuntimeConfig(),
     )
-    # No register_dispatch — _inflight is empty; protection must come from DB truth.
     assert wm._protected_paths() == set()
 
     report = await wm.reap_closed_prs(ttl_seconds=3600)
@@ -283,9 +268,6 @@ async def test_manager_reap_closed_prs_skips_stale_alias_of_active_db_row(
     row = await lookup_by_id(store, worktree_id=stale_old_id)
     assert row is not None and row.status == "stale"
     assert target.exists(), "live active directory must not be removed"
-
-
-# --- collision force-remove: live-DB-row protection (#250) -------------------
 
 
 async def test_collision_predicate_protects_live_db_row_without_registry(
@@ -306,8 +288,6 @@ async def test_collision_predicate_protects_live_db_row_without_registry(
     target = worktree_root / "pickup-1264"
     _git("worktree", "add", "-b", "pickup-1264-wt", str(target), "HEAD", cwd=main_repo)
 
-    # LIVE active row at the canonical path — but NOT registered in the in-flight
-    # registry (the exact #243 gap that left #238 defeatable).
     await _insert_row_at(
         store,
         session_id="sess-1",
@@ -327,8 +307,6 @@ async def test_collision_predicate_protects_live_db_row_without_registry(
 
     predicate = wm._build_reclaimable_collision_predicate(await wm._live_alias_paths())
 
-    # ``pickup-1264`` matches the reclaimable name prefix, but it backs a live
-    # DB row → must NOT be force-removable.
     assert predicate(target) is False
 
 
@@ -351,7 +329,7 @@ async def test_collision_predicate_allows_genuine_orphan(
         worktree_root=worktree_root,
         cfg=RuntimeConfig(),
     )
-    orphan = worktree_root / "pickup-555"  # no DB row, no registry entry
+    orphan = worktree_root / "pickup-555"
 
     predicate = wm._build_reclaimable_collision_predicate(await wm._live_alias_paths())
 
@@ -387,13 +365,9 @@ async def test_collision_predicate_protects_in_flight_registry_path(
         )
     )
 
-    # No DB row this time — protection comes solely from the in-flight registry.
     predicate = wm._build_reclaimable_collision_predicate(await wm._live_alias_paths())
 
     assert predicate(target) is False
-
-
-# --- per-attempt unique paths ------------------------------------------------
 
 
 async def test_per_attempt_keys_produce_distinct_paths(
@@ -419,17 +393,12 @@ async def test_per_attempt_keys_produce_distinct_paths(
         cfg=RuntimeConfig(),
     )
 
-    # First allocation — canonical pickup-7 path.
     alloc1 = await wm.allocate_for_dispatch(
         play_type=PlayType.ISSUE_PICKUP,
         params=PlayParams(issue_number=7),
     )
     assert alloc1.path.name == "pickup-7"  # type: ignore[union-attr]
 
-    # Force the prebranch-key reuse lookup to MISS so a fresh insert runs while
-    # the live row still holds the canonical path: rekey-away the pre_branch_key
-    # so ``lookup_by_prebranch_key`` returns None, but the row stays active at
-    # the pickup-7 path (the exact OLD/NEW alias hazard).
     await store._conn.execute(
         "UPDATE worktrees SET pre_branch_key = 'pickup-7-resolved' WHERE worktree_id = ?",
         (alloc1.worktree_id,),  # type: ignore[union-attr]
@@ -474,9 +443,6 @@ async def test_prebranch_key_reuse_preserved(
     assert alloc1.path == alloc2.path  # type: ignore[union-attr]
 
 
-# --- live_protected_rows / live_protected_paths (#311) ----------------------
-
-
 async def test_live_protected_rows_unions_inflight_and_active_db_rows(
     store: DataStore, main_repo: Path, worktree_root: Path
 ) -> None:
@@ -498,8 +464,6 @@ async def test_live_protected_rows_unions_inflight_and_active_db_rows(
     _git("worktree", "add", "-b", "inflight-only-wt", str(inflight_only), "HEAD", cwd=main_repo)
     _git("worktree", "add", "-b", "db-active-only-wt", str(db_active_only), "HEAD", cwd=main_repo)
 
-    # A row backing the DB-active worktree, but never registered in the
-    # in-memory registry (the #243-style gap).
     db_row_id = await _insert_row_at(
         store,
         session_id="sess-1",
@@ -515,7 +479,6 @@ async def test_live_protected_rows_unions_inflight_and_active_db_rows(
         worktree_root=worktree_root,
         cfg=RuntimeConfig(),
     )
-    # An in-flight dispatch with no DB row (or a DB row not yet reflecting it).
     wm.register_dispatch(
         WorktreeAllocation(
             worktree_id=4242,
@@ -572,9 +535,6 @@ async def test_live_protected_rows_includes_reaping_status(
     assert _canon_path(reaping_target) in paths
 
 
-# --- reconcile_vanished_protected_rows (#360) --------------------------------
-
-
 def _manager(store: DataStore, main_repo: Path, worktree_root: Path):  # type: ignore[no-untyped-def]
     from agentshore.agents.worktree import WorktreeManager
     from agentshore.config import RuntimeConfig
@@ -600,7 +560,7 @@ async def test_vanished_row_for_finished_work_is_retired_not_flagged(
     dispatch and no active work claim behind it, the row must instead be retired
     to ``reaped`` and reported as bookkeeping.
     """
-    gone = worktree_root / "agentshore-101-already-merged"  # never created on disk
+    gone = worktree_root / "agentshore-101-already-merged"
     row_id = await _insert_row_at(
         store,
         session_id="sess-1",
@@ -619,7 +579,6 @@ async def test_vanished_row_for_finished_work_is_retired_not_flagged(
     retired_row = await lookup_by_id(store, worktree_id=row_id)
     assert retired_row is not None
     assert retired_row.status == "reaped"
-    # And the row no longer counts as protected, so the next prune is quiet too.
     assert _canon_path(gone) not in await wm.live_protected_paths()
     assert (await wm.reconcile_vanished_protected_rows()).retired == {}
 
@@ -631,7 +590,7 @@ async def test_vanished_inflight_dispatch_is_still_flagged(
     from agentshore.agents.worktree.manager import WorktreeAllocation
     from agentshore.state import PlayType
 
-    gone = worktree_root / "pickup-42"  # registered in-flight, directory removed
+    gone = worktree_root / "pickup-42"
     row_id = await _insert_row_at(
         store,
         session_id="sess-1",
@@ -657,7 +616,6 @@ async def test_vanished_inflight_dispatch_is_still_flagged(
     assert report.in_flight == {row_id: _canon_path(gone)}
     assert report.retired == {}
     assert report.reasons[row_id] == "inflight_dispatch"
-    # The live row is left exactly as it was — nothing retired out from under it.
     live_row = await lookup_by_id(store, worktree_id=row_id)
     assert live_row is not None
     assert live_row.status == "active"
@@ -721,23 +679,15 @@ async def test_vanished_reconcile_is_noop_when_every_directory_survives(
     assert row.status == "active"
 
 
-# --- _canon_path correctness -------------------------------------------------
-
-
 def test_canon_path_separator_and_case() -> None:
     """``_canon_path`` folds separators (and case on case-insensitive FS)."""
-    # Forward vs native separators collapse to the same key.
     a = _canon_path("/tmp/agentshore-worktrees/pickup-7")
     b = _canon_path(Path("/tmp/agentshore-worktrees/pickup-7"))
     assert a == b
 
-    # normpath collapses redundant components.
     assert _canon_path("/tmp/wt/./pickup-7") == _canon_path("/tmp/wt/pickup-7")
     assert _canon_path("/tmp/wt/sub/../pickup-7") == _canon_path("/tmp/wt/pickup-7")
 
-    # On a case-insensitive filesystem (normcase lowercases), the two fold
-    # together; on a case-sensitive one they don't. Assert the platform-correct
-    # behaviour rather than a fixed answer.
     upper = _canon_path("/tmp/WT/Pickup-7")
     lower = _canon_path("/tmp/wt/pickup-7")
     if os.path.normcase("A") == "a":

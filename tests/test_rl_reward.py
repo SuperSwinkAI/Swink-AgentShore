@@ -18,7 +18,6 @@ from agentshore.state import PlayType
 
 def _cfg(**overrides: object) -> RewardConfig:
     base = RewardConfig()
-    # RewardConfig is frozen; build from scratch
     fields = {
         "alignment_weight": base.alignment_weight,
         "issue_throughput_weight": base.issue_throughput_weight,
@@ -60,20 +59,13 @@ def _signals(**overrides: object) -> RewardSignals:
     return base
 
 
-# ---------------------------------------------------------------------------
-# Individual components
-# ---------------------------------------------------------------------------
-
-
 def test_issue_throughput_component():
-    # 1 closed out of 10 open: throughput = 2.0 * (1/10) = 0.2
     sig = _signals(issues_closed_this_play=1, issues_open_before=10)
     reward, bd = compute_reward(sig, _default_cfg())
     assert bd.issue_throughput == pytest.approx(0.2, abs=1e-5)
 
 
 def test_issue_throughput_zero_open_issues():
-    # no open issues: no throughput signal (nothing to close)
     sig = _signals(issues_closed_this_play=1, issues_open_before=0)
     _, bd = compute_reward(sig, _default_cfg())
     assert bd.issue_throughput == pytest.approx(0.0)
@@ -86,14 +78,12 @@ def test_alignment_delta_component():
 
 
 def test_cost_penalty_at_avg():
-    # cost == avg_cost → ratio 1.0 → penalty = -0.1 * 1.0 = -0.1
     sig = _signals(dollar_cost=0.10, avg_dollar_cost=0.10)
     _, bd = compute_reward(sig, _cfg(cost_weight=0.1))
     assert bd.cost_penalty == pytest.approx(-0.1, abs=1e-5)
 
 
 def test_cost_penalty_clipped():
-    # cost = 5× avg, cost_clip_ratio=5 → ratio capped at 5 → penalty = -0.1 * 5 = -0.5
     sig = _signals(dollar_cost=0.50, avg_dollar_cost=0.10)
     _, bd = compute_reward(sig, _cfg(cost_weight=0.1, cost_clip_ratio=5.0))
     assert bd.cost_penalty == pytest.approx(-0.5, abs=1e-5)
@@ -148,14 +138,12 @@ def test_failure_penalty_absent_on_success():
 
 
 def test_issue_inflation_penalty_fires():
-    # 15 created, 5 closed in window (>2× threshold)
     sig = _signals(
         issues_created_in_window=15,
         issues_closed_in_window=5,
         window_play_count=10,
     )
     _, bd = compute_reward(sig, _cfg(issue_inflation_penalty=2.0, inflation_window_min_plays=5))
-    # ratio = 15/5 = 3; penalty = -2.0 * (3-2) = -2.0
     assert bd.issue_inflation_penalty == pytest.approx(-2.0, abs=1e-5)
 
 
@@ -163,14 +151,13 @@ def test_issue_inflation_penalty_absent_below_min_plays():
     sig = _signals(
         issues_created_in_window=15,
         issues_closed_in_window=5,
-        window_play_count=3,  # below min_plays=5
+        window_play_count=3,
     )
     _, bd = compute_reward(sig, _cfg(inflation_window_min_plays=5))
     assert bd.issue_inflation_penalty == pytest.approx(0.0, abs=1e-5)
 
 
 def test_issue_inflation_penalty_absent_below_threshold():
-    # 8 created, 5 closed → ratio 1.6 < 2.0 → no penalty
     sig = _signals(
         issues_created_in_window=8,
         issues_closed_in_window=5,
@@ -199,14 +186,12 @@ def test_anti_confirmation_absent_for_non_review_play():
 
 
 def test_loop_penalty_at_streak_3():
-    # penalty = -1.5 * (3 - 2) = -1.5
     sig = _signals(success=False, same_type_failure_streak=3)
     _, bd = compute_reward(sig, _cfg(loop_penalty=1.5))
     assert bd.loop_penalty == pytest.approx(-1.5, abs=1e-5)
 
 
 def test_loop_penalty_at_streak_5():
-    # penalty = -1.5 * (5 - 2) = -4.5
     sig = _signals(success=False, same_type_failure_streak=5)
     _, bd = compute_reward(sig, _cfg(loop_penalty=1.5))
     assert bd.loop_penalty == pytest.approx(-4.5, abs=1e-5)
@@ -219,33 +204,24 @@ def test_loop_penalty_absent_below_3():
 
 
 def test_loop_penalty_any_streak_kicks_in_at_6():
-    # any-outcome streak fires at 6 with half weight: -0.5 * 1.5 * (6 - 5) = -0.75
     sig = _signals(success=True, same_type_streak=6)
     _, bd = compute_reward(sig, _cfg(loop_penalty=1.5))
     assert bd.loop_penalty == pytest.approx(-0.75, abs=1e-5)
 
 
 def test_loop_penalty_any_streak_absent_below_6():
-    # 5 same-type successes is still tolerated.
     sig = _signals(success=True, same_type_streak=5)
     _, bd = compute_reward(sig, _default_cfg())
     assert bd.loop_penalty == pytest.approx(0.0, abs=1e-5)
 
 
 def test_loop_penalty_combines_failure_and_any_streak():
-    # When both conditions trip, penalties stack: -1.5 * (3-2) + -0.5 * 1.5 * (6-5)
     sig = _signals(success=False, same_type_failure_streak=3, same_type_streak=6)
     _, bd = compute_reward(sig, _cfg(loop_penalty=1.5))
     assert bd.loop_penalty == pytest.approx(-2.25, abs=1e-5)
 
 
-# ---------------------------------------------------------------------------
-# Clipping
-# ---------------------------------------------------------------------------
-
-
 def test_reward_clipped_at_high():
-    # Give a huge completion bonus to push past 10
     sig = _signals(cluster_just_completed=True, issues_closed_this_play=50, issues_open_before=1)
     reward, bd = compute_reward(sig, _cfg(completion_bonus=100.0))
     assert reward == pytest.approx(10.0, abs=1e-5)
@@ -257,11 +233,6 @@ def test_reward_clipped_at_low():
     sig = _signals(success=False, same_type_failure_streak=20, stagnation_counter=20)
     reward, _ = compute_reward(sig, _cfg(loop_penalty=10.0, stagnation_penalty=10.0))
     assert reward == pytest.approx(-10.0, abs=1e-5)
-
-
-# ---------------------------------------------------------------------------
-# NaN / inf guard
-# ---------------------------------------------------------------------------
 
 
 def test_nan_reward_input_returns_zero():
@@ -277,21 +248,11 @@ def test_inf_reward_input_returns_zero():
     assert reward == 0.0
 
 
-# ---------------------------------------------------------------------------
-# Weight change propagates
-# ---------------------------------------------------------------------------
-
-
 def test_weight_change_propagates():
     sig = _signals(issues_closed_this_play=1, issues_open_before=10)
     _, bd1 = compute_reward(sig, _cfg(issue_throughput_weight=1.0))
     _, bd2 = compute_reward(sig, _cfg(issue_throughput_weight=3.0))
     assert bd2.issue_throughput == pytest.approx(3 * bd1.issue_throughput, abs=1e-5)
-
-
-# ---------------------------------------------------------------------------
-# Breakdown fields populated
-# ---------------------------------------------------------------------------
 
 
 def test_breakdown_raw_and_clipped_populated():
@@ -300,11 +261,6 @@ def test_breakdown_raw_and_clipped_populated():
     assert math.isfinite(bd.raw_total)
     assert math.isfinite(bd.clipped_total)
     assert reward == bd.clipped_total
-
-
-# ---------------------------------------------------------------------------
-# Progress-play shaping: per-play bonus + waived cost/time penalties
-# ---------------------------------------------------------------------------
 
 
 def test_progress_bonus_fires_on_issue_pickup_success():
@@ -348,11 +304,8 @@ def test_systematic_debugging_earns_small_success_reward():
         avg_dollar_cost=0.10,
     )
     _, bd = compute_reward(sig, _cfg(cost_weight=0.1, progress_play_bonus=0.5))
-    # Bonus paid on success.
     assert bd.debug_success_bonus == pytest.approx(_DEBUG_SUCCESS_BONUS)
-    # Progress-play bonus must NOT also fire — debug is not a progress play.
     assert bd.progress_play_bonus == pytest.approx(0.0)
-    # Cost penalty still applies (cost == avg_cost → ratio 1.0 → -0.1).
     assert bd.cost_penalty == pytest.approx(-0.1, abs=1e-5)
 
 
@@ -393,8 +346,6 @@ def test_cleanup_earns_small_success_bonus():
     assert bd.cleanup_success_bonus == pytest.approx(_CLEANUP_SUCCESS_BONUS)
     assert bd.progress_play_bonus == pytest.approx(0.0)
     assert bd.cost_penalty == pytest.approx(-0.1, abs=1e-5)
-    # desktop-lyfb: cleanup (0.05) now equals debug bonus (0.05); both stay
-    # well below the progress-play family.
     assert pytest.approx(0.05) == _CLEANUP_SUCCESS_BONUS
     assert _CLEANUP_SUCCESS_BONUS <= _DEBUG_SUCCESS_BONUS
 
@@ -474,22 +425,17 @@ def test_cost_penalty_still_applies_to_planning_play():
     assert bd.cost_penalty == pytest.approx(-0.1, abs=1e-5)
 
 
-# ---------------------------------------------------------------------------
-# Multi-agent + velocity bonuses (Group B)
-# ---------------------------------------------------------------------------
-
-
 def test_concurrent_agent_bonus_fires_on_dispatch_play():
     """Bonus fires when busy agents reach the utilization threshold on a dispatch play."""
     from agentshore.rl.reward import _DISPATCH_PLAYS
 
-    dispatch_play = next(iter(_DISPATCH_PLAYS))  # any dispatch play
+    dispatch_play = next(iter(_DISPATCH_PLAYS))
     cfg = RewardConfig()
     signals = RewardSignals(
         play_type=dispatch_play,
         success=True,
-        busy_agent_count=3,  # 2 agents above the first
-        live_agent_count=4,  # 75% utilization => 2x multiplier
+        busy_agent_count=3,
+        live_agent_count=4,
         type_diversity_in_window=1,
         rolling_velocity=0.0,
     )
@@ -509,7 +455,7 @@ def test_concurrent_agent_bonus_zero_below_half_utilization():
         play_type=dispatch_play,
         success=True,
         busy_agent_count=2,
-        live_agent_count=5,  # 40% utilization => 0x multiplier
+        live_agent_count=5,
     )
     _, bd = compute_reward(signals, cfg)
     assert bd.concurrent_agent_utilization == pytest.approx(0.4)
@@ -576,12 +522,10 @@ def test_type_diversity_bonus_threshold():
     dispatch_play = next(iter(_DISPATCH_PLAYS))
     cfg = RewardConfig()
 
-    # Two types — bonus fires
     sigs_two = RewardSignals(play_type=dispatch_play, success=True, type_diversity_in_window=2)
     _, bd_two = compute_reward(sigs_two, cfg)
     assert bd_two.type_diversity_bonus == pytest.approx(cfg.type_diversity_bonus)
 
-    # One type — no bonus
     sigs_one = RewardSignals(play_type=dispatch_play, success=True, type_diversity_in_window=1)
     _, bd_one = compute_reward(sigs_one, cfg)
     assert bd_one.type_diversity_bonus == 0.0
@@ -619,7 +563,7 @@ def test_bonuses_zero_on_failure():
     cfg = RewardConfig()
     signals = RewardSignals(
         play_type=dispatch_play,
-        success=False,  # failed play
+        success=False,
         busy_agent_count=5,
         type_diversity_in_window=3,
         rolling_velocity=0.9,

@@ -39,12 +39,8 @@ if TYPE_CHECKING:
 
 _logger = structlog.get_logger(__name__)
 
-#: Default CLI binary name. Override with ``AGENTSHORE_TIMELAPSE_BIN`` (e.g. to
-#: point at a bundled binary or an alternate install path).
 _DEFAULT_BIN = "timelapse-capture"
 
-# Generous: start spawns a detached capture and returns promptly, but CLI
-# cold-start (Playwright launch) can be slow.
 _START_TIMEOUT_SECONDS = 60.0
 _STOP_TIMEOUT_SECONDS = 30.0
 _STATUS_TIMEOUT_SECONDS = 15.0
@@ -88,11 +84,6 @@ async def start_capture(dashboard_url: str, runs_cwd: Path) -> TimelapseRun:
             "'Timelapse capture' setup option or set AGENTSHORE_TIMELAPSE_BIN"
         )
     runs_cwd.mkdir(parents=True, exist_ok=True)
-    # Repair installs predating the windowsHide hardening: the desktop only
-    # re-offers the installer when not yet marked installed, so an old install
-    # keeps spawning a visible empty console window forever (#158). Re-apply the
-    # idempotent best-effort patch before the daemon spawns; no-op on
-    # non-Windows/already-patched, never raises.
     from agentshore.timelapse.setup import harden_installed_cli
 
     await harden_installed_cli(runs_cwd)
@@ -185,9 +176,6 @@ async def await_output(
                 data = json.loads(result.stdout)
             except json.JSONDecodeError:
                 data = {}
-            # timelapse-capture >=0.3.1 nests run state under a top-level
-            # ``status`` key; fall back to the flat top-level key for older
-            # builds.
             status = data.get("status")
             status_obj = status if isinstance(status, dict) else data
             output_path = status_obj.get("outputPath")

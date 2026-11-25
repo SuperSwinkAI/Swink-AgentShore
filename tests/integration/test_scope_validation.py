@@ -82,7 +82,6 @@ async def test_scope_drift_recorded(tmp_path: Path) -> None:
         assert drifts[0].reason == "No matching prefix"
         assert drifts[1].artifact == "src/unknown/file.py"
 
-        # A different session sees zero drift entries
         other_drifts = await store.list_scope_drift("other-session")
         assert len(other_drifts) == 0
     finally:
@@ -115,13 +114,11 @@ async def test_validate_scope_no_drift_without_path_boundaries(tmp_path: Path) -
             )
         )
 
-        # An artifact that would have drifted under legacy cluster-prefix logic.
         skill_result = SkillResult(
             success=True,
             artifacts=[{"path": "backend/models.py"}],
         )
 
-        # No drift source means nothing is logged regardless of scope_cfg.
         await validate_scope(
             skill_result=skill_result,
             play_id=play_id,
@@ -133,7 +130,6 @@ async def test_validate_scope_no_drift_without_path_boundaries(tmp_path: Path) -
         drifts = await store.list_scope_drift("scope-test")
         assert len(drifts) == 0
 
-        # Strict mode also produces no drift without a source.
         await validate_scope(
             skill_result=skill_result,
             play_id=play_id,

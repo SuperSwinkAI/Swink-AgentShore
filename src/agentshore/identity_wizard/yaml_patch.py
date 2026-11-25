@@ -175,7 +175,6 @@ def patch_yaml_with_bindings(config_path: Path, result: WizardResult) -> bool:
     head, body = _split_leading_comments(text)
     data = yaml.safe_load(body) or {}
     if not isinstance(data, dict):
-        # Should never happen for a valid agentshore.yaml.
         return False
 
     raw_identities_block = data.get("identities") or {}

@@ -534,10 +534,9 @@ def test_resolve_bd_binary_returns_none_when_nothing_resolves(
 def test_ensure_bd_installed_passes_when_on_path(monkeypatch: pytest.MonkeyPatch) -> None:
     from agentshore.beads.setup import ensure_bd_installed
 
-    # Empty version pin → presence-only check (stub need not report a version).
     monkeypatch.setenv("AGENTSHORE_BD_VERSION", "")
     with patch("shutil.which", return_value="/usr/local/bin/bd"):
-        ensure_bd_installed()  # must not raise
+        ensure_bd_installed()
 
 
 def test_ensure_bd_installed_raises_when_missing() -> None:
@@ -564,7 +563,6 @@ def test_ensure_bd_installed_accepts_env_var(
     monkeypatch.setenv("AGENTSHORE_BD_BIN", str(bd_path))
     monkeypatch.delenv("AGENTSHORE_BD_VERSION", raising=False)
 
-    # Stub reports the pinned version so the version check passes too.
     with (
         patch("shutil.which", return_value=None),
         patch("agentshore.beads.setup.subprocess.run", new=_VersionRun(SUPPORTED_BD_VERSION)),
@@ -606,7 +604,6 @@ def test_ensure_bd_installed_version_override(
     bd_path.write_text("stub", encoding="utf-8")
     bd_path.chmod(0o755)
     monkeypatch.setenv("AGENTSHORE_BD_BIN", str(bd_path))
-    # Explicit override to the stub's version makes the check pass.
     monkeypatch.setenv("AGENTSHORE_BD_VERSION", "0.9.0")
 
     with (
@@ -641,8 +638,6 @@ async def test_bd_init_project_configures_dolt_auto_commit_after_fresh_init(
     async def _fake_bd(*args: str, cwd: object) -> str:
         calls.append(args)
         if args[0] == "init":
-            # Real `bd init` creates .beads/; the subsequent .gitignore write
-            # in bd_init_project depends on the directory existing.
             (p / ".beads").mkdir()
         return ""
 
@@ -651,7 +646,6 @@ async def test_bd_init_project_configures_dolt_auto_commit_after_fresh_init(
 
     assert ("init",) in calls
     assert ("config", "set", "dolt.auto-commit", "on") in calls
-    # The config step must run after `bd init`, not before.
     assert calls.index(("init",)) < calls.index(("config", "set", "dolt.auto-commit", "on"))
 
 
@@ -674,8 +668,6 @@ async def test_bd_init_project_configures_dolt_auto_commit_when_already_initiali
     with patch("agentshore.beads.setup.bd", new=_fake_bd):
         await bd_init_project(p)
 
-    # `bd init` is skipped (already initialised) but the config step still runs,
-    # so pre-existing projects pick up the auto-commit fix too.
     assert ("init",) not in calls
     assert ("config", "set", "dolt.auto-commit", "on") in calls
 
@@ -700,4 +692,4 @@ async def test_bd_init_project_dolt_auto_commit_failure_is_best_effort(
         return ""
 
     with patch("agentshore.beads.setup.bd", new=_fake_bd):
-        await bd_init_project(p)  # must not raise
+        await bd_init_project(p)

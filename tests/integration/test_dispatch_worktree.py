@@ -78,7 +78,6 @@ def _init_repo_with_remote(tmp_path: Path, branch: str) -> Path:
     _run("git", "commit", "-m", "initial", cwd=main_repo)
     _run("git", "push", "-u", "origin", "main", cwd=main_repo)
 
-    # Create + push the target branch so PR-scoped allocation can find it.
     _run("git", "switch", "-c", branch, cwd=main_repo)
     (main_repo / "feature.txt").write_text("feature\n")
     _run("git", "add", "feature.txt", cwd=main_repo)
@@ -192,7 +191,6 @@ async def test_branch_scoped_dispatch_runs_in_worktree_with_main_repo_env(
             working_dir=main_repo,
         )
 
-        # Allocate the worktree the way the dispatch mixin does.
         params = PlayParams(branch=branch, pr_number=42)
         allocation = await manager.worktrees.allocate_for_dispatch(
             play_type=PlayType.CODE_REVIEW, params=params
@@ -202,9 +200,8 @@ async def test_branch_scoped_dispatch_runs_in_worktree_with_main_repo_env(
         assert allocation.branch_name == branch
         assert allocation.path.exists()
         assert allocation.path != main_repo
-        assert (allocation.path / "feature.txt").exists()  # branch checkout worked
+        assert (allocation.path / "feature.txt").exists()
 
-        # Dispatch — manager spawns the fake CLI with cwd_override.
         handle = await manager.instantiate(AgentType.CLAUDE_CODE)
         result = await manager.dispatch(
             handle.agent_id,
@@ -214,14 +211,12 @@ async def test_branch_scoped_dispatch_runs_in_worktree_with_main_repo_env(
         )
         assert result.exit_code == 0, f"fake CLI failed: {result.raw_output!r}"
 
-        # The fake CLI wrote the cwd + env it saw.
         observed = json.loads(sentinel.read_text())
         assert Path(observed["cwd"]).resolve() == allocation.path.resolve()
         assert Path(observed["agentshore_project_path"]).resolve() == main_repo.resolve(), (
             "AGENTSHORE_PROJECT_PATH must point at main repo, not the worktree"
         )
 
-        # Worktrees table has an active row for the branch.
         assert await _count_active_worktrees(store, session_id="s-branch") == 1
     finally:
         await store.close()
@@ -265,7 +260,6 @@ async def test_trunk_scoped_dispatch_runs_in_main_repo(tmp_path: Path) -> None:
         assert Path(observed["cwd"]).resolve() == main_repo.resolve()
         assert Path(observed["agentshore_project_path"]).resolve() == main_repo.resolve()
 
-        # Trunk allocation doesn't create a worktree row.
         assert await _count_active_worktrees(store, session_id="s-trunk") == 0
     finally:
         await store.close()
@@ -296,7 +290,6 @@ async def test_allocation_failure_drops_play_with_worktree_create_failed(
             cfg=cfg,
             working_dir=main_repo,
         )
-        # Force the allocator to fail.
         failing_allocate = AsyncMock(
             side_effect=WorktreeAllocationFailed("simulated allocate failure", reason="simulated")
         )
@@ -305,7 +298,7 @@ async def test_allocation_failure_drops_play_with_worktree_create_failed(
         orch = make_test_orchestrator(main_repo, cfg, store=store)
         orch._session_id = "s-fail"
         orch._runtime.registry = None
-        orch._manager = manager  # real manager — its worktrees is patched above
+        orch._manager = manager
         orch._runtime.state_provider = MagicMock()
 
         orch._dispatcher = Dispatcher(
@@ -322,8 +315,6 @@ async def test_allocation_failure_drops_play_with_worktree_create_failed(
             completion=orch._completion,
         )
 
-        # Capture the drop call without exercising the rest of the drop helper
-        # (which writes to several DB tables we don't need exercised here).
         drop_mock = AsyncMock()
         orch._dispatcher.drop_selected_play_before_dispatch = drop_mock  # type: ignore[method-assign]
 
@@ -341,19 +332,13 @@ async def test_allocation_failure_drops_play_with_worktree_create_failed(
         assert result is False
         drop_mock.assert_awaited_once()
         call = drop_mock.await_args
-        # Piece A (issue #60): the drop now carries a typed MaskReason instead of
-        # the bare string "worktree_create_failed" that logged an uninformative
-        # classification="unknown". With no resource_keys on params this single
-        # failure is TRANSIENT (still retrying), not yet parked.
         reason = call.kwargs["reason"]
         assert isinstance(reason, MaskReason)
         assert reason.classification == MaskClassification.TRANSIENT
         assert reason.source == MaskSource.SPAWN
         assert "worktree allocation failed" in reason.text
         assert call.kwargs["event"] == "dispatch_worktree_create_failed"
-        # No worktrees row was written for the failed attempt.
         assert await _count_active_worktrees(store, session_id="s-fail") == 0
-        # No active_play snapshot was published (allocator runs before that).
         assert not orch._runtime.in_flight
     finally:
         await store.close()
@@ -384,7 +369,6 @@ async def test_pre_dispatch_disk_guard_pauses_when_below_floor(
             cfg=cfg,
             working_dir=main_repo,
         )
-        # Disk stays below the floor even after reaping; reap frees nothing.
         monkeypatch.setattr(manager.worktrees, "free_disk_mb", lambda: 10)
         reap_mock = AsyncMock(return_value=None)
         monkeypatch.setattr(manager.worktrees, "reap_for_disk_pressure", reap_mock)
@@ -420,8 +404,8 @@ async def test_pre_dispatch_disk_guard_pauses_when_below_floor(
         result = await orch._dispatcher.dispatch_play(PlayType.CODE_REVIEW, params, state_mock)
 
         assert result is False
-        reap_mock.assert_awaited_once()  # tried to free space first
-        allocate_spy.assert_not_awaited()  # never allocated into a full disk
+        reap_mock.assert_awaited_once()
+        allocate_spy.assert_not_awaited()
         drop_mock.assert_awaited_once()
         call = drop_mock.await_args
         assert call.kwargs["event"] == "dispatch_blocked_disk_pressure"
@@ -464,7 +448,6 @@ async def test_handle_working_dir_stays_pinned_to_main_repo(tmp_path: Path) -> N
             play_type=PlayType.CODE_REVIEW.value,
             cwd_override=allocation.path,
         )
-        # The handle's working_dir is still the main repo, not the worktree.
         assert handle.working_dir == original
         assert handle.working_dir.resolve() == main_repo.resolve()
     finally:

@@ -33,9 +33,9 @@ import {
   type ConcurrencySample,
 } from "./stats/concurrencyModel";
 
-// React port of `dashboard/src/views/stats/index.ts`; the notify* functions
-// mirror the imperative module's inputs. Rendering reproduces its DOM exactly
-// so the co-located `.stats-*` rules style this tree identically.
+
+
+
 
 export interface StatsStageInsets {
   top: number;

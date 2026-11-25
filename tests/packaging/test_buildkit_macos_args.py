@@ -17,7 +17,6 @@ _BUILDKIT = _REPO / "scripts" / "buildkit"
 
 
 def _load_macos() -> ModuleType:
-    # Register the package so macos.py's relative imports (`from . import ...`) resolve.
     pkg_spec = importlib.util.spec_from_file_location(
         "scripts_buildkit_pkg2",
         _BUILDKIT / "__init__.py",

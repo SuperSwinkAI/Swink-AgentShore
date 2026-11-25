@@ -45,13 +45,6 @@ _logger = structlog.get_logger(__name__)
 STATE_FILENAME = "dashboard_state.json"
 EVENTS_FILENAME = "dashboard_events.ndjson"
 
-# Windows file-locking tolerance. The dashboard bridge opens these files
-# read-only and closes them again on every poll; CPython's open() grants no
-# FILE_SHARE_DELETE, so while that momentary handle is live an ``os.replace``
-# or ``unlink`` of the target raises ``PermissionError`` (WinError 5/32) — a
-# POSIX rename-over-open has no such problem. The bridge's hold is sub-poll, so
-# a short bounded retry clears it; an orphaned prior-session bridge is the worst
-# case and must never crash the orchestrator. POSIX takes the single-shot path.
 _WIN_LOCK_RETRIES = 10
 _WIN_LOCK_BACKOFF_S = 0.02
 
@@ -73,10 +66,6 @@ def _replace_with_retry(src: str, dst: Path) -> None:
     raise last
 
 
-# Rotation: when the events file exceeds ``_EVENTS_ROTATE_BYTES``, keep
-# only the trailing ``_EVENTS_ROTATE_KEEP_BYTES`` (rounded to a line
-# boundary). Historical events are recoverable from agentshore.db; the file
-# is a tail consumed by the dashboard, so unbounded retention is wasted.
 _EVENTS_ROTATE_BYTES = 5 * 1024 * 1024
 _EVENTS_ROTATE_KEEP_BYTES = 1 * 1024 * 1024
 
@@ -134,13 +123,7 @@ class StateWriter:
         self._dir = session_dir
         self._state_path = session_dir / STATE_FILENAME
         self._events_path = session_dir / EVENTS_FILENAME
-        # Single in-process lock around the file operations so async tasks
-        # cannot interleave a tmp-write/rename with an append.
         self._lock = asyncio.Lock()
-        # The session directory is keyed by project_key (stable path hash),
-        # so prior sessions for the same project leave events behind. The
-        # bridge's prime-from-disk would otherwise replay a prior session's
-        # `session_ended` and trigger uvicorn `should_exit` on startup.
         reset_session_files(session_dir)
 
     @property
@@ -175,8 +158,6 @@ class StateWriter:
 
     def _sync_write_state(self, blob: str) -> None:
         self._dir.mkdir(parents=True, exist_ok=True)
-        # Use NamedTemporaryFile + os.replace so a crash mid-write leaves
-        # the previous snapshot intact.
         fd, tmp_path = tempfile.mkstemp(
             prefix=".dashboard_state-",
             suffix=".json.tmp",
@@ -190,9 +171,6 @@ class StateWriter:
             with contextlib.suppress(OSError):
                 os.unlink(tmp_path)
             if sys.platform.startswith("win"):
-                # A dropped snapshot is recoverable — state is coalesced, so the
-                # next write carries the latest. Never crash the orchestrator
-                # over a transient dashboard-reader lock on Windows.
                 _logger.warning("state_writer.write_state_failed", error=str(exc))
                 return
             raise
@@ -226,12 +204,10 @@ class StateWriter:
             _logger.warning("state_writer.rotate_read_failed", error=str(exc))
             return
 
-        # Trim to the first newline so we don't keep a partial line.
         newline = tail.find(b"\n")
         if newline != -1:
             tail = tail[newline + 1 :]
 
-        # Rewrite via the same tmp+rename dance for atomicity.
         try:
             fd, tmp_path = tempfile.mkstemp(
                 prefix=".dashboard_events-",

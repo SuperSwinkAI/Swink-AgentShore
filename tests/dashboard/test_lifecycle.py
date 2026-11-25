@@ -18,7 +18,6 @@ from agentshore.dashboard import lifecycle
 def test_supersede_excludes_own_lineage(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """A pid in our own lineage (getpid/getppid) is never reaped."""
     reaped: list[int] = []
-    # dashboard.pid records *our own* pid — reaping it would kill our tree.
     monkeypatch.setattr(lifecycle.session_path, "read_dashboard_pid", lambda _p: 4321)
     monkeypatch.setattr(lifecycle.os, "getpid", lambda: 4321)
     monkeypatch.setattr(lifecycle.os, "getppid", lambda: 1)

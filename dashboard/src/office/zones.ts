@@ -1,6 +1,6 @@
 import { ZoneId } from "./layout";
 
-// Canonical V1 action-space order, parallel to Python's V1_ACTION_ORDER.
+
 export const PLAY_KEYS: readonly string[] = [
   "instantiate_agent",
   "unblock_pr",
@@ -26,8 +26,8 @@ export const PLAY_KEYS: readonly string[] = [
   "future_8",
 ];
 
-// Display order for the bottom plays tray. The tray grid flows by column, so
-// each adjacent pair represents top/bottom cells for one visual column.
+
+
 export const PLAY_TRAY_KEYS: readonly string[] = [
   "instantiate_agent",
   "seed_project",
@@ -53,7 +53,7 @@ export const PLAY_TRAY_KEYS: readonly string[] = [
   "future_8",
 ];
 
-// Human-readable names for each play key (sourced from design handoff plays-data.jsx).
+
 export const PLAY_DISPLAY_NAMES: Record<string, string> = {
   instantiate_agent: "New Agent",
   unblock_pr: "Unblock PR",
@@ -79,27 +79,27 @@ export const PLAY_DISPLAY_NAMES: Record<string, string> = {
   future_8: "Reserved 8",
 };
 
-// Reserved action slots (italicized in the Plays Panel, always masked by the policy).
+
 export const PLAY_RESERVED: ReadonlySet<string> = new Set([
   "future_4",
   "future_7",
   "future_8",
 ]);
 
-// Zone accent colors used by the Plays Panel cards.
-// violet and oxblood are panel-local additions; others match --color-fm-* tokens.
+
+
 export const ZONE_ACCENTS: Record<ZoneId, string> = {
-  [ZoneId.WAR_ROOM]: "#a78bfa", // violet — planning
-  [ZoneId.WORKSHOP]: "#f0a030", // amber — matches --color-fm-busy
-  [ZoneId.SCIENCE_LAB]: "#3dc878", // green — matches --color-fm-ok
-  [ZoneId.LAUNCH_CONTROL]: "#ff4040", // red — matches --color-fm-hot
-  [ZoneId.EDITORS_DESK]: "#ec6f55", // oxblood — review
-  [ZoneId.RECOVERY_BAY]: "#d95a6d", // red — failures and cooldowns
-  [ZoneId.ZEN_GARDEN]: "#9aa0a6", // mute — matches --color-fm-mute
-  [ZoneId.FRONT_DESK]: "#9aa0a6", // mute — lifecycle/structural
+  [ZoneId.WAR_ROOM]: "#a78bfa",
+  [ZoneId.WORKSHOP]: "#f0a030",
+  [ZoneId.SCIENCE_LAB]: "#3dc878",
+  [ZoneId.LAUNCH_CONTROL]: "#ff4040",
+  [ZoneId.EDITORS_DESK]: "#ec6f55",
+  [ZoneId.RECOVERY_BAY]: "#d95a6d",
+  [ZoneId.ZEN_GARDEN]: "#9aa0a6",
+  [ZoneId.FRONT_DESK]: "#9aa0a6",
 };
 
-// Short labels used in Plays Panel tooltips.
+
 export const ZONE_LABELS: Record<ZoneId, string> = {
   [ZoneId.WAR_ROOM]: "War Room",
   [ZoneId.WORKSHOP]: "Workshop",
@@ -112,38 +112,38 @@ export const ZONE_LABELS: Record<ZoneId, string> = {
 };
 
 export const PLAY_TO_ZONE: Record<string, ZoneId> = {
-  // War Room — planning
+
   refine_task_breakdown: ZoneId.WAR_ROOM,
   seed_project: ZoneId.WAR_ROOM,
   groom_backlog: ZoneId.WAR_ROOM,
   calibrate_alignment: ZoneId.WAR_ROOM,
 
-  // Workshop — code work
+
   issue_pickup: ZoneId.WORKSHOP,
   unblock_pr: ZoneId.WORKSHOP,
   systematic_debugging: ZoneId.WORKSHOP,
   cleanup: ZoneId.WORKSHOP,
 
-  // Recovery Bay — self-heal of wedged state, cooldowns, error recovery
+
   reconcile_state: ZoneId.RECOVERY_BAY,
   take_break: ZoneId.RECOVERY_BAY,
   prune: ZoneId.RECOVERY_BAY,
 
-  // Science Lab — QA & verification
+
   run_qa: ZoneId.SCIENCE_LAB,
 
-  // Launch Control — deploy & merge
+
   merge_pr: ZoneId.LAUNCH_CONTROL,
 
-  // Editor's Desk — critique and implementation plans
+
   write_implementation_plan: ZoneId.EDITORS_DESK,
   code_review: ZoneId.EDITORS_DESK,
   design_audit: ZoneId.EDITORS_DESK,
 
-  // Front Desk — agent arrival
+
   instantiate_agent: ZoneId.FRONT_DESK,
 
-  // Agent lifecycle — routed specially by the state manager.
+
   end_agent: ZoneId.FRONT_DESK,
   end_session: ZoneId.FRONT_DESK,
 };

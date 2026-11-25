@@ -47,7 +47,6 @@ def _detect_default_target_branch(project_path: Path) -> str | None:
     falls through to the next source. Returns ``None`` when nothing
     sensible is available (e.g., not a git repo).
     """
-    # 1. origin/HEAD — what GitHub treats as the default branch.
     result = command.git_sync(
         "symbolic-ref", "refs/remotes/origin/HEAD", cwd=project_path, timeout_seconds=5.0
     )
@@ -57,7 +56,6 @@ def _detect_default_target_branch(project_path: Path) -> str | None:
         if ref.startswith(prefix):
             return ref[len(prefix) :] or None
 
-    # 2. Currently-checked-out branch.
     result = command.git_sync(
         "rev-parse", "--abbrev-ref", "HEAD", cwd=project_path, timeout_seconds=5.0
     )
@@ -109,8 +107,6 @@ def _maybe_prompt_target_branch(
     from agentshore.subprocess_env import is_interactive
 
     if not is_interactive():
-        # No TTY and no explicit flag — leave untouched so scripted runs stay
-        # deterministic.
         return
 
     default = _detect_default_target_branch(project_path) or "main"
@@ -231,7 +227,6 @@ def init(
     project_path = Path(project).resolve()
     config_yaml = project_path / "agentshore.yaml"
 
-    # --install-skills: run only phases 2 + 4, skip all config-mutating steps.
     if install_skills_only:
         from agentshore.skills import install_skills
 
@@ -244,18 +239,14 @@ def init(
             "Warning: agentshore init --install-skills is deprecated; "
             "agentshore start refreshes skills automatically."
         )
-        # 2. Install skill files.
         installed = install_skills(project_path, force=force)
         if installed:
             click.echo(f"Installed {len(installed)} skill(s): {', '.join(installed)}")
         else:
             click.echo("All skills are up-to-date.")
-        # 4. Ensure artifact dirs are gitignored.
         if (project_path / ".git").exists():
             gitignore = project_path / ".gitignore"
             existed = gitignore.exists()
-            # Single source of truth with the start-time git-safety sweep so the
-            # two consumers can't drift (#594).
             for _entry in AGENTSHORE_OWNED_ROOT_PATHS:
                 if cli_helpers._ensure_gitignore_entry(project_path, _entry):
                     verb = "Added" if existed else "Created"
@@ -263,7 +254,6 @@ def init(
                     existed = True
         return
 
-    # 1. Generate or merge agentshore.yaml.
     if force:
         removed = _reset_agentshore_database(project_path)
         if removed:
@@ -282,8 +272,6 @@ def init(
                 f"(preserves user-edited keys outside `agents:`)"
             )
 
-        # Agent detection is authoritative: init must not invent unavailable
-        # CLI agents.
         try:
             gh_info = cli_helpers._detect_gh_remote(project_path)
             name_with_owner = gh_info.get("nameWithOwner", "owner/repo")
@@ -298,15 +286,11 @@ def init(
             budget=_DEFAULT_BUDGET,
             strict=False,
         )
-        if written and not config_yaml.exists():
-            # Defensive — should always exist after _render_or_merge.
+        if written and not config_yaml.exists():  # noqa: SIM114
             click.echo(f"Created {config_yaml}")
         elif not force:
             click.echo(f"Created {config_yaml}")
 
-    # 2b. Prompt for / persist the target branch.
-    # Mirrors desktop TargetBranchScreen so CLI projects also set
-    # project.target_branch (desktop-3t62).
     if config_yaml.exists():
         _maybe_prompt_target_branch(
             project_path,
@@ -314,9 +298,6 @@ def init(
             explicit_target_branch=target_branch,
         )
 
-    # 3. Refresh availability + run wizards.
-    # init is explicit, so wizards run with prefill from the merged config;
-    # both skip cleanly when stdin isn't a TTY.
     from agentshore.availability import refresh as refresh_availability
     from agentshore.errors import ConfigError
     from agentshore.identity_wizard import run_identity_wizard
@@ -325,17 +306,12 @@ def init(
         refresh_availability()
         _init_agents = cli_helpers._detect_agents()
 
-        # 3a0. Antigravity (agy) settings provisioning.
-        # agy has no per-invocation verbosity flag; verbosity: low lives only in
-        # its global settings.json and trims prose around its fenced JSON result
-        # (cheaper to parse). Set once, respecting any existing user value.
         if "agy" in _init_agents:
             from agentshore.agents.cli_antigravity import ensure_low_verbosity_setting
 
             if ensure_low_verbosity_setting():
                 click.echo("Set Antigravity (agy) verbosity to 'low' for cleaner JSON output")
 
-        # 3a. Agent / tier / model wizard.
         try:
             _init_cfg = _load_config_for_agent_setup(config_yaml)
             _interactive_agent_select(
@@ -345,9 +321,8 @@ def init(
                 force_run=True,
             )
         except (ConfigError, OSError, ValueError):
-            pass  # unparseable YAML — skip; `agentshore configure` can fix
+            pass
 
-        # 3b. Identity wizard.
         agent_keys = _agent_keys_from_yaml(config_yaml, detected_agents=_init_agents)
         if agent_keys:
             defaults = _identity_defaults_from_yaml(config_yaml)
@@ -361,25 +336,18 @@ def init(
                 repo_name_with_owner=_identity_repo_name_with_owner(project_path),
             )
 
-            # 3c. SSH signing pre-flight.
-            # init precedes a session, so surface a missing signing key here
-            # rather than letting it first bite a merge_pr play mid-run.
             from agentshore.cli.helpers import report_ssh_signing_status
 
             click.echo()
             report_ssh_signing_status(project_path)
 
-    # 4. Ensure artifact dirs are gitignored.
     if (project_path / ".git").exists():
         gitignore = project_path / ".gitignore"
         existed = gitignore.exists()
-        # Single source of truth with the start-time git-safety sweep so the two
-        # consumers can't drift (#594).
         for _entry in AGENTSHORE_OWNED_ROOT_PATHS:
             if cli_helpers._ensure_gitignore_entry(project_path, _entry):
                 verb = "Added" if existed else "Created"
                 click.echo(f"{verb} {_entry} to {gitignore}")
                 existed = True
 
-    # 5. Beads project-graph initialisation.
     _run_beads_init(project_path, config_yaml if config_yaml.exists() else None)

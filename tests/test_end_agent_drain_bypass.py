@@ -56,7 +56,6 @@ def test_end_agent_preconditions_in_drain_bypass_min_agents() -> None:
 def test_end_agent_preconditions_in_drain_bypass_min_plays() -> None:
     """Drain mode bypasses the >10-plays-per-agent gate."""
     play = EndAgentPlay()
-    # Two agents, neither has >10 plays — would normally be blocked in RUNNING
     state = _state(
         SessionState.DRAINING,
         agents=[_snap("a1", tasks_completed=3), _snap("a2", tasks_completed=1)],
@@ -108,7 +107,6 @@ def _make_resolver() -> ParameterResolver:
 def test_resolver_end_agent_drain_picks_any_idle() -> None:
     """In drain mode, resolver picks any idle agent regardless of play count."""
     resolver = _make_resolver()
-    # Agent with only 2 plays — would be skipped in RUNNING mode
     state = _state(
         SessionState.DRAINING,
         agents=[_snap("a1", status=AgentStatus.IDLE, tasks_completed=2)],
@@ -139,7 +137,6 @@ def test_resolver_end_agent_normal_mode_min_plays_enforced() -> None:
             _snap("a2", status=AgentStatus.IDLE, tasks_completed=5),
         ],
     )
-    # Neither agent has >10 plays — resolver should return None
     params = resolver._resolve_end_agent(state)
     assert params is None
 
@@ -163,9 +160,9 @@ def test_resolver_end_agent_drain_picks_highest_failure_rate() -> None:
     state = _state(
         SessionState.DRAINING,
         agents=[
-            _snap_with_failures("a1", completed=5, failed=1),  # rate 0.17
-            _snap_with_failures("a2", completed=3, failed=3),  # rate 0.50 — worst
-            _snap_with_failures("a3", completed=8, failed=0),  # rate 0.00
+            _snap_with_failures("a1", completed=5, failed=1),
+            _snap_with_failures("a2", completed=3, failed=3),
+            _snap_with_failures("a3", completed=8, failed=0),
         ],
     )
     params = resolver._resolve_end_agent(state)

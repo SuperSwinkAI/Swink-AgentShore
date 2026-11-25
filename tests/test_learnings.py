@@ -72,16 +72,12 @@ def test_save_atomic_survives_concurrent_read(tmp_path: Path) -> None:
     stop = threading.Event()
 
     def reader() -> None:
-        # First successful read flips started_reading so the writer knows a
-        # reader is actively contending for the file.
         while not stop.is_set():
             try:
                 content = path.read_text(encoding="utf-8")
                 json.loads(content)
                 results.append(True)
             except OSError:
-                # Windows transient sharing violation during os.replace — not a
-                # partial read; next read sees the old or new complete file.
                 results.append(True)
             except Exception:
                 results.append(False)
@@ -89,7 +85,6 @@ def test_save_atomic_survives_concurrent_read(tmp_path: Path) -> None:
 
     t = threading.Thread(target=reader, daemon=True)
     t.start()
-    # Ensure the reader makes a pass before writing — concurrency without sleeps.
     assert started_reading.wait(timeout=5), "reader thread never started"
     for i in range(20):
         save_atomic(path, [_make(f"entry-{i}", confidence=i * 0.05)])
@@ -251,7 +246,6 @@ def test_global_entries_added_when_not_in_project(tmp_path: Path) -> None:
 
     project_entries = [_make("local tip")]
 
-    # Simulate the merge logic from core.py's load_learnings step.
     global_entries = load(global_path)
     project_ids = {e.id for e in project_entries}
     for ge in global_entries:
@@ -437,7 +431,6 @@ def test_consolidate_merges_near_duplicates() -> None:
     ]
     result = consolidate(entries, overlap_threshold=0.8)
     assert len(result) == 1
-    # Representative = highest-confidence member's text; confidence = max.
     assert result[0].pattern == "always run the tests before opening PR"
     assert result[0].confidence == pytest.approx(0.8)
 
@@ -465,9 +458,9 @@ def test_consolidate_folds_recency_and_reinforcement() -> None:
     assert len(result) == 1
     merged = result[0]
     assert merged.confidence == pytest.approx(0.7)
-    assert merged.sessions_since_use == 1  # min
-    assert merged.last_reinforced_play_id == 9  # most recent
-    assert merged.created_at == "2025-01-01T00:00:00+00:00"  # earliest
+    assert merged.sessions_since_use == 1
+    assert merged.last_reinforced_play_id == 9
+    assert merged.created_at == "2025-01-01T00:00:00+00:00"
 
 
 def test_consolidate_leaves_distinct_patterns_untouched() -> None:
@@ -525,10 +518,10 @@ def test_fold_learnings_folds_metadata_with_chosen_identity() -> None:
     assert folded.id == "chosen-id"
     assert folded.pattern == "merged"
     assert folded.category == "conventions"
-    assert folded.confidence == pytest.approx(0.8)  # max
-    assert folded.sessions_since_use == 1  # min
-    assert folded.last_reinforced_play_id == 9  # most recent
-    assert folded.created_at == "2025-01-01T00:00:00+00:00"  # earliest
+    assert folded.confidence == pytest.approx(0.8)
+    assert folded.sessions_since_use == 1
+    assert folded.last_reinforced_play_id == 9
+    assert folded.created_at == "2025-01-01T00:00:00+00:00"
 
 
 def test_fold_learnings_none_reinforcement_when_no_source_reinforced() -> None:

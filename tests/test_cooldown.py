@@ -23,7 +23,6 @@ def test_streak_arms_at_threshold() -> None:
     assert cd.record_failure(7, now=0) == 1
     assert cd.record_failure(7, now=1) == 2
     assert not cd.is_armed(7, now=2)
-    # Third failure trips the cooldown; the streak resets to 0.
     assert cd.record_failure(7, now=2) == 0
     assert cd.is_armed(7, now=2)
     assert cd.streak(7) == 0
@@ -31,9 +30,8 @@ def test_streak_arms_at_threshold() -> None:
 
 def test_cooldown_expires_at_window_end() -> None:
     cd: Cooldown[int] = Cooldown(_spec(threshold=1, cooldown=20))
-    cd.record_failure(7, now=100)  # threshold 1 → arms immediately, expires at 120
+    cd.record_failure(7, now=100)
     assert cd.is_armed(7, now=119)
-    # Window end is inclusive-expiry: now >= until releases.
     assert not cd.is_armed(7, now=120)
     assert not cd.is_armed(7, now=121)
 
@@ -41,22 +39,21 @@ def test_cooldown_expires_at_window_end() -> None:
 def test_re_arms_only_after_threshold_again() -> None:
     cd: Cooldown[int] = Cooldown(_spec(threshold=2, cooldown=10))
     cd.record_failure(7, now=0)
-    cd.record_failure(7, now=0)  # trips, armed until 10
+    cd.record_failure(7, now=0)
     assert cd.is_armed(7, now=5)
-    assert not cd.is_armed(7, now=10)  # expired
-    # A single post-expiry failure is below threshold — not re-armed yet.
+    assert not cd.is_armed(7, now=10)
     assert cd.record_failure(7, now=11) == 1
     assert not cd.is_armed(7, now=11)
-    assert cd.record_failure(7, now=12) == 0  # second failure re-trips
+    assert cd.record_failure(7, now=12) == 0
     assert cd.is_armed(7, now=12)
 
 
 def test_armed_keys_prunes_expired() -> None:
     cd: Cooldown[int] = Cooldown(_spec(threshold=1, cooldown=10))
-    cd.record_failure(1, now=0)  # armed until 10
-    cd.record_failure(2, now=5)  # armed until 15
+    cd.record_failure(1, now=0)
+    cd.record_failure(2, now=5)
     assert cd.armed_keys(now=8) == {1, 2}
-    assert cd.armed_keys(now=12) == {2}  # key 1 expired and pruned
+    assert cd.armed_keys(now=12) == {2}
     assert cd.armed_keys(now=20) == set()
 
 
@@ -69,7 +66,7 @@ def test_clear_drops_streak_and_cooldown() -> None:
     assert cd.streak(7) == 0
     cd.record_failure(7, now=0)
     cd.record_failure(7, now=0)
-    cd.record_failure(7, now=0)  # trips
+    cd.record_failure(7, now=0)
     assert cd.is_armed(7, now=0)
     cd.clear(7)
     assert not cd.is_armed(7, now=0)
@@ -77,10 +74,10 @@ def test_clear_drops_streak_and_cooldown() -> None:
 
 def test_tracked_keys_spans_streaks_and_armed() -> None:
     cd: Cooldown[int] = Cooldown(_spec(threshold=3, cooldown=20))
-    cd.record_failure(1, now=0)  # streak only
+    cd.record_failure(1, now=0)
     cd.record_failure(2, now=0)
     cd.record_failure(2, now=0)
-    cd.record_failure(2, now=0)  # armed
+    cd.record_failure(2, now=0)
     assert cd.tracked_keys() == {1, 2}
 
 
@@ -88,7 +85,7 @@ def test_keys_are_independent() -> None:
     cd: Cooldown[int] = Cooldown(_spec(threshold=2, cooldown=10))
     cd.record_failure(1, now=0)
     cd.record_failure(2, now=0)
-    cd.record_failure(2, now=0)  # only key 2 trips
+    cd.record_failure(2, now=0)
     assert not cd.is_armed(1, now=0)
     assert cd.is_armed(2, now=0)
 

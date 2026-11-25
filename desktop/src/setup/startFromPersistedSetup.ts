@@ -1,44 +1,13 @@
 /**
- * Shared "start a session from the previously-persisted setup" helper.
+ * Start a session from persisted project setup through Quick Start.
  *
- * Used by the Quick Start tile on the Chooser (issue #565), which skips
- * the setup rail and wants a session running against whatever was
- * already configured for the project — same target branch, same agents,
- * same identities, same budget.
+ * Select the active project, inspect its configuration, hydrate its budget,
+ * and navigate to /starting with the persisted seed input path.
+ * StartingProgressRoute owns session.start. Budget changes are persisted
+ * through project.set_budget before the session starts.
  *
- * (The End-Session-Report "Repeat with same settings" button (#561) used
- * to be a second caller of this helper. It was removed in #309 — the ESR
- * never reliably re-attached its live view to the freshly spawned
- * session, so it now just routes back to the Chooser via Back to Home /
- * Start a new session instead of restarting in place.)
- *
- * The flow:
- *
- *   1. Re-select the project (``project.select``) so the sidecar's
- *      ``ServerState.active_project_path`` matches what the caller wants.
- *      Required: ``session.start`` reads its config off the active project,
- *      and the sidecar may have been told to forget the previous selection
- *      (``project.deselect``) on its way to the ESR / chooser screen.
- *   2. Read the project's agentshore.yaml typed fields via ``project.inspect``
- *      and hydrate the budget slice so the caller can layer the persisted-local
- *      budget back on top via ``budgetSelectionToConfig``. The budget is not
- *      currently sent on the ``session.start`` wire (the sidecar reads it
- *      out of ``agentshore.yaml``); the call still goes through so callers
- *      that DO want to mutate budget-on-disk before start (a near-term
- *      ``project.set_budget`` RPC arrives via #580) can plug in here.
- *   3. Navigate to ``/starting`` with the persisted seed input path so
- *      StartingProgressRoute fires ``session.start`` itself and the user
- *      sees the progress steps in real time.
- *
- * Errors from any RPC are surfaced to ``opts.onError`` with a string
- * identifying which step failed (``select`` / ``inspect`` / ``start``).
- * Callers typically translate those into an inline banner; rethrowing is
- * intentionally avoided so a click handler that doesn't await still gets
- * a useful error path.
- *
- * Owned by issue #565 (Quick Start). The signature stays intentionally
- * minimal — if you need more knobs add them to ``opts`` rather than
- * growing this into a general-purpose start function.
+ * RPC errors are reported to opts.onError with the failed step; they are
+ * not rethrown to the click handler.
  */
 
 import type { NavigateFunction } from "react-router-dom";
@@ -112,7 +81,7 @@ export function readPersistedBudget(): {
       typeof totalRaw === "number" && Number.isFinite(totalRaw) && totalRaw >= 0
         ? totalRaw
         : 0;
-    // Time dimension. Absent on older snapshots — default to unlimited.
+
     const timeMode = v.timeMode === "capped" ? "capped" : "unlimited";
     const timeMinutesRaw = v.timeMinutes;
     const timeMinutes =
@@ -155,9 +124,9 @@ interface PersistedSetupSeed {
 }
 
 function readPersistedSeed(): PersistedSetupSeed {
-  // Defensive — localStorage access can throw inside locked-down WebViews;
-  // a missing seed is fine, return null so the session.start RPC defaults
-  // to its own seed_project resolution.
+
+
+
   try {
     const raw = localStorage.getItem(SETUP_STORAGE_KEY);
     if (!raw) return { seedInputPath: null };
@@ -194,9 +163,9 @@ export async function startSessionFromPersistedSetup(
   const selectImpl = opts.selectProjectImpl ?? selectProject;
   const inspectImpl = opts.inspectProjectImpl ?? inspectProject;
 
-  // Step 1: re-select. ``project.select`` is idempotent on the sidecar
-  // side — if the active project already matches, this still succeeds and
-  // refreshes the recent-touch timestamp.
+
+
+
   try {
     await selectImpl(projectPath);
   } catch (err) {
@@ -204,10 +173,10 @@ export async function startSessionFromPersistedSetup(
     return;
   }
 
-  // Step 2: inspect + hydrate budget. Uses typed parsed fields from the
-  // Python sidecar — no TS YAML parser needed (issue #123). Compute the
-  // budget selection eagerly so callers that want to write it back via
-  // project.set_budget (#580) have a single place to slot in.
+
+
+
+
   try {
     const inspect = await inspectImpl();
     const budget = budgetHydrationToSelection(inspect.agentshore_yaml?.parsed?.budget);
@@ -219,10 +188,10 @@ export async function startSessionFromPersistedSetup(
     return;
   }
 
-  // Step 3: navigate to the starting-progress screen and let IT fire
-  // ``session.start``. This way the user sees the progress steps in real
-  // time instead of the modal being skipped. The route's existing
-  // non-handoff path (``sessionStarted`` falsy) handles the RPC dispatch.
+
+
+
+
   const { seedInputPath } =
     opts.seedInputPathOverride !== undefined
       ? { seedInputPath: opts.seedInputPathOverride }

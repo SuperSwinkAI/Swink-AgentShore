@@ -1,8 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
-// Single source of truth for RPC method timeout classes.
-// The Rust supervisor (sidecar.rs:response_timeout_for_method) reads the same
-// file via include_str! — do not edit method lists here; edit
-// desktop/rpc-method-classes.json instead.
+
+
+
+
 import methodClasses from "../../rpc-method-classes.json";
 
 export interface JsonRpcErrorPayload {
@@ -25,8 +25,8 @@ export const RPC_CLIENT_TIMEOUT_CODE = -32001;
  * Method lists are read from desktop/rpc-method-classes.json (single source of
  * truth shared with the Rust supervisor).
  */
-const SETUP_TIMEOUT_MS = 35_000; // Rust SETUP_RESPONSE_TIMEOUT is 30s.
-const DEFAULT_TIMEOUT_MS = 130_000; // Rust RESPONSE_TIMEOUT is 120s.
+const SETUP_TIMEOUT_MS = 35_000;
+const DEFAULT_TIMEOUT_MS = 130_000;
 
 const SETUP_METHODS: ReadonlySet<string> = new Set(methodClasses.setup);
 const UNCAPPED_METHODS: ReadonlySet<string> = new Set(methodClasses.uncapped);

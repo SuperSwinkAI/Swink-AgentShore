@@ -1,38 +1,12 @@
-"""Single home for the error-classification marker tables.
+"""Error-classification marker tables and derived canonical supersets.
 
-The same auth/rate-limit/timeout/etc. substring vocabularies were previously
-defined several times across ``agents/cli/errors.py``, ``agents/auth_probe.py``,
-``agents/git_auth_probe.py``, ``plays/_publish_reconciler.py`` and
-``errors.py`` — and had silently drifted (the Critical "error / cooldown / retry
-consistency" finding in ``tmp/TNQA.md``). This module is the union home: every
-scoped view a consumer reads is defined here verbatim, and the canonical
-``*_MARKERS`` supersets are *derived* from those views, so a future edit that
-widens one view without the others is caught by ``tests/test_error_markers.py``.
-
-Phase 1 of ``tmp/PLAN-error-cooldown-unification.md`` relocated these tables here
-without changing any consumer's matched set; Phase 4 then pointed the broad
-auth-classification sites (the executor failure inferer, the publish reconciler,
-and the CLI stderr classifier) at the canonical ``AUTH_MARKERS`` superset. The
-high-precision views (``STDOUT_AUTH_MARKERS`` for agent work product,
-``GITHUB_AUTH_ERROR_MARKERS`` for skill error strings) stay narrow by design.
-"""
+Consumer-specific views retain their matched sets. High-precision stdout
+and GitHub skill-error views remain narrower than the canonical AUTH_MARKERS."""
 
 from __future__ import annotations
 
 from agentshore.errors import GITHUB_AUTH_ERROR_MARKERS
 
-# --- Auth family ---
-# Four scoped views detect "this is a GitHub/backend auth failure" against
-# different surfaces, each with deliberately different precision:
-#   * GITHUB_AUTH_ERROR_MARKERS — free-form skill/command error strings
-#     (lives in ``errors.py``; the long-standing public name).
-#   * PUBLISH_AUTH_MARKERS      — issue-pickup publish-failure recovery (narrow).
-#   * STDERR_AUTH_PATTERNS      — CLI stderr (diagnostics; safe to match broadly).
-#   * STDOUT_AUTH_MARKERS       — CLI stdout (the work PRODUCT; high-precision
-#                                 subset that never appears in legit agent output).
-# ``AUTH_MARKERS`` is the union of all four — the canonical superset.
-
-# Issue-pickup publish-failure recovery. Was ``_publish_reconciler._AUTH_ERROR_MARKERS``.
 PUBLISH_AUTH_MARKERS: tuple[str, ...] = (
     "bad credentials",
     "http 401",
@@ -46,14 +20,6 @@ PUBLISH_AUTH_MARKERS: tuple[str, ...] = (
     "not resolvable to this token/session",
 )
 
-# CLI stderr auth classification (full set). Was ``cli/errors._AUTH_PATTERNS``.
-# Trailing two are Codex backend-session TTL-expiry signatures — stderr-only, NOT
-# mirrored into the stdout subset (see CACHE_RENEWAL_MARKERS).
-# Status codes kept ONLY in phrased forms ("http 401"/"401 unauthorized"/...).
-# Bare "401"/"403" were removed: they substring-match the microsecond ISO
-# timestamp Codex prefixes every stderr line with (e.g. ``…319401Z``), so a benign
-# line tripped a hard auth abort that benched all Codex agents while the token was
-# fine. Phrased forms carry a space + word and cannot collide.
 STDERR_AUTH_PATTERNS: tuple[str, ...] = (
     "unauthorized",
     "http 401",
@@ -77,16 +43,9 @@ STDERR_AUTH_PATTERNS: tuple[str, ...] = (
     "cannot access repository metadata",
     "failed to renew cache ttl",
     "failed to refresh available models",
-    # grok 1.0: "Not signed in. To authenticate ... grok login --device-code".
-    # (claude's "Not logged in" is caught by its structured
-    # ``authentication_failed`` code; "not logged in" itself stays in the
-    # sibling PROBE_NOT_AUTHED_MARKERS vocabulary.)
     "not signed in",
 )
 
-# CLI stdout-safe auth subset (high-precision). Drops the short generic tokens
-# ("401"/"403"/"unauthorized"/"forbidden"/"authentication") that appear in code;
-# keeps the distinctive gh/git access strings. Was ``cli/errors._AUTH_STDOUT``.
 STDOUT_AUTH_MARKERS: tuple[str, ...] = (
     "invalid api key",
     "bad credentials",
@@ -103,26 +62,15 @@ STDOUT_AUTH_MARKERS: tuple[str, ...] = (
     "cannot access repository metadata",
 )
 
-# Codex CLI model-cache TTL-renewal blips. A subset of the stderr auth markers
-# that the Codex CLI also prints during a *transient* renewal hiccup (not a real
-# auth rejection); the watchdog subtracts these to separate "hard auth" from a
-# cache-renewal blip. Was ``cli/errors._CACHE_RENEWAL_MARKERS``.
 CACHE_RENEWAL_MARKERS: frozenset[str] = frozenset(
     {"failed to renew cache ttl", "failed to refresh available models"}
 )
 
-# Canonical superset: every auth spelling across all four scoped views.
 AUTH_MARKERS: frozenset[str] = frozenset(GITHUB_AUTH_ERROR_MARKERS).union(
     PUBLISH_AUTH_MARKERS, STDERR_AUTH_PATTERNS, STDOUT_AUTH_MARKERS
 )
 
-# --- Auth-adjacent probe vocabularies (siblings, NOT subsets of AUTH_MARKERS) ---
-# These detect the same *category* — "this agent cannot authenticate" — but
-# against a disjoint string set: CLI *login-status* output and *git transport*
-# errors, not GitHub-API auth strings. Homed here for single-sourcing; they are
-# intentionally not asserted ⊆ AUTH_MARKERS.
 
-# Codex pre-launch login-status probe. Was ``auth_probe._NOT_AUTHED_MARKERS``.
 PROBE_NOT_AUTHED_MARKERS: tuple[str, ...] = (
     "not logged in",
     "not authenticated",
@@ -135,7 +83,6 @@ PROBE_NOT_AUTHED_MARKERS: tuple[str, ...] = (
     "failed to refresh available models",
 )
 
-# git ls-remote pre-launch probe. Was ``git_auth_probe._AUTH_FAILED_MARKERS``.
 GIT_AUTH_FAILED_MARKERS: tuple[str, ...] = (
     "authentication failed",
     "invalid username or password",
@@ -150,15 +97,7 @@ GIT_AUTH_FAILED_MARKERS: tuple[str, ...] = (
     "terminal prompts disabled",
 )
 
-# --- Rate-limit family ---
 
-# CLI stderr (full set). Was ``cli/errors._RATE_LIMIT_PATTERNS``.
-# Quota signatures folded in (#276): Codex "usage limit"/"try again at", Grok
-# "spending-limit"/"out of credits" (the latter carries a trailing 403/Forbidden
-# that previously misclassified as a permanent AUTH bench). Routing them through
-# rate-limit reuses Claude's take_break + provider-wide eligibility hold;
-# ``_classify_error`` checks rate_limit before auth, so the quota markers win
-# over the coexisting 403 tokens.
 RATE_LIMIT_STDERR_PATTERNS: tuple[str, ...] = (
     "rate limit",
     "rate_limit",
@@ -174,14 +113,6 @@ RATE_LIMIT_STDERR_PATTERNS: tuple[str, ...] = (
     "out of credits",
 )
 
-# CLI stdout-safe subset. Was ``cli/errors._RATE_LIMIT_STDOUT``.
-# "hit your usage limit" is the Codex stdout quota signature (mirrors Claude's
-# "hit your session limit"); kept as the full distinctive phrase so it never
-# matches an agent's work product (#276).
-# No bare "rate_limit": claude >= 2.1 streams an informational
-# ``{"type":"rate_limit_event",...,"status":"allowed"}`` on every run, which
-# made any killed run read as rate-limited. Claude's real quota failure is the
-# structured ``"error":"rate_limit"`` code (cli/errors._CLAUDE_ERROR_CODES).
 RATE_LIMIT_STDOUT_MARKERS: tuple[str, ...] = (
     "rate limit",
     "too many requests",
@@ -194,23 +125,18 @@ RATE_LIMIT_MARKERS: frozenset[str] = frozenset(RATE_LIMIT_STDERR_PATTERNS).union
     RATE_LIMIT_STDOUT_MARKERS
 )
 
-# --- Timeout family ---
 
-# CLI stderr. Was ``cli/errors._TIMEOUT_PATTERNS``.
 TIMEOUT_STDERR_PATTERNS: tuple[str, ...] = (
     "timeout",
     "timed out",
     "deadline exceeded",
     "context deadline",
 )
-# All timeout tokens are common in source/test names — none are stdout-safe.
 TIMEOUT_STDOUT_MARKERS: tuple[str, ...] = ()
 
 TIMEOUT_MARKERS: frozenset[str] = frozenset(TIMEOUT_STDERR_PATTERNS).union(TIMEOUT_STDOUT_MARKERS)
 
-# --- Invalid-model family ---
 
-# CLI stderr. Was ``cli/errors._INVALID_MODEL_PATTERNS``.
 INVALID_MODEL_STDERR_PATTERNS: tuple[str, ...] = (
     "modelnotfounderror",
     "model not found",
@@ -219,22 +145,14 @@ INVALID_MODEL_STDERR_PATTERNS: tuple[str, ...] = (
     "not found or is not supported",
     "not supported when using codex with a chatgpt account",
     "invalid_request_error",
-    # OpenAI API-key auth: "The model `x` does not exist or you do not have access to it."
     "does not exist or you do not have access",
-    # claude 2.1 stderr tag / result text
     "unrecognized_model",
     "issue with the selected model",
-    # agy 1.2+: 'invalid model selection (--model "X" ...): model X is not
-    # recognized as a known model or custom model in settings'
     "invalid model selection",
     "is not recognized as a known model",
-    # swink-coding: 'unknown tier "x"; expected small|medium|large'
     "unknown tier",
-    # copilot 1.0.94: 'Error: Model "x" from --model flag is not available.'
     "from --model flag is not available",
 )
-# CLI stdout-safe subset (distinctive Codex phrasings only).
-# Was ``cli/errors._INVALID_MODEL_STDOUT``.
 INVALID_MODEL_STDOUT_MARKERS: tuple[str, ...] = (
     "not found or is not supported",
     "not supported when using codex with a chatgpt account",
@@ -244,12 +162,9 @@ INVALID_MODEL_MARKERS: frozenset[str] = frozenset(INVALID_MODEL_STDERR_PATTERNS)
     INVALID_MODEL_STDOUT_MARKERS
 )
 
-# --- Single-stream families (match in either stderr or stdout; no precision split) ---
 
-# Codex rollout-recording internal error. Was ``cli/errors._CODEX_ROLLOUT_PATTERNS``.
 CODEX_ROLLOUT_MARKERS: frozenset[str] = frozenset({"failed to record rollout items"})
 
-# Transient network/socket failures. Was ``cli/errors._TRANSIENT_NETWORK_PATTERNS``.
 TRANSIENT_NETWORK_MARKERS: frozenset[str] = frozenset(
     {
         "socket connection was closed unexpectedly",
@@ -259,7 +174,6 @@ TRANSIENT_NETWORK_MARKERS: frozenset[str] = frozenset(
     }
 )
 
-# Out-of-memory signatures. Was ``cli/errors._OOM_PATTERNS``.
 OOM_MARKERS: frozenset[str] = frozenset(
     {
         "out of memory",
@@ -270,12 +184,6 @@ OOM_MARKERS: frozenset[str] = frozenset(
     }
 )
 
-# Host disk exhaustion. Was ``cli/errors._ENOSPC_PATTERNS``.
-# "os error 28" is Codex's (Rust) spelling of ENOSPC — Rust's std::io::Error
-# Display prints "os error 28" rather than "errno 28", so without this the
-# Codex disk-full stderr ("No space left on device (os error 28)") fell through
-# to AUTH classification (#332) because the cache-renewal TTL text that often
-# accompanies a full disk matched the auth markers instead.
 ENOSPC_MARKERS: frozenset[str] = frozenset(
     {
         "no space left on device",

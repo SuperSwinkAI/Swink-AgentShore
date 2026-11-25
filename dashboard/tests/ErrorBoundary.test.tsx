@@ -46,7 +46,7 @@ describe("ErrorBoundary", () => {
   });
 
   it("catches a render throw and shows the error detail instead of blanking", () => {
-    // React logs the caught error to console.error; silence it for a clean run.
+
     vi.spyOn(console, "error").mockImplementation(() => {});
 
     act(() => {
@@ -59,7 +59,7 @@ describe("ErrorBoundary", () => {
 
     const alert = container.querySelector('[role="alert"]');
     expect(alert).not.toBeNull();
-    // The actual error message is surfaced on-screen (diagnosable, not blank).
+
     expect(container.textContent).toContain("kaboom-from-render");
   });
 });

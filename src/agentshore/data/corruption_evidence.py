@@ -35,7 +35,6 @@ if TYPE_CHECKING:
 
 _logger = structlog.get_logger(__name__)
 
-# Bounded so evidence stays loggable.
 _LOG_OUTPUT_BYTES_LIMIT = 8 * 1024
 _LSOF_OUTPUT_BYTES_LIMIT = 4 * 1024
 _PMSET_OUTPUT_BYTES_LIMIT = 2 * 1024
@@ -82,7 +81,6 @@ def _run_capture(
             capture_output=True,
             check=False,
             timeout=timeout,
-            # Don't inherit sidecar stdin (live Tauri JSON-RPC pipe) — probing wedges caller (#155).
             stdin=subprocess.DEVNULL,
         )
     except FileNotFoundError:
@@ -179,7 +177,6 @@ def _caffeinate_status() -> dict[str, Any]:
             capture_output=True,
             check=False,
             timeout=3.0,
-            # Don't inherit sidecar stdin (live Tauri JSON-RPC pipe); probing wedges startup (#155).
             stdin=subprocess.DEVNULL,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as exc:
@@ -207,14 +204,12 @@ def capture_corruption_evidence(db_path: Path) -> dict[str, Any]:
         "db_path": str(db_path),
     }
 
-    # DB file family (main + WAL + SHM)
     files: dict[str, Any] = {}
     for suffix in ("", "-wal", "-shm"):
         sibling = db_path.with_name(db_path.name + suffix) if suffix else db_path
         files[sibling.name] = _stat_file(sibling)
     evidence["db_files"] = files
 
-    # Last-write recency approximated via main file mtime.
     main_stat = files.get(db_path.name)
     if isinstance(main_stat, dict):
         evidence["seconds_since_db_mtime"] = max(0.0, time.time() - float(main_stat["mtime_unix"]))

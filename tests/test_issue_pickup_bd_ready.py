@@ -13,8 +13,6 @@ from agentshore.state import (
     SessionState,
 )
 
-# Helpers
-
 
 def _make_agent() -> AgentSnapshot:
     return AgentSnapshot(
@@ -52,9 +50,6 @@ def _make_state(*, graph: ProjectGraph | None = None) -> OrchestratorState:
     )
 
 
-# Precondition: graph is None — beads not set up, must not block
-
-
 def test_preconditions_no_graph_does_not_block_on_beads() -> None:
     """When state.graph is None (beads not initialised), the beads gate is silent."""
     state = _make_state(graph=None)
@@ -63,9 +58,6 @@ def test_preconditions_no_graph_does_not_block_on_beads() -> None:
     assert not any("groom_backlog" in f.text for f in failures), (
         f"Beads gate must not fire when graph is None; got: {failures}"
     )
-
-
-# Precondition: has_epics but no ready tasks → block
 
 
 def test_preconditions_epics_no_ready_tasks_blocks() -> None:
@@ -88,9 +80,6 @@ def test_preconditions_epics_no_ready_tasks_blocks() -> None:
     )
 
 
-# Precondition: has_epics AND has_ready_tasks → no beads block
-
-
 def test_preconditions_epics_with_ready_tasks_does_not_block() -> None:
     """When the beads graph has epics AND ready tasks, the beads gate does not fire."""
     graph = ProjectGraph(
@@ -109,9 +98,6 @@ def test_preconditions_epics_with_ready_tasks_does_not_block() -> None:
     assert not any("groom_backlog" in f.text for f in failures), (
         f"Beads gate must not fire when ready tasks exist; got: {failures}"
     )
-
-
-# Precondition: graph present but no epics → no beads block
 
 
 def test_preconditions_no_epics_does_not_block() -> None:

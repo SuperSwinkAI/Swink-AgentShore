@@ -485,8 +485,6 @@ class TestSessionSummary:
         path = await gen.generate_session_summary(SID, tmp_path)
         html = path.read_text(encoding="utf-8")
 
-        # Split into lines and check each — allow footer GitHub link and
-        # URLs inside bundled library comments (e.g. jsdelivr.com in Chart.js).
         allowed_domains = {"github.com", "jsdelivr.com", "chartjs.org"}
         for line in html.splitlines():
             if "https://" in line or "http://" in line:

@@ -34,7 +34,6 @@ def test_real_0_2_32_capture_parses_without_usage() -> None:
 
     assert text == "Hi"
     assert session_id == "019ecfe0-b449-7cc2-a354-15e544d5f11f"
-    # grok 0.2.32 emits no usage at all -> graceful zero, never an exception.
     assert usage.tokens_in == 0
     assert usage.tokens_out == 0
 
@@ -76,7 +75,6 @@ def test_usage_block_nesting_tolerance() -> None:
     assert _grok_usage_block({"result": {"usage": {"input_tokens": 2}}}) == {"input_tokens": 2}
     assert _grok_usage_block({"turn": {"usage": {"output_tokens": 3}}}) == {"output_tokens": 3}
     assert _grok_usage_block({"tokens_in": 4, "tokens_out": 5}) == {"tokens_in": 4, "tokens_out": 5}
-    # No usage-bearing keys (the live 0.2.32 ``end`` event) -> None.
     assert _grok_usage_block({"stopReason": "EndTurn", "sessionId": "x"}) is None
 
 
@@ -107,19 +105,13 @@ def test_first_byte_deadline_resolution() -> None:
     from agentshore.agents.cli.watchdogs import _FIRST_BYTE_DEADLINE_S
 
     cfg = AgentConfig()
-    # All streaming agents share one generous 600s first-byte deadline (#213):
-    # reasoning models legitimately go silent before the first token, so the
-    # deadline only catches a child emitting nothing; wall-clock backstops hangs.
     assert resolve_first_byte_deadline(AgentType.GROK, cfg, timeout=3600.0) == 600.0
     assert (
         resolve_first_byte_deadline(AgentType.GROK, cfg, timeout=3600.0) == _FIRST_BYTE_DEADLINE_S
     )
-    # Codex/other falls back to the same global default.
     assert (
         resolve_first_byte_deadline(AgentType.CODEX, cfg, timeout=3600.0) == _FIRST_BYTE_DEADLINE_S
     )
-    # Explicit config override wins over the per-type default.
     cfg_override = AgentConfig(first_byte_timeout_seconds=20)
     assert resolve_first_byte_deadline(AgentType.GROK, cfg_override, timeout=3600.0) == 20.0
-    # Always clamped to the wall-clock timeout.
     assert resolve_first_byte_deadline(AgentType.GROK, cfg, timeout=10.0) == 10.0

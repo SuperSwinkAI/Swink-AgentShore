@@ -101,7 +101,7 @@ def test_get_budget_echoes_current() -> None:
 
 
 def test_set_budget_without_orchestrator_errors() -> None:
-    state = ServerState()  # no live orchestrator
+    state = ServerState()
     response = _drive(_request("session.set_budget", {"budget": {"enabled": False}}), state=state)
 
     error = cast("dict[str, object]", response["error"])

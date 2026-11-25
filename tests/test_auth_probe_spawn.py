@@ -61,8 +61,6 @@ def test_probe_ok(tmp_path: Path) -> None:
 
 
 def test_probe_expired_marker_classifies_regardless_of_exit(tmp_path: Path) -> None:
-    # Marker match takes precedence over the exit code: a 0-exit that still
-    # prints a not-authed signature is EXPIRED (mirrors codex's TTL-expiry hang).
     binary = _make_fake_agent(
         tmp_path,
         body="sys.stderr.write('Not logged in. Please run `codex login`.\\n'); sys.exit(0)",
@@ -79,14 +77,11 @@ def test_probe_nonzero_without_marker_is_error(tmp_path: Path) -> None:
     )
     result = probe_cli_auth(AgentType.CODEX, binary=binary)
     assert result.status == AUTH_ERROR
-    assert not result.blocks_launch  # error is surfaced but non-blocking
+    assert not result.blocks_launch
     assert "exited 3" in result.detail
 
 
 def test_probe_timeout_returns_promptly_and_tree_kills(tmp_path: Path) -> None:
-    # Sleeps far past the timeout; the probe must return at ~timeout (not ~30s),
-    # proving communicate(timeout=) fired and the tree-kill/`proc.kill()` path
-    # ran instead of blocking on the child.
     binary = _make_fake_agent(tmp_path, body="import time; time.sleep(30)")
     started = time.monotonic()
     result = probe_cli_auth(AgentType.CODEX, binary=binary, timeout=0.5)
@@ -103,14 +98,9 @@ def test_probe_missing_binary_is_error(tmp_path: Path) -> None:
 
 
 def test_probe_unprobeable_agent_type_never_spawns() -> None:
-    # GROK has no probe argv and isn't actively probed → UNPROBEABLE without
-    # resolving or spawning a binary. (agy IS actively probed; see below.)
     result = probe_cli_auth(AgentType.GROK, binary="/nonexistent/grok")
     assert result.status == "unprobeable"
     assert result.ok
-
-
-# claude: `claude auth status` prints JSON {"loggedIn": bool}; rc 0 / rc 1.
 
 
 def test_claude_probe_logged_in_is_ok(tmp_path: Path) -> None:
@@ -135,7 +125,6 @@ def test_claude_probe_logged_out_blocks_launch(tmp_path: Path) -> None:
     [
         "print('not json'); sys.exit(1)",
         "print('[1, 2]'); sys.exit(0)",
-        # loggedIn false but an unexpected exit code: not definitive.
         "print('{\"loggedIn\": false}'); sys.exit(2)",
     ],
 )
@@ -144,11 +133,6 @@ def test_claude_probe_unparseable_is_nonblocking_error(tmp_path: Path, body: str
     result = probe_cli_auth(AgentType.CLAUDE_CODE, binary=binary)
     assert result.status == AUTH_ERROR
     assert not result.blocks_launch
-
-
-# agy has no status verb and HANGS in -p mode when logged out instead of erroring,
-# so it gets an active liveness probe where a timeout is EXPIRED (launch-gating) —
-# unlike codex, where a timeout is a non-blocking hiccup.
 
 
 def _make_fake_agy(tmp_path: Path, *, body: str) -> str:
@@ -166,8 +150,6 @@ def test_agy_probe_ok(tmp_path: Path) -> None:
 
 
 def test_agy_probe_timeout_is_expired_not_timeout(tmp_path: Path) -> None:
-    # The defining difference from codex: an agy that hangs (logged-out re-login)
-    # classifies EXPIRED and gates the launch — not the non-blocking TIMEOUT.
     binary = _make_fake_agy(tmp_path, body="time.sleep(30)")
     started = time.monotonic()
     result = probe_cli_auth(AgentType.ANTIGRAVITY, binary=binary, timeout=0.5)
@@ -179,7 +161,6 @@ def test_agy_probe_timeout_is_expired_not_timeout(tmp_path: Path) -> None:
 
 
 def test_agy_probe_not_authed_marker_is_expired(tmp_path: Path) -> None:
-    # Even on a clean exit, a not-logged-in marker on stderr is launch-gating.
     binary = _make_fake_agy(
         tmp_path,
         body="sys.stderr.write('You are not logged into Antigravity.\\n'); sys.exit(0)",
@@ -190,8 +171,6 @@ def test_agy_probe_not_authed_marker_is_expired(tmp_path: Path) -> None:
 
 
 def test_agy_probe_empty_output_is_nonblocking_error(tmp_path: Path) -> None:
-    # Clean exit but no output (rare agy no-op): auth isn't disproven → surfaced
-    # as a non-blocking error, never gates the launch.
     binary = _make_fake_agy(tmp_path, body="sys.exit(0)")
     result = probe_cli_auth(AgentType.ANTIGRAVITY, binary=binary)
     assert result.status == AUTH_ERROR

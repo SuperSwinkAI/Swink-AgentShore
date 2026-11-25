@@ -47,9 +47,9 @@ _BRANCH = "agentshore/567-known-branch"
 async def test_github_adapter_list_pull_requests_propagates_branch() -> None:
     """``GitHubAdapter.list_pull_requests`` must copy ``headRefName`` to record.branch."""
     cfg = RuntimeConfig()
-    store = AsyncMock()  # never accessed by list_pull_requests
+    store = AsyncMock()
     adapter = GitHubAdapter(store, session_id="s1", cfg=cfg)
-    adapter._available = True  # bypass the probe gate for the unit test
+    adapter._available = True
     adapter._gh_json_list = AsyncMock(  # type: ignore[method-assign]
         return_value=[
             {
@@ -98,7 +98,6 @@ async def test_github_adapter_list_pull_requests_branch_none_when_headref_missin
                 "title": "PR with deleted ref",
                 "url": "https://github.com/org/repo/pull/999",
                 "state": "CLOSED",
-                # headRefName intentionally omitted
                 "labels": [],
                 "isDraft": False,
                 "author": {"login": "alice"},
@@ -110,7 +109,7 @@ async def test_github_adapter_list_pull_requests_branch_none_when_headref_missin
     )
     records = await adapter.list_pull_requests()
     assert len(records) == 1
-    assert records[0].branch is None  # fallback honoured
+    assert records[0].branch is None
 
 
 @pytest.mark.asyncio
@@ -175,7 +174,6 @@ async def test_data_store_round_trip_preserves_base_ref(tmp_path: Path) -> None:
         pr = await store.get_pull_request("s1", 510)
         assert pr is not None
         assert pr.base_ref == "main"
-        # The list read paths must agree with the single-row read.
         open_prs = await store.list_open_pull_requests("s1")
         assert [p.base_ref for p in open_prs] == ["main"]
     finally:
@@ -211,7 +209,6 @@ async def test_data_store_upsert_preserves_existing_branch_on_null_refresh(
                 branch=_BRANCH,
             )
         )
-        # Second write simulates a partial refresh with branch=None.
         await store.record_pull_request(
             PullRequestRecord(
                 pr_number=506,
@@ -261,7 +258,7 @@ def test_project_pull_requests_emits_warning_on_missing_branch() -> None:
             session_id="s1",
             state="open",
             created_at="2026-05-22T00:00:00+00:00",
-            branch=None,  # the leak we want to surface
+            branch=None,
             url="https://github.com/org/repo/pull/508",
             author_agent_id="agent-x",
         )
@@ -271,7 +268,6 @@ def test_project_pull_requests_emits_warning_on_missing_branch() -> None:
         snapshots = SnapshotProjector.project_pull_requests(records)
     assert len(snapshots) == 1
     assert snapshots[0].branch is None
-    # Find the warning call matching our event name + PR number (for triage).
     warning_calls = mock_logger.warning.call_args_list
     matching = [
         call for call in warning_calls if call.args and call.args[0] == "pr_snapshot_missing_branch"

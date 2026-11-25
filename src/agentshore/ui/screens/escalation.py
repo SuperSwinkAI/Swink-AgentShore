@@ -47,7 +47,7 @@ class EscalationModal(ModalScreen[str]):
     def _show_budget_input(self) -> None:
         try:
             self.query_one("#budget-amount")
-            return  # already mounted
+            return
         except QueryError:
             pass
         try:

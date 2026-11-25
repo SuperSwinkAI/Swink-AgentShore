@@ -361,23 +361,23 @@ export function isDoorEdgeBuffer(x: number, y: number): boolean {
 }
 
 export const WALL_BARRIERS: Rect[] = [
-  // Left rooms to Workshop/Zen. Door rows are intentionally omitted.
+
   { x: 20, y: 6, w: 1, h: 5 },
   { x: 20, y: 16, w: 1, h: 10 },
   { x: 20, y: 31, w: 1, h: 5 },
   { x: 20, y: 40, w: 1, h: 12 },
 
-  // Right rooms to Workshop/Zen. Door rows are intentionally omitted.
+
   { x: 53, y: 6, w: 1, h: 5 },
   { x: 53, y: 16, w: 1, h: 10 },
   { x: 53, y: 31, w: 1, h: 5 },
   { x: 53, y: 40, w: 1, h: 12 },
 
-  // Stacked side rooms do not connect directly to each other.
+
   { x: 5, y: 20, w: 15, h: 1 },
   { x: 54, y: 20, w: 15, h: 1 },
 
-  // Zen Garden is entered from the Workshop gate only.
+
   { x: 20, y: 40, w: 12, h: 1 },
   { x: 38, y: 40, w: 16, h: 1 },
 ];

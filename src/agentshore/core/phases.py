@@ -65,7 +65,6 @@ if TYPE_CHECKING:
 GITHUB_ISSUE_FETCH_LIMIT = 200
 GITHUB_PR_FETCH_LIMIT = 50
 
-# Colors matched to dashboard agent brand (dashboard/src/characters/types.ts AGENT_COLORS).
 _AUTHOR_LABEL_COLORS: dict[str, str] = {
     "claude_code": "E07B39",
     "codex": "F4D44D",
@@ -84,12 +83,9 @@ async def _phase_init_datastore(repo_root: Path) -> DataStore:
         db_dir = project_dir(repo_root)
         db_dir.mkdir(exist_ok=True)
         db_path = project_db_path(repo_root)
-        # desktop-jc7p: swap in latest intact snapshot if main DB is corrupt
-        # (corrupt file kept as agentshore.db.corrupt.<ts>); no-op when DB is fine.
         from agentshore.data.integrity import restore_from_snapshot_ring
 
         restore_from_snapshot_ring(db_path, db_dir)
-        # Test seam: tests patch ``agentshore.core.phases.DataStore``.
         store: DataStore = DataStore(db_path)
         await store.initialize()
         return store
@@ -119,7 +115,6 @@ async def _phase_init_executor(
 
     Returns ``(manager, gh, executor, registry)``.
     """
-    # Test seam: these symbols are patched on ``agentshore.core.phases``.
     async with _step("init_manager"):
         manager = AgentManager(
             session_id=sid,
@@ -271,9 +266,6 @@ async def _phase_init_ppo_selector(
         config_index = build_config_index(cfg)
         pp = _resolve_policy_path(cfg, policy_path)
 
-        # #247: pre-warm the cold ~1-3s torch import OFF the event loop. Run on
-        # the loop it freezes Textual's compositor; priming the module cache in a
-        # thread makes the subsequent _ppo_selector_cls() a cache hit.
         import importlib
 
         await asyncio.to_thread(importlib.import_module, "agentshore.rl.selector")
@@ -311,8 +303,6 @@ async def _phase_init_ppo_selector(
 
         orch._runtime.selector = ppo
 
-        # Wire the RL experience recorder now selector/metrics/versions are final.
-        # Completion no-ops the RL tail when this stays None (non-PPO / headless).
         from agentshore.core.concurrency_log import ConcurrencyLog
         from agentshore.core.experience_recorder import ExperienceRecorder
         from agentshore.session_path import session_dir
@@ -327,8 +317,6 @@ async def _phase_init_ppo_selector(
             concurrency_log=ConcurrencyLog(session_dir(orch._repo_root), orch._session_id),
         )
 
-        # Single autonomous-stop signal: drain after N consecutive ticks with no
-        # agent dispatch, all agents idle, and no beads/GitHub graph change.
         from agentshore.core.progress_monitor import ForwardProgressMonitor
 
         orch._runtime.progress_monitor = ForwardProgressMonitor()
@@ -496,8 +484,6 @@ async def _phase_session_start_trunk_artifacts(
                 owner_windows.append(
                     PlayWindow(play_id=play_id, started_at=started, ended_at=iso_to_epoch(ended_at))
                 )
-            # No active plays exist at bootstrap (dispatch not open), so a prior
-            # killed play (ended_at NULL) is an owner, not active.
             reclaimed_total = await sweep_and_reclaim_orphans(
                 repo_root,
                 store=store,
@@ -548,8 +534,6 @@ async def _phase_git_safety_sweep(
     """
     async with _step("git_safety_sweep"):
         added = await asyncio.to_thread(ensure_gitignore_entries, repo_root)
-        # A .gitignore line is a no-op for already-committed paths; untrack them
-        # so the ignore takes effect.
         untracked = await asyncio.to_thread(untrack_ignored_entries, repo_root)
         if added or untracked:
             _logger.info(
@@ -653,7 +637,6 @@ async def _phase_git_safety_sweep(
 
 def _phase_install_skills(repo_root: Path) -> None:
     """Install bundled skills into the project; non-fatal on failure."""
-    # _step is async; use a synchronous timing log to keep this phase sync.
     t0 = time.perf_counter()
     try:
         from agentshore.skills import install_skills
@@ -697,11 +680,6 @@ async def _clear_session_scoped_bead_progress(
     )
 
     if phase == "session_shutdown":
-        # Push the just-cleaned local beads store to its remote (if any) so
-        # session-end state survives a lost machine/disk. Single-writer by
-        # construction (session shutdown is the sole beads writer at this
-        # point), so upstream's concurrent-push corruption warning doesn't
-        # apply. Best-effort: never raises, never blocks shutdown.
         from agentshore.beads.durability import push_beads_remote
 
         await push_beads_remote(repo_root)
@@ -712,7 +690,6 @@ async def _clear_session_scoped_bead_progress(
 async def _phase_clear_beads_in_progress(*, repo_root: Path, sid: str) -> None:
     """Clear stale beads progress before the first session state snapshot."""
     async with _step("clear_beads_in_progress"):
-        # Test seam: ``_clear_session_scoped_bead_progress`` is patched here.
         await _clear_session_scoped_bead_progress(
             repo_root=repo_root,
             sid=sid,
@@ -727,7 +704,7 @@ def _author_labels_for_config(cfg: RuntimeConfig, prefix: str) -> list[tuple[str
     are enabled in the current config — labels are cheap, and missing labels
     cause silent failures when an agent type is later enabled mid-project.
     """
-    _ = cfg  # retained for signature compatibility; no longer filters by enabled
+    _ = cfg
     return [
         (
             f"{prefix}author:{agent_type.value}",
@@ -758,13 +735,11 @@ async def _mirror_issues_to_beads(
       filters between sessions will orphan previously-mirrored tasks — the
       beads task remains while the matching issue is no longer returned.
     """
-    import agentshore.beads as _beads_mod  # deferred — beads is an optional dep
+    import agentshore.beads as _beads_mod
 
     beads_dir = project_path / ".beads"
     if not beads_dir.exists():
         return
-    # No epics yet → seed_project owns first-time graph construction; mirroring
-    # now would create orphan tasks with no parent epic/story.
     if graph is None or not graph.has_epics:
         _logger.debug(
             "beads_mirror_skipped_no_epics",
@@ -775,7 +750,6 @@ async def _mirror_issues_to_beads(
         if issue.state != "open":
             continue
         ext_ref = f"gh-{issue.issue_number}"
-        # Already tracked → skip (idempotent re-run).
         if any(t.external_ref == ext_ref for t in graph.tasks):
             continue
         line = json.dumps(
@@ -794,8 +768,6 @@ async def _mirror_issues_to_beads(
                 stdin_data=(line + "\n").encode(),
             )
         except _beads_mod.BdError as exc:
-            # Dolt's "nothing to commit" (exit 1) means the import fully
-            # deduplicated — a converged no-op, not a failure.
             if "nothing to commit" in str(exc):
                 _logger.debug(
                     "beads_mirror_issue_noop",
@@ -818,8 +790,6 @@ async def _phase_fetch_github(
         try:
             await gh.probe()
             if not gh.available:
-                # Probe failed — open_issues stays empty until refresh recovers.
-                # ERROR so operators distinguish "empty repo" from "gh unavailable".
                 _logger.error(
                     "github_unavailable",
                     expected_issues_known=False,
@@ -827,8 +797,6 @@ async def _phase_fetch_github(
                     session_id=sid,
                 )
             else:
-                # desktop-rla8: full sweep at startup (no ``since`` cursor yet),
-                # then advance the cursor so later refreshes use cheap ``since=``.
                 from agentshore.core.github_syncer import GitHubSyncer, sync_cursor_now
 
                 syncer = GitHubSyncer(gh=gh, store=store, cfg=cfg, session_id=sid)
@@ -861,12 +829,6 @@ async def _phase_fetch_github(
                     try:
                         _startup_graph = await _load_graph(repo_root)
                     except BeadsSchemaDriftError as exc:
-                        # Lower-stakes than the bootstrap path (this only skips
-                        # mirroring newly-fetched GitHub issues into beads for
-                        # this tick, it doesn't decide whether to reseed), but
-                        # still worth a distinct event so schema drift shows up
-                        # as its own signal rather than folded into the
-                        # generic read-failure count.
                         _logger.warning(
                             "beads_schema_drift_skipping_mirror",
                             error=str(exc),
@@ -884,8 +846,6 @@ async def _phase_fetch_github(
                         project_path=repo_root, issues=issues, graph=_startup_graph
                     )
                 else:
-                    # Empty result is success — set cursor to skip the full
-                    # sweep next refresh.
                     await syncer.cache_issues([], cursor=startup_cutoff)
                     _logger.info(
                         "github_issues_fetched_empty",
@@ -976,7 +936,6 @@ async def _phase_load_learnings(*, cfg: RuntimeConfig, repo_root: Path) -> None:
 
             learnings_path = repo_root / cfg.learnings.file
             entries = await asyncio.to_thread(load, learnings_path)
-            # Age every entry by one session.
             entries = [
                 _Learning(
                     id=e.id,
@@ -994,18 +953,14 @@ async def _phase_load_learnings(*, cfg: RuntimeConfig, repo_root: Path) -> None:
                 prune(entries, min_confidence=cfg.learnings.min_confidence),
                 threshold_sessions=cfg.learnings.decay_after_sessions,
             )
-            # Compact near-duplicate prose so the max_entries trim doesn't drop
-            # distinct insights.
             entries = consolidate(
                 entries, overlap_threshold=cfg.learnings.consolidate_overlap_threshold
             )
             await asyncio.to_thread(save_atomic, learnings_path, entries)
-            # Merge in global-scope learnings not already present locally.
             global_learnings_path = _GLOBAL_CONFIG_DIR / "learnings.json"
             if global_learnings_path.exists():
                 try:
                     global_entries = await asyncio.to_thread(load, global_learnings_path)
-                    # Global-scope only; project entries win on id collision.
                     project_ids = {e.id for e in entries}
                     for ge in global_entries:
                         if getattr(ge, "scope", "project") == "global" and ge.id not in project_ids:
@@ -1172,10 +1127,6 @@ def _queue_open_recipe(
         agents_spawned=spawned,
     )
     if spawned:
-        # Reconcile beads↔GitHub once the fleet is online, before PPO takes
-        # over. NO wait_for gate: as first agent-consumer, groom claims an
-        # agent by queue position — a gate yields a None tick that lets PPO
-        # free-select onto the idle agent first and starves groom.
         _enqueue_groom(orch, cfg)
 
 
@@ -1238,13 +1189,9 @@ def _queue_seed_recipe(
             else None
         )
         if medium_agent_type is not None:
-            # #569: gate the medium spawn behind the first-play completing — both
-            # touch trunk and need exclusive access.
             _enqueue_instantiate(
                 orch, medium_agent_type, "medium", wait_for_play_type=first_play_type
             )
-        # Groom the seeded graph once SEED_PROJECT completes — same trunk-
-        # exclusivity gate (#569). Needs an agent, so requires the large spawn.
         if large_agent_type is not None:
             _enqueue_groom(orch, cfg, wait_for_play_type=first_play_type)
     finally:

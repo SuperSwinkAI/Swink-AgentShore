@@ -121,9 +121,6 @@ def test_keychain_status_reports_absent_token(monkeypatch) -> None:
 
 
 def test_keychain_status_times_out_when_backend_hangs(monkeypatch) -> None:
-    # keyring_child.keychain_has_token swallows exceptions (including timeouts) and
-    # returns False.  _keychain_has_token delegates to keyring_child, so keychain_status
-    # sees False and returns has_token=False without raising.
     monkeypatch.setattr(
         identities_mod,
         "_keychain_has_token",
@@ -321,8 +318,6 @@ def test_rpc_add_identity_invalid_login_returns_invalid_params(tmp_path: Path) -
 def test_identities_list_gh_login_does_not_fall_back_to_ambient(
     tmp_path: Path, monkeypatch
 ) -> None:
-    # list_identities reads only YAML config; it does not invoke gh or the OS
-    # credential store.  Ambient GH_TOKEN/GITHUB_TOKEN must not affect the listing.
     cfg = tmp_path / "agentshore.yaml"
     cfg.write_text(
         yaml.safe_dump(
@@ -354,8 +349,6 @@ def test_identities_list_gh_login_does_not_fall_back_to_ambient(
 def test_identities_list_gh_login_does_not_resolve_token(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # list_identities must not invoke gh_sync or run any subprocess — it is a
-    # fast YAML-only read used by the setup screen's initial paint.
     cfg = tmp_path / "agentshore.yaml"
     cfg.write_text(
         yaml.safe_dump(
@@ -371,8 +364,6 @@ def test_identities_list_gh_login_does_not_resolve_token(
         encoding="utf-8",
     )
 
-    # identity_config.py has no subprocess/gh_sync import; the call must
-    # succeed on YAML alone with no token resolution attempted.
     rows = list_identities(tmp_path)
 
     assert rows == [
@@ -661,7 +652,6 @@ def test_check_identity_access_gh_login_falls_back_to_matching_active_token(
 
     assert row["repo_access"] == "ok"
     assert row["token_status"] == "auth_ok"
-    # Two gh_sync calls: first with -u (fails), then without (succeeds via fallback)
     assert len(calls) == 2
     assert "-u" in calls[0]
     assert "-u" not in calls[1]

@@ -26,9 +26,6 @@ if TYPE_CHECKING:
 
 _MIN_PLAY_COST = 0.05
 
-# Approximate dollar cost of bringing a new agent online — system prompt, tool
-# manifest, project context, and skills priming. Tier-scaled because larger
-# models bill more per priming token.
 _TIER_SPAWN_COST: dict[str, float] = {
     "small": 0.02,
     "medium": 0.05,
@@ -74,13 +71,6 @@ class InstantiateAgentPlay(InternalPlay):
 
     def preconditions(self, state: OrchestratorState) -> list[MaskReason]:
         issues: list[MaskReason] = []
-        # Defer fleet *expansion* until the bootstrap first-play has completed,
-        # but never block the very first spawn. With zero active agents no play
-        # can run, so INSTANTIATE_AGENT must stay valid for the PPO to open an
-        # empty fleet from cold (open-start boot, or mid-session fleet wipeout).
-        # The gate only applies once at least one agent is already active: in
-        # seed mode the first play is SEED_PROJECT/CLEANUP; in open-start any
-        # non-INSTANTIATE_AGENT play is evidence the first PPO cycle progressed.
         active_agents = any(a.status in (AgentStatus.IDLE, AgentStatus.BUSY) for a in state.agents)
         has_first_play = any(
             pt != PlayType.INSTANTIATE_AGENT for pt in state.plays_since_last_play_type
@@ -105,9 +95,6 @@ class InstantiateAgentPlay(InternalPlay):
                     source=MaskSource.PRECONDITION,
                 )
             )
-        # Count a dispatched-but-not-yet-completed instantiate toward the
-        # per-tier cap. An in-flight instantiate means its slot is already
-        # committed; hold the next one until it lands to prevent overshoot.
         in_flight_instantiate = sum(
             1 for pt in state.in_flight_plays if pt == PlayType.INSTANTIATE_AGENT
         )
@@ -203,8 +190,6 @@ class InstantiateAgentPlay(InternalPlay):
         except (aiosqlite.Error, sqlite3.Error, RuntimeError, OSError) as exc:
             return PlayOutcome.failed(self.play_type, str(exc))
         if handle.status == AgentStatus.ERROR:
-            # gh-476: identity/repo-access preflight failed; the manager never
-            # registered the agent, so this spawn produced nothing.
             return PlayOutcome.failed(
                 self.play_type,
                 f"{agent_type.value} identity preflight failed ({handle.last_error_class})",

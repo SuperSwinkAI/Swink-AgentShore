@@ -140,7 +140,6 @@ pub fn declare_webview_wedged(app: &AppHandle, _mode: WebviewWedgeMode) {
 
     let wedge_active = app.state::<WedgeDialogActive>();
     if wedge_active.0.swap(true, Ordering::SeqCst) {
-        // Another dialog is already showing; drop this trip.
         return;
     }
 
@@ -161,8 +160,6 @@ pub fn declare_webview_wedged(app: &AppHandle, _mode: WebviewWedgeMode) {
             ))
             .show_with_result(move |result| {
                 use tauri_plugin_dialog::MessageDialogResult;
-                // Disarm the watchdog and the re-entrancy guard on any outcome;
-                // the watchdog re-arms when the next ui_heartbeat arrives.
                 app_action
                     .state::<WebviewHeartbeat>()
                     .enabled
@@ -172,9 +169,6 @@ pub fn declare_webview_wedged(app: &AppHandle, _mode: WebviewWedgeMode) {
                     .0
                     .store(false, Ordering::SeqCst);
 
-                // Map positional Yes/No/Cancel AND Custom(label) for the
-                // YesNoCancelCustom variant (Linux rfd may return positional;
-                // macOS/Windows may return Custom).
                 let action = match &result {
                     MessageDialogResult::Yes => "reload",
                     MessageDialogResult::No => "ignore",
@@ -209,13 +203,8 @@ pub fn declare_webview_wedged(app: &AppHandle, _mode: WebviewWedgeMode) {
 #[cfg(not(test))]
 pub fn spawn_watchdog_thread(app_handle: AppHandle) {
     std::thread::spawn(move || {
-        const WEDGE_THRESHOLD_MS: i64 = 10_000; // ~10s / 5 missed 2s beats
+        const WEDGE_THRESHOLD_MS: i64 = 10_000;
 
-        // Require the stale condition to hold for this many
-        // consecutive 1s polls before declaring a wedge — absorbs
-        // transient stalls (GC pause, heavy re-render under a large
-        // fleet) that self-heal within a couple more seconds, at the
-        // cost of ~3s slower detection of a genuine wedge.
         const WEDGE_CONFIRM_POLLS: u32 = 3;
         let mut wedge_declared = false;
         let mut consecutive_stale_polls: u32 = 0;
@@ -223,14 +212,12 @@ pub fn spawn_watchdog_thread(app_handle: AppHandle) {
             std::thread::sleep(std::time::Duration::from_millis(1_000));
             let beat = app_handle.state::<WebviewHeartbeat>();
             if !beat.enabled.load(Ordering::SeqCst) {
-                // Not armed or disarmed after a reload; reset wedge flag.
                 wedge_declared = false;
                 consecutive_stale_polls = 0;
                 continue;
             }
             let active = app_handle.state::<crate::activity::ActivityHolder>().is_active();
             if !active {
-                // Session ended; disarm until the next session starts.
                 beat.enabled.store(false, Ordering::SeqCst);
                 wedge_declared = false;
                 consecutive_stale_polls = 0;
@@ -266,43 +253,30 @@ mod tests {
 
     #[test]
     fn should_declare_wedge_trips_when_stale_and_not_esr_ready() {
-        // enabled, active, not esr_ready, beat stamped at t=0, now=11s, 10s
-        // threshold → 11s elapsed > 10s → trip.
         assert!(should_declare_wedge(true, true, false, 1, 11_000, 10_000));
     }
 
     #[test]
     fn should_declare_wedge_suppressed_once_esr_ready() {
-        // Same staleness as above, but esr_ready=true suppresses the trip —
-        // this is the fix: the trailing session.completed gap (timelapse
-        // finalization etc.) must not be mistaken for a paint wedge.
         assert!(!should_declare_wedge(true, true, true, 1, 11_000, 10_000));
     }
 
     #[test]
     fn should_declare_wedge_suppressed_when_draining() {
-        // Same staleness as the esr_ready test, but the suppressed
-        // param is driven by `draining` (session.draining, fired at drain
-        // start) rather than esr_ready — must suppress the trip identically,
-        // since this is the earlier of the two signals in the real call site.
         assert!(!should_declare_wedge(true, true, true, 1, 11_000, 10_000));
     }
 
     #[test]
     fn should_declare_wedge_suppressed_when_unfocused() {
-        // Same staleness as the esr_ready/draining tests, but the suppressed
-        // param is driven by the window being unfocused/minimized (#314) —
-        // must suppress the trip identically, since a missed rAF beat while
-        // the OS/webview has throttled it is not a paint wedge.
         assert!(!should_declare_wedge(true, true, true, 1, 11_000, 10_000));
     }
 
     #[test]
     fn watchdog_suppressed_true_when_any_reason_present() {
-        assert!(watchdog_suppressed(true, false, false)); // esr_ready
-        assert!(watchdog_suppressed(false, true, false)); // draining
-        assert!(watchdog_suppressed(false, false, true)); // unfocused (#314)
-        assert!(watchdog_suppressed(true, true, true)); // all three
+        assert!(watchdog_suppressed(true, false, false));
+        assert!(watchdog_suppressed(false, true, false));
+        assert!(watchdog_suppressed(false, false, true));
+        assert!(watchdog_suppressed(true, true, true));
     }
 
     #[test]
@@ -335,14 +309,12 @@ mod tests {
 
     #[test]
     fn should_declare_wedge_false_when_no_beat_yet() {
-        // last_beat_ms == 0 means "enabled but no beat stamped yet" — never trip.
         assert!(!should_declare_wedge(true, true, false, 0, 11_000, 10_000));
         assert!(!should_declare_wedge(true, true, false, 0, 0, 10_000));
     }
 
     #[test]
     fn should_declare_wedge_false_within_threshold() {
-        // 5s elapsed against a 10s threshold, beat stamped at t=5_000.
         assert!(!should_declare_wedge(
             true, true, false, 5_000, 10_000, 10_000
         ));

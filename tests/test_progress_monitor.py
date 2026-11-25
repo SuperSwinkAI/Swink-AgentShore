@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from agentshore.core.progress_monitor import ForwardProgressMonitor
 
-# A stable fingerprint used for "no graph change" ticks.
 _FP = (0.25, 4, 10, 8, 5)
 
 
@@ -20,24 +19,23 @@ def _dead_tick(monitor: ForwardProgressMonitor) -> bool:
 
 def test_first_tick_never_trips() -> None:
     monitor = ForwardProgressMonitor(no_progress_ticks=3)
-    # First tick establishes the fingerprint baseline → counts as progress.
     assert _dead_tick(monitor) is False
     assert monitor.no_progress_ticks == 0
 
 
 def test_trips_after_n_consecutive_dead_ticks() -> None:
     monitor = ForwardProgressMonitor(no_progress_ticks=3)
-    _dead_tick(monitor)  # baseline
-    assert _dead_tick(monitor) is False  # 1
-    assert _dead_tick(monitor) is False  # 2
-    assert _dead_tick(monitor) is True  # 3 → trip
+    _dead_tick(monitor)
+    assert _dead_tick(monitor) is False
+    assert _dead_tick(monitor) is False
+    assert _dead_tick(monitor) is True
     assert monitor.no_progress_ticks == 3
 
 
 def test_dispatch_resets_counter() -> None:
     monitor = ForwardProgressMonitor(no_progress_ticks=3)
-    _dead_tick(monitor)  # baseline
-    _dead_tick(monitor)  # 1
+    _dead_tick(monitor)
+    _dead_tick(monitor)
     assert (
         monitor.record_tick(dispatched_to_agent=True, any_agent_busy=False, fingerprint=_FP)
         is False
@@ -60,7 +58,6 @@ def test_graph_change_resets_counter() -> None:
     monitor = ForwardProgressMonitor(no_progress_ticks=3)
     _dead_tick(monitor)
     _dead_tick(monitor)
-    # An issue/PR/beads-task created/closed/advanced changes the fingerprint.
     changed = (0.30, 5, 11, 7, 6)
     assert (
         monitor.record_tick(dispatched_to_agent=False, any_agent_busy=False, fingerprint=changed)
@@ -74,9 +71,8 @@ def test_interleaved_progress_never_trips() -> None:
     monitor = ForwardProgressMonitor(no_progress_ticks=3)
     _dead_tick(monitor)
     for _ in range(50):
-        assert _dead_tick(monitor) is False  # 1
-        assert _dead_tick(monitor) is False  # 2
-        # ...then real work resets it before the 3rd dead tick.
+        assert _dead_tick(monitor) is False
+        assert _dead_tick(monitor) is False
         assert (
             monitor.record_tick(dispatched_to_agent=True, any_agent_busy=False, fingerprint=_FP)
             is False

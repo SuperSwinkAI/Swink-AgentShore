@@ -23,8 +23,6 @@ class EsrPayload(TypedDict):
     archive_path: str
     report_path: str
     log_path: str | None
-    # Rendered timelapse MP4 path when the optional desktop capture ran; ``None``
-    # otherwise. Desktop opens it on session completion.
     timelapse_output_path: str | None
     esr_summary: EndSessionReportData
 

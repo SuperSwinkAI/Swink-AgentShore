@@ -28,19 +28,12 @@ from pathlib import Path
 
 import pytest
 
-# Repo layout: <root>/tests/<this file>, source under <root>/src/agentshore.
 SRC_ROOT = Path(__file__).resolve().parent.parent / "src" / "agentshore"
 
-# subprocess spawn primitives that inherit the parent's stdin. Each may be
-# referenced directly (not just via run()), so guard them all.
 SPAWN_ATTRS = frozenset({"run", "Popen", "call", "check_call", "check_output"})
 
-# Async spawns: names are asyncio-specific, so match on the attribute name
-# regardless of receiver (``asyncio.`` vs ``asyncio.subprocess.``).
 ASYNC_SPAWN_ATTRS = frozenset({"create_subprocess_exec", "create_subprocess_shell"})
 
-# Keywords that make a call safe: ``stdin=`` pins the child's stdin explicitly;
-# ``input=`` causes subprocess.run to wire stdin itself.
 SAFE_KWARGS = frozenset({"stdin", "input"})
 
 
@@ -52,11 +45,8 @@ def _is_subprocess_spawn(func: ast.expr) -> bool:
     """True for ``subprocess.<spawn>(...)`` or ``asyncio.create_subprocess_*(...)``."""
     if not isinstance(func, ast.Attribute):
         return False
-    # Async spawns: distinctive attribute name, any receiver.
     if func.attr in ASYNC_SPAWN_ATTRS:
         return True
-    # Sync spawns: ``subprocess.<attr>`` only (``run`` etc. are too generic to
-    # match on the bare attribute name).
     return (
         func.attr in SPAWN_ATTRS
         and isinstance(func.value, ast.Name)
@@ -74,8 +64,6 @@ def _find_offenders(path: Path) -> list[tuple[int, str]]:
         if not _is_subprocess_spawn(node.func):
             continue
         keywords = {kw.arg for kw in node.keywords if kw.arg is not None}
-        # A ``**kwargs`` splat (kw.arg is None) could carry stdin; treat the
-        # presence of any double-star as opaque-but-safe rather than guess.
         has_splat = any(kw.arg is None for kw in node.keywords)
         if has_splat or keywords & SAFE_KWARGS:
             continue

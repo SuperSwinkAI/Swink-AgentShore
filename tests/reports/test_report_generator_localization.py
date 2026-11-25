@@ -34,7 +34,6 @@ def test_dt_short_localizes_z_suffix(fixed_tz: None) -> None:
 
 
 def test_dt_short_passthrough_on_garbage() -> None:
-    # Non-ISO input falls back to the old minute-truncation (first 16 chars).
     assert ReportGenerator._format_dt_short("not-a-real-datetime") == "not-a-real-datet"
 
 

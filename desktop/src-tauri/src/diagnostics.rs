@@ -28,9 +28,6 @@ pub fn spawn_open(target: &str) -> Result<(), String> {
     cmd.spawn().map(|_| ()).map_err(|e| e.to_string())
 }
 
-// DESIGN §1.4 — Recovery Screen actions. These commands trust the caller-
-// supplied path (the recovery screen plumbs it from the SidecarCrashedPayload
-// the supervisor emitted, never from a user-typed input).
 #[cfg_attr(test, allow(dead_code))]
 #[tauri::command]
 pub fn open_path_in_default_app(path: String) -> Result<(), String> {
@@ -55,13 +52,11 @@ pub fn resolve_log_folder(project_path: Option<&str>, home: Option<&Path>) -> Op
 #[cfg_attr(test, allow(dead_code))]
 #[tauri::command]
 pub fn open_log_folder(project_path: Option<String>) -> Result<(), String> {
-    // HOME is the norm on macOS/Linux; USERPROFILE is the Windows fallback.
     let home = std::env::var_os("HOME")
         .or_else(|| std::env::var_os("USERPROFILE"))
         .map(PathBuf::from);
     let folder = resolve_log_folder(project_path.as_deref(), home.as_deref())
         .ok_or_else(|| "could not resolve a log folder".to_string())?;
-    // Create it so the opener doesn't fail on a project that hasn't logged yet.
     let _ = std::fs::create_dir_all(&folder);
     spawn_open(&folder.to_string_lossy())
 }

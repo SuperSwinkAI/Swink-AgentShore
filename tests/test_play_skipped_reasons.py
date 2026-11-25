@@ -121,14 +121,12 @@ def test_selector_returned_none_when_no_work_and_no_reasons() -> None:
 def test_value_dominated_by_idle_is_reserved_in_enum() -> None:
     """The deprecated-post-rni0 value remains importable so log consumers
     relying on the literal don't crash during the rollout window."""
-    # PlaySkipReason is a Literal type; introspecting requires get_args.
     from typing import get_args
 
     from agentshore.state import PlaySkipReason
 
     values = set(get_args(PlaySkipReason))
     assert "value_dominated_by_idle" in values
-    # Plus the rest of the live set so the enum surface is pinned here too:
     assert {
         "all_masked",
         "no_eligible_targets",
@@ -143,8 +141,6 @@ def test_executor_skip_category_maps_to_reason() -> None:
     is the contract dashboards consume. Pin every category here so a future
     rename surfaces the breakage in this test, not in the user's agentshore.log.
     """
-    # The mapping is currently inlined in completion.py; mirror it here.
-    # When the indirection grows a helper, swap this to import & call it.
     mapping = {
         "masked": "all_masked",
         "no_target": "no_eligible_targets",

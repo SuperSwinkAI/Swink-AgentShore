@@ -27,7 +27,6 @@ if TYPE_CHECKING:
 MIN_ENABLED_BUDGET_USD = 20.0
 BUDGET_DRAIN_RESERVE_USD = 5.0
 
-# Wall-clock time budget: validated 1h–72h when enabled, 20-minute graceful drain.
 MIN_TIME_BUDGET_MINUTES = 60
 MAX_TIME_BUDGET_MINUTES = 4320
 TIME_BUDGET_DRAIN_RESERVE_MINUTES = 20.0
@@ -117,9 +116,6 @@ def parse_duration_delta(text: str) -> int:
     return _parse_duration_core(text, min_minutes=None, max_minutes=MAX_TIME_BUDGET_MINUTES)
 
 
-# --- Parse / validate a raw YAML budget mapping → BudgetConfig ---
-
-
 def parse_budget_raw(raw: dict[str, object]) -> BudgetConfig:
     """Parse and validate a raw ``budget:`` YAML mapping into a :class:`BudgetConfig`.
 
@@ -167,7 +163,7 @@ def validate_budget_payload(
 
     if not isinstance(payload, dict):
         _raise("budget payload must be an object")
-        return BudgetConfig()  # unreachable; satisfies mypy
+        return BudgetConfig()
     unknown = set(payload.keys()) - budget_keys
     if unknown:
         _raise(f"unknown budget fields: {sorted(unknown)}")
@@ -176,14 +172,12 @@ def validate_budget_payload(
     enabled = payload["enabled"]
     if not isinstance(enabled, bool):
         _raise("budget.enabled must be a boolean")
-    # ``total`` is required when enabled; optional (defaults to 0.0) when disabled
-    # so that ``{"enabled": false}`` is a valid payload for the live-session RPC.
     if "total" not in payload and enabled:
         _raise("budget.total is required when budget.enabled is true")
     total_raw = payload.get("total", 0)
     if isinstance(total_raw, bool) or not isinstance(total_raw, (int, float)):
         _raise("budget.total must be a number")
-        return BudgetConfig()  # unreachable
+        return BudgetConfig()
     total = float(total_raw)
     if not math.isfinite(total):
         _raise("budget.total must be finite")
@@ -210,7 +204,7 @@ def validate_budget_payload(
     time_total_minutes_raw = payload.get("time_total_minutes", 0)
     if isinstance(time_total_minutes_raw, bool) or not isinstance(time_total_minutes_raw, int):
         _raise("budget.time_total_minutes must be an integer")
-        return BudgetConfig()  # unreachable
+        return BudgetConfig()
     time_total_minutes = int(time_total_minutes_raw)
     if time_enabled and not (
         MIN_TIME_BUDGET_MINUTES <= time_total_minutes <= MAX_TIME_BUDGET_MINUTES

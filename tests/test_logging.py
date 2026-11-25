@@ -30,7 +30,6 @@ class TestSetupLogging:
 
         log.warning("hello", extra_key="val")
 
-        # session_id is injected via a context-var processor; verify the var was set.
         from agentshore.logging import _session_id_var
 
         assert _session_id_var.get() == "sess-abc-123"
@@ -75,7 +74,7 @@ class TestAttachSessionFileHandler:
     def test_log_line_reaches_file(self, tmp_path: object) -> None:
         from pathlib import Path
 
-        setup_logging()  # ensure structlog is configured, mirroring sidecar cold start
+        setup_logging()
         log_dir = Path(str(tmp_path)) / "logs"
         attach_session_file_handler(log_dir, "sess-early-2")
 

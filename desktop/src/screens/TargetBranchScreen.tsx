@@ -34,10 +34,10 @@ export function TargetBranchScreen({
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  // Track whether the user actually picked a different branch, so the
-  // leave-flush (below) never silently overwrites the configured target with
-  // the auto-seeded default on a passive visit. ``savedRef`` suppresses a
-  // double-write after an explicit "Set target branch" click.
+
+
+
+
   const dirtyRef = useRef(false);
   const savedRef = useRef(false);
   const selectedBranchRef = useRef("");
@@ -51,11 +51,11 @@ export function TargetBranchScreen({
     setSelectedBranch(name);
   }, []);
 
-  // Persist the selection when the user leaves this screen by ANY exit path.
-  // "Set target branch" saves explicitly, but the left rail and Back navigate
-  // away without it — and the selection lives only in local state, so without
-  // this flush a rail-navigated change is lost entirely (not even localStorage
-  // holds it). Only flush a user-made, not-yet-saved selection.
+
+
+
+
+
   useEffect(
     () => () => {
       if (savedRef.current || !dirtyRef.current) return;

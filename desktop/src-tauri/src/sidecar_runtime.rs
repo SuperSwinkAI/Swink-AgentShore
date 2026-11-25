@@ -96,8 +96,6 @@ pub(crate) fn managed_venv_python_path(home: &Path) -> PathBuf {
     }
     #[cfg(target_os = "windows")]
     {
-        // Per-user fallback (AppData\Local) — the machine-managed path under
-        // ProgramData is tried first in locate_managed_venv_python.
         home.join(r"AppData\Local\AgentShore\venv\Scripts\python.exe")
     }
 }
@@ -132,7 +130,6 @@ mod tests {
     #[test]
     fn managed_venv_python_path_in_programdata_matches_installer_layout() {
         let path = install_layout::managed_venv_python_path();
-        // The managed venv python must be under ProgramData\AgentShore\venv\Scripts.
         let s = path.to_string_lossy().to_lowercase();
         assert!(
             s.contains("agentshore"),

@@ -127,7 +127,7 @@ if ($Action -eq "SetupCert") {
     exit 0
 }
 
-# Action == Sign
+
 if (-not $File) { Die "Sign action requires -File." }
 if (-not (Test-Path $File)) { Die "File to sign not found: $File" }
 
@@ -136,8 +136,8 @@ $resolvedThumbprint = Resolve-CodeSigningThumbprint
 if (-not $resolvedSignTool -or -not $resolvedThumbprint) {
     if (-not $resolvedSignTool) { Write-Info "signtool.exe not found." }
     if (-not $resolvedThumbprint) { Write-Info "No current-user code-signing certificate with a private key was found." }
-    # Exit 2 = "could not sign" — distinct from a hard failure so the caller can
-    # decide (debug builds tolerate it; release builds must not).
+
+
     exit 2
 }
 

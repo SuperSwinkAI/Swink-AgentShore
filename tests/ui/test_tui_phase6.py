@@ -46,11 +46,6 @@ async def test_action_show_issues_no_state() -> None:
         await app.action_show_issues()
 
 
-# ---------------------------------------------------------------------------
-# Play label mapping — #486
-# ---------------------------------------------------------------------------
-
-
 def test_short_play_label_known_values() -> None:
     """play_short_label returns expected short labels for key play types."""
     assert play_short_label(PlayType.ISSUE_PICKUP) == "Pickup"

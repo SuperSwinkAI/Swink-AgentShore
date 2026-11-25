@@ -46,19 +46,9 @@ from agentshore.platform_compat import ensure_windows_event_loop_policy, force_u
 from agentshore.sidecar.recents import (
     recents_path,
 )
-
-# ---------------------------------------------------------------------------
-# Recents dispatch — wrapper lives here so server.recents_path is the lookup
-# ---------------------------------------------------------------------------
 from agentshore.sidecar.rpc.handlers.recents import (  # noqa: E402
     _dispatch_recents_rpc as _dispatch_recents_rpc_impl,
 )
-
-# ---------------------------------------------------------------------------
-# Re-exports from rpc sub-package — public surface of this module
-# ---------------------------------------------------------------------------
-# Error codes (all of them — tests import several)
-# Protocol types, factories, helpers
 from agentshore.sidecar.rpc.protocol import (  # noqa: F401 — re-exported public surface
     _PROJECT_NO_ACTIVE_REMAP,  # noqa: F401 — re-exported public surface
     ERR_NO_ACTIVE_PROJECT,
@@ -84,8 +74,6 @@ from agentshore.sidecar.rpc.protocol import (  # noqa: F401 — re-exported publ
     _result,  # noqa: F401 — re-exported public surface
     notification,  # noqa: F401 — re-exported; also named as param below
 )
-
-# Router — HANDLERS table and routing helpers
 from agentshore.sidecar.rpc.router import (
     _ROUTE_GROUPS,  # noqa: F401 — re-exported public surface
     HANDLERS,
@@ -93,8 +81,6 @@ from agentshore.sidecar.rpc.router import (
     _resolve_route,  # noqa: F401 — re-exported public surface
 )
 from agentshore.sidecar.rpc.router import handle_request as _handle_request_impl
-
-# Progress notification builders and phase constants
 from agentshore.sidecar.rpc.router_helpers import (
     SESSION_START_PHASES,  # noqa: F401 — re-exported public surface
     SESSION_STOP_DRAIN_PHASES,  # noqa: F401 — re-exported public surface
@@ -105,13 +91,7 @@ from agentshore.sidecar.rpc.router_helpers import (
     build_sidecar_health_notification,
 )
 
-# ---------------------------------------------------------------------------
-# Explicit re-export surface — required by mypy strict (implicit_reexport=False)
-# ---------------------------------------------------------------------------
-# Every name that any src consumer or sidecar test imports from this module
-# must appear here; omissions cause "does not explicitly export attribute X".
 __all__ = [
-    # Error codes
     "ERR_NO_ACTIVE_PROJECT",
     "ERR_SESSION_ACTIVE",
     "INTERNAL_ERROR",
@@ -120,7 +100,6 @@ __all__ = [
     "METHOD_NOT_FOUND",
     "PARSE_ERROR",
     "REQUEST_CANCELLED",
-    # Wire types
     "DispatchResult",
     "JsonRpcError",
     "JsonRpcNotification",
@@ -129,7 +108,6 @@ __all__ = [
     "RouteHandler",
     "SessionContext",
     "ServerState",
-    # Protocol helpers
     "_ParamError",
     "_PROJECT_NO_ACTIVE_REMAP",
     "_as_dict",
@@ -137,12 +115,10 @@ __all__ = [
     "_require_str_params",
     "_result",
     "notification",
-    # Router
     "HANDLERS",
     "Route",
     "_ROUTE_GROUPS",
     "_resolve_route",
-    # Notification builders
     "SESSION_START_PHASES",
     "SESSION_STOP_DRAIN_PHASES",
     "build_beads_schema_drift_notification",
@@ -150,7 +126,6 @@ __all__ = [
     "build_session_completed_notification",
     "build_session_draining_notification",
     "build_sidecar_health_notification",
-    # Serve-loop (defined in this module)
     "DEFAULT_HEALTH_INTERVAL_SECONDS",
     "EOF_IN_FLIGHT_GRACE_SECONDS",
     "EOF_TEARDOWN_DEADLINE_SECONDS",
@@ -161,7 +136,6 @@ __all__ = [
     "handle_request",
     "serve",
     "run",
-    # recents (defined/re-exported in this module)
     "recents_path",
 ]
 
@@ -194,23 +168,12 @@ def _dispatch_recents_rpc(
     )
 
 
-# Wire the recents wrapper into the HANDLERS dispatch table imported from router.
 HANDLERS["recents.list"] = Route(_dispatch_recents_rpc)
 HANDLERS["recents.touch"] = Route(_dispatch_recents_rpc)
 HANDLERS["recents.remove"] = Route(_dispatch_recents_rpc)
 
-# ---------------------------------------------------------------------------
-# Custom method handler table (module-level so tests can monkeypatch it)
-# ---------------------------------------------------------------------------
 
-# Empty by default — ``app.handshake`` is dispatched explicitly below. Tests
-# inject ad-hoc methods (e.g. ``test.slow``) to exercise dispatch and cancel.
 METHOD_HANDLERS: dict[str, MethodHandler] = {}
-
-
-# ---------------------------------------------------------------------------
-# Public handle_request wrapper — passes METHOD_HANDLERS so patches are seen
-# ---------------------------------------------------------------------------
 
 
 def handle_request(
@@ -228,10 +191,6 @@ def handle_request(
     """
     return _handle_request_impl(payload, notify, state=state, method_handlers=METHOD_HANDLERS)
 
-
-# ---------------------------------------------------------------------------
-# Serve-loop constants (kept here so monkeypatch.setattr("...server.X") works)
-# ---------------------------------------------------------------------------
 
 DEFAULT_HEALTH_INTERVAL_SECONDS: float = 30.0
 """Default cadence for ``sidecar.health`` liveness pings (DESIGN §5.1)."""
@@ -252,12 +211,6 @@ stdin EOF means the desktop shell exited or the pipe broke; "sidecar death ==
 orchestrator death" (DESIGN §1.2) only holds if the serve loop is guaranteed
 to return promptly after EOF, so every post-EOF wait is bounded (#155).
 """
-
-
-# ---------------------------------------------------------------------------
-# Serve-loop implementation (kept here so monkeypatch works for constants /
-# ServerState / _reader_loop)
-# ---------------------------------------------------------------------------
 
 
 def _cancel_request_id(payload: object) -> int | str | None:
@@ -309,10 +262,6 @@ async def _serve_async(
     def _handle_loop_exception(
         _loop: asyncio.AbstractEventLoop, context: dict[str, object]
     ) -> None:
-        # Global backstop for orphaned-task exceptions the per-task callbacks
-        # don't cover. structlog is already routed to stderr by
-        # _configure_sidecar_logging (stdout is reserved for JSON-RPC), and
-        # dict_tracebacks renders the stack when an exception is present.
         import structlog
 
         exc = context.get("exception")
@@ -327,9 +276,6 @@ async def _serve_async(
     reader.start()
     in_flight: dict[int | str, asyncio.Task[None]] = {}
     cancelled_ids: set[int | str] = set()
-    # Background tasks that drain cancelled handlers so the serve loop never
-    # blocks on a slow `finally` and so a non-CancelledError from handler
-    # cleanup cannot escape and kill the loop. Held to prevent premature GC.
     drain_tasks: set[asyncio.Task[None]] = set()
     state = ServerState()
 
@@ -339,8 +285,6 @@ async def _serve_async(
                 with contextlib.suppress(asyncio.CancelledError, Exception):
                     await task
             finally:
-                # Keep `cancelled_ids` sticky until the handler finishes so
-                # `run_request` cannot double-write the cancellation reply.
                 cancelled_ids.discard(req_id)
 
         drain = asyncio.create_task(_drain())
@@ -348,9 +292,6 @@ async def _serve_async(
         drain.add_done_callback(drain_tasks.discard)
 
     def _emit(obj: object) -> None:
-        # One framing site for every stdout write (H2/H3): json_safe +
-        # allow_nan=False so a non-finite float in a response can never emit
-        # invalid JSON, then flush so the shell sees the line immediately.
         stdout.write(frame(obj))
         stdout.flush()
 
@@ -366,11 +307,6 @@ async def _serve_async(
         emitted = False
         try:
             rpc_response = await response
-            # If a cancel arrived while this request was in flight, the
-            # cancel handler already wrote the cancellation reply — never
-            # double-write, even if the handler's `finally` masked the
-            # CancelledError with a RuntimeError that the inner
-            # `_await_handler` then turned into a normal error response.
             if req_id not in cancelled_ids:
                 _emit(rpc_response)
             emitted = True
@@ -411,24 +347,10 @@ async def _serve_async(
             if task is not None and not task.done():
                 cancelled_ids.add(cancel_id)
                 task.cancel()
-                # Write the cancellation reply immediately — never block the
-                # serve loop on the cancelled handler's cleanup (desktop-y4g).
                 _emit(_error(cancel_id, REQUEST_CANCELLED, "request cancelled"))
-                # Drain the cancelled task in the background so a non-
-                # CancelledError raised by its `finally` cleanup is swallowed
-                # rather than killing the loop (desktop-6hd). The drain
-                # discards `cancel_id` from `cancelled_ids` only after the
-                # task finishes — keeps `run_request` from double-writing.
                 _schedule_drain(task, cancel_id)
             continue
 
-        # Defensive: an unhandled exception in handle_request used to escape
-        # all the way out of _serve_async, killing the dispatch loop and
-        # leaving the desktop shell's pending JSON-RPC promise to hang
-        # forever (the "freeze" symptom on Identities Add when add_identity
-        # raised PermissionError writing to Path.cwd()). Trap any unexpected
-        # error and convert it to an INTERNAL_ERROR response so the loop
-        # survives and the caller sees a real failure.
         try:
             response = handle_request(payload_obj, notify=_write_notification, state=state)
         except Exception as exc:  # noqa: BLE001 — last-resort guard
@@ -459,19 +381,6 @@ async def _serve_async(
         with contextlib.suppress(asyncio.CancelledError):
             await health_task
 
-    # stdin EOF: the desktop shell is gone (window closed, host exited, or the
-    # pipe broke). EOF is always HARD-stop semantics — nobody is left to
-    # receive a graceful drain's result, so never wait for one (#155).
-    #
-    # 1. Cancel the supervised orchestrator run loop immediately. An in-flight
-    #    graceful ``session.stop`` awaits it through ``asyncio.shield``, so
-    #    cancelling only the handler would leave the orchestrator running
-    #    headless; the task itself must be cancelled.
-    # 2. Give in-flight handlers a short grace to finish naturally (quick
-    #    requests still drain and emit, as documented), then cancel stragglers.
-    # 3. Bound the final wait so the serve loop is guaranteed to return and
-    #    ``asyncio.run`` can tear the loop down — the sidecar process must
-    #    always exit promptly once the pipe closes.
     orch_task = state.orchestrator_task
     if orch_task is not None and not orch_task.done():
         orch_task.cancel()
@@ -570,8 +479,5 @@ def run() -> None:
     force_utf8_stdio()
     ensure_windows_event_loop_policy()
     _configure_sidecar_logging()
-    # Map numpy/torch native DLLs while single-threaded — see docstring. Must run
-    # before serve() spawns the reader thread / event loop / executors, or the
-    # later session.start import deadlocks on the Windows loader lock.
     _preload_native_libraries()
     serve(sys.stdin, sys.stdout)

@@ -210,15 +210,8 @@ def start(
 
       agentshore start --mode agent --dashboard
     """
-    # On macOS, re-exec under `caffeinate -i` so the OS can't defer the
-    # sidecar's SQLite fsyncs while the screen is locked (desktop-tvsb /
-    # desktop-n7ci). No-op on Linux/Windows and inside pytest.
     maybe_re_exec_under_caffeinate()
 
-    # Parse: validate flag-level options the bootstrap needs. The caps are
-    # resolved against the loaded config inside bootstrap (so omitted flags can
-    # defer to agentshore.yaml); validate the explicit values here so a bad flag
-    # surfaces as a usage error before any work happens.
     if unlimited and (budget is not None or time_budget is not None):
         raise click.BadParameter("--unlimited cannot be combined with --budget or --time.")
     validate_budget_flag(budget)
@@ -240,7 +233,6 @@ def start(
         headless=headless,
     )
 
-    # Bootstrap: resolve budget/socket/config/detection into a ResolvedSession.
     resolved = bootstrap_session(
         StartOptions(
             project_path=Path(project).resolve(),
@@ -259,9 +251,6 @@ def start(
         )
     )
 
-    # Summary + preflight gates (each echoes its own banner, validates, and
-    # exits 1 on failure). Sequencing is pinned by run_session_preflight so
-    # this can't drift from the desktop sidecar's equivalent phase.
     echo_bootstrap_summary(resolved)
     run_session_preflight(
         identities=lambda: preflight_identities(resolved.cfg, resolved.repo_root),
@@ -271,7 +260,6 @@ def start(
         skip_git_auth_preflight=skip_git_auth_preflight,
     )
 
-    # -- Dispatch: run the orchestrator -----------------------------------------
     from agentshore.session_path import cleanup_session, write_pid, write_session_info
     from agentshore.session_process import stop_dashboard_process
 
@@ -366,9 +354,6 @@ def start(
                 session_id=run_session_id,
             )
     finally:
-        # Finalise any CLI-started dashboard timelapse before cleanup removes the
-        # sidecar — covers a natural session end and a graceful drain. No-op when
-        # no capture was started (e.g. headless/solo).
         _finalize_cli_timelapse(project_path)
         stop_dashboard_process(project_path)
         cleanup_session(project_path)

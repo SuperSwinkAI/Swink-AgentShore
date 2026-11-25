@@ -62,7 +62,6 @@ def _make_manager(
 ) -> AgentManager:
     agents: dict[str, AgentConfig] = {}
     if mock_binary:
-        # No per-agent timeout — we want play_timeouts to win.
         agents["codex"] = AgentConfig(enabled=True, binary=mock_binary)
     cfg = RuntimeConfig(
         agents=agents,
@@ -76,11 +75,6 @@ def _make_manager(
         working_dir=tmp_path,
         python_executable=sys.executable,
     )
-
-
-# ---------------------------------------------------------------------------
-# Per-play timeout resolution
-# ---------------------------------------------------------------------------
 
 
 def test_effective_play_timeout_falls_back_to_global() -> None:
@@ -97,7 +91,6 @@ def test_effective_play_timeout_per_play_override_wins() -> None:
     )
     assert cfg.effective_play_timeout("issue_pickup") == 3600
     assert cfg.effective_play_timeout("unblock_pr") == 5400
-    # Plays not in the map keep the global fallback.
     assert cfg.effective_play_timeout("merge_pr") == 1800
     assert cfg.effective_play_timeout(None) == 1800
 
@@ -107,11 +100,6 @@ def test_play_timeouts_frozen_after_init() -> None:
     cfg = RuntimeConfig(play_timeouts={"issue_pickup": 3600})
     with pytest.raises(TypeError):
         cfg.play_timeouts["unblock_pr"] = 5400  # type: ignore[index]
-
-
-# ---------------------------------------------------------------------------
-# Manager dispatch threads play_type to dispatch_cli
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -184,14 +172,8 @@ async def test_dispatch_falls_back_to_agent_timeout(
 
     monkeypatch.setattr("agentshore.agents.manager.dispatch_cli", _fake_dispatch_cli)
 
-    # merge_pr has no override → falls back to agent_timeout (1800).
     await mgr.dispatch(handle.agent_id, "prompt", play_type="merge_pr")
     assert captured["default_timeout"] == 1800
-
-
-# ---------------------------------------------------------------------------
-# Classified timeout event
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio

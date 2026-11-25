@@ -36,9 +36,6 @@ double-pop paths.
 
 from __future__ import annotations
 
-# Consecutive same-cause merge_pr dirty_trunk failures before the trunk is
-# considered wedged. A new cause (different blocking path(s)) resets the
-# streak to 1; a successful merge_pr clears it entirely.
 _DIRTY_TRUNK_WEDGE_THRESHOLD = 3
 
 
@@ -46,27 +43,11 @@ class MainRepoGuard:
     """Owns the default branch, the pre-play ref handshake, and the dispatch latch."""
 
     def __init__(self, *, default_branch: str = "main") -> None:
-        # Default branch resolved from origin/HEAD at session start; refreshed
-        # on SIGHUP. Defaults to "main" until the session-start sweeper runs.
         self.default_branch = default_branch
-        # Per-dispatch pre-play symbolic ref shadow, keyed by dispatch_id.
-        # Populated in _dispatch_play, consumed (popped) in _process_completion;
-        # entries are popped on consumption so the dict never grows past the
-        # in-flight set.
         self._pre_play_branches: dict[str, str | None] = {}
-        # Latched True on main_repo_auto_restore_failed; _dispatch_play consults
-        # it before launching a task. Cleared by a successful RECONCILE_STATE.
         self.dispatch_paused = False
-        # dirty_trunk wedge counter (#330): keyed on the sorted, joined set of
-        # blocking root-level untracked paths from a live git-status read. A
-        # new key (different blocking file(s)) resets the count to 1; a
-        # successful merge_pr clears it entirely (see clear_dirty_trunk_failures).
         self._dirty_trunk_failure_key: str | None = None
         self._dirty_trunk_failure_count: int = 0
-
-    # ------------------------------------------------------------------
-    # Pre-play handshake
-    # ------------------------------------------------------------------
 
     def record_pre_play_branch(self, dispatch_id: str, ref: str | None) -> None:
         self._pre_play_branches[dispatch_id] = ref
@@ -74,10 +55,6 @@ class MainRepoGuard:
     def pop_pre_play_branch(self, dispatch_id: str) -> str | None:
         """Pop the recorded pre-play ref (default ``None`` if never recorded)."""
         return self._pre_play_branches.pop(dispatch_id, None)
-
-    # ------------------------------------------------------------------
-    # dirty_trunk wedge counter (#330)
-    # ------------------------------------------------------------------
 
     def record_dirty_trunk_failure(self, key: str) -> None:
         """Record a merge_pr ``dirty_trunk`` failure blocked by root-untracked path(s) ``key``."""

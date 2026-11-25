@@ -10,9 +10,6 @@
  * * On any step failure the helper short-circuits and calls onError with
  *   the matching ``failedStep`` label, then resolves cleanly so click
  *   handlers don't see an unhandled rejection.
- *
- * (This helper used to have a second caller — the ESR "Repeat with same
- * settings" button, issue #561 — removed in #309.)
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -23,9 +20,9 @@ import type { inspectProject, selectProject } from "../../rpc/projectClient";
 
 const STORAGE_KEY = "agentshore.desktop.setup.v1";
 
-// jsdom 27 ships a Storage that doesn't implement ``clear`` in this
-// environment; replace it with an in-memory shim scoped to each test so
-// we have stable seed/teardown semantics.
+
+
+
 function installInMemoryLocalStorage(): void {
   const store = new Map<string, string>();
   const shim: Storage = {

@@ -37,9 +37,6 @@ def _read(name: str) -> str:
     return (_FIXTURES / name).read_text(encoding="utf-8")
 
 
-# --- argv ------------------------------------------------------------------
-
-
 def test_build_argv_shape() -> None:
     argv = build_argv(
         AgentType.COPILOT,
@@ -115,9 +112,6 @@ def test_tool_denial_maps_to_copilot_permission_kinds(
     assert [a for a in argv if a.startswith("--deny-tool")] == expected
 
 
-# --- parser ----------------------------------------------------------------
-
-
 def test_parse_real_capture() -> None:
     text, usage, session_id = parse_copilot_jsonl(_read("copilot_json_1_0_94.jsonl"))
     assert text == "PINEAPPLE"
@@ -126,7 +120,6 @@ def test_parse_real_capture() -> None:
     assert usage.tokens_out == 7
     assert usage.cached_tokens_in == 1152
     assert usage.max_turn_input_tokens == 15646
-    # 1 premium request at the $0.04 overage rate.
     assert usage.reported_cost == pytest.approx(0.04)
 
 
@@ -158,9 +151,6 @@ def test_parse_fractional_premium_requests_and_garbage() -> None:
     assert parse_copilot_jsonl("not json")[0] == "not json"
 
 
-# --- error classification --------------------------------------------------
-
-
 @pytest.mark.parametrize(
     ("stderr", "expected"),
     [
@@ -188,7 +178,6 @@ def test_session_error_event_feeds_classification() -> None:
 @pytest.mark.parametrize(
     ("error_type", "error_code", "message"),
     [
-        # Message texts verbatim from the 1.0.94 runtime (runtime.node).
         (
             "quota",
             "quota_exceeded",
@@ -222,9 +211,6 @@ def test_other_session_error_types_do_not_read_as_rate_limit() -> None:
     assert _classify_error(1, "", stdout) != ErrorClass.RATE_LIMIT
 
 
-# --- resume usage delta ----------------------------------------------------
-
-
 def _finalize(
     driver: CopilotCliDriver, usage: _UsageTotals, sid: str, resume: str | None
 ) -> _UsageTotals:
@@ -255,11 +241,7 @@ def test_resume_of_unknown_session_passes_usage_through_and_clamps() -> None:
     driver = CopilotCliDriver()
     usage = _UsageTotals(tokens_in=10, reported_cost=0.04)
     assert _finalize(driver, usage, "s9", "s9") == usage
-    # A resume that died before its first checkpoint reports zeros: no negatives.
     assert usage_since(_UsageTotals(), usage) == _UsageTotals()
-
-
-# --- registration ----------------------------------------------------------
 
 
 def test_copilot_registered_everywhere() -> None:

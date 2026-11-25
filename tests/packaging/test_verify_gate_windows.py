@@ -21,7 +21,6 @@ _VERIFY_PATH = _REPO / "scripts" / "buildkit" / "verify.py"
 
 
 def _load() -> ModuleType:
-    # Load as part of the scripts.buildkit package so its relative imports resolve.
     pkg_spec = importlib.util.spec_from_file_location(
         "scripts_buildkit_pkg4",
         _REPO / "scripts" / "buildkit" / "__init__.py",

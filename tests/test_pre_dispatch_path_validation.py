@@ -59,7 +59,6 @@ def _build_dispatch_harness(working_dir: Path) -> object:
     manager_mock = orch._manager
     manager_mock._working_dir = working_dir
 
-    # State stub for revalidation. Won't be reached on the early refuse path.
     state_mock = MagicMock()
     state_mock.session_state = MagicMock()
     state_mock.agents = []
@@ -78,7 +77,6 @@ def _build_dispatch_harness(working_dir: Path) -> object:
         state_builder=orch._state_builder,
         completion=orch._completion,
     )
-    # Patch the drop helper (writes store + warns) so the test can assert on it.
     orch._dispatcher.drop_selected_play_before_dispatch = AsyncMock()  # type: ignore[method-assign]
     return orch, state_mock
 
@@ -150,9 +148,6 @@ async def test_dispatch_proceeds_when_path_is_clean(tmp_path: Path) -> None:
     orch, state = _build_dispatch_harness(tmp_path)
     params = PlayParams()
 
-    # Fall through past the backslash-space guard; later plumbing (missing
-    # executor/state) may raise for ISSUE_PICKUP — fine, we only assert the
-    # guard did NOT trip.
     state.session_state = MagicMock()
     from contextlib import suppress
 
@@ -163,5 +158,4 @@ async def test_dispatch_proceeds_when_path_is_clean(tmp_path: Path) -> None:
             state,
         )
 
-    # Critical: the bad-path guard was NOT invoked.
     orch._dispatcher.drop_selected_play_before_dispatch.assert_not_called()

@@ -21,9 +21,9 @@ function renderCarousel(overrides: Partial<{ open: boolean; seen: boolean }> = {
   return handlers;
 }
 
-// Walk to the final slide via the Next button.
+
 function advanceToLastSlide() {
-  // 4 slides → 3 Next clicks.
+
   fireEvent.click(screen.getByTestId("welcome-carousel-next"));
   fireEvent.click(screen.getByTestId("welcome-carousel-next"));
   fireEvent.click(screen.getByTestId("welcome-carousel-next"));
@@ -86,7 +86,7 @@ describe("WelcomeCarousel", () => {
   it("marks seen when the last slide is reached and closes via Get started", () => {
     const h = renderCarousel();
     advanceToLastSlide();
-    // Reaching the final slide marks the flow seen.
+
     expect(h.onSeen).toHaveBeenCalled();
     const cta = screen.getByTestId("welcome-carousel-cta");
     expect(cta).toHaveTextContent("Get started");

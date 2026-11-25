@@ -13,8 +13,6 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
 
 DEFAULT_MODEL_TIER = "medium"
-# Spawn order for INSTANTIATE_AGENT round-robin: medium (workhorse) first, then
-# small (cheap-band coverage), then large (high-complexity).
 MODEL_TIER_PRIORITY: tuple[str, ...] = ("medium", "small", "large")
 MODEL_TIER_ORDER: tuple[str, ...] = ("small", "medium", "large")
 REQUIRED_MODEL_TIERS: tuple[str, ...] = MODEL_TIER_ORDER
@@ -26,11 +24,6 @@ DEFAULT_MODEL_TIERS: dict[AgentType, dict[str, ModelTierConfig]] = {
         "large": ModelTierConfig(model="opus", reasoning_effort="high"),
     },
     AgentType.CODEX: {
-        # gpt-5.6-luna/terra/sol (released 2026-07-09) mirror OpenAI's own
-        # fast-affordable/balanced/flagship segmentation, so they map 1:1 onto
-        # AgentShore's small/medium/large tiers. ``-codex``-suffixed ids are
-        # API-key only (HTTP 400 with a ChatGPT account), so they must not be
-        # defaults.
         "small": ModelTierConfig(model="gpt-5.6-luna", reasoning_effort="low"),
         "medium": ModelTierConfig(model="gpt-5.6-terra", reasoning_effort="medium"),
         "large": ModelTierConfig(model="gpt-5.6-sol", reasoning_effort="high"),
@@ -41,26 +34,16 @@ DEFAULT_MODEL_TIERS: dict[AgentType, dict[str, ModelTierConfig]] = {
         "large": ModelTierConfig(model="grok-4.5", reasoning_effort="high"),
     },
     AgentType.ANTIGRAVITY: {
-        # Effort is baked into the display-name, so reasoning_effort is unset
-        # (REASONING_EFFORTS is empty). Small tier = open-weight GPT-OSS 120B.
         "small": ModelTierConfig(model="GPT-OSS 120B (Medium)"),
         "medium": ModelTierConfig(model="Gemini 3.8 Flash (High)"),
         "large": ModelTierConfig(model="Gemini 3.1 Pro (High)"),
     },
     AgentType.SWINK_CODING: {
-        # --model only accepts the tier aliases themselves; the tier→model-id
-        # map lives in swink-coding's own config (~/.swink-coding/config.toml),
-        # so reasoning_effort is unset (REASONING_EFFORTS is empty).
         "small": ModelTierConfig(model="small"),
         "medium": ModelTierConfig(model="medium"),
         "large": ModelTierConfig(model="large"),
     },
     AgentType.COPILOT: {
-        # Preferences, resolved against the live Copilot catalog
-        # (model_discovery.discover_copilot_models): one per catalog
-        # model_picker_category (lightweight/versatile/powerful). A model the
-        # seat lacks degrades to its newest same-family sibling, else `auto`
-        # (always valid; the account picks the model).
         "small": ModelTierConfig(model="claude-haiku-5.5", reasoning_effort="low"),
         "medium": ModelTierConfig(model="claude-sonnet-5.5", reasoning_effort="medium"),
         "large": ModelTierConfig(model="claude-opus-5.5", reasoning_effort="high"),
@@ -68,20 +51,12 @@ DEFAULT_MODEL_TIERS: dict[AgentType, dict[str, ModelTierConfig]] = {
 }
 
 
-# Canonical reasoning-effort vocabularies per agent type.  Empty tuple means
-# the agent CLI has no effort flag and the field must not be set. These are the
-# CLI-wide fallback; per-model levels discovered live (codex) take precedence
-# and out-of-range values are clamped by model_resolver.resolve_effort.
-# Grok: the lowest common set (grok-4.5 rejects xhigh/max; grok 1.0.50).
-# Codex: gpt-5.6-* reject "minimal" (codex-cli 0.144.1).
 REASONING_EFFORTS: dict[AgentType, tuple[str, ...]] = {
     AgentType.CLAUDE_CODE: ("low", "medium", "high", "xhigh", "max"),
     AgentType.GROK: ("low", "medium", "high"),
     AgentType.CODEX: ("none", "low", "medium", "high", "xhigh", "max"),
     AgentType.ANTIGRAVITY: (),
     AgentType.SWINK_CODING: (),
-    # Copilot CLI 1.0.94 `--reasoning-effort`; per-model lists from the live
-    # catalog narrow this (resolve_effort clamps).
     AgentType.COPILOT: ("none", "minimal", "low", "medium", "high", "xhigh", "max"),
 }
 

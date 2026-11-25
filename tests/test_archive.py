@@ -217,13 +217,11 @@ async def test_complete_session_persists_play_totals(tmp_path: Path) -> None:
 
         await store.complete_session(session_id, final_alignment=0.5)
 
-        # (a) session row carries the real aggregate, not the 0/0.0 defaults (#170).
         session = await store.get_session(session_id)
         assert session is not None
         assert session.total_plays == 3
         assert session.total_cost == pytest.approx(4.50)
 
-        # (b) archive record + (c) manifest reflect the persisted totals.
         archiver = Archiver(store, tmp_path / ".agentshore" / "archives")
         result = await archiver.create_archive(session_id, db_path=db_path)
         manifest = json.loads((result / "manifest.json").read_text(encoding="utf-8"))

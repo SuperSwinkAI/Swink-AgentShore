@@ -132,9 +132,6 @@ fn run_sidecar(args: Vec<OsString>) -> ProvisionResult<()> {
             &logger,
         )?;
 
-        // bd is deliberately not provisioned here: AgentShore uses the system
-        // bd (brew/npm/...) and `agentshore init` offers to install or upgrade
-        // it through that package manager on first use.
         grant_read_execute(&venv, &logger)?;
         Ok(())
     })?;
@@ -152,8 +149,6 @@ fn run_cli(args: Vec<OsString>) -> ProvisionResult<()> {
 
     let logger = Logger::open("Installing-AgentShore-CLI")?;
     logger.line("==> Installing AgentShore CLI");
-    // Plain wheel path, not a file:// URI — uv resolves local paths directly and
-    // handles spaces, #, %, and non-ASCII (wheel_uri's %20-only encoding didn't).
     run_required(
         "uv tool install",
         CLI_FAILURE,
@@ -206,9 +201,6 @@ fn run_timelapse(_args: Vec<OsString>) -> ProvisionResult<()> {
 }
 
 fn run_timelapse_update(_args: Vec<OsString>) -> ProvisionResult<()> {
-    // Runs on every install so a previously-installed (opt-in) timelapse
-    // component gets upgraded when its version drifts from the pin; no-op when
-    // timelapse-capture isn't installed at all.
     let logger = Logger::open("Updating-Timelapse-Capture")?;
     logger.line("==> Updating Timelapse Capture (if installed)");
     let python = managed_venv_python_path();

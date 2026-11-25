@@ -16,9 +16,6 @@ use windows_sys::Win32::System::Threading::{
     PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE,
 };
 
-// Shared install-layout constants. The provisioner is a separate workspace
-// crate, so it textually includes the app crate's install_layout.rs via #[path]
-// rather than duplicating the machine-path literals.
 #[path = "../../src/install_layout.rs"]
 mod install_layout;
 
@@ -33,7 +30,6 @@ pub(crate) const PROCESS_OR_SWAP_FAILURE: i32 = 30;
 pub(crate) const UV_VENV_FAILURE: i32 = 40;
 pub(crate) const WHEEL_INSTALL_FAILURE: i32 = 50;
 pub(crate) const SIDECAR_IMPORT_FAILURE: i32 = 60;
-// 70 was BD_PROVISION_FAILURE; bd is the system's now and is never provisioned here.
 pub(crate) const TIMELAPSE_FAILURE: i32 = 80;
 pub(crate) const CLI_FAILURE: i32 = 90;
 
@@ -179,10 +175,6 @@ pub(crate) fn run_logged(
         .args(args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    // Force UTF-8 for any Python child: without it the managed venv's stdout
-    // defaults to cp1252 and structlog's print() crashes with UnicodeEncodeError
-    // on the first non-cp1252 char (e.g. a winget progress glyph in an error).
-    // Mirrors sidecar_env.rs so install-time logging is just as robust.
     command.env("PYTHONUTF8", "1");
     apply_no_window_creation_flags(&mut command);
     let mut child = command.spawn().map_err(|err| {
@@ -412,8 +404,6 @@ fn is_managed_python(image_path: &[u16], len: usize) -> bool {
         return false;
     }
 
-    // Accept the machine-wide ProgramData path or the per-user LOCALAPPDATA path
-    // that older installer revisions used.
     let programdata_prefix = std::env::var_os("ProgramData")
         .map(|v| {
             v.to_string_lossy()
@@ -453,27 +443,20 @@ fn is_managed_python(image_path: &[u16], len: usize) -> bool {
 /// `QueryFullProcessImageNameW` and does not require `SeDebugPrivilege`.
 #[cfg(windows)]
 fn terminate_pid(pid: u32) -> Result<bool, String> {
-    // Long-path names can reach 32767 UTF-16 code units; size to the ceiling
-    // so a valid path is never truncated.
     const MAX_IMAGE_PATH: usize = 32768;
 
     unsafe {
-        // TERMINATE + QUERY_LIMITED_INFORMATION: inspect the image before killing.
         let handle = OpenProcess(
             PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE_ACCESS,
             0,
             pid,
         );
         if handle.is_null() {
-            // Process not running or access denied; treat as already gone.
             return Ok(false);
         }
 
-        // If the image path can't be queried (process exited, or any error), do
-        // NOT kill — the target can no longer be verified.
         let mut buf = [0u16; MAX_IMAGE_PATH];
         let mut buf_len = MAX_IMAGE_PATH as u32;
-        // dwFlags = 0 means Win32 format (not native NT path).
         let query_ok = QueryFullProcessImageNameW(handle, 0, buf.as_mut_ptr(), &mut buf_len) != 0;
         if !query_ok {
             eprintln!(
@@ -484,7 +467,6 @@ fn terminate_pid(pid: u32) -> Result<bool, String> {
             return Ok(false);
         }
 
-        // Verify the target is our managed python.exe before committing to a kill.
         if !is_managed_python(&buf, buf_len as usize) {
             let path_display = String::from_utf16_lossy(&buf[..buf_len as usize]);
             eprintln!(
@@ -559,7 +541,6 @@ fn run_icacls(path: &Path, grant: &str, label: &str, logger: &Logger) -> Provisi
 }
 
 pub(crate) fn cleanup_legacy_layout(logger: &Logger) {
-    // Older installers staged a private bd binary here; AgentShore uses the system bd now.
     let mut paths = vec![agentshore_programdata_root().join("bin")];
     if let Some(local) = env::var_os("LOCALAPPDATA").map(PathBuf::from) {
         paths.push(local.join("Programs").join("AgentShore"));
@@ -615,10 +596,6 @@ pub(crate) fn runtime_dir() -> PathBuf {
     install_layout::runtime_dir()
 }
 
-// Non-Windows stubs: the provisioner is Windows-only but must compile in the
-// cross-platform desktop crate. install_layout's machine paths are Windows-cfg'd,
-// so mirror the layout under a temp root just to satisfy the build — never run on
-// a real macOS/Linux install.
 #[cfg(not(windows))]
 pub(crate) fn agentshore_programdata_root() -> PathBuf {
     std::env::temp_dir().join("agentshore")
@@ -730,9 +707,6 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn pythonutf8_is_set_for_spawned_children() {
-        // Regression: the managed venv Python must run in UTF-8 mode so a
-        // non-cp1252 log line (e.g. a winget progress glyph in a timelapse
-        // error) cannot crash structlog's print() with UnicodeEncodeError.
         let root = unique_temp_dir("pythonutf8");
         fs::create_dir_all(&root).unwrap();
         let logger = test_logger(&root);
@@ -814,12 +788,10 @@ mod tests {
                 .collect::<Vec<u16>>()
         };
 
-        // Use the real ProgramData prefix so the test works on any Windows install.
         let programdata = env::var_os("ProgramData")
             .map(|v| v.to_string_lossy().to_string())
             .unwrap_or_else(|| r"C:\ProgramData".to_string());
 
-        // Canonical managed path — must be accepted.
         let managed_path = format!(r"{programdata}\AgentShore\venv\Scripts\python.exe");
         let buf = encode(&managed_path);
         assert!(
@@ -827,7 +799,6 @@ mod tests {
             "managed venv python.exe should be accepted: {managed_path}"
         );
 
-        // Case-insensitive variant — must be accepted.
         let managed_lower = managed_path.to_lowercase();
         let buf_lower = encode(&managed_lower);
         assert!(
@@ -835,7 +806,6 @@ mod tests {
             "lower-case managed path should be accepted"
         );
 
-        // System python — must be rejected.
         let system_python = r"C:\Windows\System32\python.exe";
         let buf_sys = encode(system_python);
         assert!(
@@ -843,7 +813,6 @@ mod tests {
             "system python.exe must be rejected"
         );
 
-        // Arbitrary executable — must be rejected.
         let arbitrary = r"C:\Windows\System32\svchost.exe";
         let buf_arb = encode(arbitrary);
         assert!(
@@ -851,8 +820,6 @@ mod tests {
             "svchost.exe must be rejected"
         );
 
-        // Path-traversal spoof: contains AgentShore prefix text but doesn't
-        // start with the managed root — must be rejected.
         let spoof = format!(
             r"C:\Users\attacker\{programdata}\AgentShore\venv\Scripts\python.exe"
         );
@@ -862,7 +829,6 @@ mod tests {
             "path-traversal spoof must be rejected"
         );
 
-        // Zero-length must not panic and must return false.
         assert!(
             !is_managed_python(&[], 0),
             "zero-length buffer must be rejected"

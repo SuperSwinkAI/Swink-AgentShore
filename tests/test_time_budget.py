@@ -27,10 +27,6 @@ from agentshore.config.models import BudgetConfig
 from agentshore.core.mixins.snapshots import SnapshotProjector
 from agentshore.errors import ConfigError
 
-# --------------------------------------------------------------------------- #
-# parse_duration
-# --------------------------------------------------------------------------- #
-
 
 @pytest.mark.parametrize(
     ("text", "expected"),
@@ -65,14 +61,8 @@ def test_parse_duration_bounds_inclusive() -> None:
     assert parse_duration(f"{MAX_TIME_BUDGET_MINUTES}") == MAX_TIME_BUDGET_MINUTES
 
 
-# --------------------------------------------------------------------------- #
-# time reserve
-# --------------------------------------------------------------------------- #
-
-
 def test_time_reserve_threshold() -> None:
     assert time_budget_reserve_threshold(1440) == 1440 - TIME_BUDGET_DRAIN_RESERVE_MINUTES
-    # Never negative for tiny caps.
     assert time_budget_reserve_threshold(10) == 0.0
 
 
@@ -80,11 +70,6 @@ def test_time_reserve_reached() -> None:
     assert not time_budget_reserve_reached(elapsed_minutes=1419, total_minutes=1440)
     assert time_budget_reserve_reached(elapsed_minutes=1420, total_minutes=1440)
     assert time_budget_reserve_reached(elapsed_minutes=1440, total_minutes=1440)
-
-
-# --------------------------------------------------------------------------- #
-# config validation (load_config -> _parse_budget)
-# --------------------------------------------------------------------------- #
 
 
 def _write(tmp_path: Path, body: str) -> Path:
@@ -119,16 +104,9 @@ def test_config_time_disabled_allows_zero(tmp_path: Path) -> None:
 
 
 def test_empty_budget_config_is_default_sentinel() -> None:
-    # The bare-default injection in resolution keys off this equality, so the
-    # new time fields must not change the empty sentinel.
     assert BudgetConfig() == BudgetConfig(
         enabled=False, total=0.0, warning_threshold=0.20, time_enabled=False, time_total_minutes=0
     )
-
-
-# --------------------------------------------------------------------------- #
-# snapshot time fields
-# --------------------------------------------------------------------------- #
 
 
 def _projector() -> SnapshotProjector:
@@ -155,7 +133,7 @@ def test_snapshot_time_remaining_clamped_at_zero() -> None:
         total_plays=1,
         total_cost=0.0,
         budget_cfg=cfg,
-        elapsed_minutes=120.0,  # past the cap
+        elapsed_minutes=120.0,
     )
     assert snap.time_remaining_minutes == 0.0
 

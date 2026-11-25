@@ -1,11 +1,4 @@
-"""Tests for the orchestrator's selection-digest gate + Fibonacci idle backoff.
-
-Regression for the 2026-05-07 ``ppo_selector.retry_exhausted`` storm: the
-main loop was re-running the selector once per second against unchanged
-state during long-running plays, firing 570 events in 13 minutes. The
-gate skips ``_select_play`` when the digest matches, and the backoff
-stretches the watchdog wait progressively the longer the digest stays put.
-"""
+"""Tests for the orchestrator's selection-digest gate + Fibonacci idle backoff."""
 
 from __future__ import annotations
 
@@ -62,11 +55,6 @@ def _orch() -> Orchestrator:
     return make_test_orchestrator(Path("."))
 
 
-# ---------------------------------------------------------------------------
-# _idle_backoff()
-# ---------------------------------------------------------------------------
-
-
 def test_idle_backoff_starts_at_one_second() -> None:
     orch = _orch()
     assert orch._loop.idle_backoff() == 1.0
@@ -85,11 +73,6 @@ def test_idle_backoff_clamps_at_ceiling() -> None:
     orch = _orch()
     orch._runtime.idle_streak = 999
     assert orch._loop.idle_backoff() == _IDLE_BACKOFF_SECONDS[-1]
-
-
-# ---------------------------------------------------------------------------
-# _selection_state_digest()
-# ---------------------------------------------------------------------------
 
 
 def test_digest_is_stable_for_equivalent_state() -> None:

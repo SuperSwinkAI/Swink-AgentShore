@@ -25,23 +25,13 @@ from agentshore.config.models import TimelapseConfig
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
 
-# Internal project.* error codes (mapped to public codes by the dispatcher).
-# ERR_PROJECT_NOT_ACTIVE is remapped to server.ERR_NO_ACTIVE_PROJECT (-32011)
-# for project.{inspect,branches,set_target_branch}; see server._dispatch.
 ERR_PROJECT_NOT_ACTIVE = -32004
 GIT_PROBE_TIMEOUT_SECONDS = 5.0
 GIT_TIMEOUT_RETURN_CODE = 124
-# Deliberately short: inspect() fans probes out concurrently and falls back for
-# any slow probe so the Readiness screen always paints fast. The non-interactive
-# git env (no credential prompt) is what removes the real hang risk, not a longer
-# deadline here.
 INSPECT_PROBE_TIMEOUT_SECONDS = 2.0
 BRANCH_LIST_TIMEOUT_SECONDS = 20.0
 BRANCH_REMOTE_ONLY_LIMIT = 200
 
-# Dedicated thread pool for inspect() probes. A custom executor (not asyncio's
-# default) means asyncio.run() / shutdown_default_executor() won't wait on slow
-# probe threads.
 _PROBE_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
     max_workers=16,
     thread_name_prefix="agentshore-project-probe",
@@ -163,7 +153,7 @@ def _fetch_auth_overlay(path: Path) -> Mapping[str, str] | None:
 
     try:
         return resolve_ff_fetch_overlay(load_config(path / "agentshore.yaml"))
-    except Exception:  # best-effort: never break the branch picker over auth
+    except Exception:
         return None
 
 
@@ -264,7 +254,6 @@ async def inspect() -> dict[str, object]:
     def _run(fn: object) -> asyncio.Task[object]:
         return asyncio.ensure_future(loop.run_in_executor(_PROBE_EXECUTOR, fn))  # type: ignore[arg-type]
 
-    # Build (task, fallback) pairs — each task wraps a blocking git probe.
     probe_pairs: list[tuple[asyncio.Future[object], object]] = [
         (_run(lambda: _repo_identity(path)), _repo_identity_probe_fallback(path)),
         (_run(lambda: _current_branch(path)), None),
@@ -469,7 +458,6 @@ def _list_branches_sync(path: Path, deadline: float | None = None) -> list[_Bran
 
     local_order, remote_names = _parse_ref_listing(local_res, remote_res)
 
-    # No deadline passed to _build_branch_rows — ahead/behind stay None
     return _build_branch_rows(
         path,
         default=default,
@@ -603,7 +591,6 @@ def set_target_branch(name: str) -> dict[str, object]:
     if check.returncode != 0:
         raise ProjectError(f"invalid branch name: {name!r}", code=-32002)
 
-    # Validate the branch exists in local or remote refs
     local_res = _run_git(
         ["for-each-ref", "--format=%(refname:short)", "refs/heads/"],
         path,
@@ -723,8 +710,6 @@ def set_trusted_issue_enforcement(payload: object) -> dict[str, object]:
     return {"enabled": enabled, "yaml_path": str(yaml_path)}
 
 
-# Accepted keys on the ``timelapse:`` mapping; mirrors ``TimelapseConfig`` in
-# ``src/agentshore/config/models.py``.
 _TIMELAPSE_KEYS: frozenset[str] = frozenset({"enabled", "installed"})
 
 
@@ -781,8 +766,6 @@ async def install_timelapse() -> dict[str, object]:
     ``{"success": bool, "message": str, "installed": bool, "yaml_path": str?}``.
     """
     path = _require_active()
-    # Lazy import keeps the sidecar's cold-start import graph light: the
-    # installer module is only needed when the user opts into the feature.
     from agentshore.timelapse.setup import install_timelapse as _install
 
     result = await _install(cwd=path)
