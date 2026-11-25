@@ -173,7 +173,6 @@ def test_non_object_payload_is_rejected() -> None:
 
 
 def test_notification_returns_none() -> None:
-    # No "id" field => notification per JSON-RPC 2.0 — no response written.
     assert handle_request({"jsonrpc": "2.0", "method": "app.handshake"}) is None
     assert handle_request({"jsonrpc": "2.0", "method": "no.such.method"}) is None
 
@@ -345,7 +344,6 @@ def test_session_start_emits_per_phase_progress_notifications() -> None:
         assert ok_params["step"] == step
         assert running_params["percent"] == 0
         assert ok_params["percent"] == 100
-        # "running" message is the "ok" phase label plus a "…" suffix.
         assert running_params["message"] == f"{ok_params['message']}…"
 
 
@@ -372,10 +370,9 @@ def test_session_start_fails_when_config_missing_with_active_project(tmp_path: o
     )
     error = response["error"]
     assert isinstance(error, dict)
-    assert error["code"] == -32602  # INVALID_PARAMS
+    assert error["code"] == -32602
     assert "agentshore.yaml" in cast("str", error["message"])
 
-    # The first phase fires running then failed; later phases never emit.
     assert len(notifications) == 2
     running = cast("dict[str, object]", notifications[0])
     failed = cast("dict[str, object]", notifications[1])
@@ -397,7 +394,6 @@ def test_session_start_fails_when_beads_init_fails(tmp_path: object) -> None:
     (project_path / "agentshore.yaml").write_text(VALID_TIERED_CONFIG, encoding="utf-8")
     notifications: list[dict[str, object]] = []
 
-    # Simulate bd binary not found so the automatic init fails.
     with patch(
         "agentshore.beads.setup.bd_init_project",
         new=AsyncMock(side_effect=RuntimeError("bd binary not found")),
@@ -418,8 +414,6 @@ def test_session_start_fails_when_beads_init_fails(tmp_path: object) -> None:
     assert error["code"] == -32602
     assert ".beads" in cast("str", error["message"])
 
-    # First three phases emit ok; init_beads emits running then failed.
-    # (check_agent_auth still emits its running/ok pair with no CLI agents.)
     steps_seen = [cast("dict[str, object]", n["params"])["step"] for n in notifications]
     assert steps_seen == [
         "config_merge",
@@ -445,7 +439,6 @@ def test_session_start_succeeds_with_valid_project(tmp_path: object) -> None:
     (project_path / "agentshore.yaml").write_text(VALID_TIERED_CONFIG, encoding="utf-8")
     (project_path / ".beads").mkdir()
     state = ServerState(active_project_path=str(project_path))
-    # start_bridge=False skips real uvicorn binding; an async test covers it.
     from agentshore.sidecar.session_lifecycle import run_session_start
 
     outcome = asyncio.run(run_session_start(state, start_bridge=False))
@@ -482,8 +475,6 @@ def test_session_start_runs_bd_hooks_after_init(tmp_path: object) -> None:
     (project_path / ".beads").mkdir()
 
     mock_setup = AsyncMock(return_value=["claude", "codex"])
-    # Neutralise the check_agent_auth gate (dd7fcb3 — requires two distinct
-    # identities) so the bd-hooks phase is what's under test.
     with (
         patch("agentshore.beads.setup.bd_setup_for_agent_types", mock_setup),
         patch("agentshore.agents.identity.require_two_distinct_gh_identities"),
@@ -624,7 +615,7 @@ def test_session_start_recovers_stale_remote_clone_via_bootstrap(tmp_path: objec
         if args and args[0] == "bootstrap":
             calls.append(args)
             return ""
-        return ""  # benign no-op for unrelated init/hooks/config calls
+        return ""
 
     with (
         patch("agentshore.beads.setup.bd", side_effect=_fake_bd),
@@ -693,7 +684,7 @@ def test_session_stop_rejects_unknown_mode() -> None:
     assert response is not None
     error = cast("dict[str, object]", response)["error"]
     assert isinstance(error, dict)
-    assert error["code"] == -32602  # INVALID_PARAMS
+    assert error["code"] == -32602
     assert "mode" in cast("str", error["message"])
 
 
@@ -795,7 +786,6 @@ def test_serve_writes_progress_before_lifecycle_result() -> None:
     assert replies[0]["method"] == "$/progress"
     assert replies[0]["params"]["token"] == "tok-2"
     assert replies[1]["id"] == "stop-1"
-    # No active session → ERR_SESSION_ACTIVE per DESIGN §5.2 ESR contract.
     assert replies[1]["error"]["code"] == -32010
 
 

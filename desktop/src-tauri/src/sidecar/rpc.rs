@@ -63,10 +63,6 @@ fn method_buckets() -> &'static MethodBuckets {
 fn response_timeout_for_method(method: &str) -> Duration {
     let buckets = method_buckets();
     if buckets.uncapped.contains(method) {
-        // session.start / session.stop / project.install_timelapse: these
-        // are long-running lifecycle calls driven by $/progress; the Rust
-        // side gives them their own generous caps rather than sharing the
-        // setup/default budgets.
         match method {
             crate::methods::SESSION_START => SESSION_START_RESPONSE_TIMEOUT,
             crate::methods::SESSION_STOP => SESSION_STOP_RESPONSE_TIMEOUT,
@@ -116,9 +112,6 @@ impl SidecarSupervisor {
             .as_i64()
             .ok_or_else(|| "request id must be an integer".to_string())?;
 
-        // Register a one-shot channel under the request id before we
-        // write the request — the dispatcher thread is already running
-        // and could deliver the response before we'd otherwise register.
         let (tx, rx) = mpsc::channel::<JsonRpcResponse>();
         {
             let mut pending = self
@@ -128,7 +121,6 @@ impl SidecarSupervisor {
             pending.insert(id, tx);
         }
 
-        // Write the framed request to stdin under its own lock.
         let write_result = (|| -> Result<(), String> {
             let line = encode_line(req).map_err(|e| format!("encode request: {e}"))?;
             let mut stdin = self
@@ -142,8 +134,6 @@ impl SidecarSupervisor {
             Ok(())
         })();
 
-        // If the write failed, clean up the pending entry — no response
-        // will ever land for this id, so it would leak.
         if let Err(err) = write_result {
             self.discard_pending(id);
             return Err(err);
@@ -205,9 +195,6 @@ fn dispatch_line(
     let value: Value = match serde_json::from_str(line) {
         Ok(v) => v,
         Err(err) => {
-            // Silent drop here meant a partial/corrupt sidecar line could
-            // make an RPC wait the full 120s timeout with no console trace.
-            // At least leave breadcrumbs so we know parse failure happened.
             let preview: String = line.chars().take(200).collect();
             eprintln!(
                 "[agentshore-desktop][sidecar] dispatch_line: JSON parse failure: {err}; line preview: {preview}"
@@ -216,8 +203,6 @@ fn dispatch_line(
         }
     };
 
-    // JSON-RPC responses carry an `id`; notifications do not (the
-    // `method` field marks the line as a notification).
     if let Some(id) = value.get("id").and_then(Value::as_i64) {
         if let Ok(response) = decode_response_line(line) {
             if let Ok(mut pending) = pending.lock() {
@@ -232,34 +217,16 @@ fn dispatch_line(
     if let Some(method) = value.get("method").and_then(Value::as_str) {
         let params = value.get("params").cloned().unwrap_or(Value::Null);
         handle_agent_subprocess_notification(method, &params, agent_pids);
-        // $/esr_ready fires as soon as the ESR HTML is generated — well before
-        // session.completed, which can trail by up to ~60s of unrelated backend
-        // bookkeeping (e.g. timelapse render finalization). From esr_ready
-        // onward there is no more live-dashboard work for the heartbeat
-        // watchdog to protect, so stand it down here rather than waiting for
-        // session.completed (fixes false "Dashboard not responding" trips
-        // during that trailing window).
         if method == crate::methods::ESR_READY {
             app.state::<crate::WebviewHeartbeat>()
                 .esr_ready
                 .store(true, Ordering::Relaxed);
         }
-        // session.draining fires at drain start, well before $/esr_ready (which
-        // only arrives once ESR HTML generation finishes — unbounded, O(plays)).
-        // This closes the silent gap where a real, busy shutdown can legitimately
-        // pause the React render loop for >10s before esr_ready would otherwise
-        // suppress the watchdog.
         if method == crate::methods::SESSION_DRAINING {
             app.state::<crate::WebviewHeartbeat>()
                 .draining
                 .store(true, Ordering::Relaxed);
         }
-        // desktop-bzr2: release the activity assertion on natural session exit.
-        // session.completed is the fallback for exits where session.stop never
-        // fires (drain_complete, max_plays, timeout, shutting_down). The state
-        // mutation itself lives in `SessionState::on_session_completed` — the
-        // same lifecycle owner `jsonrpc_call` uses for session.start/stop — so
-        // there is one place that knows what "session over" means.
         if method == crate::methods::SESSION_COMPLETED {
             crate::session_state::SessionState::on_session_completed(app);
             let _ = app.emit(SESSION_COMPLETED_EVENT, params.clone());
@@ -335,18 +302,11 @@ mod tests {
     /// id is delivered to the registered channel.
     #[test]
     fn dispatch_line_routes_response_to_pending_channel() {
-        // We can't easily construct a tauri::AppHandle in a unit test,
-        // so we exercise the response branch by inserting a sender and
-        // verifying delivery. The notification branch is exercised in
-        // the integration test below.
         let pending: Arc<Mutex<HashMap<i64, mpsc::Sender<JsonRpcResponse>>>> =
             Arc::new(Mutex::new(HashMap::new()));
         let (tx, rx) = mpsc::channel();
         pending.lock().unwrap().insert(7, tx);
 
-        // We need a real AppHandle for dispatch_line; but the response
-        // branch doesn't touch `app`. To exercise just the response
-        // dispatch path, replicate it here:
         let line = r#"{"jsonrpc":"2.0","id":7,"result":{"ok":true}}"#;
         let value: Value = serde_json::from_str(line).unwrap();
         let id = value.get("id").and_then(Value::as_i64).expect("id");

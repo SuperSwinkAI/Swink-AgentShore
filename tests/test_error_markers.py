@@ -31,8 +31,6 @@ from agentshore.error_markers import (
 )
 from agentshore.errors import GITHUB_AUTH_ERROR_MARKERS
 
-# Frozen snapshot of the canonical auth superset. Update this deliberately when
-# intentionally adding an auth spelling — the diff is the audit trail.
 _FROZEN_AUTH_MARKERS = (
     "401 unauthorized",
     "403 forbidden",
@@ -89,17 +87,10 @@ def test_auth_markers_is_exactly_the_union_of_its_views() -> None:
 
 
 def test_cache_renewal_is_nested_in_stderr_auth() -> None:
-    # The watchdog subtracts CACHE_RENEWAL_MARKERS from STDERR_AUTH_PATTERNS at
-    # runtime, so the renewal markers must actually be present in that view.
     assert set(STDERR_AUTH_PATTERNS) >= CACHE_RENEWAL_MARKERS
 
 
 def test_probe_vocabularies_are_siblings_not_subsets() -> None:
-    # The login-status / git-transport probe vocabularies detect the same
-    # *category* (can't authenticate) via a disjoint string set; they are NOT
-    # claimed to be subsets of AUTH_MARKERS. Assert they carry distinctive
-    # markers absent from the GitHub-API auth superset, so a future edit that
-    # accidentally collapses them into AUTH_MARKERS is caught.
     assert "not logged in" in set(PROBE_NOT_AUTHED_MARKERS) - AUTH_MARKERS
     assert "terminal prompts disabled" in set(GIT_AUTH_FAILED_MARKERS) - AUTH_MARKERS
 
@@ -123,27 +114,18 @@ def test_canonical_set_is_union_of_stream_views(
 
 
 def test_codex_usage_limit_markers_present_in_rate_limit_family() -> None:
-    # #276: Codex's quota-miss signatures must live in the rate-limit family so a
-    # weekly-quota exit classifies as RATE_LIMIT (like Claude's session limit) and
-    # inherits the provider-wide eligibility hold + take_break, not UNKNOWN.
     assert "usage limit" in RATE_LIMIT_STDERR_PATTERNS
     assert "try again at" in RATE_LIMIT_STDERR_PATTERNS
     assert "hit your usage limit" in RATE_LIMIT_STDOUT_MARKERS
 
 
 def test_enospc_markers_include_rust_os_error_spelling() -> None:
-    # #332: Codex is Rust and prints "os error 28", not "errno 28" — the two
-    # marker sets otherwise look identical but Codex's disk-full stderr ("No
-    # space left on device (os error 28)") only ever matches the "os error 28"
-    # spelling. Missing it let ENOSPC fall through to AUTH classification.
     assert "os error 28" in ENOSPC_MARKERS
     assert "errno 28" in ENOSPC_MARKERS
     assert "no space left on device" in ENOSPC_MARKERS
 
 
 def test_consumers_read_the_registry_objects() -> None:
-    # Phase 1 rewiring: the post-decomposition consumer names must resolve to the
-    # exact registry objects, so the single home is real (not a re-copied table).
     from agentshore.agents.auth_probe import _NOT_AUTHED_MARKERS
     from agentshore.agents.cli.errors import _AUTH_PATTERNS, _AUTH_STDOUT, _RATE_LIMIT_PATTERNS
     from agentshore.agents.git_auth_probe import _AUTH_FAILED_MARKERS

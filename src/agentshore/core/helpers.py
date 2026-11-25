@@ -37,17 +37,11 @@ if TYPE_CHECKING:
     from agentshore.state import OrchestratorState, PlayOutcome
 
 
-# Package-wide logger shared by every core module. Tests patch it at the
-# call-site module (whole-object) or via ``helpers._logger.<method>`` (the
-# shared object's attribute, observed by every module's binding).
 _logger = structlog.get_logger("agentshore.core")
 
 MIN_COST_PER_PLAY = 0.05
 MIN_DURATION_SECONDS = 1.0
 
-# Warn-threshold multipliers at which `loop_detected` fires — geometric spacing
-# on long streaks instead of one emission per increment. With warn_after=3:
-# streak ∈ {3, 6, 15, 30, 60, 150, 300}, deduped by the `_last_warned_*` memo.
 _LOOP_DETECTED_MULTIPLIERS: tuple[int, ...] = (1, 2, 5, 10, 20, 50, 100)
 
 
@@ -184,8 +178,6 @@ def _build_reward_signals(
             agent.agent_id for agent in next_state.agents if agent.status == AgentStatus.BUSY
         }
         busy_agent_count = len(busy_agent_ids)
-        # Reward runs after the completed agent usually returned to IDLE; count it
-        # busy for this just-finished window, but not if state still marks it BUSY.
         if outcome.agent_id is not None and outcome.agent_id not in busy_agent_ids:
             completed_agent_live = any(agent.agent_id == outcome.agent_id for agent in live_agents)
             if completed_agent_live:
@@ -199,9 +191,6 @@ def _build_reward_signals(
         success=outcome.success,
         partial=outcome.partial,
         inflation_raised=outcome.inflation_raised,
-        # Only CODE_REVIEW carries the anti-confirmation invariant now (RUN_QA
-        # runs on merged trunk, any can_test agent qualifies). Identity check is
-        # enforced at dispatch; this signal is just for reward shaping on success.
         anti_confirmation_play=outcome.play_type == PlayType.CODE_REVIEW,
         anti_confirmation_satisfied=outcome.play_type == PlayType.CODE_REVIEW,
         dollar_cost=outcome.dollar_cost,
@@ -216,8 +205,6 @@ def _build_reward_signals(
         live_agent_count=live_agent_count,
         type_diversity_in_window=type_diversity_in_window,
         rolling_velocity=rolling_velocity,
-        # desktop-8zzy: PR-pressure signal so MERGE_PR / CODE_REVIEW earn a
-        # small bonus when the queue fills up.
         open_pr_count=ctx_after.open_pr_count,
     )
 

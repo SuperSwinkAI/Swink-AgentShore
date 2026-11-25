@@ -58,9 +58,6 @@ class _WindowsLockingModule(Protocol):
     def locking(self, fd: int, mode: int, nbytes: int, /) -> int: ...
 
 
-# Local / canonical checkpoint lifecycle
-
-
 def _prune_local_checkpoints(weights_dir: Path, keep: int = _LOCAL_CHECKPOINT_KEEP) -> None:
     """Delete numbered local checkpoints beyond the most recent `keep` files."""
     numbered = sorted(weights_dir.glob("policy_[0-9][0-9][0-9][0-9][0-9][0-9].pt"))
@@ -69,9 +66,6 @@ def _prune_local_checkpoints(weights_dir: Path, keep: int = _LOCAL_CHECKPOINT_KE
             stale.unlink()
 
 
-# Observation versions whose checkpoints differ from the current layout only in the
-# flow block (slots 2-7), which was permanently zero-filled before v17. Such a
-# checkpoint is carried forward exactly by zeroing those input columns.
 _FLOW_BLOCK_MIGRATABLE_OBSERVATION_VERSIONS: frozenset[int] = frozenset({16})
 _FIRST_LAYER_WEIGHT_KEY = "trunk.0.weight"
 
@@ -170,15 +164,12 @@ def _archive_old_canonicals(weights_dir: Path) -> None:
     Sibling to cleanup_stale_canonical_weights (which handles the legacy unnamed
     policy.pt). Never deletes — renames so the user can inspect.
     """
-    # Carry a migratable previous-version canonical forward before quarantining it,
-    # so an observation bump that only reuses zero-filled slots keeps its training.
     migrate_previous_observation_canonical(weights_dir)
     current = weights_dir / canonical_weights_filename()
     for f in sorted(weights_dir.glob("policy_*.pt")):
         if f == current or f.name.startswith("policy_legacy_"):
             continue
-        stem = f.stem  # e.g. "policy_v2" or "policy_a13_o12_p5"
-        # Skip numbered local checkpoints — managed by _prune_local_checkpoints, not here.
+        stem = f.stem
         suffix = stem[len("policy_") :]
         if suffix.isdigit():
             continue
@@ -201,7 +192,6 @@ def cleanup_stale_canonical_weights(weights_dir: Path) -> None:
         from agentshore.rl.policy import IncompatibleCheckpointError
 
         ActorCritic.load(legacy)
-        # Compatible — leave it alone.
     except IncompatibleCheckpointError:
         try:
             payload = torch.load(legacy, map_location="cpu", weights_only=True)
@@ -220,9 +210,6 @@ def cleanup_stale_canonical_weights(weights_dir: Path) -> None:
         )
     except (OSError, RuntimeError, ValueError) as exc:
         _logger.warning("cleanup_stale_canonical_failed", error=str(exc))
-
-
-# Cross-platform advisory file locks
 
 
 @contextmanager
@@ -273,9 +260,6 @@ def _prepare_windows_lock_byte(lock_file: BinaryIO) -> None:
     lock_file.seek(0)
 
 
-# Global canonical delta-merge write
-
-
 def write_global_canonical_blocking(
     policy: ActorCritic,
     reload_base: dict[str, torch.Tensor] | None,
@@ -296,16 +280,14 @@ def write_global_canonical_blocking(
     current_sd = policy.state_dict()
 
     if reload_base is not None:
-        # Compute what this PPO update actually changed.
         try:
             delta: dict[str, torch.Tensor] | None = {
                 k: current_sd[k] - reload_base[k] for k in reload_base
             }
         except (KeyError, RuntimeError):
-            # Shape mismatch — architecture changed mid-session; full write.
             delta = None
     else:
-        delta = None  # No base snapshot; write full weights.
+        delta = None
 
     with _exclusive_file_lock(lock_path):
         if delta is not None and canonical.exists():
@@ -316,11 +298,11 @@ def write_global_canonical_blocking(
                     base.load_state_dict(merged_sd)
                     to_save = base
                 else:
-                    to_save = policy  # config index mismatch; full write
+                    to_save = policy
             except (IncompatibleCheckpointError, KeyError, RuntimeError):
-                to_save = policy  # incompatible global; full write
+                to_save = policy
         else:
-            to_save = policy  # no delta or no existing global; full write
+            to_save = policy
 
         canonical.parent.mkdir(parents=True, exist_ok=True)
         tmp_fd, tmp_path = tempfile.mkstemp(dir=canonical.parent, suffix=".pt.tmp")

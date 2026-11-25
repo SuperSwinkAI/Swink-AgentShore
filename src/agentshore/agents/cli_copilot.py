@@ -39,21 +39,8 @@ from agentshore.agents._jsonl import _iter_json_events, _safe_int, _UsageTotals
 
 _logger = structlog.get_logger(__name__)
 
-# ponytail: Copilot bills premium requests, not tokens. $0.04 is GitHub's
-# per-premium-request overage price — the ceiling: requests covered by the
-# seat's monthly allowance cost nothing, and accounts on the newer AI-credit
-# billing (``totalNanoAiu`` in the checkpoint) are priced differently. 1.0.94
-# defines nano-AIU only as nano AI credits (the credit conversion lives in the
-# native ``responseLimitsNanoAiuToAiCredits``) and ships no credit->USD rate, so
-# totalNanoAiu is not priced here. Make it a pricebook knob if ESR cost
-# accuracy for Copilot starts to matter.
 _PREMIUM_REQUEST_USD = 0.04
 
-# Play-declared tool names (swink-coding's vocabulary, see
-# ``plays/skill_backed/code_review.py``) -> copilot 1.0.94 ``--deny-tool``
-# permission kinds (``copilot help permissions``). ``write`` covers every
-# file-creating/editing tool (create, edit, apply_patch) but not shell
-# redirection; deny rules win even under ``--yolo``.
 _COPILOT_TOOL_NAMES: dict[str, str] = {
     "write_file": "write",
     "edit_file": "write",
@@ -71,7 +58,6 @@ def _copilot_deny_tools(disallowed_tools: tuple[str, ...]) -> list[str]:
             _logger.debug("copilot_disallowed_tool_unmapped", tool=spec)
         elif kind not in kinds:
             kinds.append(kind)
-    # ``=`` form: --deny-tool is variadic and would otherwise swallow later args.
     return [f"--deny-tool={kind}" for kind in kinds]
 
 
@@ -175,8 +161,6 @@ def _checkpoint_usage(data: dict[str, object]) -> _UsageTotals:
     for model_metrics in metrics.values() if isinstance(metrics, dict) else ():
         usage = model_metrics.get("usage") if isinstance(model_metrics, dict) else None
         if isinstance(usage, dict):
-            # inputTokens already includes cacheReadTokens (input + cache_read
-            # tokenDetails sum to it), matching tokens_in's "all input" meaning.
             tokens_in += _safe_int(usage.get("inputTokens"))
             tokens_out += _safe_int(usage.get("outputTokens"))
             cache_read += _safe_int(usage.get("cacheReadTokens"))

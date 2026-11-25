@@ -16,15 +16,11 @@ from __future__ import annotations
 
 from agentshore.state import AgentType
 
-# max_context feeds the observation builder; cost estimation reads pricing from
-# AgentConfig (see agentshore.agents.costs), not this registry.
 AGENT_CAPABILITIES: dict[AgentType, dict[str, object]] = {
     AgentType.CLAUDE_CODE: {
-        # The opus/sonnet/haiku aliases resolve to 1M-context models.
         "max_context": 1_000_000,
     },
     AgentType.CODEX: {
-        # gpt-5.x context_window per codex-cli 0.144.1 `debug models`.
         "max_context": 272_000,
     },
     AgentType.GROK: {
@@ -37,11 +33,6 @@ AGENT_CAPABILITIES: dict[AgentType, dict[str, object]] = {
         "max_context": 32_768,
     },
     AgentType.COPILOT: {
-        # The Copilot API caps *prompt* tokens per model below its context
-        # window (models catalog `max_prompt_tokens`, 2026-10: 200k for the
-        # claude-*-5.5 tier defaults, 128k for auto -> mai-code-1.1-flash,
-        # 272k for gpt-5.x). AgentShore runs the CLI's `--context default`
-        # tier (not long_context), so the default-tier prompt cap is the limit.
         "max_context": 200_000,
     },
 }

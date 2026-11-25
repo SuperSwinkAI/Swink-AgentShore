@@ -348,11 +348,6 @@ def _build_default_yaml() -> str:
     return render_config_yaml()
 
 
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
-
-
 def _apply_global_preferences(cfg: RuntimeConfig) -> RuntimeConfig:
     """Fold the machine-global ``preferences.yaml`` into *cfg*.
 

@@ -22,16 +22,12 @@ import pytest
 
 from agentshore import power as power_mod
 
-# ---------------------------------------------------------------------------
-# Linux / no-op platforms
-# ---------------------------------------------------------------------------
-
 
 def test_acquire_on_linux_is_a_noop_but_returns_held(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("sys.platform", "linux")
     with patch.object(ctypes, "CDLL") as cdll:
         handle = power_mod.acquire("test")
-    assert handle.is_held is True  # Vacuous success on platforms without an OS hook.
+    assert handle.is_held is True
     cdll.assert_not_called()
     handle.release()
     assert handle.is_held is False
@@ -44,23 +40,16 @@ def test_acquire_on_unknown_platform_is_a_noop(monkeypatch: pytest.MonkeyPatch) 
     handle.release()
 
 
-# ---------------------------------------------------------------------------
-# macOS
-# ---------------------------------------------------------------------------
-
-
 def _make_fake_macos_libs() -> tuple[MagicMock, MagicMock]:
     """Build mock IOKit + CoreFoundation handles that simulate success."""
     iokit = MagicMock()
     cf = MagicMock()
 
-    # Non-null pointer; any truthy value works (treated as opaque c_void_p).
     cf.CFStringCreateWithCString.return_value = 0xDEADBEEF
 
     def _create_assertion(_type, _level, _name, id_ptr):  # noqa: ANN001
-        # Simulate the kernel populating the out-param with a real ID.
         id_ptr._obj.value = 1234
-        return 0  # kIOReturnSuccess
+        return 0
 
     iokit.IOPMAssertionCreateWithName.side_effect = _create_assertion
     iokit.IOPMAssertionRelease.return_value = 0
@@ -88,7 +77,6 @@ def test_acquire_on_macos_calls_iopm_assertion_create(
     assert handle.is_held is True
     assert handle._mac_assertion_id == 1234
     iokit.IOPMAssertionCreateWithName.assert_called_once()
-    # CFRelease ran on both CFString allocations.
     assert cf.CFRelease.call_count == 2
 
 
@@ -143,13 +131,7 @@ def test_macos_acquire_failure_when_ioreturn_nonzero(
         handle = power_mod.acquire("ioreturn-fail")
 
     assert handle.is_held is False
-    # CFStrings still get released even on the failure path.
     assert cf.CFRelease.call_count == 2
-
-
-# ---------------------------------------------------------------------------
-# Windows
-# ---------------------------------------------------------------------------
 
 
 def test_acquire_on_windows_sets_thread_execution_state(
@@ -157,7 +139,6 @@ def test_acquire_on_windows_sets_thread_execution_state(
 ) -> None:
     monkeypatch.setattr("sys.platform", "win32")
     kernel32 = MagicMock()
-    # Non-zero return = success (previous state flags).
     kernel32.SetThreadExecutionState.return_value = 0x80000000
 
     fake_windll = MagicMock(kernel32=kernel32)
@@ -166,10 +147,7 @@ def test_acquire_on_windows_sets_thread_execution_state(
     handle = power_mod.acquire("win32-acquire")
 
     assert handle.is_held is True
-    kernel32.SetThreadExecutionState.assert_called_once_with(
-        # ES_CONTINUOUS (0x80000000) | ES_SYSTEM_REQUIRED (0x1)
-        0x80000001
-    )
+    kernel32.SetThreadExecutionState.assert_called_once_with(0x80000001)
 
 
 def test_release_on_windows_clears_execution_state(
@@ -194,7 +172,7 @@ def test_windows_acquire_failure_when_set_thread_returns_zero(
 ) -> None:
     monkeypatch.setattr("sys.platform", "win32")
     kernel32 = MagicMock()
-    kernel32.SetThreadExecutionState.return_value = 0  # documented failure code
+    kernel32.SetThreadExecutionState.return_value = 0
     fake_windll = MagicMock(kernel32=kernel32)
     monkeypatch.setattr(ctypes, "windll", fake_windll, raising=False)
 
@@ -202,16 +180,11 @@ def test_windows_acquire_failure_when_set_thread_returns_zero(
     assert handle.is_held is False
 
 
-# ---------------------------------------------------------------------------
-# Cross-cutting behaviour
-# ---------------------------------------------------------------------------
-
-
 def test_release_twice_is_a_noop(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("sys.platform", "linux")
     handle = power_mod.acquire("idempotent-release")
     handle.release()
-    handle.release()  # Must not raise.
+    handle.release()
     assert handle.is_held is False
 
 
@@ -231,5 +204,5 @@ def test_release_before_acquire_is_safe(monkeypatch: pytest.MonkeyPatch) -> None
     """
     monkeypatch.setattr("sys.platform", "linux")
     handle = power_mod.PowerAssertion("never-acquired")
-    handle.release()  # Must not raise.
+    handle.release()
     assert handle.is_held is False

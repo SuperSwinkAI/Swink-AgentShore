@@ -74,10 +74,6 @@ if TYPE_CHECKING:
 _logger = get_logger(__name__)
 
 
-# Executor branching on play behavior is now declarative: each ``Play`` exposes
-# ``is_observation`` / ``requeue_on_anti_confirmation`` / ``is_handoff`` /
-# ``retarget_pr_base`` / ``authors_prs`` (defaulted inert on the base classes,
-# overridden by the opt-in plays). See the ``Play`` protocol docstring.
 _MAX_REQUEUE_ATTEMPTS = 3
 
 _POLICY_DISALLOWED_ERROR_MARKERS = (
@@ -252,17 +248,9 @@ class PlayExecutor:
             else None
         )
         self._requeue_callback = requeue_callback
-        # Lets sleeping plays (take_break) observe a wind-down and abort early
-        # (#30). Wired post-construction by the orchestrator once it owns the
-        # drain flag (mirrors ``_requeue_callback``).
         self._is_draining = is_draining
         self.emits_play_started = True
         self._inflight_issues: set[int] = set()
-        # Session-scoped set of issues that have had a WRITE_IMPLEMENTATION_PLAN
-        # started this session. Intentionally not cleared after completion so
-        # sequential re-plans are blocked even before the GH label refresh (~2 min)
-        # catches up. Concurrent re-plans are also blocked since the add happens
-        # before dispatch.
         self._planned_issues: set[int] = set()
 
     @property
@@ -289,11 +277,6 @@ class PlayExecutor:
         try:
             play, params = await self._prepare_dispatch(play_type, state, override, started_at)
 
-            # PR-base self-heal (#8) ----------------------------------------
-            # issue_pickup agents sometimes open PRs against the repo default
-            # instead of the configured target branch. Retarget before running
-            # any PR-scoped play so merge_pr can merge and code_review diffs the
-            # right base. Idempotent; a no-op when the base already matches.
             if params.pr_number is not None and play.retarget_pr_base:
                 await _maybe_retarget_pr_base(
                     self._github, self._cfg, self._session_id, play_type, params, state
@@ -306,10 +289,6 @@ class PlayExecutor:
         except _SkipDispatchError as e:
             return e.outcome
         return await self._run_finalize_and_persist(play, play_type, state, setup)
-
-    # -------------------------------------------------------------------------
-    # Private helpers
-    # -------------------------------------------------------------------------
 
     async def _prepare_dispatch(
         self,
@@ -335,18 +314,9 @@ class PlayExecutor:
                 )
             ) from None
 
-        # When override params are already populated, the EligibilityAuthority's
-        # confirm() has already validated this play and the resolver has already
-        # enumerated + claimed the target — trust that here and do NOT re-resolve
-        # or re-check eligibility (no preconditions recheck). PPO can never reach
-        # the no_target / resolve-None path because it never re-resolves.
         if override is not None and override != PlayParams():
             return play, override
 
-        # Legacy / non-PPO callers (no populated override) still drive a resolve()
-        # pass; they have no authority confirm upstream. A None here means the
-        # resolver found no claimable target — surface the no_target skip so the
-        # run history reflects it (this path is unreachable from the PPO loop).
         params = await self._resolver.resolve(play_type, state, override=override)
         if params is None:
             await self._finish_claim_group(override, status="released")
@@ -375,11 +345,6 @@ class PlayExecutor:
         if play.skill_name is None:
             return params
 
-        # Look up the PR's GitHub author for the identity-based
-        # anti-confirmation filter. This consults the DB row populated by the
-        # GH cache refresh at bootstrap (and updated by record_pull_request).
-        # Falls back to None for PRs not yet cached, letting the executor's
-        # _anti_confirmation_check act as the backstop.
         pr_github_author: str | None = None
         if play_type == PlayType.CODE_REVIEW and params.pr_number is not None:
             pr_github_author = await self._store.get_pr_github_author(
@@ -401,7 +366,6 @@ class PlayExecutor:
                 await self._handle_selection_violation(play, play_type, params, started_at, exc)
             ) from exc
 
-        # Anti-confirmation DB re-check (defense in depth)
         anti_err = await self._anti_confirmation_check(play_type, params, handle.agent_id)
         if anti_err:
             await self._finish_claim_group(params, status="released")
@@ -430,8 +394,6 @@ class PlayExecutor:
         started_at: str,
         exc: AntiConfirmationViolation,
     ) -> PlayOutcome:
-        # Read-only observation plays soft-mask when no agent qualifies rather
-        # than failing — the play didn't fail, the staffing did.
         if play.is_observation:
             await self._finish_claim_group(params, status="released")
             await self._record_pre_dispatch_skip(
@@ -447,8 +409,6 @@ class PlayExecutor:
                 error=f"masked: {exc}",
             )
 
-        # Requeueable plays defer to the next tick (up to a cap) rather than
-        # taking a failure penalty — the timing race is transient.
         _raw_attempts = params.extras.get("requeue_attempts") or 0
         attempt = _raw_attempts if isinstance(_raw_attempts, int) else int(str(_raw_attempts))
         if (
@@ -460,9 +420,6 @@ class PlayExecutor:
                 k: v for k, v in params.extras.items() if k not in ("play_id", "started_at")
             }
             requeue_extras["requeue_attempts"] = attempt + 1
-            # Clear target_agent_id on requeue: the previously chosen agent
-            # may no longer be IDLE, and the resolver re-picks against fresh
-            # state on the next dispatch.
             requeue_params = dataclasses.replace(
                 params,
                 agent_id=None,
@@ -479,9 +436,6 @@ class PlayExecutor:
                 reason=str(exc),
                 session_id=self._session_id,
             )
-            # Requeue isn't a no-op for the user — surface it in the
-            # plays-table so a CR PR that keeps bouncing on anti-confirmation
-            # doesn't look invisible in history.
             await self._record_pre_dispatch_skip(
                 play_type,
                 started_at=started_at,
@@ -517,10 +471,8 @@ class PlayExecutor:
         state: OrchestratorState,
         started_at: str,
     ) -> _ExecutionSetup:
-        # Snapshot alignment_before from the dispatch-time beads graph.
         alignment_before = state.graph.global_closure_ratio if state.graph is not None else None
 
-        # Insert placeholder play row (provides play_id for FK constraints).
         play_id = await self._store.record_play(
             PlayRecord(
                 session_id=self._session_id,
@@ -546,11 +498,6 @@ class PlayExecutor:
         )
 
         if not await self._start_claim_group(params, play_id):
-            # #205: a RETRY dispatch can lose its claim group to the idle-claim
-            # reaper in the window between scheduling and dispatch (the group is
-            # released → start_work_claim_group finds no active rows → False).
-            # For a retry, attempt to re-acquire the group's resource keys before
-            # giving up; if the re-acquire succeeds the dispatch proceeds normally.
             reacquired = False
             is_retry = "__retry_prompt" in params.extras
             if is_retry:
@@ -558,9 +505,6 @@ class PlayExecutor:
             if not reacquired:
                 await self._finish_claim_group(params, status="released")
                 if is_retry:
-                    # The resource is genuinely unavailable (held by another live
-                    # claim, not just reaped). Reclassify away from CODE_ERROR so a
-                    # benign retry-vs-reaper race doesn't pollute failure counters.
                     await self._persist_play(
                         play_id,
                         started_at,
@@ -614,7 +558,6 @@ class PlayExecutor:
         play_id: int,
         started_at: str,
     ) -> AgentHandle | None:
-        # Notify that the agent is transitioning to BUSY before dispatch begins.
         if (
             play.skill_name is not None
             and self._state_provider is not None
@@ -622,11 +565,8 @@ class PlayExecutor:
         ):
             await self._state_provider.on_agent_changed(params.agent_id, AgentStatus.BUSY)
 
-        # Track issue_pickup plays so the resolver can avoid double-claiming.
         if play_type == PlayType.ISSUE_PICKUP and params.issue_number is not None:
             self._inflight_issues.add(params.issue_number)
-        # Track write_plan plays so concurrent and sequential re-plans on the
-        # same issue are blocked before the GH label refresh propagates.
         if play_type == PlayType.WRITE_IMPLEMENTATION_PLAN and params.issue_number is not None:
             self._planned_issues.add(params.issue_number)
 
@@ -643,7 +583,6 @@ class PlayExecutor:
             play_id=play_id,
         )
 
-        # Notify that the play has started (with agent_id resolved).
         if self._state_provider is not None:
             await self._state_provider.on_play_started(play_type, params)
         return current_play_handle
@@ -670,9 +609,6 @@ class PlayExecutor:
         elapsed_s = time.monotonic() - t0
         ended_at = now_iso()
 
-        # Recover issue-pickup runs that completed local work/tests but failed
-        # during PR publication. This must happen before scope validation and
-        # deferral wiring so a recovered PR is recorded like a normal pickup.
         skill_result = getattr(play, "_last_skill_result", None)
         if (
             skill_result is not None
@@ -687,12 +623,6 @@ class PlayExecutor:
                 state,
             )
 
-        # Finalize the worktree allocation (desktop-mr1i). For PR-scoped plays
-        # this just bumps last_used_at; for branch-creating plays it re-keys
-        # the row from ``pre_branch_key`` to ``SkillResult.branch`` and renames
-        # the directory. Trunk allocations have no DB row and skip finalize.
-        # Wrapped in try/except so a finalize failure can't poison the outcome —
-        # the session-start reaper will sweep any orphan worktree.
         discovered_branch = await self._finalize_worktree(params, outcome, skill_result, play_type)
         if discovered_branch and not params.branch:
             params = dataclasses.replace(params, branch=discovered_branch)
@@ -761,8 +691,6 @@ class PlayExecutor:
         if typed_skill_result is not None:
             await self._apply_mutations(params, typed_skill_result, state)
 
-        # Stamp play_id, alignment_delta (live beads delta), and
-        # inflation_raised on outcome.
         return dataclasses.replace(
             outcome,
             play_id=play_id,
@@ -776,12 +704,6 @@ class PlayExecutor:
         play_type: PlayType,
         alignment_before: float | None,
     ) -> tuple[float | None, float | None]:
-        # Reload beads after the play and any reconciliation side effects have
-        # run. Calibration and merge plays can close beads, so the persisted
-        # play row must use the post-play graph rather than the dispatch
-        # snapshot. max_age_seconds=0.0 forces a live read — the agent's
-        # mutations just happened, so a TTL-cached graph could still show the
-        # pre-play state.
         try:
             post_graph = await load_graph(self._project_path, max_age_seconds=0.0)
         except Exception as exc:  # pragma: no cover - defensive logging path
@@ -831,8 +753,6 @@ class PlayExecutor:
                 duration_ms=int(elapsed_s * 1000),
                 error=outcome.error,
                 failure_category=failure_category,
-                # Failure outcomes often omit agent_id, but params.agent_id holds
-                # the agent this play was dispatched to (set at selection).
                 agent_id=outcome.agent_id or params.agent_id,
                 token_cost=outcome.token_cost,
                 dollar_cost=outcome.dollar_cost,
@@ -1111,7 +1031,6 @@ class PlayExecutor:
         elapsed_s: float,
     ) -> None:
         """Write Phase-1 deferred DB rows (handoffs, PR records, branch activity)."""
-        # Handoff for terminating plays (agent termination)
         if play.is_handoff and params.agent_id:
             await self._store.record_handoff(
                 HandoffRecord(
@@ -1125,16 +1044,12 @@ class PlayExecutor:
                 )
             )
 
-        # PR and branch artifacts
         now = now_iso()
         for artifact in outcome.artifacts:
             if not isinstance(artifact, dict):
                 continue
             artifact_type = artifact.get("type", "")
             if artifact_type in ("pull_request", "pr"):
-                # Non-authoring plays (unblock_pr, code_review, …) may emit a
-                # PR reference artifact for traceability but must not stamp
-                # authorship — skip the entire authorship-recording block.
                 if not play.authors_prs:
                     continue
                 await _record_pr_artifact(
@@ -1199,14 +1114,8 @@ class PlayExecutor:
                     "",
                 )
                 continue
-            # ``request_play`` was an agent-driven "run this play next" directive
-            # that bypassed PPO selection; the mechanism has been removed, so any
-            # such emission is ignored (never recorded, never promoted). The PPO
-            # policy chooses the next play from the post-completion state instead.
             if str(mut.get("type", "")) == "request_play":
                 continue
-            # Unknown mutation types stay pending in the durable intent ledger
-            # for a dedicated consumer; the executor never applies them inline.
 
         if _is_policy_disallowed(skill_result) and params.issue_number is not None:
             issue_number = params.issue_number
@@ -1270,9 +1179,6 @@ class PlayExecutor:
         blocker_bead: str | None = None
         graph = state.graph
         if graph is not None:
-            # pick_bead_for_issue prefers the live bead over a closed duplicate
-            # mirror; a last-wins dict could land the edge on the closed one,
-            # where it never blocks (#521).
             blocked_task = pick_bead_for_issue(graph.tasks, blocked_issue)
             blocker_task = pick_bead_for_issue(graph.tasks, blocker_issue)
             if blocked_task is not None and blocker_task is not None:
@@ -1306,10 +1212,6 @@ class PlayExecutor:
                         )
                     return "cycle_conflict"
                 return "unpersisted"
-        # No bead mirror (or the beads write failed for a non-cycle reason) →
-        # durable label gate. Pair the (blocker-number-less) label with a
-        # marker comment so groom_backlog can trace the gate to #blocker and
-        # evidence-clear it once that closes.
         if await self._apply_issue_labels(blocked_issue, [BLOCKED_LABEL], idempotency_key):
             if self._github is not None:
                 await self._github.comment_issue(
@@ -1329,20 +1231,10 @@ class PlayExecutor:
         error: str,
         agent_id: str | None = None,
     ) -> None:
-        """Persist a plays-table row for a skip that fires before ``record_play``.
+        """Record a plays-table row for a skip before record_play.
 
-        Issue #565 (Bug B): five executor skip branches return a
-        ``PlayOutcome.skipped_outcome(...)`` without ever inserting a plays
-        row. The UI sets ``state.active_play`` in ``dispatch.py:940`` before
-        the executor runs, so these skips produce a "ghost" card in the
-        active-play panel that never appears in run history.
-
-        Record a row with ``success=False`` and ``failure_category=skip:<kind>``
-        so the run history reflects what the UI showed. The ``skip:`` prefix
-        keeps the column semantics broad while still letting consumers
-        discriminate skips from real failures (e.g. dashboard styling, ESR
-        rollups, PPO reward filtering).
-        """
+        Use success=False and failure_category=skip:<kind>; consumers distinguish
+        skips from failures through this prefix."""
         ended_at = now_iso()
         try:
             await self._store.record_play(
@@ -1359,8 +1251,6 @@ class PlayExecutor:
                 )
             )
         except Exception as exc:  # pragma: no cover - defensive
-            # Never let skip-row visibility crash the play. The structured
-            # log line below preserves observability if the DB write fails.
             _logger.warning(
                 "pre_dispatch_skip_record_failed",
                 play_type=play_type.value,
@@ -1413,10 +1303,4 @@ class PlayExecutor:
         )
 
 
-# ---------------------------------------------------------------------------
-# Module-level helpers
-# ---------------------------------------------------------------------------
-
-# Re-export build_idempotency_key so ``agentshore.plays.executor.build_idempotency_key``
-# continues to resolve (imported by tests and core mixins).
 __all__ = ["PlayExecutor", "build_idempotency_key"]

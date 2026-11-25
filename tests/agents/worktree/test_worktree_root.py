@@ -53,9 +53,6 @@ def test_default_worktree_root_honors_configured_root(tmp_path):
     assert root == central / "myrepo" / "worktrees"
 
 
-# --- config parsing -----------------------------------------------------------
-
-
 def test_parse_worktrees_accepts_root_and_ttl():
     cfg = _parse_worktrees({"root": "/data/wt", "reap_ttl_seconds": 1800})
     assert cfg.root == "/data/wt"
@@ -84,9 +81,6 @@ def test_parse_worktrees_ignores_removed_orphan_retention_key():
     assert cfg.root is None
 
 
-# --- legacy quarantine-dir cleanup -------------------------------------------
-
-
 async def test_reap_session_start_removes_legacy_orphan_dir(
     store: DataStore, main_repo: Path, worktree_root: Path
 ) -> None:
@@ -95,7 +89,7 @@ async def test_reap_session_start_removes_legacy_orphan_dir(
     legacy = worktree_root.with_name(worktree_root.name + "-orphan")
     aged = legacy / "agentshore-194-stale-20260101T000000Z"
     aged.mkdir(parents=True)
-    (aged / "target").mkdir()  # rebuildable build-cache stand-in
+    (aged / "target").mkdir()
     (aged / "leftover.txt").write_text("old quarantined work\n")
 
     manager = WorktreeManager(

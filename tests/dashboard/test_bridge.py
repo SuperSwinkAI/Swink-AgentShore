@@ -96,7 +96,6 @@ async def test_bridge_picks_up_state_snapshot(
     payload = json.dumps({"type": "state_update", "payload": {"tick": 7}})
     await writer.write_state(payload)
 
-    # Poll up to ~1s for the watcher to pick the change up.
     for _ in range(50):
         if any(json.loads(m).get("payload", {}).get("tick") == 7 for m in fake_ws.sent):
             break
@@ -135,7 +134,6 @@ async def test_bridge_caches_active_play_and_event_history(
     )
     await writer.append_event(started)
 
-    # Drive the tail loop manually.
     lines = await asyncio.to_thread(bridge._read_new_events_sync)
     for line in lines:
         bridge._ingest_event_line(line, broadcast=False)
@@ -343,7 +341,6 @@ async def test_prime_from_disk_ignores_stale_session_ended(
     assert bridge._session_ended_raw is None
     assert bridge._session_draining_raw is None
 
-    # A live tail (broadcast=True) still flips the flag.
     bridge._ingest_event_line(
         json.dumps({"type": "session_ended", "payload": {"reason": "cli_request"}}),
         broadcast=True,
@@ -530,7 +527,6 @@ async def test_events_tail_resumes_after_rotation(
     lines = await asyncio.to_thread(bridge._read_new_events_sync)
     assert len(lines) == 1
 
-    # Simulate rotation by truncating the file to a shorter payload.
     rotated = json.dumps(
         {"type": "play_event", "payload": {"play_type": "y", "status": "started", "play_id": 2}}
     )
@@ -733,7 +729,6 @@ async def test_bridge_server_exits_after_session_ended(
     monkeypatch.setattr(uvicorn, "Server", fake_server_factory)
 
     async def fire_session_ended() -> None:
-        # Wait until the bridge has finished priming + started its server.
         for _ in range(200):
             if fake_servers:
                 break

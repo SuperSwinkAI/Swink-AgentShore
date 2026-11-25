@@ -128,7 +128,6 @@ async def save_checkpoint(
     weights_dir = Path(weights_dir)
     weights_dir.mkdir(parents=True, exist_ok=True)
 
-    # Numbered local checkpoint for crash recovery.
     weights_path = weights_dir / f"policy_{total_plays:06d}.pt"
     policy.save(weights_path)
 
@@ -157,7 +156,6 @@ async def save_checkpoint(
                 error=str(exc),
             )
 
-    # Keep local dir lean — crash recovery only needs the last few.
     _prune_local_checkpoints(weights_dir)
 
     record = CheckpointRecord(

@@ -39,7 +39,6 @@ def bare_repo(tmp_path: Path) -> Path:
     (repo / "README.md").write_text("# test\n")
     _git("add", "README.md", cwd=repo)
     _git("commit", "-m", "initial", cwd=repo)
-    # Add a fake origin URL (doesn't need to be reachable for remote list/remove).
     _git("remote", "add", "origin", "https://github.com/example/repo.git", cwd=repo)
     return repo
 

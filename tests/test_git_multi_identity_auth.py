@@ -45,7 +45,6 @@ def test_overlay_scopes_header_to_host() -> None:
 
 
 def test_overlay_never_places_token_in_a_key() -> None:
-    # Call sites log env KEYS only — the token must live only in a VALUE field.
     overlay = subprocess_env.git_auth_config_overlay("supersecret")
     assert all("supersecret" not in key for key in overlay)
 
@@ -110,7 +109,6 @@ def test_resolve_fetch_overlay_builds_header_and_preserves_identity_env(monkeypa
     assert overlay is not None
     values = [v for k, v in overlay.items() if k.startswith("GIT_CONFIG_VALUE_")]
     assert f"Authorization: Basic {_b64('tok')}" in values
-    # the chosen identity's own env (authorship, gh config) is preserved
     assert overlay["GIT_AUTHOR_NAME"] == "U"
     assert overlay["GH_CONFIG_DIR"] == "/cfg"
 
@@ -123,17 +121,12 @@ def test_resolve_fetch_overlay_none_when_identity_has_no_token(monkeypatch) -> N
     assert mgr._resolve_fetch_overlay(cfg) is None
 
 
-# branch_sync FF-fetch overlay (#178)
-
-
 def test_resolve_ff_fetch_overlay_none_without_identities() -> None:
     assert branch_sync.resolve_ff_fetch_overlay(RuntimeConfig(identities={})) is None
 
 
 def test_resolve_ff_fetch_overlay_builds_header_and_preserves_identity_env(monkeypatch) -> None:
     cfg = RuntimeConfig(identities={"u": _ident(login="u")})
-    # resolve_ff_fetch_overlay lazy-imports from agentshore.agents.identity, so
-    # patch the source module attribute (re-read on each call).
     monkeypatch.setattr(
         identity_mod,
         "resolve_identity_env_by_name",
@@ -163,8 +156,6 @@ async def test_fast_forward_threads_fetch_overlay_to_git(monkeypatch) -> None:
     async def fake_git(*args: str, cwd, timeout=120.0, env_overlay=None):  # type: ignore[no-untyped-def]
         captured["args"] = args
         captured["overlay"] = env_overlay
-        # Non-zero rc → impl returns FETCH_FAILED after the fetch, so the fetch
-        # is the only git call and we can assert its overlay in isolation.
         return (1, "", "fatal: unable to get password from user")
 
     monkeypatch.setattr(branch_sync, "_git", fake_git)
@@ -175,9 +166,6 @@ async def test_fast_forward_threads_fetch_overlay_to_git(monkeypatch) -> None:
     assert result.status is branch_sync.FFSyncStatus.FETCH_FAILED
     assert captured["args"][0] == "fetch"
     assert captured["overlay"] == overlay
-
-
-# worktree allocator ls-remote / fetch overlay (#179 + #151 audit)
 
 
 @pytest.mark.asyncio

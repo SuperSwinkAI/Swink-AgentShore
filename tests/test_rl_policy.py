@@ -30,11 +30,6 @@ def _mask_single(idx: int) -> torch.Tensor:
     return m
 
 
-# ---------------------------------------------------------------------------
-# Architecture
-# ---------------------------------------------------------------------------
-
-
 def test_param_count_under_100k():
     m = ActorCritic()
     total = sum(p.numel() for p in m.parameters())
@@ -55,11 +50,6 @@ def test_forward_batch_shape():
     logits, value = m(obs)
     assert logits.shape == (8, NUM_ACTIONS)
     assert value.shape == (8, 1)
-
-
-# ---------------------------------------------------------------------------
-# act() — masking and sampling
-# ---------------------------------------------------------------------------
 
 
 def test_act_returns_valid_action():
@@ -94,11 +84,6 @@ def test_act_all_masked_raises():
         m.act(_obs(), empty_mask)
 
 
-# ---------------------------------------------------------------------------
-# evaluate() — used by PPOUpdater
-# ---------------------------------------------------------------------------
-
-
 def test_evaluate_shapes():
     m = ActorCritic()
     batch = 4
@@ -121,25 +106,14 @@ def test_evaluate_entropy_non_negative():
     assert (entropy >= 0).all()
 
 
-# ---------------------------------------------------------------------------
-# value()
-# ---------------------------------------------------------------------------
-
-
 def test_value_returns_float():
     m = ActorCritic()
     v = m.value(_obs())
     assert isinstance(v, float)
 
 
-# ---------------------------------------------------------------------------
-# save / load round-trip
-# ---------------------------------------------------------------------------
-
-
 def test_save_load_roundtrip(tmp_path: Path):
     m = ActorCritic()
-    # Randomize weights to check they survive round-trip
     with torch.no_grad():
         for p in m.parameters():
             p.normal_()
@@ -159,7 +133,6 @@ def test_save_is_atomic(tmp_path: Path):
     m = ActorCritic()
     path = tmp_path / "policy.pt"
     m.save(path)
-    # No partial .tmp files should remain
     tmps = list(tmp_path.glob("*.tmp"))
     assert tmps == []
 
@@ -169,7 +142,6 @@ def test_load_mismatched_version_raises(tmp_path: Path):
     path = tmp_path / "bad.pt"
     import torch as _torch
 
-    # Write a payload with wrong version
     _torch.save(
         {
             "state_dict": m.state_dict(),
@@ -228,11 +200,6 @@ def test_load_mismatched_observation_version_raises(tmp_path: Path):
         ActorCritic.load(path)
 
 
-# ---------------------------------------------------------------------------
-# Config head
-# ---------------------------------------------------------------------------
-
-
 def test_config_head_default_num_configs_is_zero():
     m = ActorCritic()
     assert m.num_configs == 0
@@ -289,7 +256,6 @@ def test_save_load_preserves_num_configs(tmp_path: Path):
     m.save(path)
     loaded = ActorCritic.load(path)
     assert loaded.num_configs == 4
-    # Config-head logits should match across save/load.
     obs = torch.zeros(1, OBSERVATION_DIM)
     with torch.no_grad():
         torch.testing.assert_close(m.forward_config(obs), loaded.forward_config(obs))

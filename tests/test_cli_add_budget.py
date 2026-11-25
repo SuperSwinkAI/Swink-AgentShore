@@ -9,8 +9,6 @@ from click.testing import CliRunner
 
 from agentshore.cli import main
 
-# Wire encoding from the IPC reply; keys mirror DrainController._applied_from_state
-# and _serialize_budget (both use ``total`` for the dollar cap).
 _APPLIED: dict[str, object] = {
     "enabled": True,
     "total": 75.0,
@@ -25,7 +23,6 @@ _APPLIED: dict[str, object] = {
 
 @pytest.fixture()
 def project_dir(tmp_path: Any) -> str:
-    # The CLI uses click.Path(exists=True, file_okay=False); tmp_path is a dir.
     return str(tmp_path)
 
 
@@ -167,9 +164,6 @@ def test_add_budget_command_name_is_hyphenated() -> None:
     assert "add-budget" in result.output
 
 
-# request_add_budget — reads an ``add_budget_ok`` reply directly, no polling.
-
-
 def test_request_add_budget_returns_no_session_when_no_endpoint(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Any
 ) -> None:
@@ -198,7 +192,7 @@ def test_request_add_budget_parses_ok_reply(monkeypatch: pytest.MonkeyPatch, tmp
 
     def _serve() -> None:
         conn, _ = server_sock.accept()
-        conn.recv(4096)  # consume the command
+        conn.recv(4096)
         conn.sendall(reply.encode())
         conn.close()
         server_sock.close()

@@ -25,7 +25,6 @@ import sys
 import tomllib
 from pathlib import Path
 
-# (relative path, kind, dotted key path within the file)
 CANONICAL: tuple[str, str, tuple[str, ...]] = ("pyproject.toml", "toml", ("project", "version"))
 MIRRORS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     ("desktop/src-tauri/tauri.conf.json", "json", ("version",)),
@@ -35,16 +34,9 @@ MIRRORS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     ("dashboard/package.json", "json", ("version",)),
 )
 
-# Cargo.lock is not a simple one-version-line mirror: it carries a `version`
-# field for *every* resolved crate. Only the local workspace members track the
-# project version, and each must match canonical or `cargo build --locked` fails.
 CARGO_LOCK = "desktop/src-tauri/Cargo.lock"
 CARGO_LOCK_PACKAGES: tuple[str, ...] = ("agentshore-desktop", "agentshore-provisioner")
 
-# Targeted, formatting-preserving replacements for `write()`. Anchored at line
-# start: in Cargo.toml the bare `version = "..."` is the [package] field, while
-# dependency versions are inline (`{ version = "..." }`) or indented, so the
-# first line-anchored match is always the package version.
 _VERSION_LINE: dict[str, re.Pattern[str]] = {
     "json": re.compile(r'^(?P<pre>\s*"version"\s*:\s*")[^"]*(?P<post>")', re.MULTILINE),
     "toml": re.compile(r'^(?P<pre>version\s*=\s*")[^"]*(?P<post>")', re.MULTILINE),

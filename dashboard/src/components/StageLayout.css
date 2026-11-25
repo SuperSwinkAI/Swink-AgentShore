@@ -1,4 +1,3 @@
-/* ── Kanban stage ───────────────────────────────────────────── */
 #kanban-stage[hidden] {
   display: none;
 }
@@ -23,7 +22,6 @@
     calc(var(--stats-inset-bottom, 120px) + 16px)
     calc(var(--stats-inset-left, var(--dashboard-side-panel-width)) + 16px);
 }
-/* When HTML stages are active hide the office canvas underneath. */
 body.kanban-active .agentshore-dashboard-canvas,
 body.stats-active .agentshore-dashboard-canvas {
   display: none;

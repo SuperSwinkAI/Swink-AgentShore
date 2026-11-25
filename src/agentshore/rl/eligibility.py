@@ -76,18 +76,10 @@ if TYPE_CHECKING:
     from agentshore.rl.config_head import ConfigKey
     from agentshore.state import AgentSnapshot, OrchestratorState
 
-    # Returns a freshly-loaded beads graph (or None on a live-read blip). The
-    # one live read ``confirm()`` is permitted, supplied by the dispatch layer
-    # which owns the repo path.
     LiveGraphLoader = Callable[[], Awaitable[ProjectGraph | None]]
 
 
 _logger = structlog.get_logger(__name__)
-
-
-# ---------------------------------------------------------------------------
-# Frozen public interface — the contract other components import.
-# ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True, slots=True)
@@ -131,17 +123,6 @@ class EligibilityReport:
         return mask
 
 
-# ---------------------------------------------------------------------------
-# Per-play candidate-validity functions (moved out of the play classes).
-#
-# Each ``fn(state, plan) -> list[MaskReason]`` returns the validity-blocking
-# reasons for one play type, reading the *snapshot* candidate plan rather than
-# rebuilding it. An empty list means valid. These are the canonical A-type
-# candidate gates the play classes used to derive inline; the authority now
-# owns them and the play preconditions delegate.
-# ---------------------------------------------------------------------------
-
-
 def _candidate_reason(plan: PlayCandidatePlan, play_type: PlayType, fallback: str) -> MaskReason:
     """Build a HARD candidate reason, preferring the plan's blocked-reason text."""
     blocked = plan.blocked_reasons_by_play_type.get(play_type, ())
@@ -177,8 +158,6 @@ def _write_plan_validity(state: OrchestratorState, plan: PlayCandidatePlan) -> l
                 source=MaskSource.PRECONDITION,
             )
         )
-    # Call the real predicate (not a hand-copied one) so the mask can't drift from
-    # the resolver. The analyzer is the same one ``build_candidate_plan`` uses.
     analyzer = PlayCandidateAnalyzer(state)
     if not any(analyzer.issue_available_for_plan(issue) for issue in state.open_issues):
         issues.append(
@@ -252,8 +231,6 @@ def _unblock_pr_validity(state: OrchestratorState, plan: PlayCandidatePlan) -> l
         for s in state.agents
         if s.current_play_type == PlayType.UNBLOCK_PR and s.current_play_pr_number is not None
     }
-    # When every unblockable PR is already being worked, the gate is transient
-    # (clears when the in-flight unblock completes), not a hard no-candidate.
     has_unblockable = any(
         pr_unblockable(pr) and pr.pr_number in in_flight_pr_numbers for pr in state.pull_requests
     )
@@ -331,12 +308,6 @@ def _idle_audit_validity(
     return _fn
 
 
-# Module-level validity-function table. Each entry maps a play type to a pure
-# function that returns the list of validity-blocking reasons for that play
-# given the state and the shared candidate plan (empty list == valid).
-#
-# RECONCILE_STATE is intentionally absent: its ``ArmedByFailureGate`` owns the
-# arming decision and there is no candidate gate to add.
 _VALIDITY_FNS: dict[
     PlayType, Callable[[OrchestratorState, PlayCandidatePlan], list[MaskReason]]
 ] = {
@@ -480,8 +451,6 @@ def _stage_anti_confirmation_reason(_ctx: _AgentEligibilityContext) -> MaskReaso
     )
 
 
-# The canonical agent-eligibility chain. Order is the single source of truth:
-# both the mask fold and the reason lookup walk this same list.
 _AGENT_ELIGIBILITY_STAGES: tuple[_EligibilityStage, ...] = (
     _EligibilityStage("idle", _stage_idle_filter, _stage_idle_reason),
     _EligibilityStage("tier", _stage_tier_filter, _stage_tier_reason),
@@ -577,9 +546,6 @@ class EligibilityAuthority:
         self._cfg = cfg
         self._config_index = config_index
         self._candidate_plan = candidate_plan or build_candidate_plan(state)
-        # The one live read confirm() may perform. None (e.g. in the mask path
-        # or tests) makes confirm() fall back to the snapshot — still correct,
-        # just without fresh-beads drift detection.
         self._live_graph_loader = live_graph_loader
 
     @property
@@ -625,58 +591,27 @@ class EligibilityAuthority:
         idx: int,
     ) -> MaskReason | None:
         """Return the first A-type validity reason for ``pt``, or None if valid."""
-        # _stage_wedged_end_agent re-enable: a recovery-exhausted agent lifts
-        # END_AGENT even when its registry precondition would mask it (this is
-        # the sole re-enable — it hands the retire decision to the policy). It
-        # MUST be evaluated before the precondition early-return below, otherwise
-        # the precondition reason returns first and the re-enable is unreachable.
         wedged_end_agent_reenable = pt == PlayType.END_AGENT and agent_needs_reaping(state)
 
-        # 1. Registry preconditions (runs each play's declared gates).
         precondition_reason = self._precondition_reason(pt, state)
         if precondition_reason is not None and not wedged_end_agent_reenable:
             return precondition_reason
 
-        # 2. Agent eligibility (tier / exclude / anti-confirmation).
         if agent_mask is not None and not bool(agent_mask[idx]):
             return self._eligibility_reason(pt, state)
 
-        # 3. Per-play candidate-validity functions (moved out of play classes).
         validity_fn = _VALIDITY_FNS.get(pt)
         if validity_fn is not None:
             fn_reasons = validity_fn(state, plan)
             if fn_reasons:
                 return fn_reasons[0]
 
-        # 4. Candidate-required plays: no concrete target → masked.
         if pt in CANDIDATE_REQUIRED_PLAY_TYPES and not plan.candidates_for(pt):
             return _candidate_reason(plan, pt, f"no {pt.value} candidates")
 
-        # 5. INSTANTIATE_AGENT config viability.
         if pt == PlayType.INSTANTIATE_AGENT:
             return self._instantiate_config_reason(state, plan)
 
-        # 6. END_SESSION while actionable work remains, or while the beads
-        #    backlog is non-empty. GitHub workable-issue counts can lag
-        #    calibrate_alignment syncs; ready_task_count is authoritative.
-        #    Escape hatch (#166): when the open-PR queue is wedged on human
-        #    intervention (>= MAX_OPEN_PRS - 1 PRs carry manual-required, so the
-        #    backpressure cap blocks new issue_pickup and nothing can drain into
-        #    a mergeable PR), END_SESSION becomes a valid choice even while
-        #    nominal issue/task work still looks plannable. It is non-forcing —
-        #    the PPO still weighs it against any genuinely-actionable PR play, and
-        #    _stage_end_session_in_flight still prevents a double-fire.
-        #    Escape hatch (#330): when ``merge_pr`` has failed repeatedly with
-        #    the same ``dirty_trunk`` cause — a root-level untracked file a
-        #    deterministic reclaim sweep correctly leaves alone (e.g. it looks
-        #    like real user WIP) — the trunk is wedged and cannot drain via
-        #    merge_pr no matter how many times it's retried.
-        #    ``MainRepoGuard.is_trunk_wedged()`` (surfaced as
-        #    ``state.trunk_wedged``) fires after
-        #    ``_DIRTY_TRUNK_WEDGE_THRESHOLD`` consecutive same-cause failures.
-        #    Same non-forcing contract as the #166 hatch: this only unmasks
-        #    END_SESSION for the PPO to weigh against other actionable work, it
-        #    never stops the session itself.
         if (
             pt == PlayType.END_SESSION
             and not plan.work_availability.pr_queue_human_blocked
@@ -692,7 +627,6 @@ class EligibilityAuthority:
                 source=MaskSource.TERMINAL,
             )
 
-        # 7. TAKE_BREAK unless an agent is in rate_limit/unknown error.
         if pt == PlayType.TAKE_BREAK and not self._has_break_trigger(state):
             return MaskReason(
                 text="No agent in rate_limit or unknown-error state",
@@ -700,8 +634,6 @@ class EligibilityAuthority:
                 source=MaskSource.PRECONDITION,
             )
 
-        # END_AGENT with a recovery-exhausted agent reaches here only via the
-        # wedged re-enable (precondition reason was bypassed above) → valid.
         return None
 
     def _precondition_reason(self, pt: PlayType, state: OrchestratorState) -> MaskReason | None:
@@ -761,11 +693,6 @@ class EligibilityAuthority:
         if self._cfg is None:
             return None
         if not self._config_index:
-            # None OR empty tuple → no (agent_type, tier) cell exists to spawn
-            # into. Fail closed: an empty config_index must HARD-mask the action,
-            # not leave it selectable (the selector coerces () -> None, so the
-            # old ``is None`` guard let an empty index bypass the cap and spin
-            # against execute()'s slot check; #159).
             return MaskReason(
                 text="No agent configuration index — nothing to spawn",
                 classification=MaskClassification.HARD,
@@ -812,15 +739,9 @@ class EligibilityAuthority:
         caller should cleanly re-pick (re-mask the action and resample) — never
         a plays-table skip row, never an RL experience sample.
         """
-        # (a) Trusted bypass (bootstrap fleet seeding) skips all gates.
         if params.bypass_preconditions:
             return PlayVerdict(play_type=play_type, valid=True, reason=None, candidates=())
 
-        # (b) THE live read: reload the beads graph (the resource a sibling agent
-        #     can flip — e.g. mark a bead in_progress — between selection and
-        #     dispatch) and re-derive validity against it. A live-read blip falls
-        #     back to the passed snapshot; never a hard block. ``confirm`` NEVER
-        #     acquires work-claims.
         live_state = state
         if self._live_graph_loader is not None:
             try:
@@ -833,7 +754,6 @@ class EligibilityAuthority:
         try:
             live_plan = build_candidate_plan(live_state)
         except (ValueError, AttributeError, RuntimeError, KeyError):
-            # Beads/GitHub blip while deriving — fall back to snapshot-valid.
             return PlayVerdict(play_type=play_type, valid=True, reason=None, candidates=())
 
         agent_mask = (
@@ -857,12 +777,6 @@ class EligibilityAuthority:
                 candidates=live_plan.candidates_for(play_type),
             )
 
-        # (c) Live target presence: for a play whose params name a concrete
-        #     issue/PR target, the target must still be in the live candidate
-        #     set. This folds the live-beads IN_PROGRESS gate (an issue whose
-        #     bead flipped to in_progress drops out of the live plan) and the
-        #     resolver-time fallbacks. Plays without a named target (or not in
-        #     the live-confirm set) pass through on the snapshot verdict.
         live_reason = self._live_target_reason(play_type, params, live_plan)
         if live_reason is not None:
             return PlayVerdict(
@@ -892,16 +806,12 @@ class EligibilityAuthority:
         play has candidates but the *specific* target is gone, that is a live
         drift → HARD ``SELECTED_CANDIDATE_NO_LONGER_AVAILABLE`` → clean re-pick.
         """
-        # The live-confirm set: candidate-bearing target plays. Internal/control
-        # plays and audit plays are not target-confirmed here.
         if play_type not in LIVE_CONFIRM_PLAY_TYPES:
             return None
 
         target_issue = params.issue_number
         target_pr = params.pr_number
         if target_issue is None and target_pr is None:
-            # No specific target pinned — the snapshot candidate check already
-            # confirmed the play has at least one live candidate.
             return None
 
         live_candidates = live_plan.candidates_for(play_type)
@@ -911,8 +821,6 @@ class EligibilityAuthority:
             if target_issue is not None and candidate.params.issue_number == target_issue:
                 return None
 
-        # The pinned target is gone from the live plan (e.g. issue's bead flipped
-        # to in_progress, PR merged/closed, review queue row cleared).
         return SELECTED_CANDIDATE_NO_LONGER_AVAILABLE
 
     @staticmethod
@@ -921,11 +829,6 @@ class EligibilityAuthority:
     ) -> Callable[[OrchestratorState, PlayCandidatePlan], list[MaskReason]] | None:
         """Return the validity function registered for ``play_type``, or None."""
         return _VALIDITY_FNS.get(play_type)
-
-
-# ---------------------------------------------------------------------------
-# Relocated eligibility/config masks (re-exported by ``mask.py``).
-# ---------------------------------------------------------------------------
 
 
 def _auth_config_blocked(
@@ -1006,7 +909,6 @@ def compute_agent_eligibility_mask(
         except KeyError:
             continue
 
-        # Internal plays bypass agent selection — no eligibility gate.
         if play.capability is None:
             continue
 
@@ -1039,9 +941,6 @@ def compute_config_mask(
     if n == 0:
         return np.zeros(0, dtype=bool)
 
-    # Per-(type, tier) counts. ERROR agents are included so a failing or
-    # quota-exhausted type cannot respawn past its configured cap; TERMINATED
-    # agents are excluded because end_agent has freed their slot.
     counts: dict[tuple[str, str], int] = {}
     idle_configs: set[tuple[str, str]] = set()
     providers_in_take_break: set[str] = set()
@@ -1072,7 +971,7 @@ def compute_config_mask(
         try:
             agent_type_enum = AgentType(agent_type)
         except ValueError:
-            continue  # unrecognised agent type — skip
+            continue
         configured_model: str | None = None
         try:
             configured_model = effective_model_tier_config(agent_type_enum, agent_cfg, tier).model

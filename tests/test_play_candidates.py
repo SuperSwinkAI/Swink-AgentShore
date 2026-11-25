@@ -110,7 +110,6 @@ def _reviewer(
         tasks_completed=tasks_completed,
         tasks_failed=tasks_failed,
         timeout_count=timeout_count,
-        # code_review is large-only (#254); reviewers must be large tier.
         model_tier="large",
     )
 
@@ -182,7 +181,7 @@ def test_open_pr_review_fallback_not_shadowed_by_stale_queue_rows() -> None:
     )
 
     review_prs = [c.params.pr_number for c in plan.candidates_for(PlayType.CODE_REVIEW)]
-    assert review_prs == [414]  # reviewable PR picked up; manual-required 190 stays parked
+    assert review_prs == [414]
 
 
 def test_queued_reviewable_pr_not_double_added_by_fallback() -> None:
@@ -204,7 +203,7 @@ def test_queued_reviewable_pr_not_double_added_by_fallback() -> None:
     )
 
     review_prs = [c.params.pr_number for c in plan.candidates_for(PlayType.CODE_REVIEW)]
-    assert review_prs == [500]  # exactly once, from the queue (priority) lane
+    assert review_prs == [500]
     assert plan.has_remaining_work is True
 
 
@@ -415,7 +414,6 @@ def test_issue_pickup_excludes_dependency_blocked_bead() -> None:
         has_ready_tasks=True,
         tasks_ready=1,
         tasks=[
-            # gh-964 is blocked by the still-open dep bead for gh-963.
             SimpleNamespace(
                 issue_number=964,
                 status=BeadStatus.OPEN,
@@ -473,8 +471,6 @@ def test_in_progress_bead_excluded_from_refine_candidates() -> None:
 
 
 def test_refined_issue_excluded_from_refine_candidates() -> None:
-    # An issue marked agentshore/refined is not a refine candidate even though
-    # it still carries needs-refinement; removing refined re-arms it.
     plan = build_candidate_plan(
         _state(
             open_issues=[
@@ -501,9 +497,6 @@ def test_in_progress_bead_excluded_from_debug_candidates() -> None:
 
 
 def test_in_progress_bead_does_not_starve_workable_issues_e2e() -> None:
-    # Reproduces the live fixation in-process: gh-6 stuck in_progress must not
-    # be a candidate for ANY issue-track play, while the other workable issues
-    # remain available. No agentshore CLI required.
     workable = [7, 12, 13, 14, 16, 18, 19]
     tasks: list[object] = [
         SimpleNamespace(issue_number=6, status=BeadStatus.IN_PROGRESS, ready=False)
@@ -540,7 +533,6 @@ def test_analyzer_issue_available_for_plan_excludes_in_progress() -> None:
         _state(graph=in_progress_graph, open_issues=[issue])
     )
     assert analyzer_in_progress.issue_available_for_plan(issue) is False
-    # With no in-progress bead the same issue is still available for planning.
     analyzer_open = PlayCandidateAnalyzer(_state(open_issues=[issue]))
     assert analyzer_open.issue_available_for_plan(issue) is True
 
@@ -769,10 +761,6 @@ async def test_github_fallback_filters_active_resource_keys() -> None:
     assert candidates == []
 
 
-# ---------------------------------------------------------------------------
-# Deterministic merge-side base gate (base != target_branch is never mergeable)
-# ---------------------------------------------------------------------------
-
 from agentshore.plays.candidates import pr_merge_ready  # noqa: E402
 
 
@@ -787,7 +775,7 @@ def _approved_pr(number: int, base_ref: str) -> PullRequestSnapshot:
 
 def test_pr_merge_ready_rejects_base_mismatch() -> None:
     pr = _approved_pr(50, "main")
-    assert pr_merge_ready(pr) is True  # no target → unchanged behavior
+    assert pr_merge_ready(pr) is True
     assert pr_merge_ready(pr, target_branch="integration") is False
     assert pr_merge_ready(_approved_pr(51, "integration"), target_branch="integration") is True
 
@@ -805,11 +793,6 @@ def test_merge_pr_candidate_includes_matching_base() -> None:
     )
     nums = [c.params.pr_number for c in plan.candidates_for(PlayType.MERGE_PR)]
     assert nums == [51]
-
-
-# ---------------------------------------------------------------------------
-# Opt-in trusted-issue-author gating (Phase B)
-# ---------------------------------------------------------------------------
 
 
 def _authored_issue(
@@ -842,7 +825,6 @@ def _gated_state(open_issues: list[IssueSnapshot], **kwargs: object) -> Orchestr
 
 
 def test_untrusted_issue_workable_when_gating_off() -> None:
-    # Default state has the toggle off → author is never consulted.
     state = _state(open_issues=[_authored_issue(1, "stranger")])
 
     plan = build_candidate_plan(state)
@@ -886,10 +868,6 @@ def test_trusted_login_issue_stays_workable_when_gating_on() -> None:
 
 
 def test_agent_identity_issue_stays_workable_when_gating_on() -> None:
-    # Agent identities are folded into the trusted set at assembly (covered by
-    # trusted_issue_author_logins tests); here the resolved bot login is in the
-    # state's trusted set, and its issues stay workable. Author match is
-    # case-insensitive (canonicalized).
     state = _state(
         open_issues=[_authored_issue(1, "AgentShoreBot")],
         restrict_issues_to_trusted_authors=True,
@@ -912,9 +890,6 @@ def test_null_author_issue_excluded_when_gating_on() -> None:
     assert plan.work_availability.untrusted_issue_count == 1
 
 
-# --- Piece A: parked-resource exclusion (issue #60 backstop) ------------------
-
-
 def test_parked_pr_is_excluded_from_unblock_candidates() -> None:
     """A resource parked after repeated worktree-allocation failures is excluded
     from every play that touches it, so it can't be re-selected each tick."""
@@ -925,11 +900,9 @@ def test_parked_pr_is_excluded_from_unblock_candidates() -> None:
         blocked=True,
         blocked_reasons=["merge_conflict"],
     )
-    # Control: without parking, #489 is an unblock_pr candidate.
     unparked = build_candidate_plan(_state(pull_requests=[conflicting]))
     assert 489 in [c.params.pr_number for c in unparked.candidates_for(PlayType.UNBLOCK_PR)]
 
-    # Parked: the candidate disappears and a "parked" blocked-reason is recorded.
     parked = build_candidate_plan(
         _state(pull_requests=[conflicting], parked_resource_keys=frozenset({"pr:489"}))
     )
@@ -937,12 +910,6 @@ def test_parked_pr_is_excluded_from_unblock_candidates() -> None:
     reasons = parked.blocked_reasons_by_play_type.get(PlayType.UNBLOCK_PR, ())
     assert any("parked" in r and "pr:489" in r for r in reasons)
 
-
-# ---------------------------------------------------------------------------
-# #312 — fast per-PR repick cooldown excludes recently-failed PRs from both
-# resolver-time candidate builders, and lets them back in once the cooldown
-# window (PR_REPICK_COOLDOWN_SPEC.cooldown plays) elapses.
-# ---------------------------------------------------------------------------
 
 from agentshore.cooldown import Cooldown  # noqa: E402
 from agentshore.plays.candidates import PR_REPICK_COOLDOWN_SPEC  # noqa: E402
@@ -966,7 +933,6 @@ async def test_unblock_pr_candidates_excludes_pr_on_repick_cooldown() -> None:
     )
     state = _state(pull_requests=[conflicting])
 
-    # Sanity: it's a candidate before any failure is recorded.
     before = await service.candidates_for(PlayType.UNBLOCK_PR, state)
     assert [c.params.pr_number for c in before] == [489]
 
@@ -1060,16 +1026,9 @@ async def test_unblock_pr_candidates_rearm_when_no_longer_conflicting() -> None:
         pr_repick_cooldown_rearmable=rearmable,
     )
 
-    state = _state(pull_requests=[recovered], total_plays=1)  # well inside the window
+    state = _state(pull_requests=[recovered], total_plays=1)
     candidates = await service.candidates_for(PlayType.UNBLOCK_PR, state)
     assert [c.params.pr_number for c in candidates] == [489]
-
-
-# ---------------------------------------------------------------------------
-# Parity: PlayCandidateService.candidates_for agrees with build_candidate_plan
-# wherever the service adds no store/GitHub-only candidates. Guards the unified
-# single source of candidate logic against future drift.
-# ---------------------------------------------------------------------------
 
 
 def _candidate_keys(candidates: object) -> set[tuple[object, object, object]]:
@@ -1086,7 +1045,7 @@ async def test_service_candidates_match_build_plan_for_each_play_type() -> None:
     state and there is no GitHub fallback (the only service-specific additions).
     """
     issues = [_issue(1), _issue(2, labels=["agentshore/needs-refinement"]), _issue(3)]
-    review_pr = _pr(10, review_decision=None)  # needs review
+    review_pr = _pr(10, review_decision=None)
     merge_pr = _pr(11, mergeable="MERGEABLE", review_decision="APPROVED")
     unblock_pr = _pr(12, mergeable="CONFLICTING", blocked=True, blocked_reasons=["merge_conflict"])
     prs = [review_pr, merge_pr, unblock_pr]
@@ -1096,7 +1055,6 @@ async def test_service_candidates_match_build_plan_for_each_play_type() -> None:
     plan = build_candidate_plan(state)
 
     store = MagicMock()
-    # Store mirrors live state so the store-backed passes have no extra rows.
     store.list_pending_reviews = AsyncMock(return_value=[])
     store.list_approved_pull_requests = AsyncMock(return_value=prs)
     store.list_open_pull_requests = AsyncMock(return_value=prs)
@@ -1119,10 +1077,6 @@ async def test_service_candidates_match_build_plan_for_each_play_type() -> None:
             plan.candidates_for(play_type)
         ), f"candidate set diverged for {play_type}"
 
-
-# ---------------------------------------------------------------------------
-# Candidate agent-type resolution (used by the launch-wedge cooldown mask).
-# ---------------------------------------------------------------------------
 
 from agentshore.plays.base import PlayParams  # noqa: E402
 from agentshore.plays.candidates import (  # noqa: E402

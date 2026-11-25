@@ -186,7 +186,6 @@ def test_break_recovery_counter_persists_at_limit() -> None:
     assert h._recovery._break_recovery_failures["a1"] == BREAK_RECOVERY_FAILURE_LIMIT
     assert h._recovery._break_recovery_failures["a1"] >= BREAK_RECOVERY_FAILURE_LIMIT
 
-    # Further failures keep the counter at/above the limit (never reset here).
     h._handle_take_break_outcome(_outcome(agent_id="a1", success=False))
     assert h._recovery._break_recovery_failures["a1"] == BREAK_RECOVERY_FAILURE_LIMIT + 1
     assert h._overrides.empty()
@@ -214,13 +213,6 @@ def test_failures_on_different_agents_do_not_share_a_counter() -> None:
 
     assert h._recovery._break_recovery_failures == {"a1": 1, "a2": 1}
     assert h._overrides.empty()
-
-
-# ---------------------------------------------------------------------------
-# Rate-limit-recovery enqueue gating (#7): an externally-SIGKILLed agent
-# (-9 → crash_signal, OS OOM → crash_oom) must NOT enqueue take_break
-# rate-limit recovery. Only genuine rate-limit-eligible classes do.
-# ---------------------------------------------------------------------------
 
 
 def _enqueue_harness(error_class: ErrorClass | None, agent_id: str = "err1") -> _Harness:
@@ -300,11 +292,6 @@ def test_noop_class_enqueues_noop_recovery() -> None:
     assert entry.kind is OverrideKind.NOOP_RECOVERY
 
 
-# ---------------------------------------------------------------------------
-# Drain wind-down: retire an errored agent instead of recovering it (#30/#23)
-# ---------------------------------------------------------------------------
-
-
 class _DrainHarness(CompletionProcessor):
     """CompletionProcessor stand-in for _retire_or_recover_errored_agent."""
 
@@ -319,10 +306,8 @@ class _DrainHarness(CompletionProcessor):
         self._manager = MagicMock()
         self._manager.clear = AsyncMock()
         handle = MagicMock()
-        handle.last_error_class = ErrorClass.UNKNOWN  # recoverable class
+        handle.last_error_class = ErrorClass.UNKNOWN
         self._manager.handles = {"err1": handle}
-        # Shared session state lives on the runtime; the method reads
-        # self._runtime.draining / .stop_requested.
         self._runtime = SessionRuntime(
             cfg=RuntimeConfig(), selector=MagicMock(), state_provider=NullStateProvider()
         )
@@ -331,7 +316,7 @@ class _DrainHarness(CompletionProcessor):
         self._host = MagicMock()
 
         async def _safe_call(coro: object, _name: str) -> None:
-            await coro  # actually run manager.clear() so the assertion is real
+            await coro
 
         self._host._safe_call = _safe_call
 
@@ -343,11 +328,8 @@ async def test_drain_retires_errored_agent_without_enqueuing_recovery() -> None:
 
     await h._retire_or_recover_errored_agent("err1", AgentStatus.ERROR)
 
-    # force=True is load-bearing: the session is winding down and in-flight
-    # tasks are already cancelled; a force-less clear() would hit the
-    # active-play guard and leak the agent (#154).
     h._manager.clear.assert_awaited_once_with("err1", force=True)
-    assert h._overrides.empty()  # no doomed rate-limit recovery enqueued (#23)
+    assert h._overrides.empty()
     assert "err1" not in h._recovery._rate_limit_recovery_enqueued
 
 
@@ -375,18 +357,6 @@ async def test_drain_does_not_clear_a_non_errored_agent() -> None:
     assert h._overrides.empty()
 
 
-# ---------------------------------------------------------------------------
-# #365: exhaustion must retire the agent from the break cycle, not recycle it.
-#
-# Field trace (session 4f4596b2, agent a0d73848): every failed break re-armed
-# the next one from the completion path, so ``break_recovery_exhausted`` was
-# followed immediately by another identical 30-minute take_break; when END_AGENT
-# then cleared the agent the counter was dropped and the cycle restarted from
-# zero. Auth-classified failures — which no amount of waiting fixes — looped
-# that way for hours.
-# ---------------------------------------------------------------------------
-
-
 def _break_failed_then_completion(h: _Harness, agent_id: str) -> None:
     """Replay one full failed-break completion in production order.
 
@@ -403,19 +373,16 @@ def test_exhausted_break_cycle_enqueues_no_further_break() -> None:
     """Repeated break failures reach exhaustion and stop re-entering the break."""
     h = _enqueue_harness(ErrorClass.AUTH)
 
-    # Failure 1: below the limit — a retry break is still worth enqueueing.
     _break_failed_then_completion(h, "err1")
     assert not h._overrides.empty()
     assert h._overrides.get_nowait().play_type == PlayType.TAKE_BREAK
     assert h._recovery.break_failure_count("err1") == 1
     assert h._recovery.is_break_recovery_exhausted("err1") is False
 
-    # Failure 2 reaches BREAK_RECOVERY_FAILURE_LIMIT: no further break.
     _break_failed_then_completion(h, "err1")
     assert h._overrides.empty()
     assert h._recovery.is_break_recovery_exhausted("err1") is True
 
-    # ...and it stays that way for any later ERROR completion on this agent.
     for _ in range(3):
         h._maybe_enqueue_error_recovery("err1", AgentStatus.ERROR)
     assert h._overrides.empty()
@@ -467,12 +434,10 @@ def test_transient_failure_that_recovers_still_breaks_normally() -> None:
     assert not h._overrides.empty()
     h._overrides.get_nowait()
 
-    # The retry break recovers the agent.
     h._handle_take_break_outcome(_outcome(agent_id="err1", success=True))
     assert h._recovery.break_failure_count("err1") == 0
     assert h._recovery.is_break_recovery_exhausted("err1") is False
 
-    # A later, unrelated error gets a full fresh break cycle.
     _break_failed_then_completion(h, "err1")
     assert not h._overrides.empty()
     assert h._overrides.get_nowait().kind is OverrideKind.RATE_LIMIT_RECOVERY

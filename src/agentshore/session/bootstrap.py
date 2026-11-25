@@ -124,7 +124,6 @@ def resolve_budget_config(
             )
         return resolved
 
-    # No budget block in YAML — apply defaults or flags.
     if budget_override is None and time_override is None:
         return dataclasses.replace(
             base,
@@ -162,9 +161,6 @@ def _load_config_with_overrides(
     try:
         cfg = load_config(cfg_path)
     except (ConfigError, OSError, ValueError) as exc:
-        # Attempt to give a helpful YAML-specific message. The problem_mark may
-        # be on the exception itself (yaml.YAMLError) or on its __cause__ (when
-        # ConfigError wraps a YAML parse error).
         mark = getattr(exc, "problem_mark", None) or getattr(
             getattr(exc, "__cause__", None), "problem_mark", None
         )
@@ -182,10 +178,6 @@ def _load_config_with_overrides(
 
     effective_policy_mode = policy_mode_override or cfg.rl.policy_mode
 
-    # Budget: resolve both soft-cap dimensions (dollars + time) against the
-    # loaded config. See :func:`resolve_budget_config` for the precedence rules
-    # (configured yaml respected as-is; safety defaults only on empty config;
-    # naming one dimension suppresses the other's bare default; --unlimited off).
     budget_cfg = resolve_budget_config(
         cfg.budget,
         budget_override=budget_override,
@@ -194,7 +186,6 @@ def _load_config_with_overrides(
         absent=cfg.budget_absent,
     )
 
-    # Scope strict mode: only override when --strict/--no-strict was given.
     scope_cfg = cfg.scope if strict is None else dataclasses.replace(cfg.scope, strict_mode=strict)
 
     cfg = dataclasses.replace(
@@ -255,9 +246,6 @@ def bootstrap_session(opts: StartOptions) -> ResolvedSession:
         )
         raise SystemExit(1)
 
-    # Default socket: well-known per-project path. When --socket overrides it,
-    # also symlink the well-known path so external tools can still discover it
-    # by hashing the project.
     well_known_socket = session_socket_path(opts.project_path)
     ipc_endpoint, resolved_socket = resolve_start_ipc_endpoint(
         opts.project_path,
@@ -286,7 +274,6 @@ def bootstrap_session(opts: StartOptions) -> ResolvedSession:
     agents = cli_helpers._detect_agents()
     api_keys = cli_helpers._detect_api_keys()
 
-    # Hard-fail only if NEITHER a CLI agent is present NOR any API key is set.
     if not agents and not api_keys:
         click.echo(
             "Error: No coding agents found.\n\n"
@@ -305,9 +292,6 @@ def bootstrap_session(opts: StartOptions) -> ResolvedSession:
     agentshore_dir = repo_root / _PROJECT_DIR
     agentshore_dir.mkdir(exist_ok=True)
 
-    # Ensure agentshore.yaml exists. Seed a fresh config from the resolved CLI
-    # intent so both soft-cap dimensions land in the file exactly as the run
-    # will use them (naked start → $200 + 24h; --unlimited → both off; etc.).
     default_config_path = repo_root / "agentshore.yaml"
     if not default_config_path.exists():
         from agentshore.config.models import BudgetConfig
@@ -318,7 +302,7 @@ def bootstrap_session(opts: StartOptions) -> ResolvedSession:
             budget_override=opts.budget_override,
             time_override=opts.time_override,
             unlimited=opts.unlimited,
-            absent=True,  # no existing budget block → apply defaults or flags
+            absent=True,
         )
         seed_budget = seeded.total if seeded.enabled else None
         seed_time = seeded.time_total_minutes if seeded.time_enabled else None
@@ -340,8 +324,6 @@ def bootstrap_session(opts: StartOptions) -> ResolvedSession:
     require_startup_model_tier_coverage(cfg)
     _install_startup_skills(repo_root)
 
-    # The merged config is the source of truth for the effective budget shown in
-    # the banner and propagated to detached subprocesses.
     effective_budget = cfg.budget.total if cfg.budget.enabled else None
 
     return ResolvedSession(
@@ -413,8 +395,6 @@ def preflight_identities(cfg: RuntimeConfig, repo_root: Path) -> None:
     No-op when no identities are configured.
     """
     if not (cfg.identities or any(a.identity for a in cfg.agents.values())):
-        # Still enforce the ≥2-identity precondition below for parity with the
-        # original flow (which ran it unconditionally).
         _require_two_distinct_identities(cfg)
         _require_per_identity_tier_coverage(cfg)
         return
@@ -447,9 +427,6 @@ def preflight_identities(cfg: RuntimeConfig, repo_root: Path) -> None:
     click.echo("=" * 60)
     click.echo()
 
-    # desktop-l7i: warn if no SSH key is loaded. Identity runs use SSH-signed
-    # commits via `git merge --no-ff`; an empty ssh-agent means merge_pr plays
-    # fail mid-session with 'ssh-signing-key-not-loaded'.
     report_ssh_signing_status(repo_root)
     click.echo()
 
@@ -481,7 +458,6 @@ def preflight_cli_agent_auth(cfg: RuntimeConfig) -> None:
 
     results = probe_configured_cli_auth(cfg)
     if not results:
-        # No CLI agents configured — nothing to probe. Stay quiet.
         return
 
     click.echo("=" * 60)
@@ -493,7 +469,6 @@ def preflight_cli_agent_auth(cfg: RuntimeConfig) -> None:
     click.echo("=" * 60)
     click.echo()
 
-    # Non-blocking non-ok statuses (timeout/error/unprobeable): warn, never gate.
     for result in results:
         if not result.ok and not result.blocks_launch:
             click.echo(
@@ -532,7 +507,6 @@ def preflight_git_auth(cfg: RuntimeConfig, project_path: Path) -> None:
 
     results = probe_all_identities(cfg, project_path=project_path)
     if not results:
-        # No identities configured — nothing to probe. Stay quiet.
         return
 
     click.echo("=" * 60)
@@ -544,7 +518,6 @@ def preflight_git_auth(cfg: RuntimeConfig, project_path: Path) -> None:
     click.echo("=" * 60)
     click.echo()
 
-    # Non-blocking non-ok statuses (timeout/error/unprobeable): warn, never gate.
     for result in results:
         if not result.ok and not result.blocks_launch:
             click.echo(

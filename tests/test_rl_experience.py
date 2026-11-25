@@ -28,11 +28,6 @@ def _step(
     )
 
 
-# ---------------------------------------------------------------------------
-# Buffer basics
-# ---------------------------------------------------------------------------
-
-
 def test_buffer_len():
     buf = RolloutBuffer()
     for _ in range(5):
@@ -48,11 +43,6 @@ def test_buffer_clear():
     assert len(buf) == 0
     assert buf.advantages == []
     assert buf.returns == []
-
-
-# ---------------------------------------------------------------------------
-# GAE recursion — hand-computed example
-# ---------------------------------------------------------------------------
 
 
 def test_gae_single_step_not_done():
@@ -75,7 +65,6 @@ def test_gae_done_step_zeroes_bootstrap():
     buf = RolloutBuffer()
     buf.add(_step(reward=1.0, value=0.0, done=True))
     buf.compute_advantages(last_value=100.0, gamma=1.0, gae_lambda=1.0)
-    # delta = 1 + 0 (zeroed by done) - 0 = 1.0
     assert buf.advantages[0] == pytest.approx(1.0, abs=1e-5)
 
 
@@ -88,8 +77,8 @@ def test_gae_two_steps():
     Returns: R_1 = A_1 + V_1 = 2, R_0 = A_0 + V_0 = 2.8
     """
     buf = RolloutBuffer()
-    buf.add(_step(reward=1.0, value=0.0))  # t=0
-    buf.add(_step(reward=2.0, value=0.0))  # t=1
+    buf.add(_step(reward=1.0, value=0.0))
+    buf.add(_step(reward=2.0, value=0.0))
     buf.compute_advantages(last_value=0.0, gamma=0.9, gae_lambda=1.0)
     assert buf.advantages[1] == pytest.approx(2.0, abs=1e-5)
     assert buf.advantages[0] == pytest.approx(1 + 0.9 * 2.0, abs=1e-5)
@@ -101,14 +90,8 @@ def test_gae_bootstrap_used_when_not_done():
     """last_value > 0 should contribute when last step is not done."""
     buf = RolloutBuffer()
     buf.add(_step(reward=0.0, value=0.0, done=False))
-    # With large last_value the advantage should be positive
     buf.compute_advantages(last_value=5.0, gamma=1.0, gae_lambda=1.0)
     assert buf.advantages[0] > 0.0
-
-
-# ---------------------------------------------------------------------------
-# Minibatches
-# ---------------------------------------------------------------------------
 
 
 def test_minibatch_total_count():
@@ -143,7 +126,6 @@ def test_minibatch_shapes():
 def test_minibatch_no_advantages_yields_nothing():
     buf = RolloutBuffer()
     buf.add(_step())
-    # compute_advantages NOT called
     batches = list(buf.iter_minibatches(batch_size=1))
     assert batches == []
 
@@ -154,15 +136,9 @@ def test_minibatch_shuffled_preserves_count():
         buf.add(_step())
     buf.compute_advantages(0.0)
 
-    # Run several times to exercise shuffle paths
     for _ in range(3):
         total = sum(len(b.states) for b in buf.iter_minibatches(batch_size=3, shuffle=True))
         assert total == 7
-
-
-# ---------------------------------------------------------------------------
-# Config-head fields on Step / Batch
-# ---------------------------------------------------------------------------
 
 
 def _config_step(*, config_action: int | None, num_configs: int = 4) -> Step:
@@ -196,7 +172,7 @@ def test_minibatch_no_config_actions_yields_none_tensors():
 def test_minibatch_mixed_config_active_populates_tensors():
     buf = RolloutBuffer()
     buf.add(_config_step(config_action=2, num_configs=4))
-    buf.add(_step())  # inactive row
+    buf.add(_step())
     buf.add(_config_step(config_action=0, num_configs=4))
     buf.add(_step())
     buf.compute_advantages(0.0)
@@ -208,10 +184,7 @@ def test_minibatch_mixed_config_active_populates_tensors():
     assert batch.config_active is not None
     assert batch.config_masks is not None
     assert batch.config_old_log_probs is not None
-    # Two active rows; two inactive.
     assert int(batch.config_active.sum().item()) == 2
-    # Inactive rows get an all-True mask (so log_softmax stays finite),
-    # but the loss is masked off via config_active.
     assert batch.config_masks.shape == (4, 4)
     assert batch.config_actions.shape == (4,)
 
@@ -221,7 +194,6 @@ def test_minibatch_raises_when_action_set_but_mask_missing():
     s = _step()
     s.config_action = 1
     s.config_log_prob = -0.3
-    # Intentionally do not set config_mask.
     buf.add(s)
     buf.compute_advantages(0.0)
     with pytest.raises(ValueError, match="config_mask"):

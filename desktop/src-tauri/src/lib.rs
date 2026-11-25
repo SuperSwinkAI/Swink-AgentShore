@@ -39,9 +39,6 @@ use quit::QuitConfirmed;
 #[cfg(not(test))]
 use ui_state::{read_ui_state, with_ui_state, UiStateHolder};
 
-// Read a UTF-8 text file from disk. v1 trusts the caller-supplied path — the
-// sidecar produces the archive paths the desktop hands back here. A future
-// hardening pass can restrict this to an archive-root allowlist.
 fn read_text_file_impl(path: PathBuf) -> Result<String, String> {
     std::fs::read_to_string(path).map_err(|e| e.to_string())
 }
@@ -53,10 +50,6 @@ fn read_text_file(path: String) -> Result<String, String> {
 }
 
 struct SidecarHolder {
-    // Arc so callers can clone the supervisor OUT of the holder lock and run
-    // (possibly hours-long) blocking RPCs without holding the lock — holding
-    // it across a wedged ``session.stop`` deadlocked the window-close
-    // teardown and left the app running headless (#155).
     supervisor: Arc<sidecar::SidecarSupervisor>,
 }
 
@@ -102,10 +95,6 @@ fn with_supervisor<R>(
     app: &AppHandle,
     f: impl FnOnce(&sidecar::SidecarSupervisor) -> R,
 ) -> Result<R, String> {
-    // Clone the Arc out under a short-lived lock, then run `f` OUTSIDE it. `f` is
-    // a blocking RPC that can run minutes (session.start) to hours (session.stop
-    // drain); holding the lock that long blockaded shutdown on window close and
-    // left the app running headless (#155).
     let supervisor = {
         let state = app.state::<SidecarHolderState>();
         let guard = state.lock().map_err(|e| e.to_string())?;
@@ -149,9 +138,6 @@ async fn jsonrpc_call(
     params: Option<Value>,
 ) -> Result<Value, String> {
     let method_for_hook = method.clone();
-    // Run the blocking supervisor call OFF the main thread. Tauri runs sync
-    // commands on the UI thread, so a long RPC (session.start bringup) froze the
-    // window and stalled $/progress; spawn_blocking keeps the event loop pumping.
     let app_for_call = app.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
         app_for_call.state::<SidecarStartup>().wait();
@@ -159,14 +145,6 @@ async fn jsonrpc_call(
     })
     .await
     .map_err(|e| format!("sidecar call task failed: {e}"))??;
-    // desktop-bzr2: hold an NSProcessInfo activity assertion while a session is
-    // alive so App Nap can't throttle the backgrounded UI. Acquire on
-    // session.start, release on session.stop; natural exit (session.completed) is
-    // released in sidecar's notification handler.
-    //
-    // Guard: RPC errors arrive wrapped in Ok(json!({"error":...})) — check for
-    // the absence of an embedded "error" key rather than result.is_ok(), which
-    // is always true at this point (transport errors propagated earlier via `??`).
     if let Ok(ref rpc_value) = result {
         if rpc_value.get("error").is_none() {
             match method_for_hook.as_str() {
@@ -231,10 +209,6 @@ fn get_fatal_shell_state(app: AppHandle) -> Result<Option<sidecar::SupervisorSta
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = tauri::Builder::default()
-        // DESIGN §1.3 — single-instance enforcement. A second launch
-        // attempt (e.g. user runs `open AgentShore.app` again) hits this
-        // handler instead of spawning a parallel sidecar; we focus the
-        // existing main window so the user lands back in the running app.
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.unminimize();
@@ -256,18 +230,12 @@ pub fn run() {
         .manage(WebviewHeartbeat::default())
         .manage(heartbeat::WedgeDialogActive::default());
 
-    // macOS WKWebView renderer-death hook (#274, Phase 1+2). Registering a
-    // handler REPLACES wry's default auto-reload, so we must reload ourselves.
-    // The terminate hook fires for true renderer process death; the
-    // heartbeat watchdog (setup below) covers the JS-alive paint-wedge case.
-    // Broken out of the builder chain so the #[cfg] can be a statement attribute.
     #[cfg(target_os = "macos")]
     let builder = builder.on_web_content_process_terminate(|webview| {
         eprintln!(
             "[agentshore-desktop] WKWebView content process terminated; reloading main webview"
         );
         let _ = webview.reload();
-        // Disarm heartbeat watchdog; it re-arms on the next ui_heartbeat call.
         webview
             .app_handle()
             .state::<WebviewHeartbeat>()
@@ -284,31 +252,14 @@ pub fn run() {
                 *current = state;
             });
 
-            // Install the app menu (File > Stop Session etc.). macOS auto-
-            // supplies the leading "App" menu with About / Hide / Quit
-            // when set_menu doesn't pre-populate it.
             let menu = menu::build_app_menu(&app_handle)?;
             app.set_menu(menu)?;
 
-            // Show the shell before sidecar startup. On Windows, process
-            // launch or handshake failures otherwise leave an invisible
-            // but still-running GUI process because the window starts hidden.
             window::apply_restored_window_state(&app_handle);
             #[cfg(windows)]
             window::apply_taskbar_icon(&app_handle);
             window::attach_window_persistence(&app_handle);
 
-            // DESIGN §2.6 — survive a supervisor-startup failure: store
-            // the structured error in FatalShellState, emit an "app:fatal_error"
-            // Tauri event for the React shell to pick up immediately, and
-            // leave SidecarHolderState as ``None`` so the WebView can route
-            // to /fatal-error. Quit / Open log buttons on that screen are
-            // the only allowed actions.
-            //
-            // Started off the UI thread: the handshake takes seconds (up to the
-            // handshake timeout), and blocking here froze the freshly shown
-            // window — Windows then gave its taskbar button the generic icon
-            // and never refreshed it. RPCs wait on `SidecarStartup` instead.
             let startup_app = app_handle.clone();
             std::thread::spawn(move || {
                 match sidecar::SidecarSupervisor::start_classified(&startup_app) {
@@ -331,7 +282,6 @@ pub fn run() {
                 startup_app.state::<SidecarStartup>().finish();
             });
 
-            // Phase 2 — heartbeat watchdog (#274). See `heartbeat::spawn_watchdog_thread`.
             heartbeat::spawn_watchdog_thread(app_handle.clone());
 
             Ok(())
@@ -358,12 +308,6 @@ pub fn run() {
         .expect("error while building tauri application")
         .run(|app_handle, event| {
             match event {
-                // macOS dock-icon click on a running app. Tauri 2 fires
-                // Reopen but does not bring the window to front by
-                // default — without this the user sees nothing happen
-                // and has to minimize every other app to find the
-                // AgentShore window underneath. Mirror what
-                // tauri_plugin_single_instance does for relaunch.
                 #[cfg(target_os = "macos")]
                 tauri::RunEvent::Reopen {
                     has_visible_windows,
@@ -377,11 +321,6 @@ pub fn run() {
                         let _ = window.set_focus();
                     }
                 }
-                // ⌘Q / app-menu Quit / NSApp terminate. macOS short-circuits
-                // to exit() and can skip our SidecarSupervisor::drop, so we tear
-                // the sidecar down explicitly. But first: if a session is still
-                // running, confirm — quitting force-kills it with no drain and
-                // no end-of-session report.
                 tauri::RunEvent::ExitRequested { api, .. } => {
                     let session_active = app_handle.state::<activity::ActivityHolder>().is_active();
                     let already_confirmed = app_handle.state::<QuitConfirmed>().get();
@@ -396,9 +335,6 @@ pub fn run() {
                         });
                         return;
                     }
-                    // Quit is going ahead: bound the teardown. If anything
-                    // below (or in the Exit handler) stalls, the watchdog
-                    // hard-exits instead of leaving a headless orchestrator.
                     quit::arm_teardown_watchdog();
                     quit::shutdown_sidecar_and_agents(app_handle);
                 }

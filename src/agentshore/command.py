@@ -31,13 +31,8 @@ if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
     from pathlib import Path
 
-# Tool timed out; 124 mirrors coreutils ``timeout`` exit (per sidecar/project.py).
 TIMEOUT_RETURN_CODE = 124
-# Tool not found on PATH (127, the shell convention).
 TOOL_NOT_FOUND_RETURN_CODE = 127
-# Process could not be spawned (e.g. invalid ``cwd``; on Windows a stale project
-# dir raises NotADirectoryError [WinError 267]). 126 mirrors the shell "command
-# found but not executable" convention.
 SPAWN_FAILED_RETURN_CODE = 126
 
 
@@ -124,16 +119,10 @@ async def run_command(
         executable,
         *args[1:],
         cwd=str(cwd) if cwd is not None else None,
-        # Never inherit the parent's stdin: in the desktop sidecar that is the
-        # live Tauri JSON-RPC pipe, and git's MSYS2 runtime wedges at 0 CPU
-        # probing it. DEVNULL unless the caller is explicitly feeding stdin_data.
         stdin=asyncio.subprocess.PIPE if stdin_data is not None else asyncio.subprocess.DEVNULL,
         stdout=stdout,
         stderr=stderr,
         env=dict(env) if env is not None else None,
-        # CREATE_NO_WINDOW + new process group on Windows (0 elsewhere). POSIX
-        # session/group handling is left at the default so macOS/Linux process
-        # behavior is unchanged; the timeout path kills the child directly.
         creationflags=subprocess_env.no_window_creationflags(),
     )
     try:
@@ -142,8 +131,6 @@ async def run_command(
             timeout=timeout_seconds,
         )
     except TimeoutError as exc:
-        # Kill the whole tree (git → credential helper / ssh), not just the
-        # direct child, so nothing lingers holding a lock.
         if proc.pid is not None:
             subprocess_env.kill_tree_sync(proc.pid)
         with contextlib.suppress(ProcessLookupError):
@@ -184,9 +171,6 @@ def run_sync_command(
         raise FileNotFoundError(args[0])
 
     started = time.monotonic()
-    # A git/gh child must NEVER inherit the parent's stdin: in the desktop sidecar
-    # that is the live Tauri JSON-RPC pipe, and git's MSYS2 runtime wedges at 0 CPU
-    # probing it. When feeding input_text, subprocess.run wires stdin via ``input=``.
     stdin = None if input_text is not None else subprocess.DEVNULL
     try:
         completed = subprocess.run(  # noqa: S603 — resolved exe, no shell

@@ -29,8 +29,6 @@ def _consecutive(history: list[PlayRecord]) -> dict[PlayType, int]:
 
 
 def test_skips_and_fails_accumulate_across_interleaving() -> None:
-    # write_impl skips interleaved with a successful refine — the per-type streak
-    # ignores the interleaving (the exact 2529961d spin shape).
     history = [
         _rec("issue_pickup", True),
         _rec("write_implementation_plan", False, "skip:masked"),
@@ -40,7 +38,6 @@ def test_skips_and_fails_accumulate_across_interleaving() -> None:
     ]
     consecutive = _consecutive(history)
     assert consecutive[PlayType.WRITE_IMPLEMENTATION_PLAN] == 3
-    # refine's most-recent outcome is a success → no strikes.
     assert consecutive.get(PlayType.REFINE_TASK_BREAKDOWN, 0) == 0
 
 
@@ -48,7 +45,7 @@ def test_streak_resets_on_success() -> None:
     history = [
         _rec("issue_pickup", False),
         _rec("issue_pickup", False),
-        _rec("issue_pickup", True),  # newest success terminates the tail run
+        _rec("issue_pickup", True),
     ]
     assert _consecutive(history).get(PlayType.ISSUE_PICKUP, 0) == 0
 

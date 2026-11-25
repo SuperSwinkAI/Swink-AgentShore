@@ -11,10 +11,6 @@ from agentshore.errors import IssueInflationDetected
 from agentshore.plays.scope import validate_scope
 from agentshore.state import PlayType, SkillResult
 
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
-
 
 def _make_store() -> AsyncMock:
     store = AsyncMock()
@@ -35,11 +31,6 @@ def _result(
 
 def _cfg(strict: bool = False, threshold: float = 2.0) -> ScopeConfig:
     return ScopeConfig(strict_mode=strict, issue_inflation_threshold=threshold)
-
-
-# ---------------------------------------------------------------------------
-# Happy path — artifact drift is evidence-only until beads exposes path bounds
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -78,11 +69,6 @@ async def test_no_drift_for_any_artifact() -> None:
     store.log_scope_drift.assert_not_called()
 
 
-# ---------------------------------------------------------------------------
-# Drift is not inferred by validate_scope
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_no_drift_logged_without_path_boundaries() -> None:
     """validate_scope does not infer artifact drift without path boundaries."""
@@ -107,7 +93,6 @@ async def test_strict_mode_no_raise_without_drift() -> None:
     store = _make_store()
     result = _result(artifacts=["frontend/App.tsx"])
 
-    # Should complete without raising (no drift to trigger it)
     await validate_scope(
         skill_result=result,
         play_id=4,
@@ -120,11 +105,6 @@ async def test_strict_mode_no_raise_without_drift() -> None:
     store.log_scope_drift.assert_not_called()
 
 
-# ---------------------------------------------------------------------------
-# SEED_PROJECT — always in scope, unbounded issues
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_seed_project_always_in_scope_skips_path_check() -> None:
     store = _make_store()
@@ -135,22 +115,16 @@ async def test_seed_project_always_in_scope_skips_path_check() -> None:
         play_id=5,
         play_type=PlayType.SEED_PROJECT,
         session_id="sess-5",
-        scope_cfg=_cfg(strict=True),  # strict mode is irrelevant for issue inflation
+        scope_cfg=_cfg(strict=True),
         store=store,
     )
 
     store.log_scope_drift.assert_not_called()
 
 
-# ---------------------------------------------------------------------------
-# Issue inflation
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_issue_inflation_raises_when_exceeds_threshold() -> None:
     store = _make_store()
-    # ISSUE_PICKUP expects 0 new issues; threshold=2.0 → >0 raises
     result = _result(issues_created=[10, 11])
 
     with pytest.raises(IssueInflationDetected):
@@ -221,7 +195,6 @@ async def test_audit_plays_at_allowance_no_inflation(play_type: PlayType, allowa
 @pytest.mark.asyncio
 async def test_refine_tasks_unbounded_issues_no_inflation() -> None:
     store = _make_store()
-    # REFINE_TASK_BREAKDOWN is unbounded — many issues never trigger inflation
     result = _result(issues_created=list(range(20)))
 
     await validate_scope(

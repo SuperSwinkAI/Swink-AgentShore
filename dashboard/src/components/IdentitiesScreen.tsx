@@ -55,7 +55,7 @@ export interface IdentitiesSidecar {
   checkAgentAuth?(): Promise<AgentAuthRow[]>;
 }
 
-// badge helpers
+
 
 const TOKEN_STATUS_LABELS: Record<string, string> = {
   configured: "Token OK",
@@ -171,7 +171,7 @@ function RepoBadge({
   );
 }
 
-// agent backend auth badges
+
 
 const AGENT_AUTH_LABELS: Record<string, string> = {
   ok: "Backend auth OK",
@@ -205,7 +205,7 @@ function AgentAuthBadge({ status }: { status: string }): React.ReactElement {
   );
 }
 
-// token source selector
+
 
 const TOKEN_SOURCE_OPTIONS = [
   { value: "gh_token_login", label: "gh auth login" },
@@ -238,7 +238,7 @@ function TokenSourceSelect({
   );
 }
 
-// identity row
+
 
 interface IdentityRowItemProps {
   row: IdentityRow;
@@ -341,7 +341,7 @@ function IdentityRowItem({
   );
 }
 
-// main component
+
 
 export interface IdentitiesScreenProps {
   sidecar: IdentitiesSidecar;
@@ -403,8 +403,8 @@ export function IdentitiesScreen({
     void reload();
   }, [reload]);
 
-  // Probe each configured CLI agent's backend auth. Optional RPC: when the
-  // sidecar predates `agents.check_auth`, the section quietly stays hidden.
+
+
   const checkAgentAuth = useCallback(async () => {
     const probe = sidecar.checkAgentAuth;
     if (!probe) return;
@@ -421,8 +421,8 @@ export function IdentitiesScreen({
     void checkAgentAuth();
   }, [checkAgentAuth]);
 
-  // Probe the Keychain for an already-stored PAT so we can offer to reuse it
-  // instead of forcing a re-paste (mirrors the CLI wizard's pre-flight check).
+
+
   const probeKeychain = useCallback(
     async (login: string): Promise<void> => {
       if (!sidecar.checkKeychain) return;
@@ -439,7 +439,7 @@ export function IdentitiesScreen({
           hasToken: Boolean(status?.has_token),
         });
       } catch {
-        // A failed probe just falls back to requiring a PAT — never blocks add.
+
         dispatch({ type: "keychain_checked", hasToken: false });
       }
     },
@@ -456,8 +456,8 @@ export function IdentitiesScreen({
       });
       return;
     }
-    // A PAT is required for Keychain storage unless one is already stored there
-    // (in which case a blank field reuses the existing token).
+
+
     const keychainPatNeeded =
       state.addTokenSource === "gh_token_keychain" &&
       state.addKeychainHasToken !== true &&

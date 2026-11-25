@@ -52,21 +52,10 @@ if TYPE_CHECKING:
 
 _logger = structlog.get_logger(__name__)
 
-#: Subdirectory under ``.agentshore/`` where reclaimed artifacts are quarantined.
-#: ``.agentshore/`` is already an AgentShore-owned untracked prefix, so the
-#: quarantine never re-flags as dirty trunk.
 QUARANTINE_DIRNAME = "reclaimed"
 
-#: Fixed quarantine subdir (under ``QUARANTINE_DIRNAME``) for paths that were
-#: force-quarantined after a ``dirty_trunk`` wedge (#330) rather than attributed
-#: to an owning play_id. See :func:`force_quarantine_wedge_paths`.
 WEDGE_QUARANTINE_SUBDIR = "wedge"
 
-#: Plays that dispatch their agent into the main checkout (``TrunkAllocation``)
-#: rather than an isolated worktree — the only plays that can leave untracked
-#: root artifacts on trunk. Single source of truth: the per-play reclaim hook,
-#: the session-start sweep, and the ``agentshore-reconcile-state`` skill prose
-#: all reference this same set.
 TRUNK_SCOPED_PLAY_TYPES: frozenset[PlayType] = frozenset(
     {
         PlayType.CLEANUP,
@@ -121,8 +110,6 @@ def snapshot_untracked_root_artifacts(project_path: Path) -> set[str]:
         return set()
     artifacts: set[str] = set()
     for status, path in parse_porcelain_lines(result.stdout):
-        # Only depth-1 untracked files that AgentShore doesn't own. (Quoted /
-        # blank paths are already dropped by the shared parser.)
         if status != "??" or "/" in path or _path_is_agentshore_owned(path):
             continue
         artifacts.add(path)

@@ -97,10 +97,6 @@ pub(crate) fn apply_user_path_overlay(cmd: &mut Command) {
             cmd.env("PATH", joined);
         }
         Err(err) => {
-            // Windows caps a single env var near 32KB; if the overlaid PATH
-            // exceeds it, join_paths errs. Don't silently drop the overlay
-            // (which would lose git/gh discovery) — keep the inherited PATH and
-            // leave a breadcrumb so the failure is diagnosable.
             eprintln!(
                 "[agentshore-desktop][sidecar] PATH overlay join failed ({err}); \
                  using inherited PATH"

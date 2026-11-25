@@ -63,7 +63,7 @@ describe("StartingProgress", () => {
 
   it("shows project name when provided", () => {
     renderScreen(steps, { projectName: "example-repo" });
-    // getByText throws if not found — that's the assertion
+
     expect(screen.getByText("example-repo")).toBeTruthy();
   });
 
@@ -271,7 +271,7 @@ describe("applyProgressEvent", () => {
     const initial = buildInitialSteps();
     const updated = applyProgressEvent(initial, "install_skills", "running");
     expect(updated.find((s) => s.id === "install_skills")!.status).toBe("running");
-    // Every other step stays pending.
+
     for (const s of updated) {
       if (s.id !== "install_skills") expect(s.status).toBe("pending");
     }

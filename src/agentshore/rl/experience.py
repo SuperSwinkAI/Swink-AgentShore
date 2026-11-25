@@ -25,36 +25,31 @@ if TYPE_CHECKING:
 
 @dataclass(slots=True)
 class Step:
-    state: FloatArray  # float32 (OBSERVATION_DIM,)
+    state: FloatArray
     action: int
     reward: float
-    next_state: FloatArray  # float32 (OBSERVATION_DIM,)
+    next_state: FloatArray
     done: bool
-    log_prob: float  # old log prob at selection time
-    value: float  # value estimate at selection time
-    mask: BoolArray  # bool (NUM_ACTIONS,)
-    # Config-head metadata. Set on steps where the play head selected
-    # INSTANTIATE_AGENT — None otherwise. The config-head loss is masked off
-    # for rows with config_action is None.
+    log_prob: float
+    value: float
+    mask: BoolArray
     config_action: int | None = None
     config_log_prob: float | None = None
-    config_mask: BoolArray | None = None  # bool (num_configs,) when set
+    config_mask: BoolArray | None = None
 
 
 @dataclass(slots=True)
 class Batch:
-    states: torch.Tensor  # (batch, obs_dim)
-    actions: torch.Tensor  # (batch,) int64
-    old_log_probs: torch.Tensor  # (batch,) float32
-    advantages: torch.Tensor  # (batch,) float32
-    returns: torch.Tensor  # (batch,) float32
-    masks: torch.Tensor  # (batch, num_actions) bool
-    # Config-head batch tensors. These are None when no row in the minibatch
-    # had a config decision; PPOUpdater skips the config loss in that case.
-    config_actions: torch.Tensor | None = None  # (batch,) int64 — 0 for inactive rows
-    config_old_log_probs: torch.Tensor | None = None  # (batch,) float32
-    config_masks: torch.Tensor | None = None  # (batch, num_configs) bool
-    config_active: torch.Tensor | None = None  # (batch,) bool
+    states: torch.Tensor
+    actions: torch.Tensor
+    old_log_probs: torch.Tensor
+    advantages: torch.Tensor
+    returns: torch.Tensor
+    masks: torch.Tensor
+    config_actions: torch.Tensor | None = None
+    config_old_log_probs: torch.Tensor | None = None
+    config_masks: torch.Tensor | None = None
+    config_active: torch.Tensor | None = None
 
 
 class RolloutBuffer:
@@ -136,7 +131,6 @@ class RolloutBuffer:
 
             config_active_list = [s.config_action is not None for s in steps]
             if any(config_active_list):
-                # Determine num_configs from the first row that supplied a mask.
                 ref_mask = next(
                     (s.config_mask for s in steps if s.config_mask is not None),
                     None,
@@ -150,9 +144,6 @@ class RolloutBuffer:
                 config_masks_arr = np.zeros((len(steps), num_configs), dtype=np.bool_)
                 for i, s in enumerate(steps):
                     if s.config_action is None:
-                        # Inactive row: stash a permissive all-True mask so
-                        # log_softmax doesn't divide by zero. The loss is
-                        # masked off via config_active.
                         config_masks_arr[i, :] = True
                         continue
                     config_actions_arr[i] = s.config_action

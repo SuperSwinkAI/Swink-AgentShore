@@ -63,8 +63,6 @@ def capabilities() -> list[str]:
         "recents.list",
         "recents.touch",
         "recents.remove",
-        # Notification methods (sidecar → shell), DESIGN §5.1.
-        # Listed so the Rust supervisor can feature-detect support.
         "session.completed",
         "sidecar.health",
         "agent.subprocess_spawned",

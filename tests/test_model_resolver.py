@@ -30,11 +30,6 @@ def _record(agent_type: AgentType, models: tuple[str, ...], **kw: object) -> Non
     )
 
 
-# ---------------------------------------------------------------------------
-# resolve_model
-# ---------------------------------------------------------------------------
-
-
 def test_no_discovery_passes_preference_through() -> None:
     assert model_resolver.resolve_model(AgentType.GROK, "grok-4.5") == "grok-4.5"
 
@@ -72,11 +67,6 @@ def test_invalid_model_is_excluded_from_live_list() -> None:
     assert model_resolver.resolve_model(AgentType.CODEX, "gpt-5.4", None) == "gpt-5.6-terra"
 
 
-# ---------------------------------------------------------------------------
-# resolve_effort
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.parametrize(
     ("effort", "expected"),
     [("xhigh", "high"), ("max", "high"), ("low", "low")],
@@ -96,11 +86,6 @@ def test_effort_uses_live_per_model_levels() -> None:
         model_resolver.resolve_effort(AgentType.CODEX, "gpt-5.6-luna", "minimal", ("minimal",))
         == "low"
     )
-
-
-# ---------------------------------------------------------------------------
-# effective_model_tier_config integration
-# ---------------------------------------------------------------------------
 
 
 def test_effective_config_resolves_stale_configured_model_and_effort() -> None:
@@ -125,11 +110,6 @@ def test_swink_coding_is_never_substituted() -> None:
         effective_model_tier_config(AgentType.SWINK_CODING, cfg, "small").model
         == "ollama:qwen@http://x:1"
     )
-
-
-# ---------------------------------------------------------------------------
-# ensure_discovered
-# ---------------------------------------------------------------------------
 
 
 async def test_ensure_discovered_probes_once_and_reprobes_after_invalid(
@@ -173,10 +153,6 @@ async def test_ensure_discovered_failure_leaves_preferences_alone(
     assert model_resolver.resolve_model(AgentType.GROK, "grok-4.5") == "grok-4.5"
 
 
-# ---------------------------------------------------------------------------
-# CLI error classification (structured JSONL error events)
-# ---------------------------------------------------------------------------
-
 _CLAUDE_RATE_LIMIT_INFO = json.dumps(
     {"type": "rate_limit_event", "rate_limit_info": {"status": "allowed"}}
 )
@@ -189,7 +165,6 @@ def _claude_failed(code: str, text: str) -> str:
 
 
 def test_claude_informational_rate_limit_event_is_not_a_rate_limit() -> None:
-    # A run killed after claude's per-run rate_limit_event must not read as quota.
     stdout = '{"type":"system","subtype":"init"}\n' + _CLAUDE_RATE_LIMIT_INFO + "\n"
     assert _classify_error(-9, "", stdout) != ErrorClass.RATE_LIMIT
 

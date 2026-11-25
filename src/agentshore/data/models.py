@@ -73,13 +73,8 @@ class AgentRecord:
     total_cost: float = 0.0
     tasks_completed: int = 0
     tasks_failed: int = 0
-    # desktop-j8b: human-readable name (model_tier + display_name) for the ESR
-    # play log instead of the raw UUID. Nullable for back-compat with old rows.
     model_tier: str | None = None
     display_name: str | None = None
-    # desktop-31h2: plays dispatched to this agent this session, bumped at
-    # dispatch-claim time regardless of outcome. Surfaced as `dispatch_share`
-    # in performance rollups so fleet-utilisation imbalance is visible.
     dispatch_count: int = 0
 
 
@@ -115,17 +110,12 @@ class PullRequestRecord:
     status_check_summary: str | None = None
     is_draft: bool | None = None
     author_agent_id: str | None = None
-    # Authoring backend, separate from author_agent_id so code_review
-    # anti-confirmation can reject same-backend reviewers even after the
-    # original author is terminated and replaced.
     author_agent_type: str | None = None
     merged_at: str | None = None
     head_sha: str | None = None
     mergeable: str | None = None
     base_ref: str | None = None
     last_reviewed_sha: str | None = None
-    # Verdict at last_reviewed_sha ("PASS" | "BLOCK" | None); lapses when
-    # head_sha advances past last_reviewed_sha.
     last_review_status: str | None = None
 
     def __post_init__(self) -> None:

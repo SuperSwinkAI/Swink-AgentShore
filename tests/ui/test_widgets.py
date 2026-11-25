@@ -14,10 +14,6 @@ from agentshore.state import (
 from agentshore.ui.widgets.agent_panel import AgentPanel
 from agentshore.ui.widgets.play_history import PlayHistoryTable
 
-# ---------------------------------------------------------------------------
-# Minimal host apps
-# ---------------------------------------------------------------------------
-
 
 class _AgentPanelApp(App[None]):
     def compose(self) -> ComposeResult:
@@ -27,11 +23,6 @@ class _AgentPanelApp(App[None]):
 class _PlayHistoryApp(App[None]):
     def compose(self) -> ComposeResult:
         yield PlayHistoryTable()
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 
 def _make_agent(
@@ -78,11 +69,6 @@ def _make_outcome(
         alignment_delta=0.0,
         play_id=play_id,
     )
-
-
-# ---------------------------------------------------------------------------
-# AgentPanel tests
-# ---------------------------------------------------------------------------
 
 
 async def test_agent_panel_renders_idle_symbol() -> None:
@@ -201,11 +187,6 @@ async def test_agent_panel_multiple_agents() -> None:
         rendered = panel.render()
         assert "agent-a" in rendered
         assert "agent-b" in rendered
-
-
-# ---------------------------------------------------------------------------
-# PlayHistoryTable tests
-# ---------------------------------------------------------------------------
 
 
 async def test_play_history_adds_row() -> None:

@@ -123,8 +123,6 @@ class CopilotCliDriver(DefaultCliDriver):
     session is resumed.
     """
 
-    # ponytail: FIFO cap on remembered sessions; the JSON-retry resume follows
-    # its original within the same play, so only recent sessions matter.
     _MAX_REMEMBERED_SESSIONS = 256
 
     def __init__(self) -> None:

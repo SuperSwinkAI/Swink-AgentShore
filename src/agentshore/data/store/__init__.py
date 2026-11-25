@@ -63,7 +63,6 @@ __all__ = [
     "SessionRecord",
     "TrajectorySnapshotRecord",
     "WorkClaimRecord",
-    # Internal helpers + row converters retained for in-tree consumers.
     "_decode_artifacts",
     "_row_to_agent_record",
     "_row_to_archive_record",

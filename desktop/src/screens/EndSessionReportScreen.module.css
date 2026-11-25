@@ -8,13 +8,6 @@
   gap: 1rem;
 }
 
-/*
- * Sticky chrome bar — issue #561. Sits above the report header so the user
- * always has a one-click escape back to the chooser and a one-click way to
- * fire the next session with the same setup. Width matches the surrounding
- * page column so the alignment stays predictable when the viewport
- * narrows below the report's natural width.
- */
 .chrome {
   position: sticky;
   top: 0;

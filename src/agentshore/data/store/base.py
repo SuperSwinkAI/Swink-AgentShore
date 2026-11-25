@@ -16,22 +16,10 @@ if TYPE_CHECKING:
 
 
 class _ReentrantConnectionLock:
-    """Task-reentrant async lock serializing access to the shared connection.
+    """Task-reentrant async lock for the shared database connection.
 
-    AgentShore runs one process-wide ``aiosqlite.Connection``. Under concurrent
-    asyncio tasks (the dispatched play plus the agent-manager monitor tasks) a
-    ``COMMIT`` issued by one task can land while another task still holds an open
-    cursor on the same connection, which SQLite rejects with ``cannot commit
-    transaction - SQL statements in progress`` (GH #219). Serializing every
-    connection-touching :class:`DataStore` method behind this lock closes that
-    race — only one logical DB operation touches the connection at a time, so a
-    commit can never coincide with a foreign open statement.
-
-    Re-entrant *per task* because DataStore methods compose (a pull-request
-    write calls ``supersede_work_claims(commit=False)`` before its own commit);
-    the owning task must re-acquire without deadlocking. A different task always
-    blocks until the owner fully releases.
-    """
+    Only one logical operation touches the connection at a time. The owning
+    task may reacquire the lock; other tasks block until it fully releases."""
 
     def __init__(self) -> None:
         self._lock = asyncio.Lock()

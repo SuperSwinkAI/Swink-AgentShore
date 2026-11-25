@@ -40,7 +40,6 @@ def test_get_returns_empty_with_menu(global_prefs: Path) -> None:
 def test_set_persists_and_echoes(global_prefs: Path) -> None:
     result = _drive("preferences.set", {"disabled_plays": ["run_qa", "cleanup"]})["result"]
     assert result["disabled_plays"] == ["cleanup", "run_qa"]
-    # Persisted: a fresh get sees it.
     assert _drive("preferences.get")["result"]["disabled_plays"] == ["cleanup", "run_qa"]
 
 

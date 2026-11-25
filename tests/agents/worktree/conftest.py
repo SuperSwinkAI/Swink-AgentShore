@@ -105,7 +105,6 @@ async def store(tmp_path: Path) -> AsyncIterator[DataStore]:
     db_path = tmp_path / "wt-foundation.db"
     s = DataStore(db_path)
     await s.initialize()
-    # Seed a session so the FK on worktrees(session_id) is satisfied.
     await s._conn.execute(
         "INSERT INTO sessions (session_id, project_path, started_at) "
         "VALUES ('sess-1', '/tmp/proj', '2026-05-21T00:00:00+00:00')"

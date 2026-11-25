@@ -80,8 +80,6 @@ def _state(
 
 
 def test_capability_gate_passes_when_capable_idle_agent_present() -> None:
-    # The capability name no longer filters (every AGENT_CAPABILITIES can_*
-    # flag was always True) — an IDLE, healthy agent of any type suffices.
     gate = CapabilityGate("can_run_skill")
     assert gate(_state()) is None
 
@@ -105,7 +103,6 @@ def test_capability_gate_excludes_rate_limited_agent_type() -> None:
         last_error_class=ErrorClass.RATE_LIMIT,
     )
     reason = gate(_state(agents=[idle, rate_limited]))
-    # idle is the same agent_type as rate_limited; entire type is excluded.
     assert reason is not None
     assert "no IDLE agent" in reason.text
 
@@ -176,7 +173,6 @@ def test_cooldown_gate_masks_within_window() -> None:
 
 def test_cooldown_gate_passes_at_window_edge() -> None:
     gate = CooldownGate(PlayType.CLEANUP, plays=20)
-    # cooldown >= limit clears the gate
     assert gate(_state(plays_since_last_play_type={PlayType.CLEANUP: 20})) is None
 
 
@@ -221,7 +217,7 @@ def test_armed_gate_opens_on_first_failure() -> None:
         plays_since_last_play_type={PlayType.MERGE_PR: 1},
         last_play_success_by_type={PlayType.MERGE_PR: False},
     )
-    assert gate(state) is None  # armed = gate passes
+    assert gate(state) is None
 
 
 def test_armed_gate_stays_open_across_intervening_successes() -> None:
@@ -239,7 +235,7 @@ def test_armed_gate_stays_open_across_intervening_successes() -> None:
             PlayType.INSTANTIATE_AGENT: True,
         },
     )
-    assert gate(state) is None  # merge_pr failure arms regardless of newer successes
+    assert gate(state) is None
 
 
 def test_armed_gate_consumed_when_reconcile_runs_after_failure() -> None:
@@ -337,7 +333,7 @@ def test_armed_gate_not_armed_by_a_skip() -> None:
         last_play_success_by_type={PlayType.WRITE_IMPLEMENTATION_PLAN: False},
         last_play_skipped_by_type={PlayType.WRITE_IMPLEMENTATION_PLAN: True},
     )
-    assert gate(state) is not None  # masked — a skip does not arm self-heal
+    assert gate(state) is not None
 
 
 def test_armed_gate_still_arms_on_genuine_failure_amid_skips() -> None:
@@ -353,11 +349,11 @@ def test_armed_gate_still_arms_on_genuine_failure_amid_skips() -> None:
             PlayType.MERGE_PR: False,
         },
         last_play_skipped_by_type={
-            PlayType.WRITE_IMPLEMENTATION_PLAN: True,  # skip — ignored
-            PlayType.MERGE_PR: False,  # genuine failure — arms
+            PlayType.WRITE_IMPLEMENTATION_PLAN: True,
+            PlayType.MERGE_PR: False,
         },
     )
-    assert gate(state) is None  # armed by the real merge_pr failure
+    assert gate(state) is None
 
 
 def test_warmup_gate_masks_below_threshold_no_prereq() -> None:
@@ -381,7 +377,6 @@ def test_warmup_gate_passes_past_threshold() -> None:
 def test_warmup_gate_with_prereq_passes_when_prereq_not_run() -> None:
     """Warmup floor is skipped if the prerequisite hasn't run this session."""
     gate = WarmupGate(threshold=20, prerequisite=PlayType.SEED_PROJECT)
-    # SEED_PROJECT not in plays_since_last_play_type → prereq never ran
     assert gate(_state(total_plays=5)) is None
 
 
@@ -395,9 +390,6 @@ def test_warmup_gate_with_prereq_enforces_when_prereq_ran() -> None:
     reason = gate(state)
     assert reason is not None
     assert "warmup floor" in reason.text
-
-
-# DependenciesResolvedGate (#96)
 
 
 def _issue(number: int = 1, state: str = "OPEN") -> IssueSnapshot:
@@ -526,7 +518,7 @@ def test_dep_gate_masks_multiple_all_blocked_issues() -> None:
     state = _dep_state(graph=graph, open_issues=[_issue(1), _issue(2)])
     reason = DependenciesResolvedGate()(state)
     assert reason is not None
-    assert "2" in reason.text  # count of blocked issues mentioned
+    assert "2" in reason.text
 
 
 def test_dep_gate_passes_when_no_open_issues() -> None:
@@ -545,12 +537,10 @@ def test_dep_gate_ignores_issues_not_linked_to_blocked_tasks() -> None:
     graph = ProjectGraph(
         epics=[_epic()],
         tasks=[
-            # issue 2 is blocked, but issue 1 has no task entry at all
             _graph_task(bead_id="t2", issue_number=2, blocked_by_ids=frozenset({"dep"})),
         ],
         tasks_ready=0,
         tasks_total=1,
     )
-    # Issue 1 is open and not in the blocked set → at least one dep-free issue
     state = _dep_state(graph=graph, open_issues=[_issue(1), _issue(2)])
     assert DependenciesResolvedGate()(state) is None

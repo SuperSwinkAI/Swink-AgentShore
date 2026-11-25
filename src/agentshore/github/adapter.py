@@ -23,25 +23,12 @@ if TYPE_CHECKING:
 
 _logger = structlog.get_logger(__name__)
 
-_GH_TIMEOUT = 30  # seconds — for single-issue mutations + small queries
-# List operations (issues, PRs) can fetch up to GITHUB_ISSUE_FETCH_LIMIT=200
-# items per call. GitHub's GraphQL list endpoint takes ~0.5s/item, so a full
-# 200-issue snapshot can take ~100s. The shorter mutation timeout silently
-# returned [] on big repos; lifted ceiling here keeps cold-start correct on
-# repos with backlogs while still failing fast on a genuinely hung gh subprocess.
-_GH_LIST_TIMEOUT = 180  # seconds
+_GH_TIMEOUT = 30
+_GH_LIST_TIMEOUT = 180
 
-# Per-page bound for paginated REST list_issues (desktop-rla8). 25 keeps each
-# request cheap on the gh side and bounded in memory; a 290-issue full sync
-# costs ~12 small requests. Page bound (_LIST_ISSUES_MAX_PAGES) caps total
-# work at 1000×25=25k issues, well above any realistic repo size.
 _ISSUES_PER_PAGE = 25
 _LIST_ISSUES_MAX_PAGES = 1000
 
-# Shared ``--json`` field list for the cacheable PR record. Single-sourced so
-# ``list_pull_requests`` and ``fetch_pull_request_by_number`` can never drift
-# (they did before the desktop-08a948ed fix). Any field added to
-# ``_pr_record_from_json`` must be added here too.
 _PR_JSON_FIELDS = (
     "number,title,url,state,headRefName,baseRefName,headRefOid,labels,"
     "reviewDecision,statusCheckRollup,isDraft,author,createdAt,mergeable,"
@@ -158,10 +145,6 @@ class GitHubAdapter:
         self._available: bool = True
         self._probe_failure_reason: str | None = None
 
-    # -------------------------------------------------------------------------
-    # Lifecycle
-    # -------------------------------------------------------------------------
-
     async def probe(self) -> None:
         """Check that `gh` is on PATH and authenticated.
 
@@ -204,10 +187,6 @@ class GitHubAdapter:
     def probe_failure_reason(self) -> str | None:
         """Why the last ``probe()`` marked the adapter unavailable, or None."""
         return self._probe_failure_reason
-
-    # -------------------------------------------------------------------------
-    # Read operations
-    # -------------------------------------------------------------------------
 
     async def list_issues(
         self,
@@ -423,8 +402,6 @@ class GitHubAdapter:
                     else:
                         _logger.warning("gh_label_create_failed", label=name, stderr=stderr[:200])
                 except (OSError, TimeoutError) as exc:
-                    # f"{type(exc).__name__}: {exc}" — bare str(exc) is empty when
-                    # exc.args is empty (e.g. OSError() with no message).
                     _logger.warning(
                         "gh_label_create_error",
                         label=name,
@@ -432,10 +409,6 @@ class GitHubAdapter:
                     )
 
         await asyncio.gather(*(_create(n, c) for n, c in missing))
-
-    # -------------------------------------------------------------------------
-    # Mutating operations
-    # -------------------------------------------------------------------------
 
     async def create_issue(
         self,
@@ -520,9 +493,6 @@ class GitHubAdapter:
         already, result = await self._idempotent_mutation(
             "create_pr", head, idempotency_key, cmd, identity_env=identity_env
         )
-        # Bespoke: unlike the bool-returning mutations, an empty/failed run
-        # (but NOT an already-recorded dedup) falls back to a live lookup —
-        # `gh pr create` can fail after the PR actually landed.
         if already:
             return None
         if result:
@@ -592,10 +562,6 @@ class GitHubAdapter:
             "retarget_pr_base", str(pr_number), idempotency_key, cmd, identity_env=identity_env
         )
         return already or result is not None
-
-    # -------------------------------------------------------------------------
-    # Internal helpers
-    # -------------------------------------------------------------------------
 
     async def _idempotent_mutation(
         self,
@@ -738,11 +704,6 @@ class GitHubAdapter:
         if output.startswith("http://") or output.startswith("https://"):
             return {"url": output}
         return {}
-
-
-# ---------------------------------------------------------------------------
-# Subprocess helper
-# ---------------------------------------------------------------------------
 
 
 async def _run_gh(

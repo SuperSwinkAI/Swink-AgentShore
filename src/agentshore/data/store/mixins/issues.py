@@ -20,8 +20,7 @@ class _IssuesMixin(_DataStoreBase):
     """Methods that operate on the ``github_issues`` table."""
 
     if TYPE_CHECKING:
-        # Cross-mixin sibling (impl in _WorkClaimsMixin); mypy-only, resolved
-        # via the DataStore MRO at runtime.
+
         async def supersede_work_claims(
             self,
             session_id: str,

@@ -13,12 +13,10 @@ from agentshore.state import PlayType
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
-# Declaration order of PlayType enum IS the canonical V1 action ordering.
 V1_ACTION_ORDER: Final[tuple[PlayType, ...]] = tuple(PlayType)
 NUM_ACTIONS: Final[int] = 22
 ACTION_SPACE_VERSION: Final[int] = 13
 
-# Sanity-checked at import time — guards against accidental enum reordering.
 if len(V1_ACTION_ORDER) != NUM_ACTIONS:
     msg = f"V1_ACTION_ORDER has {len(V1_ACTION_ORDER)} entries, expected {NUM_ACTIONS}"
     raise ValueError(msg)

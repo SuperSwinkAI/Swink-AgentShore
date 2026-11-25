@@ -102,7 +102,6 @@ def _emit_stream_json(result: dict[str, object]) -> None:
         )
         + "\n"
     )
-    # Usage event: token/cost metadata.
     _emit(
         json.dumps(
             {
@@ -159,7 +158,6 @@ def main() -> None:
         time.sleep(_DELAY)
 
     if _MODE == "timeout":
-        # Sleep forever — the caller will send SIGTERM.
         while True:
             time.sleep(60)
 
@@ -173,14 +171,12 @@ def main() -> None:
         sys.exit(0)
 
     elif _MODE == "long_line":
-        # Oversized line before the success result: exercises the asyncio readline cap.
         size = _LINE_BYTES if _LINE_BYTES > 0 else 200_000
         _emit("x" * size + "\n")
         _emit_result(_success_result())
         sys.exit(0)
 
     elif _MODE == "multi_block":
-        # Emit an example block first, then the real result — parser should use the last one.
         _emit("Here is an example output:\n")
         _emit_plain(
             {
@@ -196,7 +192,7 @@ def main() -> None:
         _emit("\nAnd here is the actual result:\n")
         _emit_plain(_success_result())
 
-    else:  # success
+    else:
         _emit_result(_success_result())
 
     sys.exit(0)

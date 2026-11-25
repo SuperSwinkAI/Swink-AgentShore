@@ -1,24 +1,8 @@
-"""Shared GitHub fetch/cache primitive for bootstrap and post-play refresh.
+"""Shared GitHub fetch/cache operations for bootstrap and post-play refresh.
 
-Both the bootstrap phase (``phases._phase_fetch_github``) and the post-play
-refresh (``mixins.completion.CompletionProcessor.refresh_issues``) used to inline
-the same GitHub-cache write path: construct a ``GitHubAdapter``, probe, fetch
-issues, ``cache_github_issues`` + ``set_last_issue_sync_at``, fetch open PRs,
-``filter_trusted_pull_requests``, ``cache_pull_requests``. Two copies of that
-plumbing drifted apart over time.
-
-:class:`GitHubSyncer` owns the adapter + store + cfg + session_id and exposes
-the shared fetch/cache operations as cohesive methods. The two call sites keep
-their own distinguishing concerns (startup-only beads mirror + branch-activity
-rebuild; refresh-only duplicate-bead sweep + missing-PR resync + worktree
-reaping) but delegate the duplicated fetch/cache path here.
-
-The syncer holds no mutable session state of its own — it is a thin collaborator
-constructed where the adapter is already in hand. Log events are emitted by the
-syncer for the shared operations so both call sites observe identical wire shapes
-for the cached/refreshed primitives; call-site-specific events stay at the call
-sites.
-"""
+GitHubSyncer owns the adapter, store, config and session ID, with no mutable
+session state. Shared operations emit identical log-event shapes; callers
+retain their startup or post-play responsibilities and events."""
 
 from __future__ import annotations
 
@@ -47,9 +31,6 @@ class PullRequestResync(NamedTuple):
     absent: list[int]
 
 
-# Lookback applied to the sync cursor so an issue updated mid-fetch is still
-# caught on the next call. Cheaper than racing against gh's wall clock. Shared
-# by the startup cutoff and the incremental refresh cutoff.
 SYNC_CURSOR_LOOKBACK_SECONDS = 60
 
 
@@ -151,8 +132,6 @@ class GitHubSyncer:
         if not missing:
             return PullRequestResync(resolved=[], absent=[])
         all_prs = await self._gh.list_pull_requests(state="all", limit=limit)
-        # Raw GitHub-known numbers, BEFORE trust filtering — used to tell a
-        # genuine 404 (phantom) apart from a live-but-untrusted PR.
         github_known = {pr.pr_number for pr in all_prs}
         trusted = filter_trusted_pull_requests(
             all_prs,

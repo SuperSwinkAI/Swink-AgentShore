@@ -93,9 +93,7 @@ def test_aggregates_split_busy_live_and_per_harness_and_tier() -> None:
     ]
     rec = _record_for(agents, _outcome("c1"))
 
-    # busy = simultaneously dispatched (the rate-limit / RAM pressure metric).
     assert rec["busy_total"] == 3
-    # live = idle + busy (excludes error/terminated).
     assert rec["live_total"] == 4
     assert rec["busy_by_type"] == {"claude_code": 2, "codex": 1}
     assert rec["live_by_type"] == {"claude_code": 3, "codex": 1}
@@ -136,7 +134,7 @@ def test_completed_play_context_and_error_class_on_same_line() -> None:
         _agent(
             "c1",
             AgentType.CLAUDE_CODE,
-            AgentStatus.IDLE,  # returned to idle after the dispatch finished
+            AgentStatus.IDLE,
             model_tier="large",
             last_error_class=ErrorClass.RATE_LIMIT,
         ),
@@ -170,7 +168,6 @@ async def test_writer_appends_valid_ndjson_and_increments_seq(tmp_path: Path) ->
     assert len(lines) == 2
     first = json.loads(lines[0])
     second = json.loads(lines[1])
-    # Monotonic per-session sequence + a real timestamp were stamped by the writer.
     assert first["seq"] == 1
     assert second["seq"] == 2
     assert first["session_id"] == "sess-9"
@@ -189,14 +186,12 @@ async def test_writer_resets_prior_session_file(tmp_path: Path) -> None:
         reward=0.0,
     )
     lines = log.path.read_text(encoding="utf-8").splitlines()
-    assert len(lines) == 1  # stale line dropped on construction
+    assert len(lines) == 1
     assert json.loads(lines[0])["session_id"] == "sess-new"
 
 
 async def test_record_never_raises_on_bad_input(tmp_path: Path) -> None:
     log = ConcurrencyLog(tmp_path, "sess-x")
-    # Missing `.agents` must warn, not propagate — the read happens inside the
-    # guard (the "unguarded work as a call argument" crash, #experience-recorder).
     await log.record(next_state=SimpleNamespace(total_plays=0), outcome=_outcome("c1"), reward=0.0)  # type: ignore[arg-type]
     assert not log.path.exists() or log.path.read_text(encoding="utf-8") == ""
 

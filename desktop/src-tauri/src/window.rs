@@ -68,8 +68,6 @@ pub fn apply_taskbar_icon(app: &AppHandle) {
     let Ok(hwnd) = window.hwnd() else {
         return;
     };
-    // SAFETY: plain Win32 calls on a live window handle owned by Tauri; the
-    // icon handle is a shared resource owned by the module, never freed here.
     unsafe {
         let icon = LoadIconW(GetModuleHandleW(std::ptr::null()), IDI_APPLICATION);
         if !icon.is_null() {
@@ -133,21 +131,11 @@ pub fn apply_restored_window_state(app: &AppHandle) {
     let scale = monitor.as_ref().map(|m| m.scale_factor()).unwrap_or(1.0);
 
     let used_restored = if let Some(restored) = restored {
-        // Persisted values are what outer_size()/outer_position() returned
-        // (true physical pixels on macOS Tao). Convert to logical for
-        // set_size — set_size(Physical(...)) on macOS doesn't divide by
-        // scale_factor before writing to NSWindow, so feeding it physical
-        // pixels paints a window scale_factor× too big (and each
-        // restore→capture cycle compounds the inflation).
         let logical_w = restored.width as f64 / scale;
         let logical_h = restored.height as f64 / scale;
         let logical_x = restored.x as f64 / scale;
         let logical_y = restored.y as f64 / scale;
 
-        // Sanity-clamp: if the persisted state is larger than the current
-        // monitor in either dimension, treat it as corrupt and fall through
-        // to the 90%-default. Covers state inflated by the prior cycle of
-        // broken set/get pairs before this fix landed.
         let fits = match monitor.as_ref() {
             Some(m) => {
                 let mw = m.size().width as f64 / scale;
@@ -187,9 +175,6 @@ pub fn apply_restored_window_state(app: &AppHandle) {
         }
     }
 
-    // The conf-defined size is a small placeholder; this is the first
-    // chance to show the window at its real (restored or 90%-of-screen)
-    // dimensions without a visible resize flash.
     let _ = window.show();
 }
 
@@ -201,21 +186,12 @@ pub fn attach_window_persistence(app: &AppHandle) {
             WindowEvent::Moved(_) | WindowEvent::Resized(_) => {
                 update_window_state(&app_handle);
             }
-            // Minimizing (and simply switching to another app) fires
-            // Focused(false) — Tauri has no dedicated minimize event, and this
-            // is the same signal the OS/webview uses to throttle rAF, so it's
-            // the correct proxy (#314). Suspend the wedge watchdog's trip
-            // evaluation while unfocused; it re-arms on refocus, at which
-            // point a genuinely wedged session will trip promptly since a real
-            // hang means no heartbeat arrives once the user is looking again.
             WindowEvent::Focused(is_focused) => {
                 app_handle
                     .state::<crate::heartbeat::WebviewHeartbeat>()
                     .unfocused
                     .store(!*is_focused, Ordering::SeqCst);
             }
-            // Red close button / ⌘W. Confirm before force-killing a live
-            // session; ⌘Q and the app-menu Quit are handled by ExitRequested.
             WindowEvent::CloseRequested { api, .. } => {
                 let session_active = app_handle
                     .state::<crate::activity::ActivityHolder>()
@@ -263,10 +239,6 @@ mod tests {
 
     #[test]
     fn default_window_rect_uses_logical_units_not_physical() {
-        // On a 2560x1440 logical screen (physical 5120x2880 @ 2x), 90%
-        // must be ~2304x1296 in logical units — never the 4608x2592 the
-        // pre-fix Physical path produced (which appeared as a window
-        // ~1.8× the logical screen width).
         let (_x, _y, w, _h) = default_window_rect((2560.0, 1440.0), (0.0, 0.0));
         assert!(
             w < 2560.0,

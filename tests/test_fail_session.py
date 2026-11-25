@@ -50,7 +50,6 @@ async def test_fail_session_is_noop_once_completed(tmp_path) -> None:
         assert completed is not None
         assert completed.status == "completed"
 
-        # A late crash done-callback firing after a clean stop must not flip it.
         await store.fail_session("s1", "orchestrator_task_crashed")
 
         row = await store.get_session("s1")

@@ -490,7 +490,6 @@ async def test_agent_terminated_timestamp_is_persisted(tmp_path) -> None:
             AgentRecord(agent_id="a1", session_id="s1", agent_type="claude_code", created_at="T0")
         )
         await store.update_agent_terminated("a1", "T1")
-        # Verify via a direct query — no high-level reader yet
         async with store._conn.execute(
             "SELECT terminated_at FROM agents WHERE agent_id = 'a1'"
         ) as cur:
@@ -643,21 +642,16 @@ async def test_cache_pull_requests_seeds_last_reviewed_sha_for_approved_prs(tmp_
             assert row is not None
             return row["last_reviewed_sha"]
 
-        # 1. Seed on first insert: last_reviewed_sha = head_sha.
         assert await _last_reviewed(10) == "abc123"
 
-        # 2. Re-cache with the same fields (still last_reviewed_sha=None from
-        #    the adapter): preserved via the COALESCE.
         await store.cache_pull_requests("s1", [approved])
         assert await _last_reviewed(10) == "abc123"
 
-        # 3. AgentShore's explicit write wins; subsequent caches do not regress.
         await store.update_pr_last_reviewed_sha(10, "s1", "def456")
         assert await _last_reviewed(10) == "def456"
         await store.cache_pull_requests("s1", [approved])
         assert await _last_reviewed(10) == "def456"
 
-        # 4. Non-approved PRs are not seeded — AgentShore should review them.
         unreviewed = PullRequestRecord(
             pr_number=11,
             session_id="s1",
@@ -732,7 +726,6 @@ async def test_update_pr_last_reviewed_sha_preserves_status_when_omitted(tmp_pat
         await store.cache_pull_requests("s1", [pr])
 
         await store.update_pr_last_reviewed_sha(30, "s1", "abc123", status="PASS")
-        # SKIP path: caller passes only the SHA; verdict must remain.
         await store.update_pr_last_reviewed_sha(30, "s1", "abc123")
 
         async with store._conn.execute(
@@ -765,7 +758,7 @@ async def test_list_approved_pull_requests_includes_agentshore_internal_pass(tmp
             created_at="2026-05-06T00:00:00+00:00",
             head_sha="abc123",
             mergeable="MERGEABLE",
-            review_decision=None,  # GitHub never approved
+            review_decision=None,
         )
         await store.cache_pull_requests("s1", [pr])
         await store.update_pr_last_reviewed_sha(40, "s1", "abc123", status="PASS")
@@ -795,8 +788,6 @@ async def test_list_approved_pull_requests_excludes_stale_agentshore_pass(tmp_pa
         await store.cache_pull_requests("s1", [pr])
         await store.update_pr_last_reviewed_sha(50, "s1", "abc123", status="PASS")
 
-        # New commit lands; head_sha advances. Manually update so the test
-        # exercises the stale-approval check (no GitHub mock needed).
         await store._conn.execute(
             "UPDATE pull_requests SET head_sha='def456' WHERE pr_number=50 AND session_id='s1'"
         )
@@ -854,7 +845,6 @@ async def test_cache_pull_requests_preserves_last_review_status(tmp_path) -> Non
         await store.cache_pull_requests("s1", [pr])
         await store.update_pr_last_reviewed_sha(70, "s1", "abc123", status="PASS")
 
-        # Simulate a GitHub refresh — same record, no internal verdict.
         await store.cache_pull_requests("s1", [pr])
 
         async with store._conn.execute(
@@ -877,7 +867,6 @@ async def test_branch_activity_upsert(tmp_path) -> None:
         await store.update_branch_activity("feat-x", "s1", "agent-a", sha="abc123")
         assert await store.get_last_implementer("feat-x", "s1") == "agent-a"
 
-        # Overwrite with a different agent
         await store.update_branch_activity("feat-x", "s1", "agent-b")
         assert await store.get_last_implementer("feat-x", "s1") == "agent-b"
         assert await store.get_last_implementer("nonexistent", "s1") is None
@@ -929,7 +918,6 @@ async def test_record_handoff(tmp_path) -> None:
     await store.initialize()
     try:
         await _setup_session(store, tmp_path)
-        # Create a play row first (needed for FK)
         await store.record_play(
             PlayRecord(
                 session_id="s1",
@@ -1073,18 +1061,16 @@ async def test_external_mutation_idempotency_key_is_unique(tmp_path) -> None:
         )
         await store.record_external_mutation(mutation)
 
-        # Second insert with the same key is silently ignored (INSERT OR IGNORE)
         await store.record_external_mutation(
             ExternalMutationRecord(
                 session_id="s1",
-                idempotency_key="key-1",  # duplicate
+                idempotency_key="key-1",
                 mutation_type="issue_create",
                 target="issues",
                 status="success",
                 created_at="T1",
             )
         )
-        # Verify the original row is preserved, not overwritten
         original = await store.get_external_mutation("s1", "key-1")
         assert original is not None
         assert original.created_at == "T0"
@@ -1226,7 +1212,6 @@ async def test_migrate_v2_to_v3_adds_mask_reason_column(tmp_path) -> None:
     conn = await aiosqlite.connect(str(db_path))
     try:
         await conn.execute("CREATE TABLE schema_version (version INTEGER, applied_at TEXT)")
-        # v2-shaped rl_experience: action_mask present, mask_reason absent.
         await conn.execute(
             "CREATE TABLE rl_experience (experience_id INTEGER PRIMARY KEY, action_mask BLOB)"
         )
@@ -1237,7 +1222,6 @@ async def test_migrate_v2_to_v3_adds_mask_reason_column(tmp_path) -> None:
             cols = {r[1] for r in await cur.fetchall()}
         assert "mask_reason" in cols
 
-        # Idempotent: a second run does not raise (duplicate-column).
         await migrate_v2_to_v3(conn)
     finally:
         await conn.close()
@@ -1254,7 +1238,6 @@ async def test_migrate_v3_to_v4_adds_github_author_column(tmp_path) -> None:
     conn = await aiosqlite.connect(str(db_path))
     try:
         await conn.execute("CREATE TABLE schema_version (version INTEGER, applied_at TEXT)")
-        # v3-shaped github_issues: github_author absent.
         await conn.execute(
             "CREATE TABLE github_issues (issue_number INTEGER, session_id TEXT, title TEXT)"
         )
@@ -1265,7 +1248,6 @@ async def test_migrate_v3_to_v4_adds_github_author_column(tmp_path) -> None:
             cols = {r[1] for r in await cur.fetchall()}
         assert "github_author" in cols
 
-        # Idempotent: a second run does not raise (duplicate-column).
         await migrate_v3_to_v4(conn)
     finally:
         await conn.close()
@@ -1296,7 +1278,6 @@ async def test_play_record_null_fields_round_trip(tmp_path) -> None:
                 play_type="issue_pickup",
                 started_at="T0",
                 success=True,
-                # nullable optional fields
                 ended_at=None,
                 agent_id=None,
                 duration_ms=None,
@@ -1400,9 +1381,6 @@ async def test_mark_pr_merged_preserves_existing_merged_at(tmp_path) -> None:
         pr = PullRequestRecord(
             pr_number=43,
             session_id="s1",
-            # A real merged_at only ever coexists with a merged state — GitHub
-            # reports MERGED and the timestamp together. (An open row carrying
-            # merged_at is a phantom; see test_pull_request_refresh_clears_phantom.)
             state="MERGED",
             created_at="2026-05-06T00:00:00+00:00",
             head_sha="abc123",
@@ -1418,7 +1396,6 @@ async def test_mark_pr_merged_preserves_existing_merged_at(tmp_path) -> None:
             row = await cur.fetchone()
         assert row is not None
         assert row["state"] == "MERGED"
-        # COALESCE(merged_at, ?) — existing value wins
         assert row["merged_at"] == gh_merged_at
     finally:
         await store.close()
@@ -1445,7 +1422,6 @@ async def test_pull_request_refresh_clears_phantom_merged_at(tmp_path) -> None:
             mergeable="MERGEABLE",
         )
         await store.cache_pull_requests("s1", [pr])
-        # Optimistic write-through stamps the phantom merge.
         await store.mark_pr_merged(344, "s1")
         async with store._conn.execute(
             "SELECT merged_at FROM pull_requests WHERE pr_number = 344 AND session_id = 's1'",
@@ -1453,7 +1429,6 @@ async def test_pull_request_refresh_clears_phantom_merged_at(tmp_path) -> None:
             row = await cur.fetchone()
         assert row is not None and row["merged_at"] is not None
 
-        # GitHub refresh: the PR is still open (the merge never completed).
         await store.cache_pull_requests("s1", [pr])
 
         async with store._conn.execute(
@@ -1480,7 +1455,6 @@ async def test_pull_request_refresh_clears_dismissed_review_decision(tmp_path) -
     await store.initialize()
     try:
         await _setup_session(store, tmp_path)
-        # First sync: GitHub reports CHANGES_REQUESTED at the original head.
         await store.cache_pull_requests(
             "s1",
             [
@@ -1497,9 +1471,6 @@ async def test_pull_request_refresh_clears_dismissed_review_decision(tmp_path) -
             ],
         )
 
-        # A new commit lands; AgentShore records its PASS at the new head and the
-        # unblock skill dismisses the stale review. The next GitHub refresh reports
-        # an advanced head with an empty (None) reviewDecision.
         await store.update_pr_last_reviewed_sha(517, "s1", "0ace3e6", status="PASS")
         await store.cache_pull_requests(
             "s1",
@@ -1557,8 +1528,6 @@ async def test_pull_request_refresh_keeps_live_changes_requested(tmp_path) -> No
                 )
             ],
         )
-        # PASS-at-head is present, so the ONLY thing keeping it un-mergeable is the
-        # live CHANGES_REQUESTED — which must not be dropped by the authoritative write.
         await store.update_pr_last_reviewed_sha(517, "s1", "deadbee", status="PASS")
 
         pr = await store.get_pull_request("s1", 517)
@@ -1896,7 +1865,6 @@ async def test_update_issue_state_close_supersedes_work_claim_atomically(tmp_pat
         assert issue is not None
         assert issue.state == "closed"
         assert issue.closed_at is not None
-        # The live claim must be gone (superseded) in the same commit.
         assert await store.find_active_work_claims("s1", ["issue:77"]) == []
     finally:
         await store.close()
@@ -1928,8 +1896,6 @@ async def test_update_issue_state_close_rolls_back_both_on_supersede_failure(tmp
         async def _boom(*_args: object, **_kwargs: object) -> None:
             raise sqlite3.OperationalError("injected failure mid-supersede")
 
-        # Patch supersession so it raises after the issue UPDATE has executed
-        # inside the open transaction.
         original = store.supersede_work_claims
         store.supersede_work_claims = _boom  # type: ignore[method-assign]
         try:
@@ -1938,7 +1904,6 @@ async def test_update_issue_state_close_rolls_back_both_on_supersede_failure(tmp
         finally:
             store.supersede_work_claims = original  # type: ignore[method-assign]
 
-        # Both sides rolled back: issue still open, claim still live.
         issue = await store.get_github_issue(78, "s1")
         assert issue is not None
         assert issue.state == "open"

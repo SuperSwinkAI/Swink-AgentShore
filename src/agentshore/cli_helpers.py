@@ -14,7 +14,6 @@ from agentshore.play_pacing import STANDARD_PLAY_COOLDOWN_PLAYS
 from agentshore.state import AgentType
 
 _DEFAULT_BUDGET: float = 200.0
-# Wall-clock safety default (24h), parallel to the $200 dollar default above.
 _DEFAULT_TIME_MINUTES: int = 1440
 _PROJECT_DIR = ".agentshore"
 
@@ -80,7 +79,6 @@ def _render_or_merge_agentshore_yaml(
         path.write_text(fresh_text)
         return True
 
-    # ruamel.yaml preserves comments + key order. PyYAML cannot.
     from ruamel.yaml import YAML
 
     rt = YAML()

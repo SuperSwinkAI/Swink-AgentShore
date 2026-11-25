@@ -55,13 +55,11 @@ async def test_reentrant_lock_is_mutually_exclusive_across_tasks() -> None:
             await asyncio.sleep(hold)
             order.append(f"{tag}:exit")
 
-    # B starts slightly later but must wait for A to fully exit before entering.
     a = asyncio.create_task(worker("a", 0.05))
     await asyncio.sleep(0.01)
     b = asyncio.create_task(worker("b", 0.0))
     await asyncio.gather(a, b)
 
-    # No interleaving: A's enter/exit bracket B's entirely.
     assert order == ["a:enter", "a:exit", "b:enter", "b:exit"]
 
 
@@ -72,11 +70,10 @@ async def test_reentrant_lock_allows_same_task_reentry() -> None:
 
     async def nested() -> None:
         async with lock:  # noqa: SIM117 - nesting is the reentrancy under test
-            async with lock:  # would deadlock on a plain asyncio.Lock
+            async with lock:
                 async with lock:
                     pass
 
-    # Completes promptly; a non-reentrant lock would hang until the timeout.
     await asyncio.wait_for(nested(), timeout=1.0)
 
 
@@ -91,15 +88,12 @@ async def test_reentrant_lock_blocks_other_task_until_full_release() -> None:
             other_entered.set()
 
     async with lock:  # noqa: SIM117 - nested depth is the behavior under test
-        async with lock:  # depth 2
+        async with lock:
             task = asyncio.create_task(other())
             await asyncio.sleep(0.02)
-            # Still nested in this task — the other task must not have entered.
             assert not other_entered.is_set()
-        # depth back to 1 — still held; other still blocked.
         await asyncio.sleep(0.02)
         assert not other_entered.is_set()
-    # Fully released now — the other task can proceed.
     await asyncio.wait_for(task, timeout=1.0)
     assert other_entered.is_set()
 
@@ -119,21 +113,17 @@ async def test_concurrent_writes_and_streaming_reads_do_not_raise(tmp_path: Path
         issue_counter = 0
 
         async def writer(n: int) -> None:
-            # Each write commits — the commit side of the race vs another task's cursor.
             nonlocal issue_counter
             for i in range(15):
                 issue_counter += 1
                 await store.cache_github_issues(session_id, [_issue(session_id, n * 100 + i)])
 
         async def reader() -> None:
-            # Streaming reads hold a cursor open across awaits — the read side.
             for _ in range(15):
                 await store.list_all_issues(session_id)
                 await asyncio.sleep(0)
 
-        # 9 concurrent writers + readers mirrors the 9-agent live session.
         tasks = [writer(n) for n in range(9)] + [reader() for _ in range(4)]
-        # Must not raise OperationalError; gather surfaces the first failure.
         await asyncio.gather(*tasks)
     finally:
         await store.close()
@@ -151,12 +141,9 @@ async def test_streaming_replay_iterator_does_not_hold_cursor_across_yields(
     try:
         session_id = "replay-session"
         await _seed_session(store, session_id)
-        # Smoke check: consuming the iterator while another task commits must not raise.
         seen = 0
         async for _record in store.iter_experience_for_replay(session_id, 13):
             seen += 1  # pragma: no cover - no rows seeded; loop body unused
-        # No rows seeded, but the call path (lock acquire + fetch + release)
-        # must complete cleanly and leave the connection commit-ready.
         await store.cache_github_issues(session_id, [_issue(session_id, 999)])
         issues = await store.list_all_issues(session_id)
         assert len(issues) == 1

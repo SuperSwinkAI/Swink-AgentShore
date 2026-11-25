@@ -35,21 +35,9 @@ class OverrideQueue:
 
     def __init__(self) -> None:
         self._queue: asyncio.Queue[OverrideEntry] = asyncio.Queue()
-        # Seed / first-play override (set during bootstrap); wins over the queue.
         self.first_play_override: tuple[PlayType, PlayParams] | None = None
-        # OverrideKind of the most-recently consumed override, set by
-        # ``_consume_override`` and read once by ``_dispatch_play``. None means
-        # the next dispatch is PPO-selected (not an override).
         self.pending_override_kind: OverrideKind | None = None
-        # play_id values dispatched from the override queue (bootstrap recipe,
-        # user request, retry). ``compute_play_streaks`` skips them — they are
-        # not PPO-collapse, so they should not contribute to same_type_streak /
-        # same_type_failure_streak. Unbounded; sessions have <10k plays.
         self.dispatched_play_ids: set[int] = set()
-
-    # ------------------------------------------------------------------
-    # FIFO delegation (identical method names to asyncio.Queue)
-    # ------------------------------------------------------------------
 
     def put_nowait(self, entry: OverrideEntry) -> None:
         self._queue.put_nowait(entry)

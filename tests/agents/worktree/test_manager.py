@@ -33,9 +33,6 @@ def _make_manager(store: DataStore, main_repo: Path, worktree_root: Path) -> Wor
     )
 
 
-# --- classifier tripwires ---------------------------------------------------
-
-
 def test_cleanup_classifies_as_trunk_not_branch_creating(
     tmp_path: Path,
 ) -> None:
@@ -47,7 +44,7 @@ def test_cleanup_classifies_as_trunk_not_branch_creating(
     serializer and (b) duplicates the skill's own ``chore/cleanup-*``
     branch. The classifier must return ``"trunk"`` here.
     """
-    store = DataStore(tmp_path / "_classify.db")  # not initialised — we don't touch DB
+    store = DataStore(tmp_path / "_classify.db")
     wm = WorktreeManager(
         session_id="sess-1",
         store=store,
@@ -91,9 +88,6 @@ def test_systematic_debugging_routes_dynamically(tmp_path: Path) -> None:
     assert wm._classify(PlayType.SYSTEMATIC_DEBUGGING, PlayParams(pr_number=99, branch="x")) == "pr"
 
 
-# --- post-add registry verification (issue #584, item 5) --------------------
-
-
 async def test_verify_worktree_registered_skips_when_reused(
     store: DataStore, main_repo: Path, worktree_root: Path
 ) -> None:
@@ -108,7 +102,6 @@ async def test_verify_worktree_registered_skips_when_reused(
     allocate = AllocateResult(
         path=worktree_root / "anywhere", created=False, fetched=True, head_sha="deadbeef"
     )
-    # Should NOT raise even though the path was never created.
     await wm._verify_worktree_registered(allocate, scope="pr")
 
 
@@ -128,12 +121,10 @@ async def test_verify_worktree_registered_raises_on_mismatch(
     from agentshore.agents.worktree import manager as manager_mod
 
     async def fake_list_porcelain(*_args: Any, **_kwargs: Any) -> list[str]:
-        return []  # registry is empty — our new worktree didn't land
+        return []
 
     monkeypatch.setattr(manager_mod, "_list_worktrees_porcelain", fake_list_porcelain)
 
-    # Materialise a real on-disk dir so the cleanup branch has something
-    # to remove (otherwise _best_effort_remove is a no-op).
     fake_path = worktree_root / "phantom"
     fake_path.mkdir()
 
@@ -143,8 +134,6 @@ async def test_verify_worktree_registered_raises_on_mismatch(
     with pytest.raises(WorktreeAllocationFailed) as exc:
         await wm._verify_worktree_registered(allocate, scope="pr")
     assert exc.value.reason == "git_add_mismatch"
-    # _best_effort_remove tries git worktree remove first (no-op, the path
-    # was never registered) then rmtree the dir. The dir should be gone.
     assert not fake_path.exists()
 
 
@@ -169,11 +158,7 @@ async def test_verify_worktree_registered_passes_when_listed(
     wm = _make_manager(store, main_repo, worktree_root)
     allocate = AllocateResult(path=target, created=True, fetched=True, head_sha="deadbeef")
     await wm._verify_worktree_registered(allocate, scope="branch_creating")
-    # Path survives because verification didn't trip cleanup.
     assert target.exists()
-
-
-# --- finalize_after_dispatch fallback branch detection ----------------------
 
 
 async def test_finalize_branch_creating_detects_branch_when_result_missing(
@@ -220,7 +205,6 @@ async def test_finalize_branch_creating_detects_branch_when_result_missing(
         play_type=PlayType.ISSUE_PICKUP,
         scope="branch_creating",
     )
-    # SkillResult.success=True, branch=None — the trigger for the fallback.
     skill_result = SkillResult(success=True, branch=None)
     outcome = PlayOutcome(
         play_type=PlayType.ISSUE_PICKUP,
@@ -238,11 +222,8 @@ async def test_finalize_branch_creating_detects_branch_when_result_missing(
         alloc, result=skill_result, play_outcome=outcome
     )
 
-    # desktop-edtl: finalize returns the detected branch so the executor can
-    # back-fill params.branch before PR records are persisted.
     assert returned_branch == "feature/detected"
 
-    # Row should now be keyed by the detected branch, status active.
     promoted = await lookup_by_branch(store, session_id="sess-1", branch_name="feature/detected")
     assert promoted is not None
     assert promoted.worktree_id == row.worktree_id
@@ -321,8 +302,6 @@ async def test_finalize_branch_creating_no_branch_removes_worktree(
     from agentshore.state import PlayOutcome, SkillResult
 
     src = worktree_root / "pickup-339"
-    # Detached checkout (no -b): the play produced no branch, so finalize falls
-    # through to the stale/removal path rather than rekeying.
     subprocess.check_call(
         ["git", "worktree", "add", "--detach", str(src), "HEAD"],
         cwd=str(main_repo),
@@ -337,8 +316,6 @@ async def test_finalize_branch_creating_no_branch_removes_worktree(
         base_ref="origin/HEAD",
         head_sha=None,
     )
-    # Sanity: it's registered before finalize. git prints forward-slash paths
-    # (even on Windows), so compare in posix form rather than the native str.
     listing_before = subprocess.check_output(
         ["git", "worktree", "list", "--porcelain"], cwd=str(main_repo), text=True
     )
@@ -353,7 +330,6 @@ async def test_finalize_branch_creating_no_branch_removes_worktree(
         play_type=PlayType.ISSUE_PICKUP,
         scope="branch_creating",
     )
-    # Declined: the skill succeeded but deliberately produced no PR/branch.
     skill_result = SkillResult(success=True, branch=None)
     outcome = PlayOutcome(
         play_type=PlayType.ISSUE_PICKUP,
@@ -372,13 +348,11 @@ async def test_finalize_branch_creating_no_branch_removes_worktree(
     )
 
     assert returned_branch is None
-    # Worktree de-registered from git and gone from disk.
     listing_after = subprocess.check_output(
         ["git", "worktree", "list", "--porcelain"], cwd=str(main_repo), text=True
     )
     assert str(src) not in listing_after
     assert not src.exists()
-    # Row marked stale so the reaper drops it.
     persisted = await lookup_by_id(store, worktree_id=row.worktree_id)
     assert persisted is not None
     assert persisted.status == "stale"
@@ -426,7 +400,6 @@ async def test_finalize_branch_creating_failure_removes_worktree(
         play_type=PlayType.ISSUE_PICKUP,
         scope="branch_creating",
     )
-    # Failure: the play errored before producing a branch.
     skill_result = SkillResult(success=False, branch=None)
     outcome = PlayOutcome(
         play_type=PlayType.ISSUE_PICKUP,
@@ -509,9 +482,6 @@ async def test_finalize_pr_scoped_returns_none(
     assert returned_branch is None
 
 
-# --- TOCTOU insert-conflict re-lookup ---------------------------------------
-
-
 async def test_pr_scoped_insert_conflict_relookup_returns_existing(
     store: DataStore,
     main_repo: Path,
@@ -537,9 +507,6 @@ async def test_pr_scoped_insert_conflict_relookup_returns_existing(
     pre_seeded: dict[str, int] = {}
 
     async def conflicting_insert(*args: Any, **kwargs: Any) -> Any:
-        # Simulate a parallel writer winning the race: insert the row
-        # ourselves on first call, then raise the conflict the manager
-        # would have caught.
         if "winner_id" not in pre_seeded:
             row = await real_insert(*args, **kwargs)
             pre_seeded["winner_id"] = row.worktree_id
@@ -582,12 +549,8 @@ async def test_pr_scoped_insert_failure_cleans_up_ondisk(
     with pytest.raises(RuntimeError, match="simulated DB failure"):
         await wm._allocate_pr_scoped(PlayType.CODE_REVIEW, params)
 
-    # The on-disk worktree the manager created before the insert must be gone.
     expected_path = worktree_root / "feature-x"
     assert not expected_path.exists()
-
-
-# --- failed-PR worktree retention cap (Fix 1, #180) ---------------------------
 
 
 async def _make_pr_worktree(
@@ -667,12 +630,12 @@ async def test_finalize_pr_failure_kept_active_then_retired_at_cap(
     await wm.finalize_after_dispatch(alloc, result=None, play_outcome=_pr_outcome(False))
     r1 = await lookup_by_id(store, worktree_id=wt_id)
     assert r1 is not None
-    assert r1.status == "active"  # first failure: kept warm for a cheap retry
+    assert r1.status == "active"
 
     await wm.finalize_after_dispatch(alloc, result=None, play_outcome=_pr_outcome(False))
     r2 = await lookup_by_id(store, worktree_id=wt_id)
     assert r2 is not None
-    assert r2.status == "stale"  # cap reached: dropped for the TTL reaper
+    assert r2.status == "stale"
 
 
 async def test_finalize_pr_success_resets_failure_count(
@@ -699,7 +662,6 @@ async def test_finalize_pr_success_resets_failure_count(
     await wm.finalize_after_dispatch(alloc, result=None, play_outcome=_pr_outcome(True))
     await wm.finalize_after_dispatch(alloc, result=None, play_outcome=_pr_outcome(False))
 
-    # 1 fail, reset, 1 fail → streak is 1 (< cap), so still active.
     row = await lookup_by_id(store, worktree_id=wt_id)
     assert row is not None
     assert row.status == "active"

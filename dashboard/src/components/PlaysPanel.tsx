@@ -46,8 +46,8 @@ function reducer(panel: PanelState, action: PanelAction): PanelState {
     case "state_update":
       return { ...panel, latestState: action.state };
     case "budget_update":
-      // Patch only budget so the countdown advances without touching other panel
-      // data; ignored until a full state has arrived (the bar needs the rest).
+
+
       if (!panel.latestState) return panel;
       return {
         ...panel,
@@ -101,7 +101,7 @@ function agentsForPlay(
     }
   }
   if (activePlay && !activePlay.agent_id && activePlay.play_type === playKey) {
-    // Preserve ACTIVE state for session-level plays that are not bound to an agent.
+
     result.push({
       agent_id: "__session_active__",
       agent_type: "codex",
@@ -214,7 +214,7 @@ function describeBudget(b: BudgetSnapshot): {
   const total = b.total_budget;
   const dollarCapped = b.enabled && total !== null && b.remaining !== null;
 
-  // Narrow time fields to non-null so arithmetic below type-checks without casts.
+
   const timeTotalMinutes =
     b.time_enabled && b.time_total_minutes !== null ? b.time_total_minutes : null;
   const timeRemainingMinutes =
@@ -232,8 +232,8 @@ function describeBudget(b: BudgetSnapshot): {
   const dollarLabel = dollarCapped
     ? `$${spent.toFixed(2)} / $${total.toFixed(2)}`
     : `$${spent.toFixed(2)}`;
-  // Right segment: remaining time when capped; "∞" only when nothing is
-  // capped at all (a dollar-only run leaves the right side empty).
+
+
   const timeLabel = timeCapped
     ? `${formatRemainingTime(timeRemainingMinutes)} left`
     : !dollarCapped
@@ -362,8 +362,8 @@ export function PlaysPanelComponent({
           actionMask.length > actionIndex &&
           !actionMask[actionIndex]));
 
-    // Count plays, not play types — a card with 2 agents running issue_pickup
-    // contributes 2 to ACTIVE, matching the lower-panel "M active plays" string.
+
+
     if (isActive) {
       totActive += count;
     } else if (!isMasked) {

@@ -20,8 +20,8 @@ export const PHASE_LABEL: Record<Phase, string> = {
 };
 
 export interface KanbanCard {
-  // Null for orphan-PR cards (PR has no issue link, or its issue is not in
-  // the open-issues list). Renderer falls back to the PR's own metadata.
+
+
   issue: IssueSnapshot | null;
   task: GraphTask | null;
   epic: EpicStatus | null;
@@ -168,10 +168,10 @@ function _deriveColumns(
   for (const pr of prs) {
     if (pr.issue_number !== null) {
       const existing = prByIssue.get(pr.issue_number);
-      // Prefer open PRs over closed ones for column placement.
-      // When multiple open PRs target the same issue (e.g. after unblock_pr
-      // force-pushes and opens a replacement), pick the most recently created
-      // one (highest pr_number) so stale PRs do not win by accident.
+
+
+
+
       if (!existing) {
         prByIssue.set(pr.issue_number, pr);
       } else if (existing.state !== "open" && pr.state === "open") {
@@ -214,8 +214,8 @@ function _deriveColumns(
     } else if (activeAgent !== null) {
       phase = "in_progress";
     } else if (pr && pr.state === "open") {
-      // PR exists but no review running — keep visible in REVIEWING so the
-      // board does not lose track of in-flight work.
+
+
       phase = "reviewing";
     } else {
       phase = "todo";
@@ -243,10 +243,10 @@ function _deriveColumns(
     });
   }
 
-  // Orphan PRs: open PRs whose linked issue is not in the issues list, or
-  // which have no issue_number at all. Surface them as standalone cards in
-  // REVIEWING so operators see every open PR even when the kanban cannot
-  // anchor it to an issue card.
+
+
+
+
   const issueNumbers = new Set(issues.map((i) => i.issue_number));
   const orphanReviewPrs = prs
     .filter(
@@ -307,9 +307,9 @@ function _deriveColumns(
 
   for (const task of beadOnlyTasks) {
     if (task.status === "closed") {
-      // Avoid accumulating ancient closed beads-only tasks in DONE forever.
-      // Use the actual close time only; a recent metadata update should not
-      // make old completed work look newly relevant.
+
+
+
       if (!isRecentlyClosed(task.closed_at, now)) continue;
     }
 

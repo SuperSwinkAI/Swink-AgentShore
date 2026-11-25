@@ -100,7 +100,6 @@ body.dashboard-active .agentshore-dashboard-canvas {
   text-overflow: ellipsis;
   min-width: 0;
 }
-/* Dollars and time-left flank the meter; neither shrinks before the bar does. */
 .budget-dollar,
 .budget-time {
   flex: 0 0 auto;

@@ -14,17 +14,6 @@ from agentshore.sidecar.rpc.protocol import (
     notification,
 )
 
-# ---------------------------------------------------------------------------
-# Session phase tables (DESIGN §10.2 / §5.1 / §5.2)
-# ---------------------------------------------------------------------------
-
-# DESIGN §10.2 — the seven startup phases reported by ``session.start`` so the
-# desktop Screen 8 checklist can advance step-by-step. Each phase emits a
-# ``running`` (percent=0) notification followed by an ``ok`` (percent=100)
-# notification on the same ``step`` id. Step ids must match
-# ``STARTUP_STEP_IDS`` in ``desktop/src/startupSteps.ts``. The canonical
-# ordering lives in ``session_lifecycle.SESSION_START_STEP_IDS``; this table
-# mirrors it for the legacy stub emitter.
 SESSION_START_PHASES: tuple[tuple[str, str], ...] = (
     ("config_merge", "Config merged"),
     ("check_agent_auth", "Agent auth checked"),
@@ -36,21 +25,12 @@ SESSION_START_PHASES: tuple[tuple[str, str], ...] = (
 )
 
 
-# DESIGN §5.1 / §5.2 — drain-mode ``session.stop`` reports phase progress as
-# it walks through graceful shutdown. ``hard`` mode skips the drain wait and
-# emits a single completion event. Phase ids are stable so the desktop shell
-# can render a step list parallel to the startup checklist.
 SESSION_STOP_DRAIN_PHASES: tuple[tuple[str, str], ...] = (
     ("cancel_pending", "Cancelling queued plays"),
     ("await_inflight", "Awaiting in-flight plays"),
     ("archive_session", "Archiving session"),
     ("generate_report", "Generating ESR report"),
 )
-
-
-# ---------------------------------------------------------------------------
-# Progress notification builder
-# ---------------------------------------------------------------------------
 
 
 def _progress_notification(
@@ -69,11 +49,6 @@ def _progress_notification(
             "message": message,
         },
     )
-
-
-# ---------------------------------------------------------------------------
-# Named notification builders (re-exported from server.py public surface)
-# ---------------------------------------------------------------------------
 
 
 def build_session_completed_notification(payload: dict[str, object]) -> JsonRpcNotification:

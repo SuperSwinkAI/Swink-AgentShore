@@ -175,7 +175,7 @@ describe("AgentShoreStateManager — seq-based stale-drop", () => {
 
   it("ignores a budget_update: no character churn (no sprite jitter)", () => {
     const mgr = new AgentShoreStateManager();
-    // Busy agent mid-play so a character exists and has a routed target.
+
     mgr.handleMessage(stateUpdate(10, { agents: [agent({ status: "busy" })] }));
     mgr.handleMessage(playStarted(11));
     const char = mgr.characters.get("agent-1");
@@ -185,9 +185,9 @@ describe("AgentShoreStateManager — seq-based stale-drop", () => {
     const yBefore = char?.y;
     const stateBefore = mgr.latestState;
 
-    // The budget heartbeat must not touch the office StateManager at all: it
-    // carries no agent data and returns false, leaving every character (and the
-    // last full snapshot) exactly as they were.
+
+
+
     const accepted = mgr.handleMessage(budgetUpdate(12));
     expect(accepted).toBe(false);
     expect(mgr.characters.size).toBe(1);
@@ -195,8 +195,8 @@ describe("AgentShoreStateManager — seq-based stale-drop", () => {
     expect(char?.targetState).toBe(targetBefore);
     expect(char?.x).toBe(xBefore);
     expect(char?.y).toBe(yBefore);
-    // latestState (the full snapshot) is untouched — budget lives on the
-    // separate PlaysPanel consumer, not here.
+
+
     expect(mgr.latestState).toBe(stateBefore);
   });
 
@@ -215,7 +215,7 @@ describe("AgentShoreStateManager — seq-based stale-drop", () => {
 
     const accepted = mgr.handleMessage(playStarted(8));
     expect(accepted).toBe(false);
-    // The agent should still be idle — patchStartedPlay was never run.
+
     expect(mgr.latestState?.agents[0].status).toBe("idle");
     expect(mgr.latestState?.agents[0].current_play).toBeNull();
   });
@@ -248,14 +248,14 @@ describe("AgentShoreStateManager — seq-based stale-drop", () => {
     const mgr = new AgentShoreStateManager();
     mgr.handleMessage(stateUpdate(5));
 
-    // Synthetic, no seq.
+
     const syntheticConnLost: AgentShoreMessage = {
       type: "connection_lost",
     } as AgentShoreMessage;
     mgr.handleMessage(syntheticConnLost);
     expect(mgr.connected).toBe(false);
 
-    // A subsequent real message at seq=6 should still be accepted.
+
     const accepted = mgr.handleMessage(stateUpdate(6, { total_plays: 11 }));
     expect(accepted).toBe(true);
     expect(mgr.latestState?.total_plays).toBe(11);
@@ -272,8 +272,8 @@ describe("AgentShoreStateManager — state_update is authoritative", () => {
     const targetBefore = char.targetState;
     const activePlayBefore = mgr.latestState?.active_play;
 
-    // The full snapshot can be stale relative to the append-only play event
-    // stream; it must not visually clear the in-flight play.
+
+
     mgr.handleMessage(
       stateUpdate(3, {
         agents: [agent({ status: "idle", current_play: null })],
@@ -453,7 +453,7 @@ describe("AgentShoreStateManager — bootstrap_phase events (desktop-afp)", () =
     } as unknown as AgentShoreMessage);
     expect(mgr.bootstrapPhase).toBe("load_learnings");
 
-    // No ("ready", "completed") sentinel — the session just starts streaming.
+
     mgr.handleMessage(stateUpdate(2));
 
     expect(mgr.bootstrapPhase).toBeNull();
@@ -494,14 +494,14 @@ describe("AgentShoreStateManager — session reset (Tier 0)", () => {
     expect(mgr.bootstrapPhase).toBeNull();
     expect(mgr.bootstrapStartedAt).toBeNull();
     expect(mgr.latestState).toBeNull();
-    // The de-dup floor is cleared, so a fresh low-seq frame is accepted.
+
     expect(mgr.handleMessage(stateUpdate(1))).toBe(true);
   });
 
   it("connection_restored drops the seq floor so a reconnect's fresh stream is accepted", () => {
     const mgr = new AgentShoreStateManager();
     mgr.handleMessage(stateUpdate(20));
-    // Reconnect may attach to a new orchestrator whose seq restarts at 1.
+
     mgr.handleMessage({ type: "connection_restored" } as AgentShoreMessage);
     expect(mgr.handleMessage(stateUpdate(1, { total_plays: 3 }))).toBe(true);
     expect(mgr.latestState?.total_plays).toBe(3);
@@ -516,12 +516,12 @@ describe("AgentShoreStateManager — session reset (Tier 0)", () => {
 
   it("a stale high-seq frame can no longer suppress the next run's bootstrap modal", () => {
     const mgr = new AgentShoreStateManager();
-    // The prior run left the de-dup floor high.
+
     mgr.handleMessage(stateUpdate(50));
-    // Reconnect to the new orchestrator.
+
     mgr.handleMessage({ type: "connection_restored" } as AgentShoreMessage);
-    // The new run's first bootstrap frame carries a low seq; it must be accepted
-    // (before the fix, seq<=50 was silently dropped → modal never appeared).
+
+
     mgr.handleMessage({
       type: "bootstrap_phase",
       seq: 1,
@@ -545,7 +545,7 @@ describe("AgentShoreStateManager — session boundary (Tier 1)", () => {
     });
     expect(mgr.currentSessionId).toBe("A");
 
-    // Lower seq than the prior session, but a new id must still be accepted.
+
     const accepted = mgr.handleMessage(stateUpdate(1, { session_id: "B", total_plays: 2 }));
     expect(accepted).toBe(true);
     expect(mgr.currentSessionId).toBe("B");
@@ -559,11 +559,11 @@ describe("AgentShoreStateManager — session boundary (Tier 1)", () => {
     mgr.handleMessage(stateUpdate(10, { session_id: "A" }));
     expect(mgr.latestState).not.toBeNull();
 
-    // A play_event stamped with a new session_id flips the boundary (Tier 1
-    // detects on any frame, not just state_update).
+
+
     mgr.handleMessage(playStarted(1, { session_id: "B" }));
     expect(mgr.currentSessionId).toBe("B");
-    // resetSession wiped latestState; the play_event then no-ops (no snapshot).
+
     expect(mgr.latestState).toBeNull();
   });
 
@@ -574,19 +574,19 @@ describe("AgentShoreStateManager — session boundary (Tier 1)", () => {
       resets += 1;
     };
     mgr.handleMessage(stateUpdate(1, { session_id: "A" }));
-    expect(resets).toBe(0); // first adoption — nothing to reset
+    expect(resets).toBe(0);
     mgr.handleMessage(stateUpdate(2, { session_id: "A" }));
-    expect(resets).toBe(0); // same session
+    expect(resets).toBe(0);
     mgr.handleMessage(stateUpdate(1, { session_id: "B" }));
-    expect(resets).toBe(1); // boundary crossed
+    expect(resets).toBe(1);
   });
 });
 
 describe("AgentShoreStateManager — take_break routing (desktop-o9z1)", () => {
   beforeEach(() => {
-    // Seat reservations live in module-scope state; clear before each test so
-    // tests are independent and the spawn at Front Desk doesn't run out of
-    // seats across many tests.
+
+
+
     __testHooks.clearOccupiedSeats();
   });
 
@@ -608,9 +608,9 @@ describe("AgentShoreStateManager — take_break routing (desktop-o9z1)", () => {
     const mgr = new AgentShoreStateManager();
     mgr.handleMessage(stateUpdate(1));
 
-    // The character spawned at the Front Desk on the initial state_update.
-    // A take_break play_event is a cooldown play, even without trigger fields,
-    // so it routes to Recovery Bay instead of the idle Zen Garden.
+
+
+
     const accepted = mgr.handleMessage(
       playStarted(2, {
         play_type: "take_break",
@@ -624,9 +624,9 @@ describe("AgentShoreStateManager — take_break routing (desktop-o9z1)", () => {
       .getCharacters()
       .find((c) => c.agentId === "agent-1");
     expect(char).toBeDefined();
-    // sendToRecovery sets targetState=IDLE.
+
     expect(char!.targetState).toBe(CharacterState.IDLE);
-    // Last tile on the path must be inside Recovery Bay bounds.
+
     const last = char!.path[char!.path.length - 1];
     expect(tileInZone(last, ZoneId.RECOVERY_BAY)).toBe(true);
     expect(tileInZone(last, ZoneId.ZEN_GARDEN)).toBe(false);
@@ -649,7 +649,7 @@ describe("AgentShoreStateManager — take_break routing (desktop-o9z1)", () => {
       .getCharacters()
       .find((c) => c.agentId === "agent-1");
     expect(char).toBeDefined();
-    // sendToRecovery sets targetState=IDLE.
+
     expect(char!.targetState).toBe(CharacterState.IDLE);
     const last = char!.path[char!.path.length - 1];
     expect(tileInZone(last, ZoneId.RECOVERY_BAY)).toBe(true);

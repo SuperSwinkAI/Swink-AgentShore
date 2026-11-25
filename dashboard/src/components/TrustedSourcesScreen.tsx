@@ -41,7 +41,7 @@ type ScreenAction =
 function initialState(seed: readonly string[] | undefined): ScreenState {
   const logins = seed && seed.length > 0 ? [...seed] : [];
   return {
-    // Pre-paint seed to avoid blank flash; loading stays true so sidecar list() still reconciles authoritatively.
+
     logins,
     loading: true,
     error: null,

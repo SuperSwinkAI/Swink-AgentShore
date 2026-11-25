@@ -28,9 +28,6 @@ def _needs_interactive_agent_selection(cfg: RuntimeConfig, *, config_created: bo
     )
 
 
-# Config blocks where defaulting to empty/permissive on parse failure would
-# weaken the trust boundary (an unparseable trusted_ids must not become "trust
-# everyone"): re-raise instead of falling back to the agents-only wizard.
 _SECURITY_RELEVANT_BLOCKS: tuple[str, ...] = ("identities", "trusted_ids")
 
 
@@ -56,10 +53,6 @@ def _load_config_for_agent_setup(config_path: Path) -> RuntimeConfig:
         return load_config(config_path)
     except ConfigError as exc:
         message = str(exc)
-        # init swallows ConfigError to stay resilient, so without this echo a
-        # broken identities/trusted_ids block would vanish silently. Surface it
-        # loudly but still fall through — session start re-enforces the trust
-        # boundary (load_config re-raises), so the empty-trust fallback never runs.
         if any(block in message for block in _SECURITY_RELEVANT_BLOCKS):
             click.secho(
                 f"  ERROR: security-relevant config block failed validation: {message}",
@@ -89,7 +82,6 @@ def _load_config_for_agent_setup(config_path: Path) -> RuntimeConfig:
         if not agents:
             raise
 
-        # Real config problem the user must fix — surface prominently.
         click.secho(
             f"  WARNING: agentshore.yaml failed full validation: {message}",
             err=True,
@@ -241,8 +233,6 @@ def _interactive_agent_select(
     from beaupy import prompt as beaupy_prompt
     from beaupy import select as beaupy_select
 
-    # Candidates = supported agents detected on PATH; existing config provides
-    # defaults, missing ones are added so older yaml still offers every agent.
     candidates: list[tuple[str, AgentConfig]] = []
     seen_agent_keys: set[str] = set()
     for detected_binary in detected_agents:
@@ -272,22 +262,16 @@ def _interactive_agent_select(
 
     click.echo("\n  Fetching available models...", nl=False)
     model_catalogs: dict[str, list[str]] = {
-        # Live CLI probes (agy fetches over the network) need more than 3s.
-        k: models_for_agent(k, timeout=10.0)
-        for k, _ in candidates
+        k: models_for_agent(k, timeout=10.0) for k, _ in candidates
     }
     click.echo(" done.")
 
-    # Renderers below read ``new_agents`` — the same dict AgentTierEditor
-    # mutates in place.
     new_agents: dict[str, AgentConfig] = dict(cfg.agents)
     for agent_key, agent_cfg in candidates:
         if agent_key not in new_agents:
             new_agents[agent_key] = agent_cfg
     editor = AgentTierEditor(new_agents)
 
-    # Accelerators assigned once over the fixed candidate list so they stay put
-    # across redraws (muscle memory): number per agent toggle, letter per tier.
     agent_num_by_key: dict[str, str] = {}
     agent_by_number: dict[str, str] = {}
     cell_by_letter: dict[str, tuple[str, str]] = {}
@@ -309,7 +293,7 @@ def _interactive_agent_select(
                 tier_letter_by_cell[(_ak, _t)] = _ltr
 
     box_inner = 24
-    box_border = box_inner + 2  # rows render as "│ " + INNER + " │"
+    box_border = box_inner + 2
 
     def _tier_names_for(agent_key: str) -> list[str]:
         try:
@@ -388,18 +372,10 @@ def _interactive_agent_select(
 
         efforts = reasoning_efforts_for(agent_type)
         is_grok = agent_type == AgentType.GROK
-        # swink-coding's `--model` flag accepts the small/medium/large tier
-        # aliases directly, or a `provider:model[@endpoint]` value dispatched
-        # via `--tier-map` (both surface through the model catalog below), so
-        # the free-form custom-model entry must still not be offered here —
-        # a hand-typed value skips `classify_swink_model` validation and could
-        # be an invalid CLI value.
         is_swink_coding = agent_type == AgentType.SWINK_CODING
-        # total prompt count: enable + model (skipped for grok) + effort (if any) + max.
         total = 2 + (0 if is_grok else 1) + (1 if efforts else 0)
         n = 0
 
-        # tier enabled?
         n += 1
         click.echo(f"  [{n}/{total}] tier enabled?")
         enable_choice: str | None = beaupy_select(
@@ -420,7 +396,6 @@ def _interactive_agent_select(
             )
             return
 
-        # model — grok is hard-pinned to grok-4.5, so skip the picker entirely.
         if is_grok:
             chosen = "grok-4.5"
             click.echo("  model · grok-4.5 (fixed)")
@@ -446,7 +421,6 @@ def _interactive_agent_select(
             else:
                 chosen = chosen_sel
 
-        # reasoning effort — only agents whose CLI exposes one.
         if efforts:
             n += 1
             default_effort = (
@@ -461,7 +435,6 @@ def _interactive_agent_select(
         else:
             chosen_effort = cur.reasoning_effort if cur else dtcfg.reasoning_effort
 
-        # max
         n += 1
         current_max = cur.max if cur else dtcfg.max
         new_max: int = click.prompt(
@@ -482,7 +455,6 @@ def _interactive_agent_select(
             ),
         )
 
-    # Boxed accelerator picker loop.
     letter_keys = sorted(cell_by_letter)
     key_hint = f"[{letter_keys[0]}-{letter_keys[-1]}] edit tier · " if letter_keys else ""
     while True:
@@ -507,7 +479,6 @@ def _interactive_agent_select(
             continue
         click.echo(f"  (unrecognized key: {key!r})")
 
-    # Disable supported CLI agents that weren't in the candidate list.
     for agent_key, agent_cfg in cfg.agents.items():
         if (
             agent_key in _SUPPORTED_CLI_AGENT_KEYS
@@ -518,8 +489,6 @@ def _interactive_agent_select(
 
     cfg = dataclasses.replace(cfg, agents=new_agents)
 
-    # Merge serialized fields into each raw entry (never replace) so unmanaged
-    # user fields like ``binary`` survive the round-trip.
     from agentshore.config.yaml_io import agent_config_to_yaml_dict
 
     try:

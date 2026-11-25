@@ -1,7 +1,7 @@
 import { BACK_WALL_HEIGHT_UNITS } from "../../office/layout";
 
-// North-wall Kanban geometry (tile units)
-export const KANBAN_FACE_Y = 6.5; // front-face plane of the shared north wall
+
+export const KANBAN_FACE_Y = 6.5;
 export const KANBAN_BOARD_X_START = 5;
 export const KANBAN_BOARD_WIDTH = 64;
 export const KANBAN_BOARD_Z_START = 1.0;

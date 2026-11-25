@@ -42,7 +42,6 @@ def test_validate_unknown_command() -> None:
 
 
 def test_validate_all_commands_valid() -> None:
-    # Minimal valid payloads for every command, including required params.
     minimal_payloads: dict[str, dict[str, object]] = {
         "start": {},
         "pause": {},
@@ -60,7 +59,7 @@ def test_validate_all_commands_valid() -> None:
     assert minimal_payloads.keys() <= VALID_COMMANDS
     for command, extra in minimal_payloads.items():
         cmd: dict[str, object] = {"command": command, **extra}
-        validate_command(cmd)  # must not raise
+        validate_command(cmd)
 
 
 def test_validate_feedback_response_requires_action() -> None:
@@ -69,7 +68,6 @@ def test_validate_feedback_response_requires_action() -> None:
 
 
 def test_validate_pause_no_extras_needed() -> None:
-    # pause has no required params beyond "command" — must not raise.
     validate_command({"command": "pause"})
 
 
@@ -91,7 +89,7 @@ def test_roundtrip_parse_and_validate() -> None:
     }
     line = json.dumps(payload)
     cmd = parse_command(line)
-    validate_command(cmd)  # must not raise
+    validate_command(cmd)
     assert cmd["action"] == "continue"
     assert cmd["params"] == {"note": "looks good"}
 
@@ -101,17 +99,15 @@ def test_add_budget_is_valid_command() -> None:
 
 
 def test_add_budget_accepts_dollar_only() -> None:
-    validate_command({"command": "add_budget", "delta_usd": 25.0})  # must not raise
+    validate_command({"command": "add_budget", "delta_usd": 25.0})
 
 
 def test_add_budget_accepts_minutes_only() -> None:
-    validate_command({"command": "add_budget", "delta_minutes": 30})  # must not raise
+    validate_command({"command": "add_budget", "delta_minutes": 30})
 
 
 def test_add_budget_accepts_both() -> None:
-    validate_command(
-        {"command": "add_budget", "delta_usd": 25.0, "delta_minutes": 120}
-    )  # must not raise
+    validate_command({"command": "add_budget", "delta_usd": 25.0, "delta_minutes": 120})
 
 
 def test_add_budget_rejects_empty() -> None:
@@ -142,7 +138,7 @@ def test_add_budget_rejects_non_integer_minutes() -> None:
 
 
 def test_add_budget_accepts_integer_valued_float_minutes() -> None:
-    validate_command({"command": "add_budget", "delta_minutes": 30.0})  # must not raise
+    validate_command({"command": "add_budget", "delta_minutes": 30.0})
 
 
 def test_reload_config_is_valid_command() -> None:

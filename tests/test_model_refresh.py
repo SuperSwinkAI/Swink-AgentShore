@@ -94,7 +94,6 @@ def test_refresh_writes_only_successful_harnesses(
     written = yaml.safe_load(_isolated_global_models.read_text())
     assert written["models"]["codex"] == ["gpt-5.5"]
     assert written["models"]["antigravity"] == ["model-x"]
-    # grok's probe failed this round — its prior override entry must survive untouched.
     assert written["models"]["grok"] == ["grok-prior-override"]
 
 
@@ -121,7 +120,7 @@ def test_refresh_flags_models_missing_a_pricing_row(monkeypatch: pytest.MonkeyPa
     summary = refresh_model_catalog()
 
     assert ("codex", "brand-new-unpriced-model") in summary.unpriced_models
-    assert ("codex", "gpt-5.5") not in summary.unpriced_models  # already priced
+    assert ("codex", "gpt-5.5") not in summary.unpriced_models
 
 
 def test_refresh_include_claude_code_calls_llm_discovery_and_sums_cost(
@@ -161,7 +160,7 @@ def test_refresh_claude_code_budget_exceeded_keeps_prior_models(
 
     outcome = summary.harnesses["claude_code"]
     assert outcome.status == "budget_exceeded"
-    assert outcome.models == ("sonnet",)  # prior list preserved, nothing written
+    assert outcome.models == ("sonnet",)
     written = yaml.safe_load(_isolated_global_models.read_text())
     assert written["models"]["claude_code"] == ["sonnet"]
 
@@ -169,8 +168,6 @@ def test_refresh_claude_code_budget_exceeded_keeps_prior_models(
 def test_any_changes_false_when_nothing_added_or_removed(
     monkeypatch: pytest.MonkeyPatch, _isolated_global_models: Path
 ) -> None:
-    # Pre-seed the override so "before" exactly matches what the mocked probe
-    # returns for all three free harnesses — a genuine no-op refresh.
     seed = _ok_free_results()
     _isolated_global_models.write_text(
         yaml.dump({"models": {k: list(v.models) for k, v in seed.items()}}), encoding="utf-8"

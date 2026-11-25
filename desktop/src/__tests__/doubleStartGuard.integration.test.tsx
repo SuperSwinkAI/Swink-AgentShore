@@ -1,24 +1,6 @@
 /**
- * Integration coverage for issue #582: Quick Start (#565) walks the
- * user into ``/starting``. Before this fix the shared helper
- * ``startSessionFromPersistedSetup`` used to dispatch ``session.start``
- * before handing control to ``StartingProgressRoute``, which dispatched
- * ``session.start`` a SECOND time, double-billing the sidecar and
- * risking duplicate orchestrator boots. The helper now navigates into
- * ``/starting`` and lets that route own the single start.
- *
- * (The ESR "Repeat with same settings" entrypoint that used to share
- * this helper was removed in #309 — the ESR now only offers Back to
- * Home / Start a new session, both of which route through the normal
- * Choose-Project → Quick Start or manual-setup path already covered
- * here and in ChooseProjectScreen's own tests.)
- *
- * This test walks the Quick Start entrypoint into a mocked
- * ``/starting`` route inside a ``MemoryRouter`` and asserts that
- * ``session.start`` is invoked EXACTLY ONCE end-to-end. It specifically
- * guards against the regression class — the existing unit tests mock
- * the helper at the RPC seam and don't see the second dispatch from
- * the route.
+ * Quick Start navigates to a mocked /starting route inside a MemoryRouter.
+ * Assert that session.start is invoked exactly once end-to-end.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
@@ -32,8 +14,8 @@ import { SessionContext } from "../services/sessionContext";
 
 type ProgressHandler = (params: ProgressNotificationParams) => void;
 
-// All sidecar RPC seams used by the helper + the /starting route are
-// mocked at the module boundary so the test stays hermetic.
+
+
 const {
   selectProjectMock,
   inspectProjectMock,
@@ -136,8 +118,8 @@ function renderFromChooser() {
     remove: removeRecentMock as ChooseProjectAdapter["remove"],
     select: selectProjectMock as ChooseProjectAdapter["select"],
     openDirectory: vi.fn().mockResolvedValue(null),
-    // Don't override quickStart — we want the REAL helper to run so we
-    // exercise the actual select → inspect → start → navigate pipeline.
+
+
   };
   const sessionContextValue = {
     dashboardUrl: null,
@@ -219,10 +201,10 @@ describe("issue #582: session.start fires exactly once through Quick Start", () 
     renderFromChooser();
     const user = userEvent.setup();
 
-    // The Quick Start chip only renders for rows the helper marks
-    // eligible; force-mark by seeding localStorage with a persisted
-    // setup snapshot before the row mounts. We installed an empty
-    // shim in beforeEach, so write the canonical key now.
+
+
+
+
     localStorage.setItem(
       "agentshore.desktop.setup.v1",
       JSON.stringify({
@@ -231,8 +213,8 @@ describe("issue #582: session.start fires exactly once through Quick Start", () 
       }),
     );
 
-    // Wait for recents to render, then click the row's Quick Start
-    // chip. The row test-id pattern is ``quick-start-<path>``.
+
+
     const quickStart = await screen.findByTestId("quick-start-/tmp/proj");
     await user.click(quickStart);
 

@@ -81,7 +81,7 @@ async def test_override_masked_when_awaited_play_not_yet_completed(tmp_path: Pat
     orch = _make_orch(tmp_path)
     orch._overrides.put_nowait(_bootstrap_medium_entry(PlayType.CLEANUP))
 
-    state = _state({})  # cleanup hasn't completed yet
+    state = _state({})
 
     result = await orch._dispatcher.consume_override(state)
 
@@ -91,9 +91,7 @@ async def test_override_masked_when_awaited_play_not_yet_completed(tmp_path: Pat
     requeued = orch._overrides.get_nowait()
     assert requeued.play_type == PlayType.INSTANTIATE_AGENT
     assert requeued.wait_for_play_type == PlayType.CLEANUP
-    # BOOTSTRAP -> MASK_REQUEUE on re-queue (preserved across handle_masked_override).
     assert requeued.kind == OverrideKind.MASK_REQUEUE
-    # INDEFINITE_WAIT classification: no retry-counter bump.
     assert requeued.requeue_attempts == 0
 
 
@@ -103,7 +101,6 @@ async def test_override_released_once_awaited_play_completed(tmp_path: Path) -> 
     orch = _make_orch(tmp_path)
     orch._overrides.put_nowait(_bootstrap_medium_entry(PlayType.CLEANUP))
 
-    # Mark cleanup as having completed at least once.
     state = _state({PlayType.CLEANUP: 0})
 
     result = await orch._dispatcher.consume_override(state)
@@ -122,7 +119,6 @@ async def test_wait_for_seed_project_also_works(tmp_path: Path) -> None:
     orch = _make_orch(tmp_path)
     orch._overrides.put_nowait(_bootstrap_medium_entry(PlayType.SEED_PROJECT))
 
-    # cleanup completed but the awaited play (seed_project) has not.
     state = _state({PlayType.CLEANUP: 5})
 
     result = await orch._dispatcher.consume_override(state)

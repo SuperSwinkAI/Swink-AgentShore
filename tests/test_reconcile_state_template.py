@@ -50,8 +50,7 @@ def test_frontmatter_metadata(template_text: str) -> None:
 def test_forbidden_github_mutations(template_text: str) -> None:
     """No GitHub mutations at all — fully local diagnosis + remediation."""
     assert "Never `git push`" in template_text
-    assert "gh pr" in template_text  # appears in the forbidden list
-    # The skill no longer files upstream telemetry issues — no outbound gh calls.
+    assert "gh pr" in template_text
     assert "gh issue create" not in template_text
     assert "SuperSwinkAI/Swink-AgentShore" not in template_text
 
@@ -83,9 +82,8 @@ def test_orphan_remediation_removes_registration(template_text: str) -> None:
     """
     assert "git worktree remove --force" in template_text
     assert "git worktree prune" in template_text
-    # The old DB-only-and-defer instruction must be gone.
     assert "do NOT** call `git worktree remove`" not in template_text
-    assert "worktree remove --force:*" in template_text  # allow-listed in frontmatter
+    assert "worktree remove --force:*" in template_text
 
 
 def test_worktree_removal_age_and_claim_guard(template_text: str) -> None:
@@ -100,7 +98,6 @@ def test_worktree_removal_age_and_claim_guard(template_text: str) -> None:
     assert "active_worktree_paths" in template_text
     assert "worktree_min_age_hours" in template_text
     assert "Worktree-removal safety guard" in template_text
-    # The guard must be re-validated at remediation time, not only at diagnosis.
     assert "re-read the live claim set" in template_text
 
 
@@ -124,7 +121,6 @@ def test_result_block_parses_with_agentshore_result_parser(template_text: str) -
     assert payload["success"] is True
     assert "remediation" in payload
     assert "verification_evidence" in payload
-    # Wrap in trailing-block form so the parser's tail extraction is exercised.
     wrapped = "diagnostic output …\n\n```json\n" + json.dumps(payload) + "\n```\n"
     result = parse_skill_result(wrapped)
     assert result is not None
@@ -142,15 +138,12 @@ def test_step_structure_matches_design(template_text: str) -> None:
     The diagnose → remediate → verify subset, however, IS load-bearing in order:
     you can't remediate before diagnosing or verify before remediating.
     """
-    # Each entry: (display_name, regex matching either a heading or **bold** lead-in).
     concepts = (
         ("Forbidden", r"(?:#+\s*Forbidden|\*\*Forbidden)"),
         ("Pre-flight", r"(?:#+\s*(?:Step\s*1[^A-Za-z]*)?Pre-flight|\*\*Pre-flight)"),
         ("Diagnose", r"(?:#+\s*(?:Step\s*2[^A-Za-z]*)?Diagnose|\*\*Diagnose)"),
         ("Remediate", r"(?:#+\s*(?:Step\s*3[^A-Za-z]*)?Remediate|\*\*Remediate)"),
         ("Verify", r"(?:#+\s*(?:Step\s*4[^A-Za-z]*)?Verify|\*\*Verify)"),
-        # Renamed from "Optional follow-up" when upstream issue-filing was
-        # removed — the section now just surfaces unrecognized pathologies.
         ("Unrecognized", r"\*\*Unrecognized pattern"),
         ("Result", r"(?:#+\s*Result|\*\*(?:Report|Result))"),
     )
@@ -159,7 +152,6 @@ def test_step_structure_matches_design(template_text: str) -> None:
         match = re.search(pattern, template_text)
         assert match is not None, f"missing concept: {name}"
         positions[name] = match.start()
-    # The flow ordering that genuinely matters.
     for earlier, later in (
         ("Pre-flight", "Diagnose"),
         ("Diagnose", "Remediate"),

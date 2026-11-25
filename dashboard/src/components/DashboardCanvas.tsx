@@ -58,7 +58,7 @@ function startGameLoop(ctx: FrameContext, initialClock: number): () => void {
   let rafHandle: number | null = null;
   let prevMs = performance.now();
   let cancelled = false;
-  void initialClock; // reserved for future clock-pinning seed
+  void initialClock;
 
   const tick = () => {
     if (cancelled) return;
@@ -101,11 +101,11 @@ export function DashboardCanvas({
   const stateRef = useRef<AgentShoreStateManager | null>(null);
   const [mounted, setMounted] = useState(false);
 
-  // Core engine setup: canvas 2D context, Camera/OfficeRenderer/state-manager
-  // creation, dev-mode test hooks, and theme sync. Populates the refs above
-  // so the sibling hooks below (declared next, so they run after this
-  // effect within the same mount commit) can wire their own listeners
-  // against the same Camera/renderer/state instances.
+
+
+
+
+
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -137,14 +137,14 @@ export function DashboardCanvas({
       };
     }
 
-    // Seed from documentElement.dataset.theme in case ThemeToggle painted
-    // before mount; else canvas sticks on the default `theme` prop until a
-    // re-theme. The observer below keeps it in sync on subsequent flips.
+
+
+
     const initialTheme = normalizeResolvedTheme(document.documentElement.dataset.theme, theme);
     renderer.setTheme(initialTheme);
 
-    // ThemeToggle flips data-theme on documentElement but the canvas gets no
-    // prop update; watch the attribute and re-call setTheme to track it.
+
+
     const themeObserver = new MutationObserver(() => {
       renderer.setTheme(normalizeResolvedTheme(document.documentElement.dataset.theme, theme));
     });
@@ -156,7 +156,7 @@ export function DashboardCanvas({
     const state = stateManager ?? new AgentShoreStateManager();
     stateRef.current = state;
 
-    // Mouse drag / wheel zoom (DESIGN §3.2).
+
     camera.attachInputHandlers(canvas);
 
     return () => {
@@ -174,7 +174,7 @@ export function DashboardCanvas({
       rendererRef.current = null;
       stateRef.current = null;
     };
-    // initialClock/theme/stateManager intentionally captured at mount.
+
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -183,12 +183,12 @@ export function DashboardCanvas({
   useCanvasKeyboardPan(canvasRef, cameraRef, focusAgentRef);
   useCanvasWallStickies(rendererRef);
 
-  // Game loop start/stop and the `mounted` flag run last so the initial
-  // resize/fit (useCanvasResize, above) always lands before the first
-  // rendered frame — its requestAnimationFrame(fitToView) is registered
-  // before this effect's requestAnimationFrame(tick), so the browser runs
-  // the fit first on the next animation frame, same as the original
-  // single-effect ordering.
+
+
+
+
+
+
   useEffect(() => {
     const canvas = canvasRef.current;
     const camera = cameraRef.current;
@@ -203,13 +203,13 @@ export function DashboardCanvas({
       stopLoop();
       setMounted(false);
     };
-    // initialClock intentionally captured at mount; refs are stable objects
-    // populated by the core effect above within the same mount commit.
+
+
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // imageRendering: pixelated keeps the upscale crisp in the brief window
-  // before resize() re-syncs the backing store after a DPR change; no-op at 1:1.
+
+
   return (
     <canvas
       ref={canvasRef}

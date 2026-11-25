@@ -104,7 +104,7 @@ describe("StartingProgressRoute", () => {
       handler = h;
       return () => undefined;
     });
-    // Promise that never resolves — session.start is still in flight.
+
     startSessionMock.mockReturnValue(new Promise(() => undefined));
 
     renderRoute();
@@ -121,7 +121,7 @@ describe("StartingProgressRoute", () => {
       error: null,
     });
 
-    // first_snapshot=ok alone shouldn't navigate; the RPC hasn't returned.
+
     expect(screen.queryByTestId("session-dashboard")).not.toBeInTheDocument();
   });
 
@@ -210,14 +210,14 @@ describe("StartingProgressRoute", () => {
       },
     });
 
-    // Wait until the route registers its progress subscriber — that's
-    // the synchronization point past which a buggy implementation would
-    // have already fired session.start.
+
+
+
     await waitFor(() => expect(handler).not.toBeNull());
 
     expect(startSessionMock).not.toHaveBeenCalled();
-    // The handoff also latches first_snapshot=ok internally, so the
-    // dashboard route is reached without any $/progress events.
+
+
     expect(await screen.findByTestId("session-dashboard")).toBeInTheDocument();
     expect(startSessionMock).not.toHaveBeenCalled();
   });
@@ -237,8 +237,8 @@ describe("StartingProgressRoute", () => {
 
     await waitFor(() => expect(handler).not.toBeNull());
 
-    // Without a startResult the handoff is incomplete and the route
-    // falls back to firing session.start itself.
+
+
     await waitFor(() => expect(startSessionMock).toHaveBeenCalledTimes(1));
   });
 
@@ -260,7 +260,7 @@ describe("StartingProgressRoute", () => {
     renderRoute({ state: { trustedIssueEnforcement: true } });
 
     await waitFor(() => expect(startSessionMock).toHaveBeenCalledTimes(1));
-    // The reconcile RPC ran, with the user's choice, before session.start.
+
     expect(setTrustedIssueEnforcementMock).toHaveBeenCalledWith(true);
     expect(setTrustedIssueEnforcementMock.mock.invocationCallOrder[0]).toBeLessThan(
       startSessionMock.mock.invocationCallOrder[0],
@@ -278,8 +278,8 @@ describe("StartingProgressRoute", () => {
     renderRoute({ state: { trustedIssueEnforcement: true } });
 
     await waitFor(() => expect(handler).not.toBeNull());
-    // The enable write failed, so the session must NOT start ungated and
-    // the user sees the error.
+
+
     expect(startSessionMock).not.toHaveBeenCalled();
     expect(
       await screen.findByText(/only work issues from trusted identities/i),
@@ -300,7 +300,7 @@ describe("StartingProgressRoute", () => {
 
     renderRoute({ state: { trustedIssueEnforcement: false } });
 
-    // wantGate === false: a failed write is a no-op, so start proceeds.
+
     await waitFor(() => expect(startSessionMock).toHaveBeenCalledTimes(1));
   });
 

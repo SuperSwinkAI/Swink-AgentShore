@@ -30,7 +30,7 @@ async def test_start_orchestrator_passes_config_path(
 
     async def _fake_bootstrap(**kwargs: object) -> object:
         captured.update(kwargs)
-        raise _StopBootstrapError  # short-circuit before the heavy run-loop wiring
+        raise _StopBootstrapError
 
     monkeypatch.setattr(core.Orchestrator, "bootstrap", _fake_bootstrap)
 

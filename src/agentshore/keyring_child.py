@@ -63,7 +63,6 @@ def run_keyring_child(request: dict[str, object]) -> dict[str, object]:
     for any other failure (spawn failure, JSON decode error, non-ok response).
     """
     try:
-        # input= feeds the JSON payload; subprocess.run wires the stdin pipe itself.
         proc = subprocess.run(  # noqa: S603 — same Python executable, fixed -c payload
             [sys.executable, "-c", _KEYRING_CHILD_CODE],
             input=json.dumps(request),

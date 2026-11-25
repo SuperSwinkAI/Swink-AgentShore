@@ -34,7 +34,6 @@ class MainDashboard(Screen[None]):
 
     BINDINGS: ClassVar[list[BindingType]] = []
 
-    # agent_id → PID; read by issue #154 Kill-all / crash-recovery.
     _subprocess_pids: dict[str, int]
     _loop_alert_active: bool
 
@@ -54,8 +53,6 @@ class MainDashboard(Screen[None]):
         yield RLStateBar(id="rl-state")
         yield Footer()
 
-    # ---- Message routing ----
-
     def on_orchestrator_app_state_updated(self, event: OrchestratorApp.StateUpdated) -> None:
         """Route state snapshot to all data-display widgets."""
         self.query_one("#agent-panel", AgentPanel).update_agents(
@@ -70,8 +67,6 @@ class MainDashboard(Screen[None]):
         self.query_one("#work-queue", WorkQueueSummary).update_state(event.state)
         self.query_one("#rl-state", RLStateBar).update_state(event.state)
         alert = self.query_one("#alert-bar", AlertBar)
-        # _loop_alert_active guards hide() to our own alert; AlertBar is shared,
-        # so an unconditional hide() would clobber budget/feedback alerts.
         loop_level = event.state.loop_level
         if loop_level == 3 and event.state.last_play_type is not None:
             alert.show_loop(
@@ -146,8 +141,6 @@ class MainDashboard(Screen[None]):
         state = getattr(self.app, "_latest_state", None)
         if state is not None:
             self.query_one("#rl-state", RLStateBar).update_state(state)
-
-    # ---- Responsive layout ----
 
     def on_resize(self, event: Resize) -> None:
         """Apply layout class based on terminal width breakpoints."""

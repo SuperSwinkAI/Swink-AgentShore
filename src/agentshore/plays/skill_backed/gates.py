@@ -1,18 +1,9 @@
 """Declarative precondition gates for skill-backed plays.
 
-Each ``Gate`` is a callable returning ``MaskReason | None``. A play declares
-``gates = (Gate1(...), Gate2(...), ...)`` and the base class walks the tuple,
-collecting non-None reasons. This centralises the per-play state-walking that
-previously lived in 17 bespoke ``preconditions()`` bodies — new plays declare
-gates instead of re-deriving them, mask reason text stays consistent across
-plays that share semantics, and gate behavior is unit-tested in one place.
-
-``SkillBackedPlay._capability_check`` remains as a compatibility helper for
-heavy plays that still override ``preconditions()``. In-flight and cooldown
-checks have moved fully into their gate equivalents. Heavy plays can also opt
-into ``gates`` and ``super().preconditions(state)`` for the standard set, then
-append bespoke checks afterward.
-"""
+Each Gate returns MaskReason | None. A play declares a gates tuple and the
+base class collects non-None reasons. SkillBackedPlay._capability_check
+supports precondition overrides. Overrides can call super().preconditions
+and append bespoke checks."""
 
 from __future__ import annotations
 
@@ -59,7 +50,6 @@ class CapabilityGate:
             for a in state.agents
             if a.status == AgentStatus.IDLE
             and a.agent_type.value not in rate_limited
-            # Circuit breaker (#22): mask known-dead agents until they succeed.
             and not is_agent_circuit_broken(
                 tasks_completed=a.tasks_completed,
                 tasks_failed=a.tasks_failed,
@@ -154,8 +144,6 @@ class ArmedByFailureGate:
 
     def __call__(self, state: OrchestratorState) -> MaskReason | None:
         own_age = state.plays_since_last_play_type.get(self.play_type, float("inf"))
-        # Arm only on a GENUINE failure, not a no-op ``skip:*`` (recorded
-        # success=False but not a wedge — arming on it spins forever, zero progress).
         armed = any(
             age < own_age
             and state.last_play_success_by_type.get(pt) is False
@@ -271,13 +259,12 @@ class DependenciesResolvedGate:
             if task.issue_number is not None and bool(task.blocked_by_ids)
         }
         if not blocked_issue_numbers:
-            return None  # no blocked tasks → nothing to gate
+            return None
 
         open_numbers = {i.issue_number for i in state.open_issues if i.state.upper() == "OPEN"}
         if not open_numbers:
-            return None  # no open issues → CapabilityGate / candidate validity handles this
+            return None
 
-        # At least one open issue is not dep-blocked → play can proceed.
         if open_numbers - blocked_issue_numbers:
             return None
 

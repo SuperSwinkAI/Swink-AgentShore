@@ -22,11 +22,8 @@ _LOGIN_LINE = re.compile(
     r"Logged in to (?P<host>\S+) account (?P<login>[A-Za-z0-9_.\-]+)(?P<active>\s*\(active\))?"
 )
 
-# GitHub login: 1-39 chars, alphanumeric with non-leading/trailing/consecutive hyphens.
 _GH_LOGIN_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}$")
 
-# GitHub PAT prefixes — detect a PAT pasted into a label/name slot.
-# Covers classic, fine-grained, and OAuth/server token shapes.
 _PAT_PREFIX_RE = re.compile(r"^(ghp_|gho_|ghu_|ghs_|ghr_|github_pat_)")
 
 
@@ -53,7 +50,6 @@ def parse_gh_auth_status(text: str) -> list[GhAccount]:
         line = raw_line.strip()
         if not line:
             continue
-        # Section headers like "github.com" appear at indent 0.
         if not raw_line.startswith((" ", "\t")) and line.endswith(".com"):
             current_host = line
             continue
@@ -65,7 +61,6 @@ def parse_gh_auth_status(text: str) -> list[GhAccount]:
             continue
         login = m.group("login")
         is_active = bool(m.group("active"))
-        # Last write wins; gh occasionally prints a login twice.
         accounts[login] = GhAccount(login=login, active=is_active)
 
     return list(accounts.values())
@@ -79,5 +74,4 @@ def detect_gh_accounts() -> list[GhAccount]:
     result = command.gh_sync("auth", "status", "-a", timeout_seconds=10.0)
     if result.tool_missing:
         return []
-    # gh auth status writes to stderr (old) or stdout (new); combine both.
     return parse_gh_auth_status(result.stdout + "\n" + result.stderr)

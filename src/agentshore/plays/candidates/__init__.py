@@ -78,22 +78,8 @@ if TYPE_CHECKING:
 
 _logger = get_logger(__name__)
 
-# Backpressure cap: at this many open PRs, issue_pickup is masked to clear
-# review/merge work first. Single source of truth — pr_queue_human_blocked
-# derives from MAX_OPEN_PRS - 1 so the END_SESSION hatch stays coupled to the cap.
 MAX_OPEN_PRS = 10
 
-# Fast, short-window down-weight applied per PR when unblock_pr fails with
-# ``merge_conflicts`` or merge_pr fails with ``dirty_trunk`` (#312) — a
-# non-mechanical, provably-not-retryable-right-now reason. threshold=1: a
-# single such failure is definitive, unlike issue_pickup's dep-block streak
-# (``_SKIP_CIRCUIT_THRESHOLD=3`` in issue_pickup.py) which needs repeats to
-# confirm a pattern. Distinct from — and additional to —
-# ``ParameterResolver``'s permanent ``_unblock_pr_failures`` exhaustion
-# counter, which is a clockless terminal backstop that only bites after 3
-# attempts. Single source of truth shared by ``ParameterResolver`` (which
-# owns the actual ``Cooldown[int]`` instance built from this spec) and any
-# standalone ``PlayCandidateService`` construction (tests).
 PR_REPICK_COOLDOWN_SPEC = CooldownSpec(threshold=1, cooldown=15, clock=Clock.PLAYS)
 
 
@@ -118,8 +104,6 @@ class WorkAvailability:
     blocked_issue_count: int
     disallowed_issue_count: int
     untrusted_issue_count: int
-    # Open PRs dropped this tick (base branch != target_branch); drives the
-    # dashboard "(N hidden)" badge.
     pull_requests_hidden_count: int
     covered_by_open_pr_count: int
     resolved_by_merged_pr_count: int
@@ -139,15 +123,8 @@ class WorkAvailability:
     mergeable_pr_count: int
     unblockable_pr_count: int
     actionable_pr_work_count: int
-    # Open PRs parked behind MANUAL_REQUIRED_LABEL. pr_queue_human_blocked is True
-    # when this hits MAX_OPEN_PRS - 1 (cap saturated with human-blocked PRs) OR
-    # every open PR is manual-required with no other actionable work — either way
-    # the queue can't drain without a human, so END_SESSION becomes valid.
     manual_required_open_pr_count: int
     pr_queue_human_blocked: bool
-    # True when any dispatchable work exists (issue/PR/backlog-sync/groom). Read by
-    # the lifecycle-churn breaker; distinct from terminal_no_work, which also needs
-    # fresh terminal audits and no in-flight plays.
     has_actionable_work: bool
     terminal_no_work: bool
 
@@ -200,9 +177,6 @@ class PlayCandidateAnalyzer:
         self.disallowed_issue_numbers: set[int] = {
             i.issue_number for i in self.open_issues if DISALLOWED_LABEL in i.labels
         }
-        # Opt-in issue-author gating: only issues from a trusted login are workable.
-        # Toggle + trusted set ride on state (resolved once per tick), keeping this
-        # state-only. Off by default → empty set.
         self.untrusted_issue_numbers: set[int] = set()
         if state.restrict_issues_to_trusted_authors:
             trusted = state.trusted_issue_authors
@@ -245,7 +219,6 @@ class PlayCandidateAnalyzer:
             and bool(getattr(task, "blocked_by_ids", None))
         }
 
-        # Backlog sync
         tracked = {
             getattr(task, "issue_number")  # noqa: B009
             for task in self._graph_tasks
@@ -273,8 +246,6 @@ class PlayCandidateAnalyzer:
         self.backlog_sync_work_count: int = (
             len(self._untracked_gh_issue_numbers) + self._unlinked_ready_task_count
         )
-
-    # -- issue availability --------------------------------------------------
 
     def issue_available_for_plan(self, issue: IssueSnapshot) -> bool:
         labels = set(issue.labels)
@@ -305,9 +276,6 @@ class PlayCandidateAnalyzer:
             issue.state.upper() == "OPEN"
             and self._base_issue_available(issue)
             and "agentshore/needs-refinement" in issue.labels
-            # Skip already-refined issues (carry agentshore/refined); else refine is
-            # re-selected and dispatched only to no-op. Re-armed when groom/design-
-            # audit removes the label.
             and "agentshore/refined" not in issue.labels
         )
 
@@ -326,21 +294,13 @@ class PlayCandidateAnalyzer:
             issue.issue_number not in self.open_pr_issue_numbers
             and issue.issue_number not in self.merged_pr_issue_numbers
             and issue.issue_number not in self.in_flight_issue_numbers
-            # in_progress beads task → owned by a live PR/agent. Excluding here keeps
-            # plan/refine/debug in parity with pickup and the dispatch-time live-beads
-            # gate; else write_implementation_plan re-selects it every tick (priority
-            # sort) and is bounced at dispatch, starving other issues.
             and issue.issue_number not in self.bead_in_progress_issue_numbers
             and issue.issue_number not in self.untrusted_issue_numbers
             and "agentshore/blocked" not in labels
             and "blocked" not in labels
             and DISALLOWED_LABEL not in labels
-            # Un-plannable issue parked for a human (#458): exclude so it stops being
-            # re-selected every tick. Cleared when the label is removed.
             and NEEDS_HUMAN_LABEL not in labels
         )
-
-    # -- freshness / terminal predicates -------------------------------------
 
     def beads_groom_needed(self) -> bool:
         if not self._graph_has_epics:
@@ -371,8 +331,6 @@ class PlayCandidateAnalyzer:
     ) -> bool:
         return qa_ran_within_terminal_window(self._state, window=window)
 
-    # -- candidate plan builder ----------------------------------------------
-
     def build(self) -> PlayCandidatePlan:
         """Build a pure, state-only candidate plan for PPO-safe consumers."""
 
@@ -383,13 +341,9 @@ class PlayCandidateAnalyzer:
         parked_keys = state.parked_resource_keys
         cooled_down = state.cooled_down_targets
         wedge_cooldown = state.wedge_cooldown_agent_types
-        # agent_id -> agent_type.value, so a target_agent_id candidate can be
-        # checked against the launch-wedge cooldown set.
         agent_id_to_type = {agent.agent_id: agent.agent_type.value for agent in state.agents}
 
         def add(candidate: PlayCandidate) -> None:
-            # Exclude resources parked after repeated worktree-allocation failures
-            # so a structurally-unallocatable PR can't be re-selected each tick.
             parked_hit = sorted(set(candidate.resource_keys) & parked_keys)
             if parked_hit:
                 reasons = blocked.setdefault(candidate.play_type, [])
@@ -397,9 +351,6 @@ class PlayCandidateAnalyzer:
                 if msg not in reasons:
                     reasons.append(msg)
                 return
-            # Same play already ran against this target repeatedly without
-            # changing it (plays.attempt_ledger). Withheld per play: the target
-            # stays available to every other play.
             cooled_key = target_key(candidate.play_type, candidate.params)
             if cooled_key is not None and cooled_key in cooled_down:
                 reasons = blocked.setdefault(candidate.play_type, [])
@@ -407,8 +358,6 @@ class PlayCandidateAnalyzer:
                 if msg not in reasons:
                     reasons.append(msg)
                 return
-            # #202: a transient launch wedge masks the type only for a DECAYING
-            # cooldown — auto-unmasked once the set no longer contains the type.
             cooldown_type = _candidate_wedge_cooldown_type(
                 candidate, wedge_cooldown, agent_id_to_type
             )
@@ -454,9 +403,6 @@ class PlayCandidateAnalyzer:
         pr_by_number = {pr.pr_number: pr for pr in state.pull_requests}
 
         def _pr_manual_required(pr_number: int) -> bool:
-            # Manual-required PR is parked for a human — never a review target
-            # (mirrors pr_reviewable). _labels(None) → [], so a queue row with no
-            # PR record reads as not manual-required.
             return MANUAL_REQUIRED_LABEL in _labels(pr_by_number.get(pr_number))
 
         pending_pr_numbers = {
@@ -495,15 +441,6 @@ class PlayCandidateAnalyzer:
                     sort_key=(0, index, row.pr_number),
                 )
             )
-        # The review queue is a priority lane, not a gate. Always scan open PRs
-        # for reviewable work so a reviewable PR can't be starved by stale queue
-        # rows that yield no dispatchable candidate above — e.g. rows for
-        # manual-required PRs (skipped) or rows stuck ``claimed`` by a since-dead
-        # reviewer. Previously this fallback ran only when the queue was entirely
-        # empty, so a single undispatchable row shadowed every open reviewable PR
-        # and wedged code_review (→ actionable_pr_work=0 → MAX_OPEN_PRS cap on
-        # issue_pickup never drains). PRs already emitted from the queue path are
-        # excluded so they aren't double-added.
         for candidate in _eligible_pr_candidates(
             self.open_prs,
             excluded=in_flight_review_prs | queued_review_pr_numbers,
@@ -553,9 +490,6 @@ class PlayCandidateAnalyzer:
                 PlayCandidate(
                     play_type=PlayType.GROOM_BACKLOG,
                     params=PlayParams(),
-                    # groom_backlog only touches beads metadata — must not take the
-                    # trunk writer lock (would starve merge_pr, #17). Self-serialize
-                    # on a session key so two grooms don't race.
                     resource_keys=(f"session:{PlayType.GROOM_BACKLOG.value}",),
                     source="state",
                     sort_key=(0,),
@@ -604,14 +538,6 @@ class PlayCandidateAnalyzer:
             for c in sorted_candidates.get(PlayType.UNBLOCK_PR, ())
             if c.params.pr_number is not None
         }
-        # Review-feasibility backstop (same class as pr_queue_human_blocked): a PR
-        # whose only actionable step is review isn't actionable when no live
-        # code_review-tier agent has an identity != its author (anti-confirmation).
-        # Else a fleet that lost its only cross-identity reviewer mid-run keeps
-        # END_SESSION shut on PRs nobody can review. Only the availability signal
-        # changes; candidates and the code_review mask (anti-confirmation
-        # eligibility stage) are untouched. A fleet with no live agents at all is
-        # unknown (cold start / respawn pending) → no filter.
         feasible_review_pr_numbers = reviewable_pr_numbers
         if any(agent.status != AgentStatus.TERMINATED for agent in state.agents):
             reviewers = live_can_review_agents(state)
@@ -639,12 +565,6 @@ class PlayCandidateAnalyzer:
             or self.backlog_sync_work_count > 0
             or groom_needed
         )
-        # Wedge detection for the END_SESSION hatch (#166): the open-PR cap blocks
-        # issue_pickup, so (cap - 1) human-parked PRs mean the queue can't drain —
-        # surface it even while issue work still looks plannable. Also fire when
-        # *every* open PR is manual-required AND no other actionable work exists
-        # (ready tasks all covered by parked PRs → wedged below the cap too). The
-        # not-has_actionable_work guard keeps the hatch closed while real work remains.
         open_pr_count = len(self.open_prs)
         all_open_prs_manual_required = (
             open_pr_count > 0 and manual_required_open_pr_count == open_pr_count
@@ -735,10 +655,6 @@ class PlayCandidateService:
         self._project_path = project_path
         self._unblock_failures = unblock_failures if unblock_failures is not None else {}
         self._unblock_exhaustion_threshold = unblock_exhaustion_threshold
-        # See PR_REPICK_COOLDOWN_SPEC. Production wiring passes the same
-        # Cooldown/rearmable-dict instance ParameterResolver owns (mirrors
-        # unblock_failures above); a standalone construction (tests) gets a
-        # private, empty Cooldown of its own.
         self._pr_repick_cooldown: Cooldown[int] = (
             pr_repick_cooldown
             if pr_repick_cooldown is not None
@@ -760,9 +676,6 @@ class PlayCandidateService:
         )
         if not state.cooled_down_targets:
             return candidates
-        # The store- and GitHub-backed discovery paths don't go through
-        # ``PlayCandidateAnalyzer.build``, so apply the shared no-progress
-        # cooldown here as well: one rule, every path.
         return [c for c in candidates if not _on_no_progress_cooldown(c, state)]
 
     async def _discover_candidates(
@@ -834,9 +747,6 @@ class PlayCandidateService:
                 if pr is None and row.queue_id is not None:
                     await self._store.complete_review(row.queue_id)
                     continue
-                # A manual-required PR is parked for a human — never dispatch a
-                # reviewer at it (mirrors pr_reviewable / the build_candidate_plan
-                # filter), so it can't churn the review queue (#167).
                 if pr is not None and MANUAL_REQUIRED_LABEL in _labels(pr):
                     continue
                 reviewer = pick_reviewer_for_pr(
@@ -870,11 +780,6 @@ class PlayCandidateService:
                 )
             if candidates:
                 return candidates
-            # Pending rows yielded nothing dispatchable (all manual-required,
-            # in-flight, or absent). Don't stop at the queue — fall through to the
-            # open-PR scan below so a reviewable PR without a live queue row still
-            # gets picked up. Mirrors the build() fallback (the mask side); without
-            # this, an unmasked CODE_REVIEW action could find no resolver target.
 
         plan_candidates = build_candidate_plan(state).candidates_for(PlayType.CODE_REVIEW)
         for candidate in plan_candidates:
@@ -938,8 +843,6 @@ class PlayCandidateService:
 
     async def _merge_pr_candidates(self, state: OrchestratorState) -> list[PlayCandidate]:
         in_flight_merge_prs = _in_flight_prs(state, PlayType.MERGE_PR)
-        # #312: re-check before reading the cooldown set so a PR whose blocker
-        # cleared this same tick is selectable immediately.
         self._rearm_pr_repick_cooldown(state)
         on_cooldown = self._pr_repick_cooldown.armed_keys(now=state.total_plays)
         excluded_merge = in_flight_merge_prs | on_cooldown
@@ -948,8 +851,6 @@ class PlayCandidateService:
         def is_mergeable(pr: object) -> bool:
             return pr_merge_ready(pr, target_branch=target_branch)
 
-        # Store-backed pass: same eligibility/conflict pipeline as build(), only
-        # the PR source (approved PRs in the store) is resolver-specific.
         candidates = _pr_play_candidates(
             await self._store.list_approved_pull_requests(state.session_id),
             excluded=excluded_merge,
@@ -982,15 +883,11 @@ class PlayCandidateService:
             for pr_num, count in self._unblock_failures.items()
             if count >= self._unblock_exhaustion_threshold
         }
-        # #312: fast cooldown layered on top of the permanent exhaustion
-        # counter above — both exclusions apply.
         self._rearm_pr_repick_cooldown(state)
         on_cooldown = self._pr_repick_cooldown.armed_keys(now=state.total_plays)
         excluded = in_flight_unblock_prs | exhausted | on_cooldown
         prs = list(await self._store.list_open_pull_requests(state.session_id))
         random.shuffle(prs)
-        # Store-backed pass: same eligibility/conflict pipeline as build(), only
-        # the PR source (open PRs in the store, shuffled) is resolver-specific.
         candidates = _pr_play_candidates(
             prs,
             excluded=excluded,
@@ -1274,29 +1171,19 @@ def _already_reviewed_prs(state: OrchestratorState) -> set[int]:
     return {pr.pr_number for pr in state.pull_requests if not needs_review(pr)}
 
 
-# ---------------------------------------------------------------------------
-# Re-export everything from sub-modules so agentshore.plays.candidates
-# remains the single stable import surface for all consumers.
-# ---------------------------------------------------------------------------
-
 __all__ = [
-    # Data classes
     "PlayCandidate",
     "WorkAvailability",
     "PlayCandidatePlan",
-    # Core classes and builders
     "PlayCandidateAnalyzer",
     "PlayCandidateService",
     "build_candidate_plan",
-    # Module constants
     "MAX_OPEN_PRS",
     "PR_REPICK_COOLDOWN_SPEC",
-    # Reviewer/tail helpers
     "idle_can_review_agents",
     "live_can_review_agents",
     "pick_reviewer_for_pr",
     "in_progress_issue_numbers",
-    # Private helpers (consumed by tests)
     "_eligible_pr_candidates",
     "_pr_play_candidates",
     "_in_flight_prs",
@@ -1306,7 +1193,6 @@ __all__ = [
     "_string_or_none",
     "_bool_or_none",
     "_task_status_is",
-    # From predicates
     "pr_resource_keys",
     "pr_resource_keys_for_pr",
     "issue_resource_keys",
@@ -1323,7 +1209,6 @@ __all__ = [
     "_TRUNK_RESOURCE_KEY",
     "_SIZE_RANK",
     "_NO_PRIORITY_SORT_KEY",
-    # From freshness
     "seed_audit_is_fresh",
     "design_audit_is_fresh",
     "terminal_audits_are_fresh",

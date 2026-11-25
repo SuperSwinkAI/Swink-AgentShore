@@ -47,9 +47,6 @@ async def test_unique_reclaim_dest_suffix_bumps_on_collision(tmp_path: Path) -> 
     assert _unique_reclaim_dest(root, "feature-x") == root / "feature-x-2"
 
 
-# --- _dispose_orphan ----------------------------------------------------------
-
-
 async def test_dispose_orphan_deletes_clean_worktree(
     main_repo: Path, worktree_root: Path, remote_branch: str
 ) -> None:
@@ -86,8 +83,6 @@ async def test_dispose_orphan_quarantines_tracked_uncommitted_changes(
         base_ref=f"origin/{remote_branch}",
         fetch=True,
     )
-    # Modify a tracked file (README.md is committed on the base branch). Only
-    # changes to tracked files count as uncommitted work worth recovering.
     readme = target / "README.md"
     readme.write_text(readme.read_text() + "locally modified, uncommitted\n")
 
@@ -150,8 +145,6 @@ async def test_dispose_orphan_deletes_untracked_only_worktree(
         base_ref=f"origin/{remote_branch}",
         fetch=True,
     )
-    # Stand-ins for untracked agent-harness scaffolding (.claude/, AGENTS.md,
-    # CLAUDE.md seen in the wild) -- arbitrary untracked paths, nothing special.
     (target / "AGENTS.md").write_text("agent harness scaffolding\n")
     (target / ".claude").mkdir()
     (target / ".claude" / "settings.json").write_text("{}\n")
@@ -168,7 +161,7 @@ async def test_dispose_orphan_deletes_non_git_debris(worktree_root: Path, main_r
     """A dir git can't introspect (no valid worktree linkage) is treated as debris and deleted."""
     debris = worktree_root / "detached-debris"
     debris.mkdir()
-    (debris / "target").mkdir()  # rebuildable build-cache stand-in
+    (debris / "target").mkdir()
     (debris / "stale.txt").write_text("leftover\n")
 
     result = await _dispose_orphan(
@@ -177,9 +170,6 @@ async def test_dispose_orphan_deletes_non_git_debris(worktree_root: Path, main_r
 
     assert result == "deleted"
     assert not debris.exists()
-
-
-# --- reconcile_worktrees ------------------------------------------------------
 
 
 async def test_reconcile_deletes_orphan_leaves_registered_alone(
@@ -195,7 +185,6 @@ async def test_reconcile_deletes_orphan_leaves_registered_alone(
         fetch=True,
     )
     assert registered.exists()
-    # One orphan dir not registered with git.
     orphan = worktree_root / "orphan-from-prior-session"
     orphan.mkdir()
     (orphan / "junk.txt").write_text("hi\n")
@@ -207,7 +196,6 @@ async def test_reconcile_deletes_orphan_leaves_registered_alone(
     assert report.preserved_dirty == []
     assert not orphan.exists(), "clean orphan should have been deleted"
     assert registered.exists(), "registered worktree must not be touched"
-    # No quarantine sibling dir is created.
     sibling = worktree_root.with_name(worktree_root.name + "-orphan")
     assert not sibling.exists()
 
@@ -246,9 +234,6 @@ async def test_reconcile_ignores_files_in_worktree_root(
     assert stray.exists()
 
 
-# --- heal-on-allocate (ensure_worktree converges from orphan state) ----------
-
-
 async def test_ensure_worktree_deletes_clean_orphan_at_target_path(
     main_repo: Path, worktree_root: Path, remote_branch: str
 ) -> None:
@@ -273,7 +258,6 @@ async def test_ensure_worktree_deletes_clean_orphan_at_target_path(
     assert result.created is True
     assert (target / ".git").exists(), "target should now be a git worktree"
     assert not (target / "old_file.txt").exists(), "debris should be gone, not preserved"
-    # No quarantine sibling dir is created.
     sibling = worktree_root.with_name(worktree_root.name + "-orphan")
     assert not sibling.exists()
 
@@ -297,8 +281,6 @@ async def test_ensure_worktree_quarantines_dirty_orphan_and_proceeds(
 
     async def fake_dispose(*, main_repo: Path, path: Path, reclaimed_root: Path) -> str:
         captured["reclaimed_root"] = reclaimed_root
-        # Stand in for the real quarantine: remove the orphan dir so the
-        # subsequent ``git worktree add`` has a clean target path.
         shutil.rmtree(path, ignore_errors=True)
         return "quarantined"
 
@@ -314,7 +296,6 @@ async def test_ensure_worktree_quarantines_dirty_orphan_and_proceeds(
 
     assert result.created is True
     assert (target / ".git").exists(), "target should now be a fresh registered worktree"
-    # ensure_worktree derives the reclaimed root as a sibling of worktrees/.
     assert captured["reclaimed_root"] == worktree_root.parent / "reclaimed"
 
 

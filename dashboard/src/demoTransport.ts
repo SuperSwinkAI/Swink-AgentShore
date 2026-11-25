@@ -13,10 +13,10 @@ import type { ConnectionState, DashboardTransport } from "./ws";
 
 const BASE_TIME = "2026-01-01T00:00:00.000Z";
 
-// Both masks below are keyed by play name (not position) and derived into the
-// ordered action_mask array via PLAY_KEYS, so the mask can never silently
-// desync from PlayType if the play list is ever reordered — unlike a
-// hand-typed positional boolean array, which only stayed aligned by comment.
+
+
+
+
 const BASE_MASK_BY_NAME: Partial<Record<PlayType, boolean>> = {
   instantiate_agent: true,
   unblock_pr: true,
@@ -24,26 +24,26 @@ const BASE_MASK_BY_NAME: Partial<Record<PlayType, boolean>> = {
   end_agent: true,
   issue_pickup: true,
   code_review: true,
-  merge_pr: false, // no open PR
+  merge_pr: false,
   run_qa: true,
   systematic_debugging: true,
   design_audit: true,
-  end_session: false, // goals not aligned
+  end_session: false,
   reconcile_state: true,
   refine_task_breakdown: true,
   cleanup: true,
-  future_4: false, // reserved
-  take_break: false, // rate-limit cooldown
+  future_4: false,
+  take_break: false,
   groom_backlog: true,
-  seed_project: false, // already seeded
+  seed_project: false,
   calibrate_alignment: true,
-  prune: false, // no prune-worthy debt yet
-  future_7: false, // reserved
-  future_8: false, // reserved
+  prune: false,
+  future_7: false,
+  future_8: false,
 };
 
-// Stress scenario exercises every play as eligible; no per-play overrides
-// needed, so unmapped keys default to true.
+
+
 const STRESS_MASK_BY_NAME: Partial<Record<PlayType, boolean>> = {};
 
 export type DemoScenario =
@@ -92,7 +92,7 @@ export class DemoTransport implements DashboardTransport {
       this.onMessage?.({ ...this.baseState(), session_state: "shutting_down" });
       this.onMessage?.({ type: "session_ended", reason: "hard_stop" });
     } else if (command.command === "adjust_budget") {
-      // No-op in demo: budget is static.
+
     }
   }
 
@@ -170,7 +170,7 @@ export class DemoTransport implements DashboardTransport {
     }
 
     if (this.scenario === "bootstrap") {
-      // Walk the modal through a phase sequence so BootstrapModal is inspectable without a live core.
+
       const phases = [
         "init_datastore",
         "init_ppo_selector",
@@ -210,7 +210,7 @@ export class DemoTransport implements DashboardTransport {
     }
 
     if (this.scenario === "session_switch") {
-      // Tier 1 session boundary: second session_id must clear first session's agents/stats and re-show bootstrap.
+
       this.onMessage?.({ ...state, session_id: "demo-session-a", total_plays: 7 });
       window.setTimeout(() => {
         this.onMessage?.({
@@ -316,7 +316,7 @@ export class DemoTransport implements DashboardTransport {
   }
 
   private stressState(): StateUpdate {
-    // 10 todo, 8 in_progress, 7 reviewing, 12 done
+
     const epics = [
       {
         bead_id: "bd-auth",
@@ -376,7 +376,7 @@ export class DemoTransport implements DashboardTransport {
       };
     };
 
-    // 8 busy agents each working a different in_progress issue (issues 101–108)
+
     const busyAgents: AgentSnapshot[] = Array.from({ length: 8 }, (_, i) => ({
       agent_id: `agent-stress-${i}`,
       agent_type: i % 2 === 0 ? "claude_code" : "codex",
@@ -396,7 +396,7 @@ export class DemoTransport implements DashboardTransport {
       }),
     }));
 
-    // PRs for 7 reviewing issues (issues 111–117)
+
     const reviewingPrs: PullRequestSnapshot[] = Array.from(
       { length: 7 },
       (_, i) => ({
@@ -419,19 +419,19 @@ export class DemoTransport implements DashboardTransport {
     );
 
     const issues = [
-      // 10 todo (121–130)
+
       ...Array.from({ length: 10 }, (_, i) =>
         issueFor(121 + i, `Todo task ${i + 1}`, "open", i),
       ),
-      // 8 in_progress (101–108)
+
       ...Array.from({ length: 8 }, (_, i) =>
         issueFor(101 + i, `In-progress task ${i + 1}`, "open", i + 10),
       ),
-      // 7 reviewing (111–117)
+
       ...Array.from({ length: 7 }, (_, i) =>
         issueFor(111 + i, `Review task ${i + 1}`, "open", i + 18),
       ),
-      // 12 done (131–142, state closed)
+
       ...Array.from({ length: 12 }, (_, i) =>
         issueFor(131 + i, `Done task ${i + 1}`, "closed", i + 25),
       ),

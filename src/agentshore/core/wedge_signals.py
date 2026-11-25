@@ -33,10 +33,6 @@ if TYPE_CHECKING:
 
 _logger = structlog.get_logger(__name__)
 
-# AgentShore-owned untracked paths, filtered out of ``dirty_trunk_paths`` so
-# reconcile_state doesn't try to "restore" runtime state it shouldn't touch (#594).
-# Derived from the canonical owned-paths tuple in ``git_safety`` so this and the
-# gitignore writer can't drift apart.
 _AGENTSHORE_OWNED_UNTRACKED_PREFIXES: frozenset[str] = frozenset(AGENTSHORE_OWNED_ROOT_PATHS)
 
 
@@ -324,8 +320,6 @@ def build_recent_wedge_signals(
     )
     last_failed = recent_failed[0] if recent_failed else None
 
-    # In-flight agents for zombie cross-checking: each entry lets the skill match a
-    # candidate PID against its backing play_id.
     active_agents_in_flight = [
         {
             "agent_id": a.agent_id,
@@ -338,9 +332,6 @@ def build_recent_wedge_signals(
         if a.current_play_id is not None
     ]
 
-    # Earliest start (epoch) of each in-flight *trunk-scoped* play. An untracked
-    # root file whose mtime is at/after one of these is in-flight work owned by a
-    # live play, not a wedge — reconcile_state must leave it alone (#162).
     from agentshore.core.trunk_artifacts import TRUNK_SCOPED_PLAY_TYPES
 
     active_trunk_starts = [
@@ -355,15 +346,6 @@ def build_recent_wedge_signals(
     for entry in collect_dirty_trunk_paths(project_path):
         record = asdict(entry)
         owned = False
-        # A dirty path whose mtime is at/after a live trunk-scoped play's start is its
-        # in-flight work, not a wedge — leave it alone (#162/#224). This holds for BOTH
-        # tracked edits (nested anywhere) AND untracked (``??``) artifacts at any depth:
-        # a trunk-scoped play can leave untracked debris in a subdirectory (e.g. a build
-        # writing a resolved-dependency lockfile), not only depth-1 root scratch, so
-        # ownership must be computed for every entry with an mtime. Restricting the
-        # untracked case to the repo root left a subtree untracked file a running play
-        # was generating reading as unowned, which reconcile_state's untracked-debris
-        # remediation could then quarantine as orphaned — clobbering live work.
         if entry.mtime_utc:
             mtime = _iso_to_epoch(entry.mtime_utc)
             owned = mtime is not None and any(start <= mtime for start in active_trunk_starts)
@@ -380,7 +362,6 @@ def build_recent_wedge_signals(
         "orphan_worktree_paths": collect_orphan_worktree_paths(
             project_path, db_path=db_path, session_id=session_id
         ),
-        # Zombie cross-check: agents with active plays must never be killed.
         "active_agents_in_flight": active_agents_in_flight,
     }
 
@@ -416,8 +397,6 @@ def write_session_start_dirty_baseline(
 
     entries = collect_dirty_trunk_paths(project_path)
 
-    # Capture mtime + size once at session start (skill needs both for cluster
-    # analysis) so the skill doesn't race with subsequent in-session writes.
     enriched: list[dict[str, Any]] = []
     for entry in entries:
         abs_path = project_path / entry.path
@@ -447,7 +426,6 @@ def write_session_start_dirty_baseline(
             start_ts = datetime.fromisoformat(session_start_utc.replace("Z", "+00:00"))
             summary["pre_session"] = newest_ts < start_ts
         except (ValueError, TypeError):
-            # Defensive — bad timestamp format shouldn't fail the dump.
             pass
 
     payload = {

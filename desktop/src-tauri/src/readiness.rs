@@ -81,9 +81,6 @@ mod tests {
 
     #[test]
     fn does_not_hard_block_for_other_findings() {
-        // `Other` is the catch-all variant for surfaces the sidecar might
-        // surface in future (e.g. workspace dirty, detached HEAD). It is
-        // informational only — the user can still proceed.
         let findings = vec![ReadinessFinding::new(
             ReadinessFindingKind::Other,
             "uncategorized readiness signal",
@@ -93,7 +90,6 @@ mod tests {
 
     #[test]
     fn hard_block_still_fires_when_other_finding_is_present_alongside_blocker() {
-        // Mixing `Other` with a hard-blocker variant must not mask the block.
         let findings = vec![
             ReadinessFinding::new(ReadinessFindingKind::Other, "noise"),
             ReadinessFinding::new(

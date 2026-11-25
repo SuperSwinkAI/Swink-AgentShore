@@ -29,7 +29,6 @@ class TestInstallSkills:
     def test_install_skills_creates_files(self, tmp_path: Path) -> None:
         """Calling on a real project copies bundled skill dirs/files."""
         installed = install_skills(tmp_path)
-        # The repo has bundled skills; install_skills should copy at least one.
         assert isinstance(installed, list)
         assert len(installed) > 0
 
@@ -42,7 +41,6 @@ class TestInstallSkills:
         """Calling twice does not raise and re-installs same set."""
         install_skills(tmp_path)
         second = install_skills(tmp_path)
-        # Second call should return empty (already up-to-date, same version).
         assert isinstance(second, list)
 
     def test_install_skills_returns_list_of_skill_names(self, tmp_path: Path) -> None:
@@ -131,7 +129,6 @@ class TestInstallSkillFolders:
 
         script = project / ".agents" / "skills" / "fake-skill" / "scripts" / "detect.sh"
         assert script.is_file()
-        # Windows has no POSIX exec bit (scripts run via bash); guarantee is off-Windows only.
         if not sys.platform.startswith("win"):
             assert script.stat().st_mode & stat.S_IXUSR, "exec bit not preserved"
 
@@ -151,13 +148,11 @@ class TestInstallSkillFolders:
         project = tmp_path / "project"
         install_skills(project)
 
-        # User edits SKILL.md (drops the agentshore_version stamp).
         target_skill = project / ".agents" / "skills" / "fake-skill" / "SKILL.md"
         target_skill.write_text("---\nname: fake-skill\n---\ncustom\n", encoding="utf-8")
         target_ref = project / ".agents" / "skills" / "fake-skill" / "references" / "patterns.md"
         target_ref.write_text("# user edit\n", encoding="utf-8")
 
-        # Bump source content; install_skills should NOT overwrite either file.
         (fake_root / "fake-skill" / "references" / "patterns.md").write_text(
             "# upstream\n", encoding="utf-8"
         )
@@ -181,7 +176,6 @@ class TestInstallSkillFolders:
         project = tmp_path / "project"
         install_skills(project)
 
-        # User edits the reference; bump source; force=True must replace it.
         ref_path = project / ".agents" / "skills" / "fake-skill" / "references" / "patterns.md"
         ref_path.write_text("# user edit\n", encoding="utf-8")
         (fake_root / "fake-skill" / "references" / "patterns.md").write_text(
@@ -303,13 +297,10 @@ def test_calibrate_alignment_template_resets_orphan_in_progress_beads() -> None:
         encoding="utf-8"
     )
 
-    # The orphan-reset action and its trigger condition are present.
     assert "bd update <bead_id> --status open" in text
     assert "orphaned" in text
     assert "no open" in text.lower()
-    # The validation rule must carve out the in_progress -> open downgrade.
     assert "in_progress → open" in text
-    # Closure ratio is argued to be unaffected so the monotonic invariant holds.
     assert "only `closed` tasks" in text
 
 
@@ -319,14 +310,10 @@ def test_design_audit_template_creates_tracking_work_for_gaps() -> None:
     assert "Do not implement code" in text
     assert "gh issue list --state open" in text
     assert "gh issue list --state closed" in text
-    # Title must be positional and the type must be the --type flag: `bd create <type> "<title>"`
-    # silently creates a task titled "<type>" and drops the real title (verified on bd 1.0.4/1.1.0).
     assert "--type task" in text
     assert "bd create task" not in text
     assert '"type": "design_audit"' in text
     assert "unresolved_gaps" in text
-    # Every counted gap needs a tracker — no bare "found but unfiled" gaps,
-    # apart from the explicitly-reported over-ceiling deferrals (#368).
     assert 'there is no "found but unfiled" state' in text
     assert "Per-run ceiling: create at most 8 new GH issues" in text
     assert "deferred_requirements" in text
@@ -343,7 +330,6 @@ def test_issue_filing_templates_state_a_per_run_ceiling() -> None:
     assert "no fixed numeric cap" not in qa
     assert "at most 8 new issues per run" in qa
     assert "quality_audit.suppressed_findings" in qa
-    # Dedup must reason over the whole open set, not per-finding keyword search.
     assert "gh issue list --state open --limit 200" in qa
 
     review = (_TEMPLATE_ROOT / "agentshore-code-review" / "SKILL.md").read_text(encoding="utf-8")
@@ -363,16 +349,12 @@ def test_groom_backlog_template_clears_resolved_dependency_blocks() -> None:
     """
     text = (_TEMPLATE_ROOT / "agentshore-groom-backlog" / "SKILL.md").read_text(encoding="utf-8")
 
-    # The clearing action and its conservative gate are present.
     assert "blocks_cleared" in text
     assert "--remove-label" in text
     assert "agentshore/blocked" in text
-    # Blocker tracing pulls from all three sources, not just the body (#241).
-    assert "depends_on_id" in text  # beads-edge source
-    assert "agentshore:blocked-by" in text  # marker-comment source
-    # Untraceable agentshore/blocked gates are swept; the result is reported.
+    assert "depends_on_id" in text
+    assert "agentshore:blocked-by" in text
     assert "blocks_swept" in text
-    # Opaque/manual blocks and human-review gates must be left alone.
     assert "needs-human-review" in text
 
 
@@ -392,7 +374,6 @@ def test_code_review_template_forbids_main_worktree_checkout() -> None:
     carries a Forbidden mutations section that names the offending commands.
     """
     text = (_TEMPLATE_ROOT / "agentshore-code-review" / "SKILL.md").read_text(encoding="utf-8")
-    # Forbidden section exists in some form (heading or bold inline) — style-agnostic.
     assert re.search(r"(?:^|\n)(?:#+\s*Forbidden|\*\*Forbidden)", text), (
         "agentshore-code-review: missing a Forbidden section"
     )
@@ -422,10 +403,6 @@ def test_mutation_templates_forbid_git_worktree_calls() -> None:
     skill-internal `MAIN_REPO=${AGENTSHORE_PROJECT_PATH:-$(pwd)}` + backslash-guard
     pattern, which is now obsolete because AgentShore injects the cwd directly.
     """
-    # Accept the comma-separated form ("git worktree add, git worktree remove, ...")
-    # OR the slash form ("git worktree add/remove/prune"). The intent — all three
-    # operations forbidden in the same clause — is what matters; the prose style
-    # is not load-bearing.
     long_form = re.compile(
         r"`git worktree add`.*`git worktree remove`.*`git worktree prune`",
         re.DOTALL,
@@ -436,9 +413,6 @@ def test_mutation_templates_forbid_git_worktree_calls() -> None:
         assert long_form.search(text) or short_form.search(text), (
             f"{skill}: missing the forbidden git worktree add/remove/prune clause"
         )
-        # Accept either "AgentShore owns worktree lifecycle" or the compressed
-        # "AgentShore owns lifecycle" (when the worktree context is clear from
-        # the adjacent forbidden-worktree clause). Both convey the same rule.
         assert re.search(r"AgentShore owns (?:worktree )?lifecycle", text), (
             f"{skill}: missing the 'AgentShore owns (worktree) lifecycle' statement"
         )
@@ -481,16 +455,10 @@ def test_pr_create_resolves_base_inline() -> None:
         text = skill_md.read_text(encoding="utf-8")
         for m in create_re.finditer(text):
             cmd = m.group(0)
-            # Skip flagless prose mentions like "as `gh pr create`" — only real
-            # invocations (which always carry flags) are subject to the rule.
             if "--" not in cmd:
                 continue
             found_any = True
             assert "--base" in cmd, f"{skill_dir.name}: `gh pr create` is missing --base"
-            # Base must be resolved inline: either a command substitution that
-            # reads target_branch in the --base arg, or a BASE= assignment within
-            # the preceding 400 chars (same command block) — NOT a distant
-            # pre-flight $TARGET_BRANCH that won't survive a fresh shell.
             window = text[max(0, m.start() - 400) : m.start()]
             local_assign = "BASE=" in window and "target_branch" in window
             assert inline_subst_re.search(cmd) or local_assign, (

@@ -67,9 +67,9 @@ describe("DashboardCanvas", () => {
   });
 
   it("does not throw when the host environment lacks a 2D context (jsdom)", async () => {
-    // jsdom's HTMLCanvasElement.getContext() returns null. The
-    // component must mount the canvas element gracefully and let the
-    // game loop short-circuit without surfacing an error to React.
+
+
+
     await act(async () => {
       root.render(<DashboardCanvas />);
     });
@@ -77,8 +77,8 @@ describe("DashboardCanvas", () => {
       "[data-agentshore-dashboard-canvas]",
     ) as HTMLCanvasElement | null;
     expect(el).not.toBeNull();
-    // ``data-mounted`` is "false" when the loop couldn't attach (jsdom)
-    // and "true" in a real browser environment with canvas support.
+
+
     expect(["true", "false"]).toContain(el?.getAttribute("data-mounted"));
   });
 });
@@ -135,9 +135,9 @@ describe("Dashboard", () => {
       );
     });
 
-    // No-work session: bridge goes live and streams a state_update, but
-    // no agent is ever instantiated. The overlay-dismiss callback must
-    // still fire from the state_update alone.
+
+
+
     await act(async () => {
       transport.emit(stateUpdate({ agents: [] }));
     });
@@ -145,7 +145,7 @@ describe("Dashboard", () => {
     expect(onFirstStateUpdate).toHaveBeenCalledOnce();
     expect(onFirstAgentInstantiated).not.toHaveBeenCalled();
 
-    // Subsequent state_updates must not re-fire the once-per-mount callback.
+
     await act(async () => {
       transport.emit(stateUpdate({ agents: [], total_plays: 1 }));
     });
@@ -191,7 +191,7 @@ describe("PlaysPanel", () => {
     expect(
       container.querySelector("[data-play-key='reconcile_state']"),
     ).not.toBeNull();
-    // Slot 19 (formerly future_6) now hosts the active PRUNE play.
+
     expect(container.querySelector("[data-play-key='prune']")).not.toBeNull();
     expect(container.querySelector("[data-play-key='future_6']")).toBeNull();
     expect(
@@ -267,14 +267,14 @@ describe("PlaysPanel", () => {
       );
     });
 
-    // 1354 minutes -> 22h 34m. Dollars and time-left are separate segments
-    // with the meter physically between them: $ · [meter] · time-left.
+
+
     const bar = container.querySelector(".budget-bar") as HTMLElement;
     const dollar = bar.querySelector("#budget-label") as HTMLElement;
     const time = bar.querySelector(".budget-time") as HTMLElement;
     expect(dollar.textContent).toBe("$12.50 / $200.00");
     expect(time.textContent).toBe("22h 34m left");
-    // Meter renders between the two figures.
+
     const kids = Array.from(bar.children);
     expect(kids.indexOf(dollar)).toBeLessThan(
       kids.indexOf(bar.querySelector(".budget-track") as HTMLElement),
@@ -282,7 +282,7 @@ describe("PlaysPanel", () => {
     expect(
       kids.indexOf(bar.querySelector(".budget-track") as HTMLElement),
     ).toBeLessThan(kids.indexOf(time));
-    // Hover tooltip carries the full combined breakdown.
+
     expect(bar.getAttribute("title")).toBe("$12.50 / $200.00 · 22h 34m left");
   });
 
@@ -336,8 +336,8 @@ describe("PlaysPanel", () => {
       );
     });
 
-    // Dollars uncapped (no "(unlimited)" verbosity, no "∞" since time is capped),
-    // and the time cap survives instead of being ellipsized.
+
+
     expect(
       (container.querySelector("#budget-label") as HTMLElement).textContent,
     ).toBe("$0.05");
@@ -345,7 +345,7 @@ describe("PlaysPanel", () => {
       (container.querySelector(".budget-time") as HTMLElement).textContent,
     ).toBe("15m left");
     expect(container.textContent).not.toContain("unlimited");
-    // The meter tracks the binding (time) dimension: 45/60 = 75% -> warning.
+
     const fill = container.querySelector("#budget-fill") as HTMLElement;
     expect(fill.style.width).toBe("75%");
     expect(fill.className).toContain("warning");
@@ -503,7 +503,7 @@ class FakeTransport implements DashboardTransport {
     this.onStateChange?.("open");
   }
   send(): void {
-    // no-op for tests
+
   }
   disconnect(): void {
     this.onStateChange?.("closed");
@@ -646,15 +646,15 @@ describe("EventDrawer", () => {
   });
 
   it("does NOT auto-complete a Running card from an idle+null agent snapshot", async () => {
-    // Regression for desktop-y3kq (2026-05-22): the reconciler used to
-    // infer completion from ``agent.status === "idle"`` + null
-    // ``current_play``. That path repeatedly mis-fired during active
-    // plays — the orchestrator transitions through brief idle snapshots
-    // while a play is genuinely in progress. Inferring completion from
-    // agent state is a backstop for missed play_event "completed"
-    // events; false-positive completions hide real bugs (a stuck-on-
-    // running card is unambiguous, a wrong "Completed" looks correct).
-    // The reducer now trusts play_event "completed" exclusively.
+
+
+
+
+
+
+
+
+
     const runningAgent: AgentSnapshot = {
       agent_id: "agent-1",
       agent_type: "codex" as const,
@@ -703,8 +703,8 @@ describe("EventDrawer", () => {
       "Completed (status reconciled)",
     );
 
-    // Agent goes idle with null current_play. Before: card flipped to
-    // "Completed (status reconciled)". After: card stays as Running.
+
+
     await act(async () => {
       notifyEventDrawerStateUpdate(
         stateUpdate({
@@ -726,7 +726,7 @@ describe("EventDrawer", () => {
   });
 
   it("does NOT reconcile a Running card when the agent is still busy but current_play is transiently empty", async () => {
-    // Same false-positive guard, busy-agent variant.
+
     const runningAgent: AgentSnapshot = {
       agent_id: "agent-1",
       agent_type: "claude_code" as const,
@@ -775,7 +775,7 @@ describe("EventDrawer", () => {
       "Completed (status reconciled)",
     );
 
-    // Transient empty current_play while the agent is still ``busy``.
+
     await act(async () => {
       notifyEventDrawerStateUpdate(
         stateUpdate({
@@ -790,7 +790,7 @@ describe("EventDrawer", () => {
       );
     });
 
-    // Card must still be running. No "(status reconciled)" ghost.
+
     expect(container.textContent).toContain("Seed Project");
     expect(container.textContent).not.toContain(
       "Completed (status reconciled)",
@@ -924,13 +924,13 @@ describe("SidePanelComponent", () => {
       container.querySelectorAll<HTMLElement>(".agent-dispatch-share"),
     );
     expect(badges).toHaveLength(2);
-    // 0.6 → 60, 0.4 → 40
+
     const values = badges.map((el) =>
       el.getAttribute("data-agent-dispatch-share"),
     );
     expect(values).toContain("60");
     expect(values).toContain("40");
-    // Visible label includes the percent sign.
+
     expect(badges[0].textContent).toMatch(/%$/);
   });
 

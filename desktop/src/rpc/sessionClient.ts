@@ -15,9 +15,9 @@ import { callJsonRpc } from "./jsonrpc";
 import type { AppliedBudget, LiveBudgetInput } from "./budget";
 import type { EsrPayload } from "../services/sessionContext";
 
-// ---------------------------------------------------------------------------
-// Re-exports for backward-compat (consumers imported from either location)
-// ---------------------------------------------------------------------------
+
+
+
 export type { AppliedBudget, LiveBudgetInput };
 /** @deprecated Use {@link LiveBudgetInput} — this alias will be removed. */
 export type BudgetRpcInput = LiveBudgetInput;
@@ -26,9 +26,9 @@ export interface BudgetRpcResult {
   budget: AppliedBudget;
 }
 
-// ---------------------------------------------------------------------------
-// Budget RPC
-// ---------------------------------------------------------------------------
+
+
+
 
 /** Apply a new budget to the running session (``session.set_budget``). */
 export async function setBudgetLive(budget: LiveBudgetInput): Promise<BudgetRpcResult> {
@@ -40,9 +40,9 @@ export async function getBudget(): Promise<BudgetRpcResult> {
   return callJsonRpc<BudgetRpcResult>("session.get_budget");
 }
 
-// ---------------------------------------------------------------------------
-// Session lifecycle (merged from services/sessionClient.ts)
-// ---------------------------------------------------------------------------
+
+
+
 
 export interface StartSessionParams {
   /**
@@ -95,9 +95,9 @@ export interface StopSessionParams {
   progressToken?: string | number;
 }
 
-// ---------------------------------------------------------------------------
-// Reattach — current session state
-// ---------------------------------------------------------------------------
+
+
+
 
 /**
  * Shape returned by the ``current_session`` Tauri command.
@@ -128,9 +128,9 @@ export async function stopSession(params: StopSessionParams = {}): Promise<EsrPa
   return callJsonRpc<EsrPayload>("session.stop", rpcParams);
 }
 
-// ---------------------------------------------------------------------------
-// Beads schema drift — designate this machine as the migrator
-// ---------------------------------------------------------------------------
+
+
+
 
 /**
  * Designate this machine as the migrator for the active project's beads

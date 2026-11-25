@@ -44,8 +44,6 @@ if TYPE_CHECKING:
 MIN_COST_PER_PLAY = 0.05
 COLD_START_COST_ESTIMATE = 0.05
 
-# Non-work bookkeeping plays. Empty after desktop-rni0 (idle/recovery are
-# loop-side); retained as a seam for future bookkeeping plays.
 _NON_WORK_PLAY_VALUES: frozenset[str] = frozenset()
 
 
@@ -66,8 +64,6 @@ class SnapshotProjector:
         self._manager = manager
         self._store = store
         self._session_id = session_id
-
-    # ------------------------------------------------------------------
 
     def build_agent_snapshots(self, play_history: list[PlayRecord]) -> list[AgentSnapshot]:
         """Project live agent handles into the immutable IPC snapshot type.
@@ -98,8 +94,6 @@ class SnapshotProjector:
                 plays_by_agent[agent_id] = (ok, fail + 1)
 
         handles = list(self._manager.handles.values())
-        # int() so a MagicMock handle (test_ipc.py) doesn't trip the ``> 0``
-        # comparison below — MagicMock.__gt__ misbehaves with int.
         dispatches_by_handle = {id(h): int(getattr(h, "dispatches", 0) or 0) for h in handles}
         total_dispatches = sum(dispatches_by_handle.values())
 
@@ -187,9 +181,6 @@ class SnapshotProjector:
                 mergeable=pr.mergeable,
             )
             if pr.branch is None and pr.state and pr.state.lower() != "merged":
-                # #567: an active PR without a branch causes
-                # worktree_allocate_failed:missing_branch on the next
-                # code_review/merge_pr; log enough context to trace the leak.
                 _logger.warning(
                     "pr_snapshot_missing_branch",
                     pr_number=pr.pr_number,
@@ -252,7 +243,7 @@ class SnapshotProjector:
         same_type_failure_streak = 0
         same_type_streak = 0
         last_seen_type: str | None = None
-        failure_streak_active = True  # becomes False once a success interrupts
+        failure_streak_active = True
         completed_history = [
             p
             for p in play_history
@@ -313,8 +304,6 @@ class SnapshotProjector:
         consecutive_nonproductive_by_type: dict[PlayType, int] = {}
         _streak_broken: set[PlayType] = set()
         seed_freshness: int | None = None
-        # Skip non-work plays so the offset reflects real plays since last X.
-        # ``_NON_WORK_PLAY_VALUES`` is empty after desktop-rni0; seam retained.
         real_offset = 0
         for p in reversed(play_history):
             if p.play_type in _NON_WORK_PLAY_VALUES:
@@ -334,13 +323,7 @@ class SnapshotProjector:
                 if pt not in last_play_success_by_type:
                     last_play_success_by_type[pt] = p.success
                 if pt not in last_play_skipped_by_type:
-                    # A ``skip:*`` (recorded success=False) is a no-op, not a
-                    # wedge — track it so ArmedByFailureGate doesn't arm self-heal
-                    # off a skip (the write_impl↔reconcile spin).
                     last_play_skipped_by_type[pt] = (p.failure_category or "").startswith("skip:")
-                # Tail run of consecutive non-productive (fail OR skip) outcomes
-                # per type, newest→oldest until this type's first success ends it
-                # (the 3-strikes breaker signal).
                 if pt not in _streak_broken:
                     if p.success:
                         _streak_broken.add(pt)
@@ -383,7 +366,6 @@ class SnapshotProjector:
             total_budget=total_budget,
             spent=total_cost,
             remaining=remaining,
-            # Cold-start fallback until real cost data is available.
             estimated_cost_per_play=(
                 total_cost / total_plays if total_plays > 0 else COLD_START_COST_ESTIMATE
             ),
@@ -481,10 +463,6 @@ class SnapshotProjector:
     def compute_session_stats(play_history: list[PlayRecord]) -> SessionStatsSnapshot:
         """Aggregate dashboard play counters, excluding non-work play values."""
         work_plays = [p for p in play_history if p.play_type not in _NON_WORK_PLAY_VALUES]
-        # Play rows start with a ``success=False`` placeholder at dispatch and
-        # only get their real outcome (and ``ended_at``) at finalization. Count
-        # only finalized plays (``ended_at`` set) so in-flight placeholders don't
-        # surface as fails in the user-facing ok/fail/total counters.
         finalized_plays = [p for p in work_plays if p.ended_at is not None]
         total_plays = len(finalized_plays)
         _gate_categories = ("gate_rejection", "skip:")
@@ -495,8 +473,6 @@ class SnapshotProjector:
             if not play.success and (play.failure_category or "").startswith(_gate_categories)
         )
         failed_plays = total_plays - successful_plays - gate_rejected_plays
-        # Cost/tokens/duration total over EVERY play including idle — idle costs
-        # ~$0 but the budget meter should still account for incidental cost.
         total_cost = sum(play.dollar_cost for play in play_history)
         total_tokens = sum(play.token_cost for play in play_history)
         total_duration_seconds = sum((play.duration_ms or 0) / 1000 for play in play_history)

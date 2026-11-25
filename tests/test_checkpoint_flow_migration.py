@@ -41,11 +41,9 @@ def test_migrated_policy_matches_the_original_on_pre_v17_states(tmp_path: Path) 
     original = _write_v16(source)
 
     assert migrate_flow_block_checkpoint(source, dest) is True
-    migrated = ActorCritic.load(dest)  # raises on any version mismatch
+    migrated = ActorCritic.load(dest)
 
     assert migrated.num_configs == original.num_configs
-    # Through v16 the flow slots were always zero, so on such states the two
-    # policies must agree exactly: trained behaviour is carried over.
     states = torch.rand(32, OBSERVATION_DIM)
     states[:, FLOW_BLOCK_START:FLOW_BLOCK_END] = 0.0
     with torch.no_grad():
@@ -63,7 +61,6 @@ def test_migrated_policy_starts_blind_to_the_new_signals(tmp_path: Path) -> None
 
     weight = migrated.state_dict()["trunk.0.weight"]
     assert torch.count_nonzero(weight[:, FLOW_BLOCK_START:FLOW_BLOCK_END]) == 0
-    # ...and only those columns were touched.
     assert torch.count_nonzero(weight[:, FLOW_BLOCK_END:]) > 0
 
     base = torch.rand(4, OBSERVATION_DIM)
@@ -99,7 +96,6 @@ def test_startup_carries_the_previous_canonical_forward(tmp_path: Path) -> None:
     assert current.is_file()
     assert ActorCritic.load(current) is not None
     assert f"_o{OBSERVATION_VERSION}_" in current.name
-    # The predecessor is quarantined, not deleted.
     assert not (tmp_path / _V16_NAME).exists()
     assert (tmp_path / f"policy_legacy_a{ACTION_SPACE_VERSION}_o16_p{POLICY_VERSION}.pt").is_file()
 

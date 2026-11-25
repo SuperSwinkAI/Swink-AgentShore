@@ -20,10 +20,6 @@ from agentshore.state import (
 from agentshore.ui.app import AppWiring, OrchestratorApp
 from agentshore.ui.provider import TuiStateProvider
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 
 def _make_state() -> OrchestratorState:
     return OrchestratorState(
@@ -58,11 +54,6 @@ def _make_provider() -> tuple[TuiStateProvider, MagicMock]:
     mock_app = MagicMock()
     mock_app.post_message = MagicMock()
     return TuiStateProvider(mock_app), mock_app
-
-
-# ---------------------------------------------------------------------------
-# Tests
-# ---------------------------------------------------------------------------
 
 
 def test_isinstance_state_provider() -> None:

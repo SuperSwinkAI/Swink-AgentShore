@@ -35,7 +35,6 @@ def test_add_list_remove_round_trip(tmp_path: Path) -> None:
     add_trusted_source(tmp_path, "dependabot[bot]")
     assert list_trusted_sources(tmp_path) == ["dependabot[bot]", "octocat"]
 
-    # Written canonical (lower-cased) into trusted_ids.github_logins.
     data = yaml.safe_load(cfg.read_text(encoding="utf-8"))
     assert data["trusted_ids"]["github_logins"] == ["octocat", "dependabot[bot]"]
 
@@ -47,7 +46,7 @@ def test_add_is_idempotent(tmp_path: Path) -> None:
     cfg = tmp_path / "agentshore.yaml"
     _write_config(cfg, {})
     add_trusted_source(tmp_path, "octocat")
-    add_trusted_source(tmp_path, "OctoCat")  # same login, different case
+    add_trusted_source(tmp_path, "OctoCat")
     assert list_trusted_sources(tmp_path) == ["octocat"]
     data = yaml.safe_load(cfg.read_text(encoding="utf-8"))
     assert data["trusted_ids"]["github_logins"] == ["octocat"]
@@ -71,7 +70,6 @@ def test_preserves_pr_allow_list_and_restrict_flag(tmp_path: Path) -> None:
 
     data = yaml.safe_load(cfg.read_text(encoding="utf-8"))
     assert data["trusted_ids"]["github_logins"] == ["newbot"]
-    # The neighbouring keys are left intact.
     assert data["trusted_ids"]["pr_allow_list"] == [12, 34]
     assert data["trusted_ids"]["restrict_issues_to_trusted_authors"] is True
 

@@ -77,8 +77,8 @@ async function defaultCheckForUpdate(): Promise<AvailableUpdate | null> {
 }
 
 async function defaultRelaunch(): Promise<void> {
-  // restart_sidecar calls app.restart(), which relaunches the (now updated)
-  // binary — avoids pulling in @tauri-apps/plugin-process just for relaunch.
+
+
   const { invoke } = await import("@tauri-apps/api/core");
   await invoke("restart_sidecar");
 }
@@ -153,8 +153,8 @@ export function AppMenu({
   const [update, setUpdate] = useState<AvailableUpdate | null>(null);
   const [installing, setInstalling] = useState(false);
 
-  // lastProjectPath can change after mount (project selection); read the
-  // latest value inside event handlers without re-subscribing every time.
+
+
   const projectPathRef = useRef(lastProjectPath);
   projectPathRef.current = lastProjectPath;
 
@@ -165,10 +165,10 @@ export function AppMenu({
 
   const runUpdateCheck = useCallback(
     async (manual: boolean) => {
-      // Overlapping checks are harmless (idempotent; the latest result wins
-      // via setState), so we don't guard re-entry — a guard would silently
-      // drop a manual click that lands while the mount check is still in
-      // flight.
+
+
+
+
       try {
         const found = await adapter.checkForUpdate();
         if (found) {
@@ -178,8 +178,8 @@ export function AppMenu({
           setDialog("no-update");
         }
       } catch (err) {
-        // Silent (launch) checks swallow errors — no network, dev build, or
-        // an unsigned bundle shouldn't nag. A manual check surfaces them.
+
+
         if (manual) {
           setDialog("update-error");
         } else {
@@ -190,14 +190,14 @@ export function AppMenu({
     [adapter],
   );
 
-  // Silent check once on mount.
+
   useEffect(() => {
     void runUpdateCheck(false);
   }, [runUpdateCheck]);
 
-  // Subscribe to every app-global menu event. Each listen() resolves to an
-  // unlisten fn we collect and tear down on unmount (cancel-aware so a fast
-  // unmount before the promise resolves still unsubscribes).
+
+
+
   useEffect(() => {
     let cancelled = false;
     const unlisteners: UnlistenFn[] = [];
@@ -476,7 +476,7 @@ function PreferencesDialog({
   const [data, setData] = useState<PreferencesData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
-  // Which rows have their description expanded (info button toggled open).
+
   const [openInfo, setOpenInfo] = useState<ReadonlySet<string>>(() => new Set());
 
   const toggleInfo = useCallback((play: string) => {

@@ -73,9 +73,6 @@ class _CompletionVerdict(enum.Enum):
     RETRIED = "retried"
 
 
-# Plays that trigger a *full* paginated re-sync vs. the incremental since= sync.
-# Deletions / repo transfers don't bump updated_at and so are invisible to
-# incremental sync; these plays are the belt-and-suspenders that catch them.
 _FULL_ISSUE_SYNC_PLAYS: frozenset[PlayType] = frozenset(
     {
         PlayType.SEED_PROJECT,
@@ -84,13 +81,6 @@ _FULL_ISSUE_SYNC_PLAYS: frozenset[PlayType] = frozenset(
         PlayType.PRUNE,
     }
 )
-
-# _outcome_blocked_by_sibling_pr, _outcome_resolved_target_pr (from
-# pr_repick_tracker.py), and _UNBLOCK_MANUAL_REQUIRED_MARKERS (from
-# terminal_park.py) are unused in this module's own body — the logic that used
-# them moved to ``PrRepickTracker`` (TNQA wave-2, Task 3) — but are imported
-# and re-exported (noqa: F401 above) for backward compatibility with
-# ``test_unblock_manual_required_markers.py``, which imports them from here.
 
 
 def skip_category_to_reason(skip_category: str | None) -> PlaySkipReason:
@@ -188,7 +178,6 @@ class CompletionProcessor:
         self._lifecycle = lifecycle
         self._drain = drain
 
-        # Extracted collaborators — constructed from already-injected deps.
         self._issue_syncer = IssueSyncer(
             store=store,
             session_id=session_id,
@@ -316,8 +305,6 @@ class CompletionProcessor:
         """
         pre_play_ref = self._main_repo.pop_pre_play_branch(dispatch_id)
         if pre_play_ref is None:
-            # No snapshot (or already detached pre-play); post-only state has no
-            # signal — silent return.
             return
         try:
             mutated, post_ref, restore = await asyncio.to_thread(
@@ -417,8 +404,6 @@ class CompletionProcessor:
     ) -> tuple[_DispatchContext, PlayOutcome] | None:
         ctx = self._runtime.dispatch_ctx.pop(dispatch_id, None)
         if ctx is None:
-            # Drop the pre-play snapshot even without a matching ctx so the dict
-            # doesn't leak.
             self._main_repo.pop_pre_play_branch(dispatch_id)
             return None
 
@@ -445,9 +430,6 @@ class CompletionProcessor:
     ) -> None:
         completed_play_type = outcome.play_type
 
-        # desktop-kqo5: main-repo symbolic-ref guard at every play boundary, incl.
-        # skipped outcomes — a skip could still have left the repo poisoned if it
-        # ran checkout commands before bailing.
         agent_type_str: str | None = None
         if outcome.agent_id is not None:
             handle = self._manager.handles.get(outcome.agent_id)
@@ -460,10 +442,6 @@ class CompletionProcessor:
             agent_type=agent_type_str,
         )
 
-        # desktop-kqo5 catch-22 fix: a successful RECONCILE_STATE is the way out of
-        # a latched trunk-dispatch pause (it's exempt from the pause so it can run
-        # while wedged). Re-verify the checkout is back on a clean default branch
-        # (restore is idempotent) and only then lift the pause.
         if (
             completed_play_type == PlayType.RECONCILE_STATE
             and outcome.success
@@ -486,9 +464,6 @@ class CompletionProcessor:
     async def _handle_skipped_completion(self, outcome: PlayOutcome) -> _CompletionVerdict:
         completed_play_type = outcome.play_type
         if getattr(outcome, "skipped", False) is True:
-            # desktop-85ex: unify the play_skipped schema with the loop-tick
-            # selector-None path — structured reason enum + stable event_source so
-            # logs join cleanly. skip_category retained for dashboard back-compat.
             skip_category = outcome.skip_category
             executor_reason = skip_category_to_reason(skip_category)
             _logger.info(
@@ -500,23 +475,13 @@ class CompletionProcessor:
                 event_source="executor",
                 error=outcome.error,
             )
-            # Track executor-time masked skips as a one-shot flag in
-            # state.recent_executor_skip. No longer feeds the divergence window
-            # (obs slot executor_skip_rate_recent_50): post eligibility refactor the
-            # authority masks/confirms up front, so this path is vestigial. The
-            # divergence signal now counts confirm-repicks (_record_selection_repicks).
             is_masked_skip = outcome.skip_category == "masked"
             self._velocity.set_recent_executor_skip(is_masked_skip)
-            # No-op window for spin detection. The skip path returns early before
-            # the loop-detection/stagnation checks, so the spin check runs HERE
-            # (the write_impl↔reconcile spin lived on this path).
             self._runtime.recent_play_outcomes.append((True, completed_play_type.value))
             post_state = await self._state_builder.build_state()
             await self._host._safe_call(
                 self._runtime.state_provider.on_state_update(post_state), "on_state_update_post"
             )
-            # A skip is the canonical no-forward-progress tick (no agent dispatched)
-            # — feed the monitor here, before this path returns early.
             await self.check_no_forward_progress(post_state, outcome)
             return _CompletionVerdict.SKIPPED
         return _CompletionVerdict.CONTINUE
@@ -527,9 +492,6 @@ class CompletionProcessor:
         outcome: PlayOutcome,
         completed_play_type: PlayType,
     ) -> None:
-        # Any completed (non-skipped) play clears the executor-skip flag. The
-        # divergence window is fed from confirm-repicks, not completions, so
-        # nothing is appended here.
         self._velocity.set_recent_executor_skip(False)
         self._runtime.recent_play_outcomes.append((False, completed_play_type.value))
 
@@ -540,8 +502,6 @@ class CompletionProcessor:
             success=outcome.success,
             error=outcome.error,
         )
-        # desktop-65mq: surface bootstrap first-play failures explicitly so
-        # operators don't infer them from a generic play_completed entry.
         if (
             ctx.override_kind == OverrideKind.BOOTSTRAP
             and completed_play_type in (PlayType.SEED_PROJECT, PlayType.CLEANUP)
@@ -555,15 +515,8 @@ class CompletionProcessor:
             )
         if outcome.play_id is not None:
             self._runtime.last_play_id = outcome.play_id
-            # Record override-dispatched play_ids so compute_play_streaks ignores
-            # them: bootstrap/user/retry bursts aren't PPO-collapse and must not
-            # trigger loop_detected.
             if ctx.override_kind is not None:
                 self._overrides.dispatched_play_ids.add(outcome.play_id)
-            # Capture the just-completed play in memory so the next _build_state
-            # sees it before the SQLite WAL write is visible to a fresh
-            # get_play_history read — without this, same-tick instantiate_agent
-            # pairs slipped past the cooldown mask (desktop-65bg).
             started_at_raw = ctx.params.extras.get("started_at")
             started_at = started_at_raw if isinstance(started_at_raw, str) else ""
             self._runtime.recent_play_completions.append(
@@ -579,12 +532,6 @@ class CompletionProcessor:
                     token_cost=outcome.token_cost,
                 )
             )
-            # Label shadow (desktop-quv9): a successful systematic_debugging applies
-            # root-cause-found via gh CLI in the subprocess; the label lands on
-            # GitHub at once but the cached snapshot only learns it on the next
-            # refresh_issues poll, so PPO could re-select the same issue against the
-            # stale snapshot. Shadowing the label makes _merge_recent_applied_labels
-            # overlay it at the next state build so it drops from the debug candidates.
             if (
                 outcome.success
                 and completed_play_type == PlayType.SYSTEMATIC_DEBUGGING
@@ -777,11 +724,6 @@ class CompletionProcessor:
         next_state: OrchestratorState,
         completed_play_type: PlayType,
     ) -> None:
-        # RL experience collection and policy update. The crash-prone tail
-        # (snapshots, reward, encoding, persist, policy update, checkpoint) lives in
-        # the guarded ExperienceRecorder — a failure there degrades to a skipped
-        # record, not a run_until_idle crash (sidecar_orchestrator_run_failed). Only
-        # cheap bookkeeping (velocity events, done) stays inline.
         if (
             self._runtime.experience_recorder is not None
             and isinstance(self._runtime.selector, _ppo_selector_cls())
@@ -802,7 +744,6 @@ class CompletionProcessor:
                 )
             )
 
-            # Update velocity before the recorder snapshots so ctx_after sees it.
             play_id_for_velocity = next_state.total_plays
             if outcome.success:
                 if completed_play_type == PlayType.MERGE_PR:
@@ -814,7 +755,7 @@ class CompletionProcessor:
                     if closed_issue:
                         self._velocity.record_velocity_event(play_id_for_velocity, "issue_closed")
                 elif completed_play_type == PlayType.CLEANUP:
-                    pass  # cleanup does not reset velocity
+                    pass
             if outcome.agent_id is not None:
                 agent_snap = next(
                     (a for a in next_state.agents if a.agent_id == outcome.agent_id), None
@@ -843,23 +784,16 @@ class CompletionProcessor:
         *,
         worktree_path: Path | None = None,
     ) -> None:
-        # Refresh issue cache after plays that modify issues. QA / design audit can
-        # create follow-up issues even on partial results, so they always refresh.
         refresh_on_success = (
             PlayType.SEED_PROJECT,
             PlayType.GROOM_BACKLOG,
             PlayType.ISSUE_PICKUP,
             PlayType.MERGE_PR,
-            # unblock_pr can merge a target or dismiss a stale review; re-read
-            # promptly so the cache reflects it instead of waiting ISSUE_REFRESH_INTERVAL.
             PlayType.UNBLOCK_PR,
             PlayType.CODE_REVIEW,
             PlayType.WRITE_IMPLEMENTATION_PLAN,
             PlayType.REFINE_TASK_BREAKDOWN,
         )
-        # desktop-rla8: CLEANUP / RECONCILE_STATE always trigger a full re-sync via
-        # _FULL_ISSUE_SYNC_PLAYS (belt-and-suspenders for issues whose updated_at
-        # doesn't move — deletions, transfers), success or not.
         refresh_always = (
             PlayType.RUN_QA,
             PlayType.DESIGN_AUDIT,
@@ -870,9 +804,6 @@ class CompletionProcessor:
         if completed_play_type in refresh_always or (
             completed_play_type in refresh_on_success and outcome.success
         ):
-            # Force a full sync when issue_pickup finds an issue already CLOSED on
-            # GitHub — the incremental since= cursor has been seen missing
-            # close-state transitions, leaving the cache stale.
             force_full_sync = (
                 completed_play_type == PlayType.ISSUE_PICKUP
                 and outcome.success
@@ -892,15 +823,12 @@ class CompletionProcessor:
                 "refresh_issues",
             )
 
-        # Learnings: reinforce on success; harvest new entries after consolidation
         if self._runtime.cfg.learnings.enabled and outcome.play_id is not None:
             await self._host._safe_call(
                 self.update_learnings(outcome, completed_play_type),
                 "update_learnings",
             )
 
-        # Fork-guard: detect cross-fork PRs or non-origin remotes in the worktree.
-        # Detect-and-log only — never blocks completion or mutates any state.
         has_artifacts = bool(outcome.artifacts)
         if has_artifacts or worktree_path is not None:
             await self._host._safe_call(
@@ -911,17 +839,8 @@ class CompletionProcessor:
         await self._host._safe_call(
             self._runtime.state_provider.on_play_completed(outcome), "on_play_completed"
         )
-        # Book the take_break verdict BEFORE the recovery re-enqueue below (#365).
-        # ``_retire_or_recover_errored_agent`` consults the consecutive-failure
-        # counter to decide whether another break is still worth enqueueing; if
-        # the counter were still one short (incremented after), the failure that
-        # *reaches* the limit would enqueue one more identical break before
-        # exhaustion was recorded — the unbounded 30-minute cycle in #365.
         if completed_play_type == PlayType.TAKE_BREAK:
             self._handle_take_break_outcome(outcome)
-        # The orchestrator owns final lifecycle publication. The executor may
-        # update handles, but consumers get the terminal status event here
-        # after persistence/reward side effects complete.
         if outcome.agent_id and outcome.agent_id in self._manager.handles:
             handle_status = getattr(
                 self._manager.handles[outcome.agent_id],
@@ -947,10 +866,7 @@ class CompletionProcessor:
             and outcome.success
             and outcome.agent_id is not None
         ):
-            # END_AGENT cleared the slot; drop the break-recovery count so a reused
-            # agent id doesn't inherit an elevated (recovery-exhausted) counter.
             self._recovery.clear_break_failures(outcome.agent_id)
-        # Second state_update after play completes so consumers see the fresh result
         post_state = await self._state_builder.build_state()
         await self._host._safe_call(
             self._runtime.state_provider.on_state_update(post_state), "on_state_update_post"
@@ -1014,7 +930,6 @@ class CompletionProcessor:
         """
         draining = self._runtime.draining or self._runtime.stop_requested
         if draining and final_status == AgentStatus.ERROR:
-            # force=True: session is winding down; in-flight tasks already cancelled.
             await self._host._safe_call(
                 self._manager.clear(agent_id, force=True), "drain_clear_errored_agent"
             )
@@ -1041,9 +956,6 @@ class CompletionProcessor:
         agent_id = outcome.agent_id
         if agent_id is None:
             return
-        # Clear the recovery latches on any take_break completion so the next
-        # ERROR transition can re-arm the appropriate override (the break could
-        # have come from any path).
         self._recovery.clear_rate_limit_enqueued(agent_id)
         self._recovery.clear_unknown_error_enqueued(agent_id)
         self._recovery.clear_noop_enqueued(agent_id)
@@ -1060,7 +972,6 @@ class CompletionProcessor:
                 limit=BREAK_RECOVERY_FAILURE_LIMIT,
             )
             return
-        # Leave the counter elevated so the core tick can unmask END_AGENT.
         _logger.warning(
             "break_recovery_exhausted",
             session_id=self._session_id,
@@ -1132,7 +1043,6 @@ class CompletionProcessor:
             parse_origin_owner,
         )
 
-        # Derive origin_owner from the main repo's remote.origin.url (best-effort).
         origin_owner: str | None = None
         try:
             remote_result = await command.git(
@@ -1144,7 +1054,6 @@ class CompletionProcessor:
             pass
 
         if origin_owner is None:
-            # Can't derive a baseline owner; skip cross-fork PR check.
             pass
         else:
             for finding in detect_cross_fork_pr_artifacts(outcome.artifacts, origin_owner):

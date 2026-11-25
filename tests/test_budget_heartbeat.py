@@ -59,7 +59,6 @@ async def test_provider_emits_budget_update_event_not_state() -> None:
     writer.write_state.assert_not_awaited()
     server.set_cached_state.assert_not_called()
     writer.append_event.assert_awaited_once()
-    # Wire envelope nests under "payload"; the dashboard client (ws.ts) flattens it.
     msg = json.loads(writer.append_event.await_args.args[0])
     assert msg["type"] == "budget_update"
     assert msg["payload"]["session_id"] == "sess-7"
@@ -76,9 +75,6 @@ def test_make_message_budget_update_roundtrips() -> None:
     msg = json.loads(raw)
     assert msg["type"] == "budget_update"
     assert "budget" in msg["payload"]
-
-
-# StateBuilder.current_budget_snapshot — recompute from cache + fresh clock
 
 
 def _state_builder_stub(
@@ -106,20 +102,13 @@ def test_current_budget_snapshot_none_without_time_cap() -> None:
 def test_current_budget_snapshot_recomputes_time_from_fresh_clock(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # Loop started at monotonic=100; "now" = 100 + 30min, so 30 of 120 elapsed.
     stub = _state_builder_stub(inputs=(5, 2.0), time_enabled=True, loop_started_at=100.0)
     monkeypatch.setattr("agentshore.core.mixins.state.time.monotonic", lambda: 100.0 + 30 * 60)
     snap = StateBuilder.current_budget_snapshot(stub)  # type: ignore[arg-type]
     assert snap is not None
     assert snap.time_elapsed_minutes == pytest.approx(30.0)
     assert snap.time_remaining_minutes == pytest.approx(90.0)
-    # Dollar fields carry the cached inputs unchanged.
     assert snap.spent == pytest.approx(2.0)
-
-
-# --------------------------------------------------------------------------- #
-# LoopRunner._maybe_emit_budget_heartbeat — throttle + emit
-# --------------------------------------------------------------------------- #
 
 
 def _loop_stub(*, budget: Any, last_at: float) -> SimpleNamespace:
@@ -151,7 +140,6 @@ async def test_heartbeat_throttled_within_interval(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     stub = _loop_stub(budget=_budget_snapshot(), last_at=995.0)
-    # Only 5s since the last emit (< 30s cadence) → no emit.
     monkeypatch.setattr("agentshore.core.mixins.loop.time.monotonic", lambda: 1000.0)
     await LoopRunner._maybe_emit_budget_heartbeat(stub)  # type: ignore[arg-type]
     stub._runtime.state_provider.on_budget_update.assert_not_awaited()
@@ -162,8 +150,6 @@ async def test_heartbeat_throttled_within_interval(
 async def test_heartbeat_noop_when_no_time_budget(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # current_budget_snapshot returns None (no time cap / no cache) → no emit,
-    # and the throttle clock is NOT advanced so the next eligible tick can fire.
     stub = _loop_stub(budget=None, last_at=0.0)
     monkeypatch.setattr("agentshore.core.mixins.loop.time.monotonic", lambda: 1000.0)
     await LoopRunner._maybe_emit_budget_heartbeat(stub)  # type: ignore[arg-type]

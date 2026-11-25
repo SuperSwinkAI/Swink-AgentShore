@@ -117,8 +117,6 @@ def test_sets_sentinel_before_exec_to_block_recursive_re_exec(
     captured: dict[str, str | None] = {}
 
     def fake_execvp(_path: str, _args: list[str]) -> None:
-        # In a real exec the env is inherited by the new process; we just
-        # check it's set at the moment we exec.
         import os as _os
 
         captured["sentinel"] = _os.environ.get("AGENTSHORE_CAFFEINATED")

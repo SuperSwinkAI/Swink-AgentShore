@@ -1,12 +1,4 @@
-"""Tests for the end_agent play-count gate (≥5 plays per agent).
-
-Regression for the micro-agent churn pattern observed in a prior
-run, where tier-mismatched spawns were terminated within
-<1s of creation. The gate prevents end_agent from being eligible until at
-least one agent has earned its keep, and prevents the resolver from picking
-agents below the threshold. Floor lowered 10 → 5 in desktop-lyfb so PPO can
-retire weak agents on real-but-trim signal instead of waiting for 10 plays.
-"""
+"""Tests for the end_agent play-count gate (≥5 plays per agent)."""
 
 from __future__ import annotations
 
@@ -66,7 +58,7 @@ def test_end_agent_masked_when_no_agent_has_threshold_plays():
         [
             _agent("a", completed=2, failed=1),
             _agent("b", completed=6, failed=0),
-            _agent("c", completed=10, failed=0),  # exactly at threshold, not >
+            _agent("c", completed=10, failed=0),
         ]
     )
     reasons = play.preconditions(state)
@@ -87,7 +79,7 @@ def test_end_agent_eligible_when_one_agent_passes_threshold():
     state = _state(
         [
             _agent("a", completed=3),
-            _agent("veteran", completed=11),  # total 11 > 10
+            _agent("veteran", completed=11),
         ]
     )
     assert play.preconditions(state) == []
@@ -99,7 +91,7 @@ def test_end_agent_eligible_with_failed_plays_counting():
     state = _state(
         [
             _agent("a", completed=3),
-            _agent("veteran", completed=8, failed=3),  # total 11 > 10
+            _agent("veteran", completed=8, failed=3),
         ]
     )
     assert play.preconditions(state) == []

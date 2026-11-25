@@ -1,6 +1,6 @@
-// AgentType is derived from the canonical AGENT_REGISTRY so it stays in sync
-// automatically when new agent types are added.  Import it here for use within
-// this file, and re-export it so downstream consumers still find it in types.ts.
+
+
+
 import type { AgentType } from "./agentRegistry";
 
 export type { AgentType };
@@ -44,11 +44,11 @@ export interface ActivePlay {
   issue_number: number | null;
   pr_number: number | null;
   branch: string | null;
-  // Required to match the wire contract (serializer ActivePlayPayload /
-  // PlayEventStarted). Every field is always present on the wire — nullable,
-  // never absent. Construction sites that don't have a full set (fixtures,
-  // demoTransport mocks, hud playBar local builders) should go through
-  // {@link makeActivePlay} so the contract isn't weakened for tests.
+
+
+
+
+
   agent_id: string | null;
   phase: string | null;
   trigger_agent_id: string | null;
@@ -96,15 +96,15 @@ export interface AgentSnapshot {
   tasks_failed: number;
   current_play: ActivePlay | null;
   last_error_class?: string | null;
-  // desktop-31h2: cumulative dispatch count for this agent + its share of
-  // the live fleet-wide dispatch total. Both default to 0 when the server
-  // is older than this field set (back-compat with sessions that predate
-  // the agents.dispatch_count column).
+
+
+
+
   dispatch_count?: number;
   dispatch_share?: number;
-  // TNQA critical: these were on AgentSnapshot server-side but missing from
-  // the wire payload until the serializer parity fix. Optional for
-  // back-compat with older servers.
+
+
+
   timeout_count?: number;
   consecutive_timeouts?: number;
   github_identity?: string | null;
@@ -126,8 +126,8 @@ export interface PullRequestSnapshot {
   github_author: string | null;
   author_agent_id: string | null;
   author_agent_type: AgentType | null;
-  // TNQA critical: on PullRequestSnapshot server-side but missing from the
-  // wire payload until the serializer parity fix. Optional for back-compat.
+
+
   head_sha?: string | null;
   mergeable?: string | null;
   base_ref?: string | null;
@@ -155,8 +155,8 @@ export interface GraphTask {
   ready: boolean;
   closed_at?: string | null;
   updated_at?: string | null;
-  // TNQA critical: were on GraphTask server-side but missing from the wire
-  // payload until the serializer parity fix. Optional for back-compat.
+
+
   depends_on_ids?: string[];
   blocked_by_ids?: string[];
 }
@@ -167,8 +167,8 @@ export interface ProjectGraph {
   tasks_ready: number;
   tasks_total: number;
   global_closure_ratio: number;
-  // TNQA critical: was on ProjectGraph server-side but missing from the wire
-  // payload until the serializer parity fix. Optional for back-compat.
+
+
   tasks_blocked?: number;
 }
 
@@ -178,8 +178,8 @@ export interface BudgetSnapshot {
   spent: number;
   remaining: number | null;
   estimated_cost_per_play: number;
-  // Wall-clock soft cap (minutes), independent of the dollar cap above.
-  // null when time_enabled is false (no wall-clock limit).
+
+
   time_enabled: boolean;
   time_total_minutes: number | null;
   time_elapsed_minutes: number | null;
@@ -241,8 +241,8 @@ export interface IssueSnapshot {
   bead_status: string | null;
   bead_ready: boolean;
   bead_mirror_status: "mirrored" | "missing" | "unlinked" | string;
-  // TNQA critical: was on IssueSnapshot server-side but missing from the wire
-  // payload until the serializer parity fix. Optional for back-compat.
+
+
   github_author?: string | null;
 }
 
@@ -263,9 +263,9 @@ export interface WorkAvailability {
   mergeable_pr_count: number;
   unblockable_pr_count: number;
   actionable_pr_work_count: number;
-  // Open PRs hidden because their base branch != the session target_branch
-  // (Piece C target-branch filter). Drives the "(N hidden)" board badge.
-  // Optional: absent on older servers that predate the filter.
+
+
+
   pull_requests_hidden_count?: number;
   terminal_no_work: boolean;
 }
@@ -342,11 +342,11 @@ export interface PlayEventCompleted extends MessageEnvelope {
   play_id: number | null;
   skipped: boolean;
   skip_category: "no_target" | "staffing" | "masked" | "invalid_config" | null;
-  // Same contract as ActivePlay: always emitted, may be null. A future cleanup
-  // could split PlayEvent{Started,Completed} into per-play_type variants
-  // (issue plays, PR plays, agent-triggered plays) so the type system
-  // narrows on play_type — that needs a coordinated server change since
-  // agentshore.state.ActivePlay emits a single shape today.
+
+
+
+
+
   trigger_agent_id: string | null;
   trigger_agent_type: AgentType | string | null;
   trigger_error_class: string | null;

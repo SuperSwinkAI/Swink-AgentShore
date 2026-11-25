@@ -27,13 +27,6 @@ from agentshore.logging import get_logger
 
 _logger = get_logger(__name__)
 
-# ---------------------------------------------------------------------------
-# bd subcommands that only read the store. Everything else is treated as a
-# mutation for both locking (write-exclusive) and graph-cache invalidation.
-# ``dep`` covers read-only subcommands like ``bd dep cycles``; this codebase
-# never calls a mutating ``bd dep add``/``bd dep remove`` today, so keying
-# off the first arg alone is safe — revisit if that changes.
-# ---------------------------------------------------------------------------
 
 READ_COMMANDS: frozenset[str] = frozenset(
     {"list", "query", "ready", "show", "dep", "stats", "export", "--version"}
@@ -121,17 +114,6 @@ class GraphReadError(BdError):
     """
 
 
-# Stable coordination-decision markers from bd's own "refusing to auto-apply
-# ... to a remote-backed database" guard (bd issue #4259). A clone stuck
-# behind its remote's schema surfaces this on every read/write until either
-# the designated migrator runs `bd migrate` and pushes, or a non-designated
-# clone runs `bd bootstrap` to catch up without forking the schema. Matched
-# against the stable coordination-decision text rather than the downstream
-# "column ... could not be found"-style error, which varies by command and
-# column and isn't guaranteed stable across bd releases. Lives here (rather
-# than in beads/setup.py, the only prior user) so the low-level subprocess
-# and retry layer can classify a schema-drift failure without a circular
-# import — setup.py imports this instead of keeping its own copy.
 SCHEMA_DRIFT_MARKERS = ("refusing to auto-apply", "remote-backed", "#4259")
 
 
@@ -309,9 +291,6 @@ async def bd(
             f"bd {' '.join(args)} failed (rc={result.returncode}): {result.stderr.strip()}"
         )
     if not is_read:
-        # Deferred import: graph.py imports ``bd`` from this module, so a
-        # top-level import here would be circular. This only runs after a
-        # successful write, well after both modules have finished loading.
         from agentshore.beads.graph import _invalidate_graph_cache  # noqa: PLC0415
 
         await _invalidate_graph_cache(cwd)

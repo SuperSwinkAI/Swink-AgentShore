@@ -16,8 +16,6 @@ from agentshore import __version__
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
-# Bundled templates: src/agentshore/skills/templates/<skill-name>/SKILL.md →
-# installed into .agents/skills/ in the target project.
 _PACKAGE_DIR = Path(__file__).resolve().parent
 _BUNDLED_TEMPLATES = _PACKAGE_DIR / "templates"
 
@@ -52,17 +50,12 @@ def _should_overwrite(existing_text: str, source_text: str) -> bool:
     """
     existing_ver = _parse_agentshore_version(existing_text)
     if existing_ver is None:
-        # Field absent or removed -- treat as user-customised.
         return False
 
     source_ver = _parse_agentshore_version(source_text)
     if source_ver is None:
-        # Source has no version stamp; always overwrite.
         return True
 
-    # Compare with PEP 440 semantics so pre-release/dev stamps (e.g. 1.2.0rc1,
-    # 1.2.0.dev3) order correctly. An unparseable version on either side falls
-    # back to overwriting only when the stamped text actually differs.
     try:
         source = Version(source_ver)
         existing = Version(existing_ver)
@@ -83,14 +76,12 @@ def _stamp_version(text: str) -> str:
     if _VERSION_RE.search(text):
         return _VERSION_RE.sub(f"agentshore_version: {version}", text)
 
-    # Has frontmatter delimiters?
     if text.startswith("---"):
         first_newline = text.index("\n")
         before = text[: first_newline + 1]
         after = text[first_newline + 1 :]
         return f"{before}agentshore_version: {version}\n{after}"
 
-    # No frontmatter at all -- prepend one.
     return f"---\nagentshore_version: {version}\n---\n{text}"
 
 

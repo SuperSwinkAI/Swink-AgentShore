@@ -219,12 +219,7 @@ def test_timeline_positions_samples_by_real_time(tmp_path: Path) -> None:
     """
     path = tmp_path / "fleet_concurrency.ndjson"
     start = datetime(2026, 6, 18, tzinfo=UTC)
-    records = [
-        # Five samples clustered in the first ~4 minutes ...
-        _record(seq, 5, ts=(start + timedelta(minutes=seq)).isoformat())
-        for seq in range(5)
-    ]
-    # ... then one lone sample ~100 minutes later (the reap during shutdown).
+    records = [_record(seq, 5, ts=(start + timedelta(minutes=seq)).isoformat()) for seq in range(5)]
     records.append(_record(5, 1, ts=(start + timedelta(minutes=100)).isoformat()))
     _write_lines(path, records)
 
@@ -234,9 +229,7 @@ def test_timeline_positions_samples_by_real_time(tmp_path: Path) -> None:
     xs = _timeline_xs(data["timeline"])
     span = _TIMELINE_RIGHT - _TIMELINE_LEFT
     left_third = _TIMELINE_LEFT + span * 0.3
-    # The early cluster sits in the left ~30% ...
     assert all(x < left_third for x in xs[:5])
-    # ... and the late sample is pinned to the far right (NOT evenly spaced).
     assert xs[-1] == pytest.approx(_TIMELINE_RIGHT)
 
 
@@ -249,7 +242,6 @@ def test_idle_period_renders_flat_gap(tmp_path: Path) -> None:
         _record(0, 3, ts=start.isoformat()),
         _record(1, 5, ts=(start + timedelta(minutes=1)).isoformat()),
         _record(2, 3, ts=(start + timedelta(minutes=2)).isoformat()),
-        # Long idle, then two zero-busy reap samples far down the clock.
         _record(
             3, 0, busy_by_type={"claude_code": 0}, ts=(start + timedelta(minutes=120)).isoformat()
         ),
@@ -265,9 +257,7 @@ def test_idle_period_renders_flat_gap(tmp_path: Path) -> None:
     xs = _timeline_xs(data["timeline"])
     ys = _timeline_ys(data["timeline"])
     span = _TIMELINE_RIGHT - _TIMELINE_LEFT
-    # Wide gap between the last busy sample and the first idle sample.
     assert xs[3] - xs[2] > span * 0.5
-    # Idle samples sit on the zero baseline.
     assert ys[3] == pytest.approx(_TIMELINE_BOTTOM)
     assert ys[4] == pytest.approx(_TIMELINE_BOTTOM)
 
@@ -278,11 +268,9 @@ def test_x_axis_labels_reflect_real_clock_not_ordinal(tmp_path: Path) -> None:
     path = tmp_path / "fleet_concurrency.ndjson"
     start = datetime(2026, 6, 18, tzinfo=UTC)
     end = start + timedelta(hours=2)
-    # Front-loaded: many samples in the first 10 minutes ...
     records = [
         _record(seq, 4, ts=(start + timedelta(minutes=seq)).isoformat()) for seq in range(10)
     ]
-    # ... and a final sample two hours in, so the span is a clean 2h.
     records.append(_record(10, 1, ts=end.isoformat()))
     _write_lines(path, records)
 
@@ -291,7 +279,6 @@ def test_x_axis_labels_reflect_real_clock_not_ordinal(tmp_path: Path) -> None:
     assert data is not None
     labels = data["timeline"]["x_axis_labels"]
     assert len(labels) == 5
-    # fraction 0.5 → 01:00 UTC, rendered in the machine-local tz.
     expected_mid = (start + timedelta(hours=1)).astimezone().strftime("%H:%M")
     assert labels[2]["label"] == expected_mid
 
@@ -311,12 +298,9 @@ def test_capacity_bar_includes_idle_configured_harness_and_extends_axis(
     assert data is not None
     timeline = data["timeline"]
     harnesses_by_label = {row["label"]: row for row in timeline["harnesses"]}
-    # grok never ran (no busy samples) but is still configured capacity, so it
-    # must still appear in the shared ordering/color mapping at 0 actual peak.
     assert harnesses_by_label["grok"]["capacity_max"] == 10
     assert harnesses_by_label["claude_code"]["capacity_max"] == 2
     assert timeline["capacity_total"] == 12
-    # Shared y-axis must extend to the configured max, not just the peak busy of 2.
     max_axis_label = max(int(label["label"]) for label in timeline["y_axis_labels"])
     assert max_axis_label >= 12
 
@@ -333,8 +317,6 @@ def test_capacity_bar_stacks_cumulatively_in_harness_order(tmp_path: Path) -> No
 
     assert data is not None
     harnesses = data["timeline"]["harnesses"]
-    # claude_code has the higher peak, so it sorts first and its capacity
-    # segment sits at the bottom of the stack.
     assert [row["label"] for row in harnesses] == ["claude_code", "codex"]
     claude, codex = harnesses
     assert claude["capacity_bar_y"] > codex["capacity_bar_y"]

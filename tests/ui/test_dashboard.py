@@ -28,18 +28,9 @@ from agentshore.ui.widgets.play_history import PlayHistoryTable
 from agentshore.ui.widgets.rl_state import RLStateBar
 from agentshore.ui.widgets.work_queue import WorkQueueSummary
 
-# ---------------------------------------------------------------------------
-# Test app
-# ---------------------------------------------------------------------------
-
 
 class DashboardTestApp(App[None]):
     """Minimal host app for dashboard tests."""
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 
 def _make_state(
@@ -106,11 +97,6 @@ def _main_dashboard(app: DashboardTestApp | OrchestratorApp) -> MainDashboard:
     screen = app.screen
     assert isinstance(screen, MainDashboard)
     return screen
-
-
-# ---------------------------------------------------------------------------
-# Tests
-# ---------------------------------------------------------------------------
 
 
 async def test_dashboard_composes_all_widgets() -> None:
@@ -384,9 +370,3 @@ async def test_loop_detection_resets_when_streak_drops() -> None:
         rl_state = screen.query_one("#rl-state", RLStateBar)
         assert not rl_state.has_class("loop--warning")
         assert not rl_state.has_class("loop--force")
-
-
-# Loop-alert 'o' override and the 'r'/'o' delegate tests previously exercised the
-# PlayOverrideScreen / loop-alert flow, both intentionally deleted in commits
-# 0a1e034 (dead Override binding removed) and fe9040c (PlayOverrideScreen and all
-# UI override plumbing removed). Their corresponding tests are gone with them.

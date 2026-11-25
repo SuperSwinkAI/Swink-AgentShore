@@ -48,16 +48,10 @@ class TokenSource(StrEnum):
     AMBIENT = "ambient"
 
 
-# Derived from the enum so the validation set stays in sync with the enum members.
 _TOKEN_SOURCE_FIELDS = frozenset(s.value for s in TokenSource if s is not TokenSource.AMBIENT)
 _KNOWN_PATCH_KEYS = frozenset(
     {"token_source", "git_user_name", "git_user_email", "gh_config_dir", "ssh_key_path"}
 )
-
-
-# ---------------------------------------------------------------------------
-# YAML I/O helpers
-# ---------------------------------------------------------------------------
 
 
 def _config_path(project_path: Path) -> Path:
@@ -90,11 +84,6 @@ def _write_yaml_atomic(path: Path, data: dict[str, object]) -> None:
             pass
 
 
-# ---------------------------------------------------------------------------
-# Source / fast listing helpers
-# ---------------------------------------------------------------------------
-
-
 def _source_for_identity(raw: dict[str, object]) -> tuple[str, str]:
     """Return token status/source for fast setup listing without I/O.
 
@@ -125,11 +114,6 @@ def _apply_source(entry: dict[str, object], source: str, canonical: str) -> None
         entry["gh_token_env"] = f"{canonical.upper().replace('-', '_')}_GH_TOKEN"
     else:
         entry["gh_token_keychain"] = keychain_service_for_login(canonical)
-
-
-# ---------------------------------------------------------------------------
-# Identity listing and non-validating CRUD
-# ---------------------------------------------------------------------------
 
 
 def list_identities(project_path: Path) -> list[IdentityRow]:
@@ -228,11 +212,6 @@ def remove_identity(project_path: Path, login: str) -> None:
                 body.pop("identity", None)
 
     _write_yaml_atomic(cfg_path, data)
-
-
-# ---------------------------------------------------------------------------
-# Trusted-source CRUD
-# ---------------------------------------------------------------------------
 
 
 def _trusted_ids_mapping(data: dict[str, object]) -> dict[str, object]:

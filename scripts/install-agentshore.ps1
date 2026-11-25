@@ -48,11 +48,11 @@ function Write-Step($msg) { Write-Host "`n==> $msg" -ForegroundColor Cyan }
 function Write-Info($msg) { Write-Host "    $msg" }
 function Die($msg) { Write-Error $msg; exit 1 }
 
-# Repo root = parent of this script's directory.
+
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $RepoRoot = Split-Path -Parent $ScriptDir
 
-# --- 1. Locate or bootstrap uv ----------------------------------------------
+
 Write-Step "Locating uv"
 $uv = $null
 $cmd = Get-Command uv -ErrorAction SilentlyContinue
@@ -65,7 +65,7 @@ if ($cmd) {
 
 if (-not $uv) {
     Write-Step "uv not found -- bootstrapping via the official installer (0.8.11)"
-    # Pin to 0.8.11 to match scripts/buildkit/windows.py PINNED_UV_VERSION for reproducible installs.
+
     $env:UV_VERSION = "0.8.11"
     Invoke-RestMethod https://astral.sh/uv/install.ps1 | Invoke-Expression
     $candidate = Join-Path $env:USERPROFILE ".local\bin\uv.exe"
@@ -79,7 +79,7 @@ if (-not $uv) {
 }
 Write-Info "Using uv: $uv"
 
-# --- 2. Resolve the install source ------------------------------------------
+
 Write-Step "Resolving install source"
 $source = ""
 if ($Wheel) {
@@ -101,17 +101,17 @@ if ($Wheel) {
     }
 }
 
-# --- 3. Install / refresh the agentshore CLI --------------------------------
+
 Write-Step "Installing agentshore CLI"
 & $uv tool install --native-tls --force --reinstall --python 3.12 $source
 if ($LASTEXITCODE -ne 0) { Die "uv tool install failed (exit $LASTEXITCODE)." }
 
-# --- 4. Ensure the tool-bin dir is on PATH ----------------------------------
+
 Write-Step "Ensuring uv's tool bin directory is on PATH"
 & $uv tool update-shell | Out-Null
 Write-Info "If 'agentshore' is not found below, restart your shell so the PATH update takes effect."
 
-# --- 5. Smoke test ----------------------------------------------------------
+
 Write-Step "Verifying agentshore command"
 $bin = $null
 $toolBin = Join-Path $env:USERPROFILE ".local\bin\agentshore.exe"

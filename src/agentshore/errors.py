@@ -5,13 +5,6 @@ from __future__ import annotations
 import errno
 from enum import StrEnum
 
-# Canonical substrings that mark a GitHub authentication / access failure in a
-# free-form skill or command error string. Single home for the auth-marker table
-# that ``plays/skill_backed/base.py`` matches against when deciding whether a
-# skill failure is an auth failure (``FailureKind.AUTH``) and should mark the
-# agent in error. The narrower publish-scoped subset in
-# ``plays/_publish_reconciler.py`` is intentionally distinct (it scopes
-# issue-pickup publish-failure recovery, not general auth detection).
 GITHUB_AUTH_ERROR_MARKERS: tuple[str, ...] = (
     "bad credentials",
     "http 401",
@@ -91,28 +84,13 @@ class ErrorClass(StrEnum):
     CODEX_ROLLOUT = "codex_rollout"
     TRANSIENT_NETWORK = "transient_network"
     CRASH_OOM = "crash_oom"
-    # Host disk exhaustion (ENOSPC / "no space left on device"). An *environment*
-    # condition, not the agent's fault: retrying into a full disk just burns
-    # spend, so callers treat it as fatal-environment rather than a recoverable
-    # per-play failure (#180).
     CRASH_ENOSPC = "crash_enospc"
     CRASH_SIGNAL = "crash_signal"
     TIMEOUT_TRANSIENT = "timeout_transient"
-    # Timeout sub-classes carried on PlayTimeoutError.error_class and threaded
-    # onto last_error_class via the manager dispatch handler. Distinct strings
-    # asserted by tests (test_agent_manager / test_cli_agent), so they must be
-    # first-class members rather than collapsing to TIMEOUT/UNKNOWN.
     TIMEOUT_WALLCLOCK = "timeout_wallclock"
     TIMEOUT_POST_RESPONSE = "timeout_post_response"
     TIMEOUT_STREAM_IDLE = "timeout_stream_idle"
     OUTPUT_INVALID = "output_invalid"
-    # A clean-exit empty no-op: the agent's process exited 0 but produced no
-    # output at all (no JSON result block, no text). Antigravity (`agy`) does
-    # this non-deterministically — it returns an empty task envelope (5–14 s,
-    # 0 tokens, 0 turns) instead of doing the work. Recoverable and treated like
-    # a transient quota/throttle: 3 consecutive no-ops route the agent into the
-    # standard take_break (desktop no-op resilience). Kept distinct from UNKNOWN
-    # so no-ops are separable from genuine unknown errors in telemetry.
     NO_OP = "no_op"
     UNKNOWN = "unknown"
 
@@ -154,11 +132,6 @@ def is_disk_full(exc: BaseException) -> bool:
 
 
 class OrchestratorError(Exception):
-    # NOTE: the old ``recoverable`` / ``recovery_action`` metadata was removed —
-    # it was never read in production (recoverability is decided by frozenset
-    # membership: state.RECOVERABLE_ERROR_CLASSES + recovery_tracker routing), so
-    # the per-class strings were dead and actively misleading. ``error_type`` is
-    # the only carried metadata.
     error_type: str = "agentshore_error"
 
     def __init__(self, message: str) -> None:
@@ -166,14 +139,8 @@ class OrchestratorError(Exception):
         self.message = message
 
 
-# --- Config ---
-
-
 class ConfigError(OrchestratorError):
     error_type = "config_error"
-
-
-# --- Agent errors ---
 
 
 class AgentProcessCrashed(OrchestratorError):
@@ -197,7 +164,6 @@ class PlayTimeoutError(AgentTimeout):
         self.error_class = error_class
 
 
-# Alias used in planning docs — maps to the canonical class name.
 AgentProcessError = AgentProcessCrashed
 
 
@@ -215,9 +181,6 @@ class AgentRateLimitError(AgentAPIError):
 
 class AgentAuthError(OrchestratorError):
     error_type = "agent_auth_error"
-
-
-# --- Play errors ---
 
 
 class PreconditionFailed(OrchestratorError):
@@ -256,9 +219,6 @@ class IssueInflationDetected(OrchestratorError):
     error_type = "issue_inflation_detected"
 
 
-# --- RL errors ---
-
-
 class PolicyNaN(OrchestratorError):
     error_type = "policy_nan"
 
@@ -269,9 +229,6 @@ class NoValidActions(OrchestratorError):
 
 class RewardComputationFailed(OrchestratorError):
     error_type = "reward_computation_failed"
-
-
-# --- System errors ---
 
 
 class DatabaseError(OrchestratorError):

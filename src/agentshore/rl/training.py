@@ -106,14 +106,11 @@ class PPOUpdater:
                 rolled_back=False,
             )
 
-        # Snapshot before update — used for NaN rollback
         snapshot = {k: v.clone() for k, v in self._policy.state_dict().items()}
 
-        # Normalize advantages across the whole buffer
         adv_all = torch.tensor(buffer.advantages, dtype=torch.float32)
         adv_mean = adv_all.mean()
         adv_std = adv_all.std() + 1e-8
-        # Normalisation stored back into buffer.advantages for minibatch access
         normalized_advantages = (adv_all - adv_mean) / adv_std
         buffer.advantages = normalized_advantages.tolist()
 
@@ -144,10 +141,6 @@ class PPOUpdater:
                     policy_loss + self._value_coef * value_loss + self._entropy_coef * entropy_loss
                 )
 
-                # Add the config-head loss only on rows that actually had a
-                # config decision (i.e. play == INSTANTIATE_AGENT). Skip when no
-                # such rows are in this minibatch, when the policy has no config
-                # head, or when the batch wasn't populated with config tensors.
                 config_pl_value = 0.0
                 config_ent_value = 0.0
                 config_active_any = (

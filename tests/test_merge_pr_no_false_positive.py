@@ -89,25 +89,20 @@ def test_merge_pr_no_ff_advances_sha_but_symbolic_ref_unchanged(
     pre_sha = _git(["rev-parse", "HEAD"], merge_repo).stdout.strip()
     assert pre_ref == "refs/heads/main"
 
-    # Simulate the merge_pr play body: merge origin/<branch> --no-ff + push.
     _git(["merge", "--no-ff", "origin/feature/widget", "-m", "Merge feature/widget"], merge_repo)
     _git(["push", "origin", "main"], merge_repo)
 
     post_ref = current_head_ref(merge_repo)
     post_sha = _git(["rev-parse", "HEAD"], merge_repo).stdout.strip()
 
-    # SHA advanced.
     assert post_sha != pre_sha
-    # Symbolic ref unchanged — this is what the guard checks.
     assert post_ref == pre_ref == "refs/heads/main"
 
-    # The guard's verdict: NO mutation, no auto-restore needed.
     mutated, observed_post, restored = check_main_repo_branch_mutated(
         merge_repo, pre_ref=pre_ref, default_branch="main"
     )
     assert mutated is False
     assert observed_post == pre_ref
-    # No mutation → no restore ran; guard returns the trivially-ok RestoreResult sentinel.
     assert restored.ok is True
 
 
@@ -124,7 +119,6 @@ async def test_orchestrator_guard_emits_no_warning_on_merge_pr(
     orch._session_id = "test-session-merge"
     orch._main_repo.record_pre_play_branch("d-merge", "refs/heads/main")
 
-    # Simulate the merge mid-play.
     _git(["merge", "--no-ff", "origin/feature/widget", "-m", "Merge feature/widget"], merge_repo)
     _git(["push", "origin", "main"], merge_repo)
 
@@ -146,5 +140,4 @@ async def test_orchestrator_guard_emits_no_warning_on_merge_pr(
         "merge_pr must not be flagged — symbolic-ref unchanged despite SHA advance"
     )
     assert "main_repo_auto_restore_failed" not in event_names
-    # No paused dispatch on a healthy merge_pr.
     assert orch._main_repo.dispatch_paused is False

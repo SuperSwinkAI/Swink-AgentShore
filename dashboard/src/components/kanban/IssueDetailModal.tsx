@@ -7,7 +7,7 @@ import type { AgentSnapshot, PullRequestSnapshot } from "../../types";
 import type { KanbanCard, Phase } from "../../views/kanban/phase";
 import { titleCase } from "../../format";
 
-// Helpers mirror render.ts/detailModal.ts.
+
 
 function phaseLabel(phase: Phase): string {
   return phase.replace("_", " ").toUpperCase();
@@ -229,7 +229,7 @@ function IssueDetailModalContent({
   const closeBtnRef = React.useRef<HTMLButtonElement | null>(null);
   const visible = detail !== null;
 
-  // Focus close button on open; wire ESC-to-close.
+
   React.useEffect(() => {
     if (!visible) return;
     closeBtnRef.current?.focus();

@@ -144,7 +144,6 @@ def touch_recent(path: str, store_path: Path | None = None) -> None:
     basename = Path(normalized).name or normalized
     for entry in entries:
         if entry["path"] == normalized:
-            # Keep label stable so user-visible names don't flicker.
             entry["last_started"] = now
             _write_store(target, entries)
             return

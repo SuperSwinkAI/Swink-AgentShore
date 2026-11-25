@@ -54,13 +54,10 @@ def _cfg_mock() -> MagicMock:
 def _registry_mock(all_pass: bool = True) -> MagicMock:
     registry = MagicMock()
     if all_pass:
-        # Make every play's preconditions return [] (all pass) so the mask
-        # reflects agent/session filtering rather than returning all-zeros.
         play_mock = MagicMock()
         play_mock.preconditions.return_value = []
         registry.get.return_value = play_mock
     else:
-        # All fail — preconditions return a non-empty list.
         play_mock = MagicMock()
         play_mock.preconditions.return_value = ["blocked"]
         registry.get.return_value = play_mock
@@ -119,7 +116,6 @@ def test_non_draining_state_not_restricted_to_end_agent() -> None:
     Calls compute_action_mask without cfg so the agent-eligibility gate is
     skipped; this isolates the drain-filter logic from tier/capability checks.
     """
-    # All plays pass preconditions; with no cfg the eligibility gate is skipped.
     registry = _registry_mock(all_pass=True)
 
     running_state = OrchestratorState(
@@ -140,12 +136,10 @@ def test_non_draining_state_not_restricted_to_end_agent() -> None:
     running_mask = compute_action_mask(running_state, registry=registry)
     draining_mask = compute_action_mask(draining_state, registry=registry)
 
-    # The drain filter must produce a different (more restrictive) result.
     assert not np.array_equal(running_mask, draining_mask), (
         "RUNNING state mask should differ from DRAINING state mask"
     )
 
-    # In RUNNING mode, more than just END_AGENT should be True.
     end_agent_idx = V1_ACTION_ORDER.index(PlayType.END_AGENT)
     non_end_agent_true = sum(1 for i, v in enumerate(running_mask) if v and i != end_agent_idx)
     assert non_end_agent_true > 0, "RUNNING mask must allow plays beyond END_AGENT"

@@ -1,10 +1,4 @@
-"""Tests for credential redaction in the structlog -> NDJSON pipeline.
-
-Regression cover for the leak where ``structlog.processors.dict_tracebacks``
-serialised exception frame locals — including the resolved per-agent identity
-env dict — and wrote a live ``gho_…`` GitHub token into the session log in
-cleartext.
-"""
+"""Tests for credential redaction in the structlog -> NDJSON pipeline."""
 
 from __future__ import annotations
 
@@ -74,7 +68,7 @@ class TestTracebackFrameLocals:
                 "GITHUB_TOKEN": FAKE_GH_TOKEN,
             }
             token = identity_env["GH_TOKEN"]
-            assert token  # keep both locals live in the frame
+            assert token
             raise PermissionError("worktree not writable")
 
         log = get_logger("test")
@@ -86,7 +80,6 @@ class TestTracebackFrameLocals:
         raw = log_file.read_text(encoding="utf-8")
         assert "gho_" not in raw
         assert FAKE_GH_TOKEN not in raw
-        # The traceback itself must still be there — redaction, not suppression.
         assert "PermissionError" in raw
         assert "launch_agent" in raw
         assert REDACTED in raw
@@ -252,7 +245,6 @@ class TestProcessorUnit:
 
         out = redact_secrets(None, "info", {"event": "x", "payload": deep})
 
-        # Walk down to the cap and confirm we stopped rather than blew the stack.
         assert out["event"] == "x"
         assert isinstance(out["payload"], dict)
 

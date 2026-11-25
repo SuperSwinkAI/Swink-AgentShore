@@ -48,7 +48,6 @@ def _load_cfg(project_path: Path) -> RuntimeConfig:
 
 def _probe_all(cfg: RuntimeConfig) -> list[dict[str, object]]:
     """Probe every configured CLI agent's backend auth (blocking)."""
-    # Import at call time so launch-gate tests' patch("...auth_probe.*") applies here.
     from agentshore.agents import auth_probe
 
     return [_row(result) for result in auth_probe.probe_configured_cli_auth(cfg)]
@@ -72,7 +71,6 @@ def _probe_one(cfg: RuntimeConfig, agent_type: AgentType) -> list[dict[str, obje
                 env = {}
             result = auth_probe.probe_cli_auth(agent_type, env, binary=agent_cfg.binary)
             return [_row(result)]
-    # Not configured: probe with defaults so the setup screen gets a row, not [].
     return [_row(auth_probe.probe_cli_auth(agent_type))]
 
 

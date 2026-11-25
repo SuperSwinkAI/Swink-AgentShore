@@ -188,7 +188,6 @@ def test_step4a_skips_keyword_overlap_only() -> None:
     assert _should_link("Add login page", results) is False
 
 
-# H2 fix: bypass conditions are evaluated before the capability gate.
 def test_bypass1_no_capable_agent_returns_descriptive_error() -> None:
     """Bypass 1 fires (unlinked ready tasks, no open issues) but no IDLE agent exists.
 
@@ -203,7 +202,6 @@ def test_bypass1_no_capable_agent_returns_descriptive_error() -> None:
 
     errors = GroomBacklogPlay().preconditions(state)
 
-    # Play must be masked — a BUSY-only fleet cannot execute groom_backlog.
     assert errors != []
     assert any("urgent groom needed" in e.text for e in errors)
     assert any("unlinked ready tasks" in e.text for e in errors)
@@ -216,7 +214,6 @@ def test_bypass2_untracked_gh_issues_with_capable_agent_allows_play() -> None:
     The play must be allowed (empty preconditions list) when outside cooldown,
     because the graph is out of sync with GitHub.
     """
-    # Issue #99 exists in GitHub but has no corresponding task in the beads graph.
     graph = _graph_with_epics(tasks=[])
     state = _state(
         graph=graph,
@@ -285,7 +282,6 @@ def test_normal_path_capability_gate_blocks_when_no_bypass_fires() -> None:
     The capability error from the normal path should be returned verbatim,
     without any urgency prefix.
     """
-    # Linked ready task (issue_number set) — bypass 1 does not fire.
     linked_task = GraphTask(
         bead_id="task-2",
         title="Auth task",
@@ -293,7 +289,6 @@ def test_normal_path_capability_gate_blocks_when_no_bypass_fires() -> None:
         issue_number=42,
         ready=True,
     )
-    # Issue 42 is tracked (matches task.issue_number) — bypass 2 does not fire.
     graph = _graph_with_epics(tasks=[linked_task])
     state = _state(
         graph=graph,
@@ -304,6 +299,5 @@ def test_normal_path_capability_gate_blocks_when_no_bypass_fires() -> None:
     errors = GroomBacklogPlay().preconditions(state)
 
     assert errors != []
-    # Normal capability error — no urgency prefix.
     assert not any("urgent groom needed" in e.text for e in errors)
     assert any("no IDLE agent" in e.text for e in errors)

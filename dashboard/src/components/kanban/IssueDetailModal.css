@@ -1,4 +1,3 @@
-/* Issue detail modal */
 :root,
 :root[data-theme="light"] {
   --issue-detail-overlay: rgba(14, 23, 38, 0.42);

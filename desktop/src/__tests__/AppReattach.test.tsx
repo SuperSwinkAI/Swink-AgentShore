@@ -20,9 +20,9 @@ import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { SessionProvider } from "../services/sessionContext";
 
-// ---------------------------------------------------------------------------
-// Hoisted mocks
-// ---------------------------------------------------------------------------
+
+
+
 const { invokeMock, listenMock } = vi.hoisted(() => ({
   invokeMock: vi.fn(),
   listenMock: vi.fn(),
@@ -31,7 +31,7 @@ const { invokeMock, listenMock } = vi.hoisted(() => ({
 vi.mock("@tauri-apps/api/core", () => ({ invoke: invokeMock }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: listenMock }));
 
-// Dashboard package — used at module-level (AGENT_TYPE_SET) so must be mocked.
+
 vi.mock("@agentshore/dashboard", () => ({
   AGENT_REGISTRY: {},
   AGENT_TYPES: [],
@@ -40,10 +40,10 @@ vi.mock("@agentshore/dashboard", () => ({
   TrustedSourcesScreen: () => null,
 }));
 
-// Do NOT mock ../rpc/sessionClient — let the real currentSession() and
-// stopSession() implementations run so they call the mocked invoke. This
-// lets the wrapper unit test verify the real impl and lets the
-// reload-doesn't-stop test check invokeMock for absence of session.stop.
+
+
+
+
 
 vi.mock("../services/sessionClient", () => ({
   subscribeCompleted: vi.fn(() => () => undefined),
@@ -82,7 +82,7 @@ vi.mock("../rpc/projectClient", () => ({
   setTrustedIssueEnforcement: vi.fn(),
 }));
 
-// Screen stubs — just need to be renderable and distinguishable.
+
 vi.mock("../screens/ChooseProjectScreen", () => ({
   ChooseProjectScreen: () => <div data-testid="choose-project-sentinel" />,
 }));
@@ -105,16 +105,16 @@ vi.mock("../SessionStartingOverlay", () => ({ SessionStartingOverlay: () => null
 vi.mock("../components/AppMenu", () => ({ AppMenu: () => null }));
 vi.mock("../components/WelcomeCarousel", () => ({ WelcomeCarousel: () => null }));
 
-// ---------------------------------------------------------------------------
-// Import App after all mocks are in place.
-// ---------------------------------------------------------------------------
+
+
+
 import { App } from "../App";
 
-// ---------------------------------------------------------------------------
-// jsdom shims required by App.tsx
-// ---------------------------------------------------------------------------
 
-// App's theme effect calls window.matchMedia — jsdom doesn't implement it.
+
+
+
+
 Object.defineProperty(window, "matchMedia", {
   writable: true,
   value: vi.fn().mockImplementation((query: string) => ({
@@ -129,9 +129,9 @@ Object.defineProperty(window, "matchMedia", {
   })),
 });
 
-// ---------------------------------------------------------------------------
-// Default invoke responses (can be overridden per-test).
-// ---------------------------------------------------------------------------
+
+
+
 const DEFAULT_UI_STATE = {
   theme: "system",
   lastSelectedTab: "",
@@ -159,8 +159,8 @@ function setupDefaultInvoke(
 }
 
 function renderApp() {
-  // Match main.tsx: BrowserRouter → SessionProvider → App.
-  // App renders its own <Routes> internally — no outer Routes wrapper.
+
+
   return render(
     <MemoryRouter initialEntries={["/"]}>
       <SessionProvider>
@@ -179,9 +179,9 @@ afterEach(() => {
   cleanup();
 });
 
-// ---------------------------------------------------------------------------
-// currentSession() wrapper unit test
-// ---------------------------------------------------------------------------
+
+
+
 describe("currentSession() RPC wrapper", () => {
   it("calls invoke('current_session') and returns the response shape", async () => {
     const { currentSession } = await import("../rpc/sessionClient");
@@ -217,9 +217,9 @@ describe("currentSession() RPC wrapper", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// reattach-on-mount
-// ---------------------------------------------------------------------------
+
+
+
 describe("reattach-on-mount", () => {
   it("navigates to /session/dashboard when current_session returns active", async () => {
     invokeMock.mockImplementation(async (cmd: string) => {
@@ -240,7 +240,7 @@ describe("reattach-on-mount", () => {
   });
 
   it("stays on / and shows ChooseProjectScreen when session is inactive", async () => {
-    // default invoke returns active: false
+
 
     renderApp();
 
@@ -251,9 +251,9 @@ describe("reattach-on-mount", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// no-flash
-// ---------------------------------------------------------------------------
+
+
+
 describe("no-flash", () => {
   it("does not render ChooseProjectScreen while current_session is pending", async () => {
     let resolveProbe!: (v: unknown) => void;
@@ -270,10 +270,10 @@ describe("no-flash", () => {
 
     renderApp();
 
-    // While the probe is unresolved, picker must not appear.
+
     expect(screen.queryByTestId("choose-project-sentinel")).not.toBeInTheDocument();
 
-    // Resolve with an inactive session and let the picker render.
+
     await act(async () => {
       resolveProbe({ active: false, dashboardUrl: null, sessionId: null });
     });
@@ -311,9 +311,9 @@ describe("no-flash", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// reload-doesn't-stop
-// ---------------------------------------------------------------------------
+
+
+
 describe("reload-doesn't-stop", () => {
   it("never issues jsonrpc_call session.stop across a reattach", async () => {
     invokeMock.mockImplementation(async (cmd: string) => {
@@ -331,8 +331,8 @@ describe("reload-doesn't-stop", () => {
       expect(screen.getByTestId("session-dashboard-sentinel")).toBeInTheDocument(),
     );
 
-    // stopSession calls invoke("jsonrpc_call", { method: "session.stop", ... }).
-    // During a reattach, no stop RPC must be issued.
+
+
     const stopCalls = invokeMock.mock.calls.filter((args: unknown[]) => {
       const [cmd, params] = args;
       return (
@@ -346,21 +346,21 @@ describe("reload-doesn't-stop", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// Phase 2 — heartbeat
-// ---------------------------------------------------------------------------
+
+
+
 describe("heartbeat (Phase 2)", () => {
   it("invokes ui_heartbeat on mount and again after ~2s via rAF-gated loop", async () => {
-    // Use fake timers only for this test to control the rAF/setTimeout cycle.
-    // jsdom stubs requestAnimationFrame via setTimeout(cb, 0) so fake timers
-    // intercept both.
+
+
+
     vi.useFakeTimers();
     setupDefaultInvoke();
 
     renderApp();
 
-    // Advance enough to fire the initial rAF (jsdom rAF ≈ setTimeout(cb,0))
-    // and process any synchronous microtasks.
+
+
     await act(async () => {
       vi.advanceTimersByTime(50);
     });
@@ -370,7 +370,7 @@ describe("heartbeat (Phase 2)", () => {
     );
     expect(callsAfterFirst.length).toBeGreaterThanOrEqual(1);
 
-    // Advance by 2050ms to trigger the 2s repeat setTimeout then another rAF.
+
     await act(async () => {
       vi.advanceTimersByTime(2050);
     });
@@ -380,10 +380,10 @@ describe("heartbeat (Phase 2)", () => {
     );
     expect(callsAfterSecond.length).toBeGreaterThanOrEqual(2);
 
-    // Unmount first so the heartbeat loop's cleanup runs (sets mounted=false,
-    // cancels pending timers). Then restore real timers. Order matters:
-    // cleanup() triggers the useEffect teardown; vi.useRealTimers() after
-    // ensures no leaked fake-timer state into the next test.
+
+
+
+
     cleanup();
     vi.useRealTimers();
   });

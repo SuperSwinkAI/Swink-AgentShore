@@ -69,16 +69,11 @@ async def test_real_bridge_starts_for_valid_project(tmp_path: Path) -> None:
     try:
         assert state.bridge is not None
         assert state.bridge.is_running
-        # WebSocket bridge is listening on its declared port.
         ws_endpoint = state.bridge.endpoint()
         port = ws_endpoint["port"]
         assert isinstance(port, int) and port > 0
-        # The bridge IS the WebSocket server — a bare TCP connect proves it
-        # bound the loopback; no protocol upgrade round-trip needed.
         with socket.create_connection(("127.0.0.1", port), timeout=1.0):
             pass
-        # outcome.ipc_endpoint is the orchestrator-side IPC channel
-        # (separate from the WebSocket port the bridge serves).
         assert outcome.ipc_endpoint["kind"] == "tcp"
     finally:
         if state.bridge is not None:

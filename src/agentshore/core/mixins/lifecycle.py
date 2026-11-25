@@ -29,9 +29,6 @@ if TYPE_CHECKING:
     )
 
 
-# Automated-escalation pauses where the awaited human may be AFK: these auto-stop
-# after ``feedback.unanswered_timeout_seconds`` (#9) rather than wedging forever.
-# Explicit user/ipc pauses are excluded — an operator who paused is present.
 _AUTO_STOP_PAUSE_REASONS: frozenset[str] = frozenset(
     {"loop_detected", "stagnation", "budget_exhausted", "budget_predictive"}
 )
@@ -83,10 +80,6 @@ class LifecycleController:
         self._repo_root = repo_root
         self._main_repo = main_repo
 
-    # ------------------------------------------------------------------
-    # Implementations
-    # ------------------------------------------------------------------
-
     def should_terminate(self, state: OrchestratorState) -> tuple[bool, str | None]:
         """Return (should_stop, reason) based on termination conditions."""
         if self._runtime.stop_requested:
@@ -96,11 +89,8 @@ class LifecycleController:
                 a.status == AgentStatus.TERMINATED for a in state.agents
             )
             if no_live_agents:
-                # Pure predicate: the "drain completed with mergeable PRs" visibility
-                # check fires from ``DrainController._on_drain_complete`` instead, keeping
-                # this method side-effect-free.
                 return True, "drain_complete"
-            return False, None  # continue; mask allows only end_agent
+            return False, None
         if state.session_state == SessionState.SHUTTING_DOWN:
             return True, "shutting_down"
 
@@ -108,10 +98,6 @@ class LifecycleController:
         if max_plays is not None and state.total_plays >= max_plays:
             return True, "max_plays"
 
-        # Wall-clock hard-stop backstop: the primary path is the graceful drain in
-        # ``begin_budget_reserve_drain_if_needed``; this fires only if the deadline is
-        # hit anyway (e.g. a play ran past the reserve window). Uses the monotonic loop
-        # clock so it's independent of snapshot population order.
         budget_cfg = self._host.effective_budget_caps()
         if budget_cfg.time_enabled and self._runtime.loop_started_at > 0:
             elapsed_minutes = (time.monotonic() - self._runtime.loop_started_at) / 60
@@ -143,8 +129,6 @@ class LifecycleController:
         """
         self._runtime.pause_reason = reason
         self._runtime.pause_event.clear()
-        # Arm the unanswered-pause backstop (#9): an unanswered automated escalation
-        # must auto-stop rather than wedge forever (see _AUTO_STOP_PAUSE_REASONS).
         timeout = self._runtime.cfg.feedback.unanswered_timeout_seconds
         if reason in _AUTO_STOP_PAUSE_REASONS and timeout is not None:
             self._runtime.pause_deadline = time.monotonic() + float(timeout)
@@ -176,7 +160,6 @@ class LifecycleController:
             await self._host._safe_call(
                 self._runtime.state_provider.on_feedback_requested(reason), "on_feedback_requested"
             )
-        # Flush any pending PPO experience so plays at pause point are not lost
         if (
             isinstance(self._runtime.selector, _ppo_selector_cls())
             and len(self._runtime.selector.buffer) > 0
@@ -220,19 +203,14 @@ class LifecycleController:
             _logger.info("config_reload_no_changes")
             return
 
-        non_reloadable = {"rl"}  # rl contains policy weights, learning rate, and mode
+        non_reloadable = {"rl"}
         warned = [f for f in changed if f in non_reloadable]
         if warned:
             _logger.warning("config_non_reloadable_fields_changed", fields=warned)
 
         self._runtime.cfg = new_cfg
-        # The PPO selector builds its action mask from the config captured at
-        # construction (incl. user-disabled-play hard-mask) and isn't re-created on
-        # reload; refresh it here or a play disabled mid-session stays selectable.
         if isinstance(self._runtime.selector, _ppo_selector_cls()):
             self._runtime.selector.update_orchestrator_cfg(new_cfg)
-        # Reload also refreshes the cached default branch in case origin/HEAD was
-        # repointed (e.g. main -> develop) between sessions.
         try:
             new_default, assumed = await _asyncio.to_thread(resolve_default_branch, self._repo_root)
         except Exception as exc:

@@ -17,7 +17,6 @@ import pytest
 
 _TEMPLATES_DIR = Path(__file__).resolve().parents[1] / "src" / "agentshore" / "skills" / "templates"
 
-# Trunk-scoped planning plays that must never touch the working tree / move HEAD.
 _GUARDED_SKILLS = ("agentshore-write-plan", "agentshore-refine-tasks")
 
 
@@ -44,10 +43,8 @@ def test_allowed_tools_grant_read_only_git(name: str) -> None:
         f"{name}: broad Bash(git:*) grant must be removed — it lets the agent "
         "run git checkout/switch/branch in the main checkout"
     )
-    # Read-only git the planning plays legitimately use must still be granted.
     assert "git fetch:*" in allowed_line
     assert "git grep:*" in allowed_line
-    # Branch-moving subcommands must NOT be allow-listed.
     for forbidden in ("git checkout:*", "git switch:*", "git branch:*", "git worktree:*"):
         assert forbidden not in allowed_line, f"{name}: {forbidden} must not be allow-listed"
 
@@ -80,7 +77,6 @@ def test_prose_forbids_branch_mutation(name: str) -> None:
         f"{name}: must name the branch-creation commands it forbids"
     )
     assert "main checkout" in lowered, f"{name}: must explain it runs in the main checkout"
-    # The mechanism it must call out: a branch op here moves the main HEAD.
     assert "head" in lowered and "read-only" in lowered, (
         f"{name}: must state git is read-only and a branch op moves the main HEAD"
     )

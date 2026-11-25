@@ -1,5 +1,3 @@
-/* Shared app-menu dialog chrome — mirrors AdjustBudgetDialog.module.css so the
-   Help / Preferences / Update surfaces match the existing modal look. */
 .overlay {
   position: fixed;
   inset: 0;
@@ -43,7 +41,6 @@
   gap: 12px;
 }
 
-/* Keyboard-shortcut rows: label on the left, accelerator chip on the right. */
 .shortcutList {
   display: grid;
   gap: 8px;
@@ -114,7 +111,6 @@
   color: var(--muted, #6b7280);
 }
 
-/* Preferences: one checkbox row per disableable play. */
 .playList {
   display: grid;
   gap: 4px;
@@ -131,7 +127,6 @@
   border-bottom: none;
 }
 
-/* Toggle + name + state chip on the left, info button flush right. */
 .playRowMain {
   display: flex;
   align-items: center;
@@ -148,8 +143,6 @@
   cursor: pointer;
 }
 
-/* Sliding toggle: a visually-hidden checkbox drives a styled track + thumb so
-   the control stays a real, focusable, testable <input type="checkbox">. */
 .switch {
   position: relative;
   display: inline-flex;
@@ -204,12 +197,10 @@
   outline-offset: 2px;
 }
 
-/* Play name takes the remaining width so the state chip sits flush right. */
 .playName {
   flex: 1;
 }
 
-/* Circular "i" disclosure button revealing the play's description inline. */
 .infoButton {
   flex: none;
   width: 20px;
@@ -235,7 +226,6 @@
   border-color: var(--accent, #2563eb);
 }
 
-/* Description sits under the row, indented past the toggle. */
 .playDescription {
   margin: 0 0 10px 48px;
   font-size: 13px;

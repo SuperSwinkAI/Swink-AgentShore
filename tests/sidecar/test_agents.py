@@ -53,7 +53,6 @@ def test_list_agents_projects_canonical_shape(tmp_path: Path) -> None:
     assert [row["type"] for row in rows] == ["claude_code", "codex"]
     claude = rows[0]
     assert claude["enabled"] is True
-    # GitHub logins are case-folded for safety comparisons.
     assert claude["identity"] == "example-user"
     assert set(claude["tier_models"].keys()) == {"small", "medium", "large"}
     assert claude["tier_models"]["large"]["model"] == "opus"
@@ -61,14 +60,11 @@ def test_list_agents_projects_canonical_shape(tmp_path: Path) -> None:
     codex = rows[1]
     assert codex["enabled"] is False
     assert codex["identity"] is None
-    # Missing tiers are returned as empty dicts so the UI can render every row.
     assert codex["tier_models"]["medium"] == {}
     assert codex["tier_models"]["large"] == {}
 
 
 def test_list_agents_drops_unsupported_agent_types(tmp_path: Path) -> None:
-    # Retired agent block in stale config must be dropped by the same allow-list
-    # configure_agent uses — list_agents reads raw YAML and must not surface the ghost row.
     _write_config(
         tmp_path / "agentshore.yaml",
         {
@@ -104,7 +100,6 @@ def test_configure_agent_toggles_enabled(tmp_path: Path) -> None:
 
     data = yaml.safe_load(cfg.read_text(encoding="utf-8"))
     assert data["agents"]["claude_code"]["enabled"] is False
-    # Untouched fields persist.
     assert data["agents"]["claude_code"]["identity"] == "example-user"
 
 
@@ -114,7 +109,6 @@ def test_configure_agent_binds_and_clears_identity(tmp_path: Path) -> None:
 
     configure_agent(tmp_path, "codex", {"identity": "Bot-User"})
     data = yaml.safe_load(cfg.read_text(encoding="utf-8"))
-    # Canonicalised to case-folded login.
     assert data["agents"]["codex"]["identity"] == "bot-user"
 
     configure_agent(tmp_path, "codex", {"identity": None})
@@ -152,7 +146,6 @@ def test_configure_agent_merges_tier_models(tmp_path: Path) -> None:
 
     data = yaml.safe_load(cfg.read_text(encoding="utf-8"))
     tiers = data["agents"]["claude_code"]["model_tiers"]
-    # Existing tier merged, not replaced.
     assert tiers["small"] == {"enabled": True, "model": "haiku"}
     assert tiers["medium"]["enabled"] is False
     assert tiers["medium"]["model"] == "sonnet"
@@ -167,7 +160,6 @@ def test_configure_agent_creates_new_entry(tmp_path: Path) -> None:
 
     data = yaml.safe_load(cfg.read_text(encoding="utf-8"))
     assert data["agents"]["grok"] == {"enabled": True, "identity": "example-user"}
-    # Pre-existing keys are preserved.
     assert data["budget"] == {"enabled": True, "total": 5.0}
 
 
@@ -265,7 +257,6 @@ def test_configure_agent_rejects_invalid_tier(tmp_path: Path) -> None:
 def test_rpc_agents_list_requires_no_params() -> None:
     response = handle_request({"jsonrpc": "2.0", "id": 1, "method": "agents.list"})
     assert response is not None
-    # Without a configured cwd this returns [] - the call itself must succeed.
     assert "error" not in response
 
 
@@ -336,8 +327,8 @@ def test_tier_models_from_raw_clamps_max(tmp_path: Path) -> None:
     )
     rows = list_agents(tmp_path)
     tiers = rows[0]["tier_models"]
-    assert tiers.get("small", {}).get("max") == 20  # clamped from 99
-    assert tiers.get("large", {}).get("max") == 1  # clamped from 0
+    assert tiers.get("small", {}).get("max") == 20
+    assert tiers.get("large", {}).get("max") == 1
 
 
 def test_configure_agent_writes_max(tmp_path: Path) -> None:
@@ -558,8 +549,6 @@ def test_rpc_agents_refresh_models_passes_through_params(
 
 
 def test_rpc_agents_refresh_models_rejects_non_string_tier(tmp_path: Path) -> None:
-    # Validated synchronously before the async dispatch, like agents.configure's
-    # param checks — no _resolve() needed.
     state = ServerState(active_project_path=str(tmp_path))
 
     response = handle_request(

@@ -1,13 +1,4 @@
-"""desktop-mib1 regression: _idle_streak advances when the selector returns None.
-
-Pre-rni0, IDLE_TICK was a play; PPO picked it on idle ticks; the streak reset
-each time a play "was picked" (loop.py:474). After rni0 the selector returns
-None on idle ticks and the loop increments _idle_streak, walking through
-_IDLE_BACKOFF_SECONDS.
-
-The periodic-refresh reset at loop.py:394-397 is also removed — a fleet sitting
-idle through a refresh hasn't become less idle.
-"""
+"""Tests for _idle_streak advances when the selector returns None."""
 
 from __future__ import annotations
 
@@ -29,16 +20,13 @@ def test_idle_streak_advances_through_backoff_table(tmp_path: Path) -> None:
 
     observed_waits: list[float] = []
     for _ in range(len(_IDLE_BACKOFF_SECONDS) + 5):
-        # Simulate the loop branch on selection is None: log+increment+wait.
         observed_waits.append(orch._loop.idle_backoff())
         orch._runtime.idle_streak += 1
 
-    # First N values match the table in order.
     for i, expected in enumerate(_IDLE_BACKOFF_SECONDS):
         assert observed_waits[i] == expected, (
             f"idx {i}: expected {expected}, got {observed_waits[i]}"
         )
-    # Anything past the table clamps at the ceiling.
     ceiling = _IDLE_BACKOFF_SECONDS[-1]
     for wait in observed_waits[len(_IDLE_BACKOFF_SECONDS) :]:
         assert wait == ceiling

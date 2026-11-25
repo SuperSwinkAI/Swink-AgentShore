@@ -27,17 +27,17 @@ export interface AgentStatsView {
 
 const EMPTY_VIEW: AgentStatsView = { total: 0, ok: 0, failed: 0, byType: [] };
 
-// React-side store, intentionally independent from the imperative
-// dashboard/src/hud/agentPlayStats.ts (bridge SPA); this one is driven by Dashboard.tsx.
-//
-// Data lives in a plain Map keyed by agent id, queried on demand via
-// getAgentPlayStats() rather than subscribed to as a whole value — that
-// doesn't fit createNotifyStore's "one broadcast value" shape, so only the
-// revision counter (the actual subscribed signal) is a store; the Map stays
-// a bespoke module-level cache.
+
+
+
+
+
+
+
+
 const stats = new Map<string, AgentStats>();
 
-// Monotonic revision so the hook detects store changes without per-agent diffs.
+
 const revisionStore = createNotifyStore(0);
 
 function ensureAgent(agentId: string): AgentStats {

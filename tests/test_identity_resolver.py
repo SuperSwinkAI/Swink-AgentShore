@@ -82,7 +82,6 @@ def test_authorship_env_always_present() -> None:
     assert env["GIT_AUTHOR_EMAIL"] == "user@example.com"
     assert env["GIT_COMMITTER_NAME"] == "Example User"
     assert env["GIT_COMMITTER_EMAIL"] == "user@example.com"
-    # No token configured -> nothing injected.
     assert "GH_TOKEN" not in env
     assert "GITHUB_TOKEN" not in env
 
@@ -102,8 +101,6 @@ def test_token_env_resolves(monkeypatch: pytest.MonkeyPatch) -> None:
     env = resolve_identity_env(fc, ac)
     assert env["GH_TOKEN"] == "ghp_secret"
     assert env["GITHUB_TOKEN"] == "ghp_secret"
-    # Copilot CLI reads COPILOT_GITHUB_TOKEN first; the overlay must pin it too
-    # or an ambient one would override the per-agent identity.
     assert env["COPILOT_GITHUB_TOKEN"] == "ghp_secret"
 
 
@@ -176,7 +173,7 @@ def test_token_login_uses_gh_auth_token(monkeypatch: pytest.MonkeyPatch) -> None
 
     monkeypatch.setattr(identity_mod.command, "gh_sync", fake_gh_sync)
 
-    fc, ac = _cfg()  # default uses gh_token_login="example-user"
+    fc, ac = _cfg()
     env = resolve_identity_env(fc, ac)
 
     assert env["GH_TOKEN"] == "ghp_from_gh_cli"
@@ -281,7 +278,6 @@ def test_token_login_failure_returns_none(monkeypatch: pytest.MonkeyPatch) -> No
     fc, ac = _cfg()
     env = resolve_identity_env(fc, ac)
     assert "GH_TOKEN" not in env
-    # Authorship still set.
     assert env["GIT_AUTHOR_NAME"] == "Example User"
 
 
@@ -359,9 +355,6 @@ def test_explicit_gh_config_dir_takes_precedence(tmp_path) -> None:
     assert env["GH_CONFIG_DIR"] == str(explicit)
 
 
-# report_identities — diagnostic / startup banner
-
-
 def _report(*, identities: dict[str, GitHubIdentity], agents: dict[str, AgentConfig]) -> list:
     from agentshore.agents.identity import report_identities
 
@@ -433,7 +426,7 @@ def test_report_warns_on_classic_pat_for_copilot(
         agents={agent_key: AgentConfig(identity="bot-user")},
     )
     (row,) = rows
-    assert row.token_valid is True  # a warning, not a blocking failure
+    assert row.token_valid is True
     assert ("classic ghp_" in row.detail) is warned
     assert token not in row.detail
 
@@ -674,7 +667,6 @@ def test_keychain_backend_error_returns_none(monkeypatch: pytest.MonkeyPatch) ->
     ac = AgentConfig(identity="x")
     env = resolve_identity_env(fc, ac)
     assert "GH_TOKEN" not in env
-    # Authorship still set even when the backend errored.
     assert env["GIT_AUTHOR_NAME"] == "x"
 
 
@@ -726,9 +718,6 @@ def test_verify_repo_access_uses_github_rest_api(
 
     identity_mod.verify_identity_repo_access(tmp_path, {"GH_TOKEN": "token-secret"})
 
-    # A CA-backed SSL context must be supplied: the managed sidecar venv's Python
-    # ships no CA bundle, so urllib's default context fails with
-    # CERTIFICATE_VERIFY_FAILED. Regression guard for that bug.
     context = calls.pop("context")
     assert isinstance(context, ssl.SSLContext)
     assert context.get_ca_certs(), "preflight SSL context has no CA certificates"
@@ -740,8 +729,6 @@ def test_verify_repo_access_uses_github_rest_api(
 
 
 def test_github_api_ssl_context_is_ca_backed() -> None:
-    # On macOS/Linux the preflight context must come from certifi (the managed
-    # venv Python has no usable system CA store); assert it has CAs loaded.
     context = identity_mod._github_api_ssl_context()
     assert isinstance(context, ssl.SSLContext)
     assert context.get_ca_certs()
@@ -892,9 +879,6 @@ def test_report_gh_login_lookup(monkeypatch: pytest.MonkeyPatch) -> None:
     assert row.resolved_login == "example-user"
 
 
-# require_two_distinct_gh_identities
-
-
 def test_require_two_identities_passes_with_two_logins() -> None:
     from agentshore.agents.identity import require_two_distinct_gh_identities
 
@@ -916,7 +900,7 @@ def test_require_two_identities_passes_with_two_logins() -> None:
             "codex": AgentConfig(identity="bob"),
         },
     )
-    require_two_distinct_gh_identities(fc)  # no raise
+    require_two_distinct_gh_identities(fc)
 
 
 def test_require_two_identities_raises_when_all_share_one_login() -> None:
@@ -958,7 +942,7 @@ def test_require_two_identities_no_op_when_no_cli_agents() -> None:
     """No enabled CLI agents → code_review is structurally unavailable, skip check."""
     from agentshore.agents.identity import require_two_distinct_gh_identities
 
-    require_two_distinct_gh_identities(RuntimeConfig())  # no raise
+    require_two_distinct_gh_identities(RuntimeConfig())
 
 
 def test_require_two_identities_skips_disabled_agents() -> None:
@@ -998,12 +982,10 @@ def test_require_two_identities_rejects_missing_token_source() -> None:
             "alice": GitHubIdentity(
                 git_user_name="Alice",
                 git_user_email="alice@example.com",
-                # no token source at all → inherits ambient gh auth
             ),
             "bob": GitHubIdentity(
                 git_user_name="Bob",
                 git_user_email="bob@example.com",
-                # no token source at all → inherits ambient gh auth (likely SAME login)
             ),
         },
         agents={
@@ -1019,11 +1001,6 @@ def test_require_two_identities_accepts_keychain_token(monkeypatch: pytest.Monke
     """AgentShore-managed gh_token_keychain services encode the login."""
     from agentshore.agents.identity import IdentityResolver, require_two_distinct_gh_identities
 
-    # Pin the external resolution surfaces so the check is hermetic under xdist:
-    # without this the resolver shells out to the OS keychain (keyring) and `gh`,
-    # whose timing under parallel load made this flaky (#13). With both inert the
-    # resolver falls back to config-derived logins — exactly the path under test
-    # (a gh_token_keychain service name encodes its login).
     monkeypatch.setattr(identity_mod.command, "gh_sync", lambda *_a, **_k: _cmd(tool_missing=True))
     monkeypatch.setattr(IdentityResolver, "read_keychain_token", lambda self, service: None)
 
@@ -1045,7 +1022,7 @@ def test_require_two_identities_accepts_keychain_token(monkeypatch: pytest.Monke
             "codex": AgentConfig(identity="bot-user"),
         },
     )
-    require_two_distinct_gh_identities(fc)  # no raise
+    require_two_distinct_gh_identities(fc)
 
 
 def test_require_two_identities_accepts_env_token() -> None:
@@ -1070,7 +1047,7 @@ def test_require_two_identities_accepts_env_token() -> None:
             "codex": AgentConfig(identity="bob"),
         },
     )
-    require_two_distinct_gh_identities(fc)  # no raise
+    require_two_distinct_gh_identities(fc)
 
 
 def test_require_two_identities_rejects_undefined_identity() -> None:
@@ -1171,9 +1148,6 @@ def test_verify_repo_access_requires_push_permission_missing_permissions_key(
     assert "token-secret" not in detail
 
 
-# require_per_identity_model_tier_coverage
-
-
 def _tiers(*enabled: str) -> dict[str, ModelTierConfig]:
     """Build a model_tiers map enabling exactly *enabled* tiers."""
     return {tier: ModelTierConfig(enabled=True) for tier in enabled}
@@ -1182,8 +1156,6 @@ def _tiers(*enabled: str) -> dict[str, ModelTierConfig]:
 def test_per_identity_tier_coverage_passes_when_each_identity_covers_all_tiers() -> None:
     from agentshore.agents.identity import require_per_identity_model_tier_coverage
 
-    # Default AgentConfig (no model_tiers) yields all built-in tiers per type,
-    # so two default-bound identities each cover small/medium/large.
     fc = RuntimeConfig(
         identities={
             "alice": GitHubIdentity(
@@ -1198,7 +1170,7 @@ def test_per_identity_tier_coverage_passes_when_each_identity_covers_all_tiers()
             "codex": AgentConfig(identity="bob"),
         },
     )
-    require_per_identity_model_tier_coverage(fc)  # no raise
+    require_per_identity_model_tier_coverage(fc)
 
 
 def test_per_identity_tier_coverage_raises_when_one_identity_misses_large() -> None:
@@ -1220,9 +1192,7 @@ def test_per_identity_tier_coverage_raises_when_one_identity_misses_large() -> N
             ),
         },
         agents={
-            # jwesleye: small + medium only — missing large (review-eligible tier)
             "claude_code": AgentConfig(identity="jwesleye", model_tiers=_tiers("small", "medium")),
-            # unseriousai: full coverage
             "codex": AgentConfig(
                 identity="unseriousai", model_tiers=_tiers("small", "medium", "large")
             ),
@@ -1249,14 +1219,12 @@ def test_per_identity_tier_coverage_unions_agents_sharing_one_identity() -> None
             ),
         },
         agents={
-            # alice covers small+medium via claude_code, large via codex
             "claude_code": AgentConfig(identity="alice", model_tiers=_tiers("small", "medium")),
             "codex": AgentConfig(identity="alice", model_tiers=_tiers("large")),
-            # bob needs full coverage on its own
             "grok": AgentConfig(identity="bob", model_tiers=_tiers("small", "medium", "large")),
         },
     )
-    require_per_identity_model_tier_coverage(fc)  # no raise
+    require_per_identity_model_tier_coverage(fc)
     assert identity_mod.identities_missing_required_tiers(fc) == {}
 
 
@@ -1296,7 +1264,6 @@ def test_per_identity_tier_coverage_skips_disabled_agents() -> None:
         },
         agents={
             "claude_code": AgentConfig(identity="alice", model_tiers=_tiers("small", "medium")),
-            # the large coverage for alice is disabled → still missing large
             "codex": AgentConfig(identity="alice", model_tiers=_tiers("large"), enabled=False),
             "grok": AgentConfig(identity="bob", model_tiers=_tiers("small", "medium", "large")),
         },
@@ -1308,4 +1275,4 @@ def test_per_identity_tier_coverage_skips_disabled_agents() -> None:
 def test_per_identity_tier_coverage_no_op_when_no_cli_agents() -> None:
     from agentshore.agents.identity import require_per_identity_model_tier_coverage
 
-    require_per_identity_model_tier_coverage(RuntimeConfig())  # no raise
+    require_per_identity_model_tier_coverage(RuntimeConfig())

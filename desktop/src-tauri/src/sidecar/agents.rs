@@ -86,10 +86,6 @@ pub(super) fn handle_agent_subprocess_notification(
 }
 
 fn kill_agent_pid(pid: u32) {
-    // SIGTERM is the courteous first signal — agents may flush state.
-    // SIGKILL is the follow-up after a brief grace period for any
-    // refusal to exit. The recovery screen is opt-in cleanup; we accept
-    // best-effort semantics here.
     #[cfg(unix)]
     {
         send_unix_signal(pid, libc::SIGTERM);
@@ -98,10 +94,6 @@ fn kill_agent_pid(pid: u32) {
     }
     #[cfg(windows)]
     {
-        // ``taskkill /F /T /PID`` is the standard Windows equivalent. ``/T``
-        // kills the agent's whole process tree — CLI agents spawn their own
-        // children (node, git, MCP servers) which Windows does not reap on
-        // parent death, so a direct-PID kill leaks them (#155).
         let mut cmd = std::process::Command::new("taskkill");
         cmd.args(["/F", "/T", "/PID", &pid.to_string()]);
         crate::sidecar_env::apply_no_window_creation_flags(&mut cmd);
@@ -111,11 +103,6 @@ fn kill_agent_pid(pid: u32) {
 
 #[cfg(unix)]
 fn send_unix_signal(pid: u32, signal: libc::c_int) {
-    // SAFETY: ``libc::kill`` is the Unix process-signal boundary. The
-    // PID comes from the Python sidecar's tracked subprocess
-    // notifications, and this recovery path treats ESRCH/already-dead
-    // processes as successful cleanup, so the return value is deliberately
-    // ignored.
     unsafe {
         let _ = libc::kill(pid as libc::pid_t, signal);
     }
@@ -166,7 +153,6 @@ mod tests {
         let params = serde_json::json!({
             "agent_id": "agent-claude",
             "agent_type": "claude_code",
-            // pid missing
         });
         handle_agent_subprocess_notification("agent.subprocess_spawned", &params, &pids);
         assert!(pids.lock().unwrap().is_empty());

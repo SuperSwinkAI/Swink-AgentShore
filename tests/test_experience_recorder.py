@@ -40,8 +40,6 @@ def test_mask_reason_summary_none_when_empty() -> None:
 
 
 def test_mask_reason_summary_malformed_degrades_to_none() -> None:
-    # A non-dict (or dict with non-MaskReason values) must NOT raise — this is
-    # the exact failure shape that crashed the loop.
     assert ExperienceRecorder.mask_reason_summary(types.SimpleNamespace(mask_reasons=["x"])) is None
     bad = types.SimpleNamespace(mask_reasons={PlayType.MERGE_PR: "not-a-mask-reason"})
     assert ExperienceRecorder.mask_reason_summary(bad) is None
@@ -50,7 +48,6 @@ def test_mask_reason_summary_malformed_degrades_to_none() -> None:
 def _make_recorder(monkeypatch, *, store=None, selector=None):
     import agentshore.core.experience_recorder as mod
 
-    # Stub the reward path so the test focuses on persistence containment.
     monkeypatch.setattr(mod, "_build_reward_signals", lambda *a, **k: {})
     monkeypatch.setattr(mod, "compute_reward", lambda *a, **k: (0.0, None))
 
@@ -102,7 +99,6 @@ async def test_persist_failure_does_not_propagate_or_advance_step(monkeypatch) -
     pending.mask.tobytes.return_value = b""
     next_state = types.SimpleNamespace(total_plays=10)
 
-    # Must NOT raise even though encode_observation throws inside persist.
     await recorder.record_and_update(
         state_before=types.SimpleNamespace(),
         next_state=next_state,
@@ -111,9 +107,8 @@ async def test_persist_failure_does_not_propagate_or_advance_step(monkeypatch) -
         done=False,
     )
 
-    store.record_experience.assert_not_awaited()  # encode failed before persist
-    assert host._step_index == 7  # not advanced on a failed record
-    # Learning still proceeds — a record failure must not skip policy feedback.
+    store.record_experience.assert_not_awaited()
+    assert host._step_index == 7
     sel.on_play_completed.assert_awaited_once()
 
 
@@ -125,7 +120,6 @@ async def test_reward_failure_skips_play_without_crashing(monkeypatch) -> None:
         raise RuntimeError("reward blew up")
 
     recorder, host, sel = _make_recorder(monkeypatch)
-    # Override the helper's reward stub so reward computation now fails.
     monkeypatch.setattr(mod, "compute_reward", _boom)
 
     outcome = types.SimpleNamespace(play_id=1, success=True, agent_id=None, artifacts=[])
@@ -136,6 +130,5 @@ async def test_reward_failure_skips_play_without_crashing(monkeypatch) -> None:
         pending_step=MagicMock(),
         done=False,
     )
-    # Reward failure → early, guarded return: no learning, no crash.
     sel.on_play_completed.assert_not_awaited()
     assert host._step_index == 7

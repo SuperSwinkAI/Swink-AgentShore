@@ -60,11 +60,6 @@ def _make_orch(tmp_path: Path, cfg: RuntimeConfig) -> Any:
     return make_test_orchestrator(tmp_path, cfg)
 
 
-# ---------------------------------------------------------------------------
-# State construction
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_build_state_includes_in_flight_plays(tmp_path: Path) -> None:
     import asyncio
@@ -106,11 +101,6 @@ async def test_build_state_includes_in_flight_plays(tmp_path: Path) -> None:
     state = await orch._state_builder.build_state()
 
     assert state.in_flight_plays == [PlayType.SEED_PROJECT]
-
-
-# ---------------------------------------------------------------------------
-# _should_terminate
-# ---------------------------------------------------------------------------
 
 
 def test_should_not_terminate_normally() -> None:
@@ -177,7 +167,6 @@ async def test_budget_reserve_reached_begins_drain(tmp_path: Path) -> None:
 async def test_time_reserve_not_reached_keeps_running(tmp_path: Path) -> None:
     cfg = RuntimeConfig()
     orch = _make_orch(tmp_path, cfg)
-    # 1440-min cap, 100 min elapsed -> well outside the 20-min reserve window.
     state = _make_state(time_enabled=True, time_total_minutes=1440, time_elapsed_minutes=100)
 
     result = await orch._lifecycle.begin_budget_reserve_drain_if_needed(state)
@@ -190,8 +179,6 @@ async def test_time_reserve_not_reached_keeps_running(tmp_path: Path) -> None:
 async def test_time_reserve_reached_begins_drain(tmp_path: Path) -> None:
     cfg = RuntimeConfig()
     orch = _make_orch(tmp_path, cfg)
-    # Dollars are fine; time is inside the 20-min reserve (1425 of 1440 elapsed),
-    # so the time dimension alone must trigger the graceful drain.
     state = _make_state(
         remaining=10.0,
         time_enabled=True,
@@ -211,13 +198,11 @@ async def test_time_reserve_reached_begins_drain(tmp_path: Path) -> None:
 def test_should_terminate_on_time_budget(monkeypatch: Any) -> None:
     import dataclasses
 
-    # The wall-clock cap is now a budget dimension; the deadline hard-stop emits
-    # the "time_budget" reason (the former session.timeout_minutes path).
     cfg = dataclasses.replace(
         RuntimeConfig(), budget=BudgetConfig(time_enabled=True, time_total_minutes=1)
     )
     orch = _make_orch(Path("/tmp"), cfg)
-    orch._runtime.loop_started_at = time.monotonic() - 70  # 70 seconds ago = past 1-min cap
+    orch._runtime.loop_started_at = time.monotonic() - 70
     state = _make_state()
     should_stop, reason = orch._lifecycle.should_terminate(state)
     assert should_stop
@@ -334,19 +319,11 @@ def _make_outcome_with_play_id(play_id: int = 99) -> PlayOutcome:
     )
 
 
-# ---------------------------------------------------------------------------
-# _compute_trajectory_record: slope projection path
-# ---------------------------------------------------------------------------
-
-
 def test_compute_trajectory_record_slope_path_two_deltas(tmp_path: Path) -> None:
-    # When history has exactly 2 non-None deltas, slope = avg of both deltas;
-    # projected = current_alignment + slope * estimated_remaining_plays.
     from agentshore.beads import ProjectGraph
 
     cfg = RuntimeConfig()
     orch = _make_orch(tmp_path, cfg)
-    # remaining=1.0, estimated_cost_per_play=0.05 → avg_cost=0.05 → remaining_plays=20
     state = dataclasses.replace(
         _make_state(remaining=1.0),
         graph=ProjectGraph(global_closure_ratio=0.4),
@@ -356,7 +333,6 @@ def test_compute_trajectory_record_slope_path_two_deltas(tmp_path: Path) -> None
     rec = orch._snapshots.compute_trajectory_record(_make_outcome_with_play_id(), state, history)
 
     assert rec is not None
-    # slope = (0.01 + 0.01) / 2 = 0.01; projected = 0.4 + 0.01 * 20 = 0.6
     assert rec.projected_alignment_at_budget_end == pytest.approx(0.6)
 
 
@@ -369,7 +345,6 @@ def test_compute_trajectory_record_slope_path_three_deltas(tmp_path: Path) -> No
         _make_state(remaining=1.0),
         graph=ProjectGraph(global_closure_ratio=0.5),
     )
-    # Three deltas: average = 0.01; projected = 0.5 + 0.01 * 20 = 0.7
     history = [
         _make_play_record(0.01),
         _make_play_record(0.01),
@@ -383,7 +358,6 @@ def test_compute_trajectory_record_slope_path_three_deltas(tmp_path: Path) -> No
 
 
 def test_compute_trajectory_record_slope_path_clamps_high(tmp_path: Path) -> None:
-    # Large positive slope → projected > 1.0 → clamped to 1.0.
     from agentshore.beads import ProjectGraph
 
     cfg = RuntimeConfig()
@@ -392,7 +366,6 @@ def test_compute_trajectory_record_slope_path_clamps_high(tmp_path: Path) -> Non
         _make_state(remaining=1.0),
         graph=ProjectGraph(global_closure_ratio=0.9),
     )
-    # slope = 0.05; projected = 0.9 + 0.05 * 20 = 1.9 → clamped to 1.0
     history = [_make_play_record(0.05), _make_play_record(0.05)]
 
     rec = orch._snapshots.compute_trajectory_record(_make_outcome_with_play_id(), state, history)
@@ -402,7 +375,6 @@ def test_compute_trajectory_record_slope_path_clamps_high(tmp_path: Path) -> Non
 
 
 def test_compute_trajectory_record_slope_path_clamps_low(tmp_path: Path) -> None:
-    # Large negative slope → projected < 0.0 → clamped to 0.0.
     from agentshore.beads import ProjectGraph
 
     cfg = RuntimeConfig()
@@ -411,7 +383,6 @@ def test_compute_trajectory_record_slope_path_clamps_low(tmp_path: Path) -> None
         _make_state(remaining=1.0),
         graph=ProjectGraph(global_closure_ratio=0.3),
     )
-    # slope = -0.05; projected = 0.3 + (-0.05) * 20 = -0.7 → clamped to 0.0
     history = [_make_play_record(-0.05), _make_play_record(-0.05)]
 
     rec = orch._snapshots.compute_trajectory_record(_make_outcome_with_play_id(), state, history)
@@ -421,7 +392,6 @@ def test_compute_trajectory_record_slope_path_clamps_low(tmp_path: Path) -> None
 
 
 def test_compute_trajectory_record_isfinite_guard(tmp_path: Path) -> None:
-    # If inf/-inf deltas make slope NaN, projected falls back to current_alignment.
     from agentshore.beads import ProjectGraph
 
     cfg = RuntimeConfig()
@@ -430,7 +400,6 @@ def test_compute_trajectory_record_isfinite_guard(tmp_path: Path) -> None:
         _make_state(remaining=1.0),
         graph=ProjectGraph(global_closure_ratio=0.5),
     )
-    # sum([inf, -inf]) = nan → slope = nan → projected = nan → fallback
     history = [_make_play_record(float("inf")), _make_play_record(float("-inf"))]
 
     rec = orch._snapshots.compute_trajectory_record(_make_outcome_with_play_id(), state, history)
@@ -440,8 +409,6 @@ def test_compute_trajectory_record_isfinite_guard(tmp_path: Path) -> None:
 
 
 def test_compute_trajectory_record_slope_window_uses_last_ten(tmp_path: Path) -> None:
-    # History of 12 records: first 2 have delta=1.0, last 10 have delta=0.0.
-    # The window is capped at 10, so only the zero deltas are averaged → slope=0.0.
     from agentshore.beads import ProjectGraph
 
     cfg = RuntimeConfig()
@@ -455,14 +422,10 @@ def test_compute_trajectory_record_slope_window_uses_last_ten(tmp_path: Path) ->
     rec = orch._snapshots.compute_trajectory_record(_make_outcome_with_play_id(), state, history)
 
     assert rec is not None
-    # If all 12 were averaged: slope ≈ 0.167, projected ≠ 0.5
-    # With last-10 window: slope = 0.0, projected = 0.5 + 0.0 * 20 = 0.5
     assert rec.projected_alignment_at_budget_end == pytest.approx(0.5)
 
 
 def test_compute_trajectory_record_slope_none_deltas_excluded(tmp_path: Path) -> None:
-    # Records with alignment_delta=None are filtered out; only non-None deltas count.
-    # If fewer than 2 non-None deltas remain, the else branch echoes current_alignment.
     from agentshore.beads import ProjectGraph
 
     cfg = RuntimeConfig()
@@ -471,7 +434,6 @@ def test_compute_trajectory_record_slope_none_deltas_excluded(tmp_path: Path) ->
         _make_state(remaining=1.0),
         graph=ProjectGraph(global_closure_ratio=0.6),
     )
-    # 2 None records + 1 non-None → only 1 valid delta → else branch
     history = [
         _make_play_record(None),
         _make_play_record(None),
@@ -615,11 +577,6 @@ async def test_orchestrator_skips_trajectory_snapshot_on_failure(tmp_path: Path)
     orch._store.record_trajectory_snapshot.assert_not_awaited()
 
 
-# ---------------------------------------------------------------------------
-# Override queue
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_override_queue_drains_one_per_iteration(tmp_path: Path) -> None:
     """The override queue delivers plays in FIFO order, one per iteration."""
@@ -664,7 +621,6 @@ async def test_override_queue_drains_one_per_iteration(tmp_path: Path) -> None:
             )
         )
 
-    # After both overrides, selector returns None and loop exits
     select_calls = 0
 
     async def mock_select_after_overrides(state: Any) -> Any:

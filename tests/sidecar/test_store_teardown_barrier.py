@@ -48,14 +48,14 @@ async def test_tracked_stop_sets_then_clears_teardown_slot() -> None:
     orch = _FakeOrch(gate=gate)
 
     runner = asyncio.ensure_future(stop_orchestrator_tracked(state, orch))  # type: ignore[arg-type]
-    await asyncio.sleep(0)  # let the tracked task register itself
+    await asyncio.sleep(0)
     assert state.store_teardown_task is not None
     assert not state.store_teardown_task.done()
 
     gate.set()
     await runner
     assert orch.stopped is True
-    assert state.store_teardown_task is None  # cleared on completion
+    assert state.store_teardown_task is None
 
 
 @pytest.mark.asyncio
@@ -63,7 +63,6 @@ async def test_await_returns_immediately_with_no_teardown() -> None:
     """No in-flight teardown => the start barrier is a no-op."""
     state = ServerState()
     assert state.store_teardown_task is None
-    # Should not raise or block.
     await asyncio.wait_for(_await_prior_store_teardown(state), timeout=1.0)
 
 
@@ -79,13 +78,12 @@ async def test_start_barrier_waits_for_close_to_finish() -> None:
 
     barrier = asyncio.ensure_future(_await_prior_store_teardown(state))
     await asyncio.sleep(0)
-    # Close is still gated, so the barrier must not have resolved yet.
     assert not barrier.done()
     assert orch.stopped is False
 
-    gate.set()  # let the close finish
+    gate.set()
     await asyncio.wait_for(barrier, timeout=1.0)
-    assert orch.stopped is True  # barrier resolved only after close completed
+    assert orch.stopped is True
     await teardown
 
 
@@ -97,7 +95,7 @@ async def test_start_barrier_times_out_without_cancelling_close(
     itself keeps running (shielded) so the DB is left consistent (#283)."""
     monkeypatch.setattr(session_lifecycle, "STORE_TEARDOWN_WAIT_SECONDS", 0.05)
     state = ServerState()
-    gate = asyncio.Event()  # never set during the timeout window
+    gate = asyncio.Event()
     orch = _FakeOrch(gate=gate)
 
     teardown = asyncio.ensure_future(stop_orchestrator_tracked(state, orch))  # type: ignore[arg-type]
@@ -106,11 +104,9 @@ async def test_start_barrier_times_out_without_cancelling_close(
     with pytest.raises(SessionStartError, match="still shutting down"):
         await _await_prior_store_teardown(state)
 
-    # The underlying close must NOT have been cancelled by the timeout.
     assert not teardown.done()
     assert state.store_teardown_task is not None
 
-    # Cleanup: let the close finish.
     gate.set()
     await asyncio.wait_for(teardown, timeout=1.0)
     assert orch.stopped is True

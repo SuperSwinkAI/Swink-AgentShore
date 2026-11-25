@@ -25,7 +25,7 @@ function readStoredMode(): ThemeMode | null {
     if (isThemeMode(stored)) return stored;
     const migrated = migrateLegacyMode(stored);
     if (migrated !== null) {
-      // Persist the migrated value so the next read short-circuits above.
+
       window.localStorage.setItem(STORAGE_KEY, migrated);
     }
     return migrated;

@@ -47,8 +47,6 @@ def _dispatch_session_budget(
     if raw_params is not None and not isinstance(raw_params, dict):
         return _error(req_id, INVALID_REQUEST, "params must be an object")
 
-    # Typed via the TYPE_CHECKING-only OrchestratorHandle Protocol so the engine
-    # import stays lazy (cold-start torch-free invariant) yet still type-checks.
     orch = state.orchestrator
     if orch is None:
         return _error(req_id, ERR_SESSION_ACTIVE, "no active session")

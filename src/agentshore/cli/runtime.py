@@ -168,14 +168,8 @@ async def _handle_feedback_response(
 ) -> None:
     action = cmd.get("action")
     if action == "continue":
-        # Dashboard feedback modal Continue button: clear the loop_detected /
-        # verification pause and let PPO pick the next play. Was previously a
-        # no-op (logged "obsolete") so users would click Continue and see no
-        # effect.
         await orch.resume()
     elif action == "pause":
-        # Pause is the modal's default state once feedback fires; an explicit
-        # Pause click is informational only.
         _logger.info("ipc.feedback_response_pause_acknowledged")
     elif action in {"stop", "end_session", "drain"}:
         await orch.begin_drain("user_request")
@@ -187,8 +181,6 @@ async def _handle_feedback_response(
 async def _handle_abort_play(
     cmd: dict[str, object], orch: Orchestrator, server: IpcServer | None
 ) -> None:
-    # Cancel all in-flight play tasks. The orchestrator loop will pick up new
-    # work on the next iteration.
     _logger.warning("ipc.abort_play_received", in_flight=orch.in_flight_ids())
     await orch.abort_in_flight()
 
@@ -196,9 +188,6 @@ async def _handle_abort_play(
 async def _handle_verification_response(
     cmd: dict[str, object], orch: Orchestrator, server: IpcServer | None
 ) -> None:
-    # A human has responded to a verification_checkpoint. If the checkpoint
-    # passed, resume the paused orchestrator; otherwise keep it paused and log
-    # the failure so the operator can decide what to do next.
     passed = cmd.get("passed")
     checkpoint_id = cmd.get("checkpoint_id")
     notes = cmd.get("notes")
@@ -243,14 +232,9 @@ async def _handle_reload_config(
 async def _handle_start_noop(
     cmd: dict[str, object], orch: Orchestrator, server: IpcServer | None
 ) -> None:
-    # "start" is accepted by the validator (so connecting clients can send it)
-    # but is a no-op at dispatch time — the orchestrator is already running by
-    # the time IPC commands are processed.
     _logger.info("ipc.start_received_noop", message="Orchestrator already running")
 
 
-# Command name → handler. Every validated command must have an entry; unknown
-# commands fall through to a no-op (the validator gates the wire, not this table).
 _COMMAND_HANDLERS: dict[str, CommandHandler] = {
     "pause": _handle_pause,
     "resume": _handle_resume,
@@ -327,12 +311,6 @@ def _launch_dashboard_background(
     log_dir.mkdir(parents=True, exist_ok=True)
     log_file = log_dir / "agentshore.log"
 
-    # Reap any prior dashboard bridge for this project BEFORE spawning the
-    # orchestrator. The dead-bridge holds dashboard_events.ndjson open (no
-    # FILE_SHARE_DELETE on Windows), so the orchestrator's StateWriter reset
-    # can't unlink it — leaving a prior session's `session_ended` in place,
-    # which the new bridge then ingests and self-exits on ("dies on its own").
-    # Reaping first releases the file so the reset succeeds; it also frees 9400.
     if reap_before_orchestrator_spawn(project_path):
         click.echo("Reaped a stale dashboard process for this project.")
 
@@ -352,10 +330,6 @@ def _launch_dashboard_background(
         cmd.extend(["--socket", str(endpoint.path)])
     else:
         cmd.extend(["--ipc-host", endpoint.host, "--ipc-port", str(endpoint.port)])
-    # Reproduce the parent's resolved soft caps on the detached orchestrator.
-    # The child re-reads the same agentshore.yaml (via --config), so explicit
-    # flags here only need to pin the resolved dimensions: both off → --unlimited;
-    # otherwise --budget / --time for whichever dimension is enabled.
     if not budget_cfg.enabled and not budget_cfg.time_enabled:
         cmd.append("--unlimited")
     else:
@@ -368,9 +342,6 @@ def _launch_dashboard_background(
     cmd.extend(["--policy-mode", policy_mode.value])
     if policy:
         cmd.extend(["--policy", policy])
-    # Propagate the parent's tri-state --strict/--no-strict to the detached
-    # orchestrator so it resolves scope.strict_mode identically. When omitted
-    # (None) the subprocess defers to agentshore.yaml, just as the parent did.
     if strict is True:
         cmd.append("--strict")
     elif strict is False:
@@ -410,14 +381,6 @@ def _launch_dashboard_background(
         dashboard_cmd.extend(["--ipc-host", endpoint.host, "--ipc-port", str(endpoint.port)])
     dashboard_log = log_dir / "dashboard.log"
     with dashboard_log.open("w") as dl:
-        # The dashboard child owns dashboard.pid: it records its *own*
-        # os.getpid() once started (see commands/dashboard.py). The supervisor
-        # must NOT pre-write dashboard_proc.pid here — on Windows agentshore is a
-        # uv tool whose Scripts\python.exe is a trampoline, so Popen's pid is the
-        # trampoline, not the bridge process. Recording it would make the bridge
-        # read its own launcher pid back as a "prior dashboard" and taskkill /T
-        # its own process tree on startup, so nothing ever binds the port. (Any
-        # genuinely-stale prior bridge is already reaped above before spawn.)
         subprocess.Popen(  # nosec B603
             dashboard_cmd,
             stdout=dl,
@@ -426,9 +389,6 @@ def _launch_dashboard_background(
             **_background_spawn_kwargs(),
         )
 
-    # Sync-only delay: give the dashboard bridge a moment to bind its port
-    # before opening the browser.  This runs pre-event-loop (background launch
-    # path), so time.sleep is the correct primitive here.
     time.sleep(1)
     url = f"http://localhost:{port}"
     webbrowser.open(url)
@@ -504,8 +464,6 @@ def _finalize_cli_timelapse(
         try:
             await stop_capture(run_id, Path(runs_cwd_raw))
         except TimelapseError as exc:
-            # Already stopped (e.g. the orchestrator finalised first) or a real
-            # failure — either way, still try to fetch the rendered output.
             _logger.warning("timelapse_stop_failed", run_id=run_id, error=str(exc))
         return await await_output(run_id, Path(runs_cwd_raw))
 
@@ -544,8 +502,6 @@ async def _run_agent_mode(
     await server.start()
     endpoint = server.endpoint
 
-    # The StateWriter persists state snapshots + events into the session
-    # directory for file-tailing consumers (next-gen dashboard sidecar).
     writer = StateWriter(session_dir(repo_root))
     provider = IpcStateProvider(writer, server=server, session_id=session_id)
 
@@ -580,8 +536,6 @@ async def _run_agent_mode(
         nonlocal sigint_count
         sigint_count += 1
         if sigint_count == 1:
-            # Graceful drain: let in-flight plays finish, then end each agent.
-            # Second signal escalates to hard stop (cancel all tasks).
             orch.request_drain("signal_sigterm")
         else:
             for t in asyncio.all_tasks():
@@ -694,7 +648,6 @@ async def _run_headless_mode(
         nonlocal sigint_count
         sigint_count += 1
         if sigint_count == 1:
-            # See _run_agent_mode for why this isn't a background task.
             orch.request_stop()
         else:
             for t in asyncio.all_tasks():

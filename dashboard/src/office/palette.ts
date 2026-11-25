@@ -338,8 +338,8 @@ export const KANBAN_WALL_PALETTES: Record<ResolvedTheme, KanbanWallPalette> = {
   },
 };
 
-// Floor-pad accent palettes (zone → theme → ordered PadColors), single source of truth
-// for the four floor-render call sites; renderer indexes with `i % padColors.length`.
+
+
 
 export interface PadColor {
   fill: string;

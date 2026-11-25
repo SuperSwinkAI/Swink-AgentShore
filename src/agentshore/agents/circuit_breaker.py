@@ -41,10 +41,6 @@ class CircuitBreaker:
         self._recovery_attempts: int = 0
         self._last_recovery_at: datetime | None = None
 
-    # ------------------------------------------------------------------
-    # State queries
-    # ------------------------------------------------------------------
-
     @property
     def state(self) -> CircuitState:
         if self._state == CircuitState.OPEN:
@@ -58,10 +54,6 @@ class CircuitBreaker:
     @property
     def allows_dispatch(self) -> bool:
         return self.state in (CircuitState.CLOSED, CircuitState.HALF_OPEN)
-
-    # ------------------------------------------------------------------
-    # Feedback from the adapter
-    # ------------------------------------------------------------------
 
     def record_success(self) -> None:
         """A dispatch completed successfully — close the breaker if needed."""
@@ -80,10 +72,6 @@ class CircuitBreaker:
             self._state = CircuitState.OPEN
             self._opened_at = now
 
-    # ------------------------------------------------------------------
-    # Recovery
-    # ------------------------------------------------------------------
-
     def should_attempt_recovery(self) -> bool:
         """Return True when the breaker is HALF_OPEN and backoff has elapsed."""
         if self.state != CircuitState.HALF_OPEN:
@@ -98,10 +86,6 @@ class CircuitBreaker:
         """Record that an error-recovery probe was attempted."""
         self._last_recovery_at = self._now()
         self._recovery_attempts += 1
-
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
 
     def _prune_old_failures(self, now: datetime) -> None:
         cutoff = now.timestamp() - self._window

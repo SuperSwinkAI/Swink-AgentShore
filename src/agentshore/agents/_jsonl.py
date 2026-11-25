@@ -1,13 +1,4 @@
-"""Shared JSONL / usage-accounting primitives for the CLI agent adapters.
-
-The CLI agents (Claude Code, Codex, Grok) all emit JSONL on stdout and
-share the same token-usage bookkeeping. These primitives used to live in
-``cli_agent``; ``cli_grok`` imported them from there while ``cli_agent``
-lazily imported ``cli_grok`` back — a circular edge that forced two
-lazy-import wrappers (issue: TNQA finding #6). Hoisting the shared pieces into
-this leaf module breaks the cycle: both adapters import from here, and neither
-imports the other for these helpers.
-"""
+"""Shared JSONL / usage-accounting primitives for the CLI agent adapters."""
 
 from __future__ import annotations
 
@@ -27,10 +18,6 @@ class _UsageTotals:
     cache_write_tokens_in: int = 0
     turn_count: int = 0
     max_turn_input_tokens: int = 0
-    # Vendor-authoritative dollar cost when the agent reports one (Claude Code's
-    # ``total_cost_usd``); 0.0 = none reported → dispatch derives from tokens.
-    # Preferred: the vendor figure accounts for exact model + ephemeral-cache tier
-    # (5m vs 1h), which the static pricing table can't reconstruct from tokens.
     reported_cost: float = 0.0
 
 

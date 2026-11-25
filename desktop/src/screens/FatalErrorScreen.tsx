@@ -100,8 +100,8 @@ export function FatalErrorScreen({
   }, [adapter]);
 
   if (info === null) {
-    // Defensive: someone navigated to /fatal-error without a payload.
-    // Render a minimal Quit-only screen so the user is never trapped.
+
+
     return (
       <main className={styles.screen}>
         <header className={styles.header}>
