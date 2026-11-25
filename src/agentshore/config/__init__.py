@@ -153,7 +153,7 @@ agents:
   codex:
     enabled: true
     binary: codex
-    model: gpt-6.2-sol
+    model: gpt-6.1-terra
     reasoning_effort: medium
     model_tiers:
       small:
@@ -162,11 +162,11 @@ agents:
         reasoning_effort: low
       medium:
         enabled: true
-        model: gpt-6.2-sol
+        model: gpt-6.1-terra
         reasoning_effort: medium
       large:
         enabled: true
-        model: gpt-6.2-astra
+        model: gpt-6.2-sol
         reasoning_effort: high
   antigravity:
     enabled: true

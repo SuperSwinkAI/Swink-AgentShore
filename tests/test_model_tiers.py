@@ -43,9 +43,9 @@ def test_default_model_tiers_for_codex() -> None:
     assert set(tiers) == {"small", "medium", "large"}
     assert tiers["small"].model == "gpt-6-luna"
     assert tiers["small"].reasoning_effort == "low"
-    assert tiers["medium"].model == "gpt-6.2-sol"
+    assert tiers["medium"].model == "gpt-6.1-terra"
     assert tiers["medium"].reasoning_effort == "medium"
-    assert tiers["large"].model == "gpt-6.2-astra"
+    assert tiers["large"].model == "gpt-6.2-sol"
     assert tiers["large"].reasoning_effort == "high"
 
 

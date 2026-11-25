@@ -27,8 +27,8 @@ DEFAULT_MODEL_TIERS: dict[AgentType, dict[str, ModelTierConfig]] = {
     },
     AgentType.CODEX: {
         "small": ModelTierConfig(model="gpt-6-luna", reasoning_effort="low"),
-        "medium": ModelTierConfig(model="gpt-6.2-sol", reasoning_effort="medium"),
-        "large": ModelTierConfig(model="gpt-6.2-astra", reasoning_effort="high"),
+        "medium": ModelTierConfig(model="gpt-6.1-terra", reasoning_effort="medium"),
+        "large": ModelTierConfig(model="gpt-6.2-sol", reasoning_effort="high"),
     },
     AgentType.GROK: {
         "small": ModelTierConfig(model="grok-4.7-build-fast", reasoning_effort="low"),

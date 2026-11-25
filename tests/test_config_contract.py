@@ -46,7 +46,7 @@ def test_generated_cli_config_round_trips(tmp_path: Path) -> None:
     assert config.agents["claude_code"].model_tiers["medium"].reasoning_effort == "medium"
     assert config.agents["claude_code"].model_tiers["large"].reasoning_effort == "high"
     assert config.agents["codex"].model_tiers["small"].model == "gpt-6-luna"
-    assert config.agents["codex"].model_tiers["medium"].model == "gpt-6.2-sol"
+    assert config.agents["codex"].model_tiers["medium"].model == "gpt-6.1-terra"
     assert config.agents["codex"].model_tiers["medium"].reasoning_effort == "medium"
     assert config.agents["codex"].max_context == 272_000
     # Token rates now live in the pricebook (pricing.yaml), not on AgentConfig.
@@ -353,7 +353,7 @@ def test_default_config_has_agent_model_tiers() -> None:
     assert set(config.agents["grok"].model_tiers) == {"small", "medium", "large"}
     assert config.agents["codex"].model_tiers["small"].model == "gpt-6-luna"
     assert config.agents["codex"].model_tiers["small"].reasoning_effort == "low"
-    assert config.agents["codex"].model_tiers["medium"].model == "gpt-6.2-sol"
+    assert config.agents["codex"].model_tiers["medium"].model == "gpt-6.1-terra"
     assert config.agents["codex"].model_tiers["medium"].reasoning_effort == "medium"
     assert config.agents["grok"].model_tiers["small"].model == "grok-4.7-build-fast"
     assert config.agents["grok"].model_tiers["small"].reasoning_effort == "low"

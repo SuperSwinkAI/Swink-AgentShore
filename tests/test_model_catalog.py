@@ -123,8 +123,8 @@ def test_codex_known_models_exclude_legacy_and_deprecated_models() -> None:
 def test_codex_catalog_includes_current_lineup() -> None:
     codex_models = KNOWN_MODELS["codex"]
 
-    assert "gpt-6.2-astra" in codex_models
     assert "gpt-6.2-sol" in codex_models
+    assert "gpt-6.1-terra" in codex_models
     assert "gpt-6-luna" in codex_models
     assert "gpt-5.5" not in codex_models
 

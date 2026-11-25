@@ -158,28 +158,28 @@ models:
     cost_per_1k_output: 0.006
   gpt-6.2-astra:
     max_context: 272000
-    cost_per_1k_input: 0.005
-    cost_per_1k_output: 0.030
+    cost_per_1k_input: 0.010
+    cost_per_1k_output: 0.060
   gpt-6.2-sol:
     max_context: 500000
-    cost_per_1k_input: 0.0025
-    cost_per_1k_output: 0.015
+    cost_per_1k_input: 0.005
+    cost_per_1k_output: 0.030
   gpt-6.1-terra:
     max_context: 500000
     cost_per_1k_input: 0.0025
     cost_per_1k_output: 0.015
   gpt-6.1-sol:
     max_context: 500000
-    cost_per_1k_input: 0.0025
-    cost_per_1k_output: 0.015
+    cost_per_1k_input: 0.005
+    cost_per_1k_output: 0.030
   gpt-6-astra:
+    max_context: 272000
+    cost_per_1k_input: 0.010
+    cost_per_1k_output: 0.060
+  gpt-6-sol:
     max_context: 272000
     cost_per_1k_input: 0.005
     cost_per_1k_output: 0.030
-  gpt-6-sol:
-    max_context: 272000
-    cost_per_1k_input: 0.0025
-    cost_per_1k_output: 0.015
   gpt-6-luna:
     max_context: 272000
     cost_per_1k_input: 0.001
