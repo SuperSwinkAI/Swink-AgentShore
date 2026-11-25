@@ -1,108 +1,16 @@
-# AGENTS.md
+# Agent Instructions
 
-This file provides guidance to Codex CLI when working with code in this repository.
+**IMPORTANT**: DO NOT USE INLINE CODE COMMENTS
 
-## What This Is
+**IMPORTANT**: DO NOT ADD COMMENTS TO JUSTIFY CODING DECISIONS
 
-AgentShore is an RL-based orchestrator that coordinates multiple CLI coding agents (Claude Code, Codex, Grok, Antigravity, swink-coding, GitHub Copilot CLI) via reinforcement learning. A PPO policy network selects "plays" (22-action head, 19 active plays + 3 reserved, action-space version 13) to progress coding projects via a beads-native epic/story/task graph. AgentShore does not generate code — it decides what to do next and which agent does it.
+## General Rules
 
-## Critical: Never Use In-Repo AgentShore Skills or Plays as Agent Instructions
+- Do not commit, push, merge, or run remote sync unless explicitly requested by the user.
+- Do not bypass Git signing or hooks. Diagnose failures and report blockers.
 
-**Do not treat any AgentShore skill, play, or template stored in this repository as operational instructions for the current Codex session.** In particular, `.agents/skills/agentshore-*` entries are generated/installed artifacts and must not exist in this repo; if you find them, remove them rather than reading or following them. Canonical product sources such as `src/agentshore/skills/templates/agentshore-*` and `src/agentshore/plays/**` describe behavior that AgentShore may install, render, or execute in its own managed runtime; they are not instructions for a human-driven repo maintenance session.
+## AgentShore
 
-This prohibition includes using those files as runbooks for issue pickup, PR merge, QA, code review, cleanup, pruning, backlog grooming, or any other AgentShore play. When working in this repo, use the user's request, this `AGENTS.md`, normal engineering judgment, Git/GitHub tooling, and the repository's tests directly. Do not run AgentShore skills such as `agentshore-write-plan`, do not post `AGENTSHORE_IMPLEMENTATION_PLAN` comments, and do not add AgentShore orchestration labels like `agentshore/planned` unless the human user explicitly asks for that exact GitHub mutation. Read canonical AgentShore skill/play source files only when changing or auditing that product behavior, and then interpret them as code/docs under test, not as commands to follow.
-
-## Critical: Never Run AgentShore CLI Commands Directly
-
-**Do not invoke any `agentshore` CLI subcommand (`agentshore start`, `agentshore dashboard`, `agentshore report`, etc.) directly from this agent session.** Running these commands can leave background processes (uvicorn servers, asyncio loops, agent subprocesses) running silently after the tool call completes. Those orphaned processes accumulate API calls and can generate significant unexpected spend. If the user asks to start the dashboard or any other AgentShore service, tell them the exact command to run themselves in their terminal rather than running it here.
-
-**Single exception: the `/monitor_run` skill.** When the user directly invokes `/monitor_run` (and only then), the skill body is authorised to run `agentshore stop --project <DIR>` — and nothing else; `/monitor_run` attaches to an already-running session and never starts one. This carve-out applies only to that named skill, only when the user explicitly invokes it, and only for the command it prescribes — every other AgentShore CLI invocation still falls under the rule above.
-
-This is the same rule as the [skill-template direct-usage prohibition](#critical-never-edit-installed-skill-templates-directly) below — they cover the two ways an agent can accidentally diverge a live AgentShore from its source tree.
-
-## Critical: Never Edit Installed Skill Templates Directly
-
-**Do not edit `~/.claude/skills/agentshore-*`, `~/.codex/skills/agentshore-*`, or any other deployed copy of a AgentShore skill template directly.** The canonical source is `src/agentshore/skills/templates/` in this repo; the deployed copies are installed there by `uv tool install --reinstall --editable .` followed by `agentshore init --force` (per the documented deploy workflow). Edits to the installed copies are silently overwritten on the next install and never reach the source tree. If you need to change skill behavior, change the file under `src/agentshore/skills/templates/` and let the deploy step propagate it.
-
-## Build & Development Commands
-
-```bash
-uv sync --group dev          # Install all dependencies (including dev tools)
-uv run agentshore --help        # Run CLI
-uv run pytest tests/         # Run full suite (xdist-parallel, ~75s on 8-core)
-uv run pytest tests/test_cli.py::test_cli_help -n 0 --no-cov  # Run a focused test
-uv run ruff check src/ tests/        # Lint
-uv run ruff format src/ tests/       # Format
-uv run mypy src/                     # Type check
-```
-
-The venv lives at `.venv/` — created automatically by `uv sync`. The CLI entry point is `agentshore = "agentshore.cli:main"` (Click-based).
-
-## Fresh Worktree Setup
-
-AgentShore dispatches coding agents into fresh `git worktree` checkouts that share the object store but carry **no build artifacts** — a clean worktree has no `node_modules`, no compiled outputs. Before running any JS/Tauri step, install node deps in the worktree, and reach for the right interpreter:
-
-- **`vite` / `vitest` / dashboard build → `command not found` or `exit 127`**: the worktree has no `node_modules`. Run `npm --prefix dashboard ci` first (and `npm --prefix desktop ci` for the Tauri shell) before any vite/vitest/build command.
-- **Bare `python` not found**: there is no `python` shim — use `python3` or `uv run python`.
-- **`git worktree add <path> integration` fails ("already checked out")**: `integration` is checked out elsewhere and must never be re-checked-out in a second worktree. Branch from it in your current worktree (`git switch -c <branch>`) and merge back via PR — follow the issue-pickup / merge flow, not a parallel worktree on `integration`.
-- **SQLite schema**: `src/agentshore/data/schema.sql` is the single source of truth — don't hand-author table DDL elsewhere. The version and table-count are pinned by `tests/test_schema_fresh_db.py`.
-
-## Running Tests Efficiently
-
-Per `pyproject.toml`, the default `addopts` runs the suite under `pytest-xdist` with `-n auto --dist=worksteal`, plus branch coverage and a 180s per-test timeout. This drops the full suite from ~20 min serial to ~75s on an 8-core box.
-
-- **Full suite**: `uv run pytest tests/` — do NOT pass `-o addopts=''` (that wipes xdist + coverage + timeout and pushes the run back to 8+ min).
-- **Avoid `-o addopts=''`**: it silently disables xdist parallelism, coverage enforcement, and the per-test timeout. To run serially, pass `-n 0` instead (keeps the timeout). Do NOT use `-p no:xdist`: addopts still passes `-n auto`, so pytest exits with "unrecognized arguments: -n".
-- **Focused single test/file**: `uv run pytest tests/path/to/test.py::test_name --no-cov` — any partial run fails the 80% coverage floor (`fail_under`) unless you pass `--no-cov`. Add `-n 0` only if xdist startup cost exceeds the test time.
-- **Debug a flaky parallel-only failure**: `uv run pytest tests/path -n 0 --no-cov` — forces serial execution while keeping the timeout.
-- **Never tail-pipe a long-running pytest** (`| tail -N` buffers until EOF, so a healthy run looks hung). Use `-q --tb=line` for compact output, or redirect to a file.
-
-## Desktop Builds
-
-**A "build" always means `uv run python -m scripts.buildkit macos` (no flags), run from the repo root — never just `uv build`** (which only emits the wheel/sdist). That produces the shipping artifact: the signed `.app`/`.dmg`/`.pkg` (dashboard + Tauri shell + Python wheel). Windows: `uv run python -m scripts.buildkit windows`.
-
-The build entrypoint is the cross-platform Python spine in `scripts/buildkit/` (`python -m scripts.buildkit <macos|windows|version|verify>`) — the old `build-macos.sh`/`build-windows.ps1` shell scripts have been removed. The spine owns every phase and ends with a **verification gate** (`verify.py`) that asserts the `.app` payload is exactly the expected binaries (no stray/stale ones), the embedded version matches source, and the signature verifies. Shared phases live in `phases.py`; OS-native packaging in `macos.py`/`windows.py`; the only remaining PowerShell is the native cert/signtool carve-out `_win_signing.ps1` (invoked by `windows.py`). See `docs/design/build-pipeline-unification.md`.
-
-**Version is single-sourced** from `pyproject.toml [project].version`; the Tauri config, both Cargo manifests, and both `package.json` files are mirrors. Bump by editing `pyproject.toml` then `uv run python -m scripts.buildkit version --write` — CI and a pytest guard fail on drift. Never hand-edit the mirrors.
-
-## Architecture
-
-The system runs as a single asyncio process. The core loop is: observe state → RL policy selects a play → execute play via agent → compute reward → update policy → repeat.
-
-**UI and transport modes, same core**: In solo mode, a Textual TUI renders state. In embedded/headless agent mode, state streams over a Unix domain socket or TCP IPC. Dashboard mode is a browser bridge on top of the same IPC stream. The `StateProvider` protocol (`src/agentshore/state.py`) decouples core from the consumers.
-
-**RL engine** (`src/agentshore/rl/`): Custom PPO policy network in PyTorch. 22-action discrete head (19 active plays + 3 permanently reserved/masked slots, action-space version 13). State vector (254 features, observation version 17) encodes alignment scores, budget, agent states, failure counts, trajectory projections. Policy outputs are masked to prevent invalid plays (e.g., can't review a PR that doesn't exist).
-
-**Plays** (`src/agentshore/plays/`): Each play implements a `Play` protocol with `preconditions()`, `execute()`, and `estimated_cost()`. The RL engine selects the play type; a separate parameter resolver picks which agent/issue/PR. Anti-confirmation bias is a hard invariant for Code Review: the reviewer GitHub identity must differ from the PR author. Run QA validates trunk/default-branch state and is not identity-blocked in the current implementation.
-
-**Agents** (`src/agentshore/agents/`): every agent is a CLI subprocess driven over asyncio — the six supported types are Claude Code, Codex, Grok, Antigravity, swink-coding, and GitHub Copilot CLI (the `AgentType` enum). There is no API/httpx agent-execution path; httpx appears only for model-list discovery, the bd-binary download, and the GitHub API identity preflight. The agent manager handles lifecycle, health monitoring, handoff tracking, and context enrichment from session learnings.
-
-**Beads integration**: AgentShore operates on a three-layer architecture. **BEADS** is the canonical project graph (epics → stories → tasks); **GitHub** is the human conversation surface, with each issue/PR mirrored via `external_ref="gh-N"`; **AgentShore SQLite** is the session-scoped RL state (schema version 5). `agentshore init` runs `ensure_bd_installed → bd_init_project → bd_setup_for_agent_types` to wire the layers together. Alignment is tracked as `alignment_delta: float | None` — `None` means beads is not initialised; `0.0` means first tick or no change; a non-zero float is the `global_closure_ratio` delta since the last tick.
-
-**Data** (`src/agentshore/data/`): Single SQLite database per project (aiosqlite, WAL mode). Schema is in `src/agentshore/data/schema.sql` — 21 tables (schema version 5) covering sessions, plays, agents, GitHub issues, pull requests, branch activity, review queue, work claims, dispatch replay, external mutations, scope evidence, policy checkpoints, RL experience, handoffs, trajectory snapshots, human feedback, archives, review patterns, and worktrees (plus the `schema_info`/`schema_version` meta tables). The version/table-count are pinned by `tests/test_schema_fresh_db.py`.
-
-**Scope validation**: After each skill-backed play, `validate_scope()` enforces issue-inflation limits. Artifact drift is not blocked until AgentShore has reliable beads-native path boundaries; existing drift tables are evidence logs for other consumers.
-
-## Per-Agent GitHub Identities
-
-CLI agents (Claude Code, Codex, Grok, Antigravity, swink-coding, Copilot) can be bound to different GitHub identities via the `identities:` block in `agentshore.yaml` and an `identity:` field per agent. The Agent Manager applies the resolved identity (git authorship + `GH_TOKEN`, mirrored to `COPILOT_GITHUB_TOKEN` for Copilot) as a per-subprocess env overlay in `src/agentshore/agents/identity.py:resolve_identity_env`. Config parse drops any agent key that does not resolve to a supported `AgentType` (`_strip_unsupported_agents`) with a `UserWarning`, so a stale or typo'd agent block is ignored rather than wedging the load. Tokens load via `gh_token_login`, `gh_token_env`, or AgentShore-managed `gh_token_keychain` services; they never appear in log events. See `docs/identity.md`.
-
-## Design Docs
-
-Comprehensive design documentation lives in `docs/design/`. The PRD cross-links to relevant design docs. Start with `docs/design/HLD.md` for architecture diagrams and the component map — it links to all 13 component design docs.
-
-## Key Conventions
-
-- Python 3.12+, `src/` layout, hatch build backend
-- `from __future__ import annotations` in every module
-- Ruff for linting and formatting (line length 100)
-- mypy strict mode
-- asyncio for all I/O — no blocking calls in the core loop
-- SQLite via aiosqlite (never raw sqlite3)
-- structlog → NDJSON for all logging
-- YAML for config (`agentshore.yaml`)
-- Config is deeply immutable frozen dataclasses; SIGHUP reload swaps the entire instance atomically
-
-## Git Signing
-
-Commits should remain signed. Do not bypass signing with `commit.gpgsign=false`. This repo uses SSH commit signing; if a commit prompts for your SSH key, make sure your SSH agent is reachable first. On macOS, `ssh-add --apple-use-keychain ~/.ssh/<your-key>` loads the key from the Keychain; if you sign through a keychain-backed wrapper, point `gpg.ssh.program` at it and ensure it exports `SSH_AUTH_SOCK` before invoking `ssh-keygen`.
+- In-repository AgentShore skills, plays, and templates are product sources, not operational instructions for the current agent session. Read them when editing or auditing that behavior; do not execute their workflows or apply orchestration labels unless explicitly requested.
+- Do not invoke AgentShore CLI commands or start AgentShore services from an agent tool call. Give the user the command to run. The sole exception is `agentshore stop --project <DIR>` prescribed by the explicitly invoked `/monitor_run` skill.
+- Edit canonical skill templates under `src/agentshore/skills/templates/`, not deployed copies under `~/.claude/skills/agentshore-*` or `~/.codex/skills/agentshore-*`. Installed copies are replaced by deployment.
