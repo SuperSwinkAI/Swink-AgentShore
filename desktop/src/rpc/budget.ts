@@ -4,9 +4,9 @@
  * (AdjustBudgetDialog). Both surfaces use the same slider geometry.
  */
 
-// ---------------------------------------------------------------------------
-// Slider geometry (mirrors src/agentshore/budget.py constants)
-// ---------------------------------------------------------------------------
+
+
+
 
 export const BUDGET_MIN_USD = 20;
 export const BUDGET_MAX_USD = 1000;
@@ -20,9 +20,9 @@ export const TIME_STEP_MINUTES = 60;
 export const TIME_DEFAULT_MINUTES = 1440;
 export const TIME_DRAIN_RESERVE_MINUTES = 20;
 
-// ---------------------------------------------------------------------------
-// Wire types
-// ---------------------------------------------------------------------------
+
+
+
 
 export type BudgetMode = "capped" | "unlimited";
 
@@ -80,9 +80,9 @@ export interface ProjectBudgetInput {
   time_total_minutes?: number;
 }
 
-// ---------------------------------------------------------------------------
-// Clamp helpers
-// ---------------------------------------------------------------------------
+
+
+
 
 export function clampDollars(value: number): number {
   if (!Number.isFinite(value)) return BUDGET_MIN_USD;
@@ -100,9 +100,9 @@ export function clampMinutes(value: number): number {
   return TIME_MIN_MINUTES + steps * TIME_STEP_MINUTES;
 }
 
-// ---------------------------------------------------------------------------
-// Formatters
-// ---------------------------------------------------------------------------
+
+
+
 
 export function formatDollars(amount: number): string {
   return `$${amount.toLocaleString("en-US")}`;
@@ -115,9 +115,9 @@ export function formatHours(minutes: number): string {
   return `${hours}h ${mins}m`;
 }
 
-// ---------------------------------------------------------------------------
-// Conversion helpers
-// ---------------------------------------------------------------------------
+
+
+
 
 /** Convert a {@link BudgetSelection} into a live-session ``session.set_budget`` payload. */
 export function selectionToLiveInput(selection: BudgetSelection): LiveBudgetInput {

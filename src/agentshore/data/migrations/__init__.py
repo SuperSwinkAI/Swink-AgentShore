@@ -1,21 +1,7 @@
 """Forward-only migrations for the agentshore_dev_v1 schema generation.
 
 ``schema.sql`` is the authoritative baseline. ``DataStore.initialize()`` applies
-idempotent numbered migrations after the baseline script.
-
-Migration history
------------------
-- v1 -> v2: drop the dormant ``pending_approvals`` table (no producer ever
-  wrote to it; AgentShore is extreme-bypass with no human-in-the-loop
-  directional control).
-- v2 -> v3: add ``rl_experience.mask_reason`` so the dominant per-tick mask
-  summary is persisted for post-hoc diagnosis of why a play was not selected.
-- v3 -> v4: add ``github_issues.github_author`` so issue pickup can be gated to
-  trusted identities (opt-in ``trusted_ids.restrict_issues_to_trusted_authors``).
-- v4 -> v5: drop ``session_learnings`` table (and its indexes). The JSON store
-  at ``.agentshore/learnings.json`` is the single source of truth; the SQLite
-  table was never written in production.
-"""
+idempotent numbered migrations after the baseline script."""
 
 from __future__ import annotations
 

@@ -43,10 +43,10 @@ export function normalizeAgentShoreWireMessage(
 
   if (!isPlainObject(parsed) || typeof parsed.type !== "string") return null;
 
-  // Unwrap the documented envelope: {type, id, timestamp, payload: {...}}
-  // into the flat AgentShoreMessage shape the rest of the app expects.
-  // If there is no payload object (e.g. bridge-generated synthetic messages),
-  // treat the whole object as already flat and pass it through unchanged.
+
+
+
+
   if (!isPlainObject(parsed.payload)) return parsed;
 
   return {
@@ -108,10 +108,10 @@ export class WebSocketClient implements DashboardTransport {
         });
         return;
       }
-      // Auth handshake: the server sends auth_token + read_only as part of
-      // the connection handshake. Capture them on the transport before
-      // forwarding so downstream send()'s already carry the token, and the
-      // UI's read-only chrome reflects the right mode.
+
+
+
+
       if (flat.type === "auth_token") {
         const token = flat.token;
         if (typeof token === "string") {
@@ -127,10 +127,10 @@ export class WebSocketClient implements DashboardTransport {
     };
 
     this.ws.onclose = (event: CloseEvent) => {
-      // Connection close visibility — Tauri-origin policy blocks surface as
-      // 1006 with no reason and were silently invisible before. Route through
-      // dashboardLogger.error so it bypasses the DEV/debug gate (errors are
-      // always surfaced) and stays consistent with the rest of the dashboard.
+
+
+
+
       dashboardLogger.error("ws", "connection closed", {
         url: this.url,
         code: event.code,
@@ -138,9 +138,9 @@ export class WebSocketClient implements DashboardTransport {
         wasClean: event.wasClean,
       });
       this.ws = null;
-      // Clear stale auth state so a reconnect starts fresh — otherwise
-      // a previous-connection token leaks into the new session and the
-      // server's read_only/auth_token handshake silently fails.
+
+
+
       if (this.token !== null) {
         this.token = null;
       }
@@ -166,9 +166,9 @@ export class WebSocketClient implements DashboardTransport {
       this.ws.send(JSON.stringify(payload));
       return;
     }
-    // Surface dropped commands. The previous silent-drop hid e.g.
-    // FeedbackModal button submissions during reconnect — the user
-    // clicked, nothing happened, and there was no console trace.
+
+
+
     dashboardLogger.warn("ws", "dropping command — socket not open", {
       readyState: this.ws?.readyState ?? "no socket",
       command_type: command.type,

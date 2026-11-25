@@ -16,7 +16,6 @@ if TYPE_CHECKING:
 
 
 def _npm() -> str:
-    # shutil.which resolves npm.cmd on Windows / npm on POSIX.
     return require_tool("npm", "install Node.js (npm) and retry")
 
 

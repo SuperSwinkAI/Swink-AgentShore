@@ -123,7 +123,6 @@ async def test_mirror_calls_bd_import_for_open_issues(tmp_path: Path) -> None:
 
     assert mock_bd.call_count == 2
 
-    # Verify call shape: bd("import", "--dedup", "-", cwd=..., stdin_data=...)
     for c in mock_bd.call_args_list:
         args, kwargs = c
         assert args[0] == "import"
@@ -152,14 +151,13 @@ async def test_mirror_skips_already_tracked_issues(tmp_path: Path) -> None:
     graph = _graph_with_epics(tasks=[existing_task])
 
     issues = [
-        _make_issue(1, "Add authentication"),  # already tracked
-        _make_issue(2, "Fix navbar styling"),  # new — should be imported
+        _make_issue(1, "Add authentication"),
+        _make_issue(2, "Fix navbar styling"),
     ]
 
     with patch("agentshore.beads.bd", new_callable=AsyncMock) as mock_bd:
         await _mirror_issues_to_beads(project_path=tmp_path, issues=issues, graph=graph)
 
-    # Only issue 2 should be imported
     assert mock_bd.call_count == 1
     payload = json.loads(mock_bd.call_args.kwargs["stdin_data"].decode().strip())
     assert payload["external_ref"] == "gh-2"
@@ -200,18 +198,15 @@ async def test_mirror_swallows_bd_error(tmp_path: Path) -> None:
         _make_issue(2, "Second issue"),
     ]
 
-    # First call raises BdError, second succeeds
     with patch(
         "agentshore.beads.bd",
         new_callable=AsyncMock,
         side_effect=[BdError("bd import failed"), None],
     ) as mock_bd:
-        # Must not raise
         await _mirror_issues_to_beads(
             project_path=tmp_path, issues=issues, graph=_graph_with_epics()
         )
 
-    # Both were attempted despite the error on the first
     assert mock_bd.call_count == 2
 
 

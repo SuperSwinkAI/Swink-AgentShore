@@ -29,8 +29,6 @@ from agentshore.config.models import (
     RuntimeConfig,
 )
 
-# POSIX: force /tmp so AF_UNIX socket paths stay under the ~104-char sun_path
-# limit (macOS). Windows has neither AF_UNIX nor /tmp -> use the system temp.
 _TMP_ROOT = None if sys.platform.startswith("win") else "/tmp"
 
 
@@ -112,9 +110,6 @@ def test_existing_config_without_model_tiers_prompts_agent_selection() -> None:
     cfg.agents = {"codex": AgentConfig(enabled=True)}
 
     assert _needs_interactive_agent_selection(cfg, config_created=False)
-
-
-# 1. Agent mode auto-selects a socket
 
 
 def test_agent_mode_auto_selects_socket(
@@ -281,7 +276,6 @@ def test_start_rejects_existing_session_without_overwriting_pid(
     pid_path.parent.mkdir(parents=True)
     pid_path.write_text("12345", encoding="utf-8")
 
-    # Liveness uses _process_alive, not bare os.kill (CTRL_C_EVENT on Windows).
     monkeypatch.setattr(sp_process, "_process_alive", lambda pid: pid == 12345)
 
     result = runner.invoke(main, ["start", "--project", str(repo), "--headless"])
@@ -319,9 +313,6 @@ def test_start_runtime_error_cleans_session_metadata(
     assert isinstance(result.exception, RuntimeError)
     assert not sp.session_pid_path(repo).exists()
     assert not sp.session_socket_path(repo).exists()
-
-
-# 2. Agent mode creates IPC server (test _run_agent_mode directly)
 
 
 @pytest.mark.asyncio()
@@ -362,9 +353,6 @@ async def test_agent_mode_creates_server(tmp_path: Path) -> None:
     mock_server.start.assert_awaited_once()
     mock_server.stop.assert_awaited_once()
     assert mock_boot.await_args.kwargs["session_id"] == "sess-cli"
-
-
-# 3. TUI mode creates OrchestratorApp (via CLI dispatch)
 
 
 def test_tui_mode_creates_app(runner: CliRunner, tmp_path: Path) -> None:
@@ -412,9 +400,6 @@ def test_tui_flag_conflicts_with_agent_mode(runner: CliRunner) -> None:
 
     assert result.exit_code != 0
     assert "--tui cannot be combined with --mode agent" in result.output
-
-
-# 4-6. Command dispatch tests via _dispatch_command
 
 
 @pytest.mark.asyncio()
@@ -540,8 +525,6 @@ def test_wait_for_session_exit_waits_indefinitely_for_clean_drain(
     """No deadline: the wait polls across many ticks until the process exits."""
     with (
         patch("agentshore.session_path.read_pid", return_value=1234),
-        # Liveness via _process_alive (never os.kill(pid, 0) = CTRL_C_EVENT on
-        # Windows): alive for several polls, then it exits.
         patch(
             "agentshore.session_process._process_alive",
             side_effect=[True, True, True, False],
@@ -627,9 +610,6 @@ def test_stop_hard_skips_end_session_report(runner: CliRunner, tmp_path: Path) -
     assert "AgentShore session force-stopped." in result.output
 
 
-# 7. Server stopped on exit (finally block)
-
-
 @pytest.mark.asyncio()
 async def test_agent_mode_server_stopped_on_exit(tmp_path: Path) -> None:
     sock = str(tmp_path / "test.sock")
@@ -661,11 +641,7 @@ async def test_agent_mode_server_stopped_on_exit(tmp_path: Path) -> None:
                 policy_mode=PolicyMode.LEARNING,
             )
 
-    # server.stop must run even though run_until_idle raised.
     mock_server.stop.assert_awaited_once()
-
-
-# 8. Phase 2 warning removed
 
 
 def test_phase2_warning_removed(
@@ -719,9 +695,6 @@ def test_start_cleanup_stops_recorded_dashboard_process(
     stop_dash.assert_called_once_with(repo)
 
 
-# 9. Auto-discovery for `agentshore dashboard` and `--socket` registration
-
-
 def test_explicit_socket_override_writes_session_info_and_symlink(
     runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -740,7 +713,6 @@ def test_explicit_socket_override_writes_session_info_and_symlink(
     captured: dict[str, object] = {}
 
     def capture_during_run(coro: object) -> None:
-        # Mid-run snapshot — info.json should already exist by now.
         info = sp.read_session_info(repo)
         captured["info"] = info
         captured["well_known_is_symlink"] = sp.session_socket_path(repo).is_symlink()
@@ -767,7 +739,6 @@ def test_explicit_socket_override_writes_session_info_and_symlink(
     assert info["socket"] == str(explicit_socket)
     assert info["session_id"] == "session-info-test"
     assert info["project_key"] == sp.session_socket_path(repo).parent.name
-    # Symlink creation is best-effort; Windows often requires elevated privileges.
     if not sp.sys.platform.startswith("win"):
         assert captured["well_known_is_symlink"] is True
 
@@ -827,7 +798,6 @@ def test_dashboard_auto_discovers_socket_for_project(
         sp, "_SESSIONS_DIR", Path(tempfile.mkdtemp(prefix="fm_sessions_", dir=_TMP_ROOT))
     )
 
-    # Fake a running session: live PID + socket file.
     monkeypatch.setattr(sp.os, "kill", lambda pid, sig: None)
     sp.write_pid(project)
     sock_path = sp.session_socket_path(project)
@@ -866,7 +836,6 @@ def test_dashboard_does_not_reap_its_own_parent_pid(
         sp, "_SESSIONS_DIR", Path(tempfile.mkdtemp(prefix="fm_sessions_", dir=_TMP_ROOT))
     )
 
-    # Simulate a supervisor/trampoline having recorded our *parent's* pid.
     sp.write_dashboard_pid(project, os.getppid())
 
     reaped: list[int | None] = []
@@ -897,9 +866,7 @@ def test_dashboard_does_not_reap_its_own_parent_pid(
         )
 
     assert result.exit_code == 0, result.output
-    # The parent pid must NOT have been reaped (no self-kill)...
     assert reaped == []
-    # ...and the bridge must record its OWN real pid, overwriting the parent's.
     assert sp.read_dashboard_pid(project) == os.getpid()
 
 
@@ -931,7 +898,6 @@ def test_dashboard_reports_no_session_when_socket_stale(
 
     assert result.exit_code != 0
     assert "No running AgentShore session" in result.stderr
-    # The stale socket and PID should have been cleaned up by discover_socket.
     assert not sp.session_socket_path(project).exists()
     assert not sp.session_pid_path(project).exists()
 
@@ -950,9 +916,6 @@ def test_dashboard_ipc_host_requires_ipc_port(runner: CliRunner, tmp_path: Path)
 
     assert result.exit_code != 0
     assert "--ipc-host requires --ipc-port" in result.output
-
-
-# New drain-audit tests
 
 
 @pytest.mark.asyncio()

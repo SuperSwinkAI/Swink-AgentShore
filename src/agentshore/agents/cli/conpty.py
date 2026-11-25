@@ -39,7 +39,6 @@ if TYPE_CHECKING:
 
 _logger = get_logger(__name__)
 
-# Chars per blocking PTY read in the reader thread.
 _READ_CHUNK = 4096
 
 
@@ -54,8 +53,6 @@ def _winpty_available() -> bool:
     return True
 
 
-# Resolved once at import. Tests monkeypatch this (and ``sys.platform``) to
-# exercise both branches of ``should_use_conpty`` deterministically off-Windows.
 _HAS_WINPTY = _winpty_available()
 
 
@@ -140,8 +137,6 @@ class PtyProcess:
                 except OSError:
                     break
                 if not data:
-                    # No data but alive: retry. (pywinpty.read normally blocks
-                    # until data/EOF; guard is for alternate backends.)
                     if not self._is_alive():
                         break
                     continue
@@ -197,7 +192,7 @@ async def spawn(
     ``FileNotFoundError`` so the dispatch path maps it to the same recoverable
     "executable not found" class the plain-pipe spawn already handles.
     """
-    import winpty  # local import: only importable on Windows
+    import winpty
 
     loop = asyncio.get_running_loop()
 
@@ -209,8 +204,6 @@ async def spawn(
     except FileNotFoundError:
         raise
     except Exception as exc:
-        # Normalise pywinpty's launch errors (usually a missing binary) to the
-        # recoverable executable-not-found case, not an unexpected play error.
         raise FileNotFoundError(f"failed to spawn {argv[0]!r} under ConPTY: {exc}") from exc
     return PtyProcess(pty, loop=loop, limit=limit)
 
@@ -230,7 +223,7 @@ def run_sync(
     True. Returned stdout is raw PTY text (terminal escapes included) — the
     caller strips/searches it.
     """
-    import winpty  # local import: only importable on Windows
+    import winpty
 
     from agentshore import subprocess_env
 
@@ -239,7 +232,6 @@ def run_sync(
     except FileNotFoundError as exc:
         raise OSError(f"agy binary not found: {exc}") from exc
     except Exception as exc:
-        # Normalise to OSError: the synchronous auth-probe caller guards on it.
         raise OSError(f"failed to spawn {argv[0]!r} under ConPTY: {exc}") from exc
     chunks: list[str] = []
 

@@ -20,9 +20,6 @@ def _infer_failure_category(outcome: PlayOutcome) -> str:
     if outcome.failure_kind is not None:
         return str(outcome.failure_kind.to_category())
     error = (outcome.error or "").lower()
-    # Canonical AUTH_MARKERS superset (Phase 4): covers GitHub-table spellings
-    # ("repository not found", "http 401/403") the publish subset lacked, and
-    # avoids the bare "auth" fallback that false-matched "author"/"authorized".
     if any(marker in error for marker in AUTH_MARKERS):
         return "agent_error"
     if error.startswith(("test", "ci", "pytest", "lint")):

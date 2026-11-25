@@ -16,8 +16,6 @@ from agentshore.agents.worktree.allocator import (
     slug_for_branch,
 )
 
-# --- slug helper -------------------------------------------------------------
-
 
 @pytest.mark.parametrize(
     ("branch", "expected"),
@@ -33,9 +31,6 @@ from agentshore.agents.worktree.allocator import (
 )
 def test_slug_for_branch(branch: str, expected: str) -> None:
     assert slug_for_branch(branch) == expected
-
-
-# --- ensure_worktree happy path ---------------------------------------------
 
 
 async def test_ensure_worktree_creates_pr_scoped(
@@ -92,9 +87,6 @@ async def test_ensure_worktree_branch_creating_detached(
     assert (target / "README.md").exists()
 
 
-# --- failure paths -----------------------------------------------------------
-
-
 async def test_ensure_worktree_deletes_clean_orphan_target(
     main_repo: Path, worktree_root: Path, remote_branch: str
 ) -> None:
@@ -117,10 +109,8 @@ async def test_ensure_worktree_deletes_clean_orphan_target(
         fetch=True,
     )
     assert result.created is True
-    # The new worktree at ``target`` is a real git checkout, not the leftover dir.
     assert (target / ".git").exists()
     assert not (target / "stray.txt").exists()
-    # No quarantine sibling dir is created.
     assert not worktree_root.with_name(worktree_root.name + "-orphan").exists()
 
 
@@ -159,7 +149,6 @@ async def test_ensure_worktree_raises_on_dirty_orphan_target(
             fetch=True,
         )
     assert exc.value.reason == "orphan_dirty_uncommitted"
-    # Preserved dirty orphan stays in place.
     assert target.exists()
     assert (target / "uncommitted.txt").exists()
 
@@ -225,9 +214,6 @@ async def test_ensure_worktree_fetch_failure_proceeds_with_stale_local(
     assert result.created is True
 
 
-# --- remove_worktree ---------------------------------------------------------
-
-
 async def test_remove_worktree_cleans_disk(
     main_repo: Path, worktree_root: Path, remote_branch: str
 ) -> None:
@@ -252,9 +238,6 @@ async def test_remove_worktree_force_when_directory_missing(
     assert ok is True
 
 
-# --- pickup-* collision retry ---
-
-
 async def test_allocate_retries_on_pickup_branch_collision(
     main_repo: Path, worktree_root: Path, remote_branch: str
 ) -> None:
@@ -263,7 +246,6 @@ async def test_allocate_retries_on_pickup_branch_collision(
     Reproduces example-project session c734b96f: pickup-535 orphan held
     branch ``agentshore/535-...`` and blocked subsequent code_review allocations.
     """
-    # Create the orphaned pickup-* worktree holding the branch.
     pickup_path = worktree_root / "pickup-99"
     await ensure_worktree(
         main_repo=main_repo,
@@ -273,7 +255,6 @@ async def test_allocate_retries_on_pickup_branch_collision(
     )
     assert pickup_path.exists()
 
-    # Now try to allocate the same branch at a different path — should retry.
     new_path = worktree_root / "agentshore-x"
     result = await ensure_worktree(
         main_repo=main_repo,
@@ -283,7 +264,6 @@ async def test_allocate_retries_on_pickup_branch_collision(
     )
     assert result.created is True
     assert new_path.exists()
-    # The orphan pickup-* was force-removed during retry.
     assert not pickup_path.exists()
 
 
@@ -314,11 +294,7 @@ async def test_allocate_does_not_retry_on_non_pickup_collision(
             branch_name=remote_branch,
             base_ref=f"origin/{remote_branch}",
         )
-    # The operator-owned worktree is untouched.
     assert held_path.exists()
-
-
-# --- Piece B: detached-HEAD fallback when the branch is checked out elsewhere -
 
 
 def _head_is_detached(worktree: Path) -> bool:
@@ -334,7 +310,6 @@ def _head_is_detached(worktree: Path) -> bool:
 
 
 async def test_branch_checked_out_in_primary_detects_current_branch(main_repo: Path) -> None:
-    # The primary working tree holds ``main``; a sibling feature branch does not.
     assert await _branch_checked_out_in_primary(main_repo, "main") is True
     assert await _branch_checked_out_in_primary(main_repo, "feature/x") is False
 
@@ -342,8 +317,6 @@ async def test_branch_checked_out_in_primary_detects_current_branch(main_repo: P
 async def test_ensure_worktree_detaches_when_branch_held_by_primary(
     main_repo: Path, worktree_root: Path
 ) -> None:
-    # A PR whose head branch is ``main`` (the repo default the primary tree
-    # already has checked out): ``-B main`` would fail, so we must detach. Issue #60.
     target = worktree_root / "pr-from-main"
     result = await ensure_worktree(
         main_repo=main_repo,
@@ -362,8 +335,6 @@ async def test_ensure_worktree_detaches_when_branch_held_by_primary(
 async def test_ensure_worktree_uses_branch_when_not_checked_out_elsewhere(
     main_repo: Path, worktree_root: Path, remote_branch: str
 ) -> None:
-    # The normal case: the head branch is a feature branch nobody else holds, so
-    # the worktree is created on that branch (not detached).
     target = worktree_root / "feature-x"
     result = await ensure_worktree(
         main_repo=main_repo,

@@ -49,8 +49,6 @@ def main(log_path: Path) -> int:
         print("[STATUS] log is empty")
         return 0
 
-    # Session id: take the most common one (handles a session restart in the
-    # same log file by surfacing the active one).
     session_ids: dict[str, int] = defaultdict(int)
     for e in events:
         sid = e.get("session_id")
@@ -62,7 +60,6 @@ def main(log_path: Path) -> int:
     for e in events:
         by_event[str(e.get("event", "?"))] += 1
 
-    # Agents: aggregate state, cost, and call count from log events.
     agents: dict[str, dict[str, Any]] = {}
 
     def _agent(aid: str) -> dict[str, Any]:
@@ -133,8 +130,6 @@ def main(log_path: Path) -> int:
     else:
         print("  (no plays yet)")
 
-    # Top events by frequency. Useful diagnostic surface — repeated
-    # ``loop_detected`` or ``learnings_load_failed`` are visible here.
     print("  Top events:")
     for ev, n in sorted(by_event.items(), key=lambda kv: -kv[1])[:8]:
         print(f"    {ev:<28} {n}")

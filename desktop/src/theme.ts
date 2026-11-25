@@ -4,8 +4,8 @@ import { useCallback, useEffect, useState } from "react";
 export type ThemeChoice = "system" | "light" | "dark";
 
 export function normalizeTheme(value: string | undefined): ThemeChoice {
-  // Legacy "grid-light"/"grid-dark" stored values (pre-desktop-axub) map
-  // onto the renamed "light"/"dark" choices so existing preferences carry over.
+
+
   if (value === "dark" || value === "grid-dark") return "dark";
   if (value === "light" || value === "grid-light") return "light";
   return "system";

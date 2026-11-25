@@ -137,9 +137,6 @@ async def test_bootstrap_logs_each_step_with_timing(
         assert step in all_output, f"Missing step: {step}"
 
 
-# bootstrap_phase IPC events (desktop-zmw)
-
-
 @pytest.mark.asyncio
 async def test_step_fires_publisher_on_started_and_completed() -> None:
     """Inside a bootstrap publisher context, _step emits started + completed."""
@@ -226,5 +223,4 @@ async def test_bootstrap_forwards_phases_to_state_provider(tmp_path: Path) -> No
         assert required in phases_started, f"missing started for {required}"
         assert required in phases_completed, f"missing completed for {required}"
 
-    # Final synthetic "ready/completed" event dismisses the dashboard loading modal.
     assert ("ready", "completed", 0.0) in phase_events

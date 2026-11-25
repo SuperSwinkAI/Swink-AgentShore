@@ -44,7 +44,6 @@ async def test_write_state_overwrites_previous(writer: StateWriter, tmp_path: Pa
     data = json.loads(state_file.read_text(encoding="utf-8"))
     assert data["total_plays"] == 2
 
-    # No stray tmp files left over (would indicate failed atomic swap).
     tmp_leftovers = list(tmp_path.glob(".dashboard_state-*.tmp"))
     assert tmp_leftovers == []
 
@@ -95,8 +94,6 @@ async def test_rotation_keeps_tail_when_file_exceeds_cap(
     after = events_file.stat().st_size
     assert after <= (1 * 1024 * 1024) + len(big_line) + 256
 
-    # Last line of the rotated file is the freshly-appended event — readers
-    # never lose the most recent activity.
     lines = events_file.read_text(encoding="utf-8").splitlines()
     assert lines[-1] == _msg({"type": "newest", "marker": True})
 
@@ -108,8 +105,6 @@ async def test_concurrent_writes_serialize(writer: StateWriter) -> None:
     payloads = [_msg({"total_plays": i}) for i in range(20)]
     await asyncio.gather(*(writer.write_state(p) for p in payloads))
 
-    # The final file is *some* valid snapshot (not necessarily the last
-    # gather-arg, but a well-formed JSON document).
     data = json.loads(writer.state_path.read_text(encoding="utf-8"))
     assert "total_plays" in data
     assert isinstance(data["total_plays"], int)
@@ -160,7 +155,6 @@ def test_constructor_survives_locked_prior_session_file(
 
     monkeypatch.setattr(Path, "unlink", _locked_unlink)
 
-    # Must not raise despite both files being unremovable.
     StateWriter(tmp_path)
 
 
@@ -207,7 +201,6 @@ async def test_write_state_drops_snapshot_after_persistent_lock_on_windows(
         raise PermissionError(5, "Access is denied")
 
     monkeypatch.setattr(sw.os, "replace", _always_locked)
-    # Must return cleanly, leaving no temp files behind.
     await writer.write_state(_msg({"k": "v"}))
     assert not list(tmp_path.glob(".dashboard_state-*.tmp"))
 

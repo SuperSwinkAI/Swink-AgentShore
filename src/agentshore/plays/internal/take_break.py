@@ -25,9 +25,6 @@ if TYPE_CHECKING:
 
 _PLAY_COST = 0.005
 
-# When the session is draining, poll for the drain signal on this cadence so an
-# in-flight break aborts within seconds instead of holding the agent for the
-# full break_duration_minutes (default 30). See #30.
 _DRAIN_POLL_SECONDS = 5.0
 
 
@@ -76,10 +73,6 @@ class TakeBreakPlay(InternalPlay):
             trigger_agent_id if isinstance(trigger_agent_id, str) else None
         )
 
-        # Register a cancel signal for the pending recovery so an ``agent_cleared``
-        # teardown can abandon this wait immediately (#367). Without it the break
-        # ran to completion and logged ``break_recovery_failed`` ~31 min after the
-        # target was gone, polluting recovery telemetry.
         cancel = (
             ctx.manager.register_break_recovery(target_agent_id)
             if target_agent_id is not None
@@ -96,9 +89,6 @@ class TakeBreakPlay(InternalPlay):
         if cancelled == "cleared":
             return self._agent_cleared_outcome(target_agent_id, trigger_agent_id, elapsed)
 
-        # Final guard: drain may have flipped during the last sleep chunk (or the
-        # single unbroken sleep). Abort before attempting recovery so we never
-        # record a spurious break-recovery failure on the wind-down path.
         if is_draining is not None and is_draining():
             return self._drain_abort_outcome(params, trigger_agent_id, elapsed)
 
@@ -116,20 +106,6 @@ class TakeBreakPlay(InternalPlay):
             target_agent_id = target.agent_id if target is not None else None
 
         recovered: list[str] = []
-        # Recover only the agent that triggered this cooldown. Other agents may
-        # continue working or be handled by their own TAKE_BREAK play.
-        #
-        # The target may have been ``manager.clear()``-ed out of the registry —
-        # e.g. an idle-reap or a concurrent end_agent play retired it — either
-        # before this play was even dispatched (state.agents, captured at
-        # dispatch time, already misses it) or during the break sleep itself
-        # (up to 30 min by default; state.agents can't see that). Guard on
-        # ``state.agents`` here to skip the common case cheaply; ``attempt_recovery``
-        # itself no longer raises for an unknown id either (agents/manager.py),
-        # covering the mid-sleep-clear case as defense-in-depth (#332). Without
-        # either, ``attempt_recovery`` -> ``_get_handle`` raises
-        # ``PreconditionFailed`` for an unknown id, crashing the play instead of
-        # returning a clean outcome.
         target_still_present = target_agent_id is not None and any(
             a.agent_id == target_agent_id for a in state.agents
         )
@@ -142,9 +118,6 @@ class TakeBreakPlay(InternalPlay):
 
         trigger_error_class = params.extras.get("trigger_error_class")
 
-        # A break that ran but couldn't recover its target leaves the agent in
-        # ERROR. Returning success=False lets the loop count consecutive
-        # failures on this play and graduate to end_agent (desktop-s1u7).
         success = not recovery_attempted or recovery_succeeded
 
         return PlayOutcome(
@@ -188,10 +161,6 @@ class TakeBreakPlay(InternalPlay):
         remaining = float(duration_s)
         poll = _DRAIN_POLL_SECONDS if is_draining is not None else remaining
         while remaining > 0:
-            # Drain-aware break: poll the drain signal so a wind-down that begins
-            # mid-break aborts within ``_DRAIN_POLL_SECONDS`` instead of holding
-            # the agent for the full duration. On abort, skip recovery entirely —
-            # the agent stays ERROR and end_agent retires it during drain (#30).
             if is_draining is not None and is_draining():
                 return "drain"
             if cancel is not None and cancel.is_set():
@@ -225,13 +194,9 @@ class TakeBreakPlay(InternalPlay):
         trigger_agent_id: object,
         elapsed: float,
     ) -> PlayOutcome:
-        """Outcome for a break abandoned because its target agent was cleared (#367).
+        """Return a successful outcome for a break whose target agent was cleared.
 
-        No recovery is attempted — the agent no longer exists. ``success=True``
-        keeps this off the consecutive-break-failure path: the break did not fail,
-        it became moot, and scoring it as a failure is what produced stale
-        ``break_recovery_failed`` telemetry ~31 min after ``agent_cleared``.
-        """
+        No recovery is attempted and this does not count as a break failure."""
         return PlayOutcome(
             play_type=self.play_type,
             agent_id=target_agent_id,

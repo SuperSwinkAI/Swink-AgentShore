@@ -44,9 +44,6 @@ def _git(*args: str, cwd: Path | None = None) -> str:
     )
 
 
-# --- detect_branch_in_worktree -----------------------------------------------
-
-
 async def test_detect_branch_returns_branch_name(tmp_path: Path, fake_remote_repo: Path) -> None:
     wt = tmp_path / "wt"
     _git("clone", str(fake_remote_repo), str(wt))
@@ -69,9 +66,6 @@ async def test_detect_branch_returns_none_on_detached_head(
 async def test_detect_branch_returns_none_for_missing_path(tmp_path: Path) -> None:
     branch = await detect_branch_in_worktree(tmp_path / "nope")
     assert branch is None
-
-
-# --- rekey_worktree happy path ----------------------------------------------
 
 
 async def test_rekey_renames_dir_and_updates_row(
@@ -127,9 +121,6 @@ async def test_rekey_idempotent_when_path_already_matches(
     assert target.exists()
 
 
-# --- failure paths -----------------------------------------------------------
-
-
 async def test_rekey_db_failure_after_rename_marks_stale(
     store: DataStore,
     tmp_path: Path,
@@ -170,15 +161,12 @@ async def test_rekey_db_failure_after_rename_marks_stale(
             worktree_root=worktree_root,
         )
 
-    # Row should now be 'stale' with a descriptive failure_reason. The
-    # session-start reaper will pick it up on next start.
     fetched = await lookup_by_id(store, worktree_id=row.worktree_id)
     assert fetched is not None
     assert fetched.status == "stale"
     assert fetched.failure_reason is not None
     assert "rekey_db_update_failed" in fetched.failure_reason
 
-    # The rename did happen — dir is at the new path, original is gone.
     new_path = worktree_root / "fix-77"
     assert new_path.exists()
     assert not original.exists()
@@ -222,7 +210,7 @@ async def test_rekey_rename_failure_keeps_row_active(
     fetched = await lookup_by_id(store, worktree_id=row.worktree_id)
     assert fetched is not None
     assert fetched.status == "stale"
-    assert fetched.branch_name is None  # rekey did not advance the row
+    assert fetched.branch_name is None
     assert fetched.failure_reason is not None
     assert "rekey_rename_failed" in fetched.failure_reason
 
@@ -268,7 +256,6 @@ async def test_rekey_rename_failure_releases_orphaned_worktree(
             worktree_root=worktree_root,
         )
 
-    # On-disk orphan is gone; the branch is freed for the next allocator.
     assert not original.exists()
 
 
@@ -315,6 +302,5 @@ async def test_rekey_db_update_failure_runs_git_repair(
             worktree_root=worktree_root,
         )
 
-    # Repair was invoked with the right reason.
     assert len(repair_calls) == 1
     assert repair_calls[0][0]["reason"] == "rekey_db_update_failed"

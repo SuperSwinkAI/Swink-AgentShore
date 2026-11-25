@@ -10,10 +10,6 @@ import pytest
 from agentshore.plays.base import Play, PlayExecutionContext, PlayParams
 from agentshore.state import OrchestratorState, PlayOutcome, PlayType
 
-# ---------------------------------------------------------------------------
-# PlayParams
-# ---------------------------------------------------------------------------
-
 
 def test_play_params_immutable_frozen() -> None:
     params = PlayParams(issue_number=42)
@@ -25,11 +21,6 @@ def test_play_params_default_extras_independent_per_instance() -> None:
     a = PlayParams()
     b = PlayParams()
     assert a.extras is not b.extras
-
-
-# ---------------------------------------------------------------------------
-# Play protocol — runtime_checkable
-# ---------------------------------------------------------------------------
 
 
 def _make_minimal_play() -> object:
@@ -75,11 +66,6 @@ def test_play_protocol_runtime_checkable_against_minimal_impl() -> None:
 
 def test_non_play_object_does_not_satisfy_protocol() -> None:
     assert not isinstance(object(), Play)
-
-
-# ---------------------------------------------------------------------------
-# PlayExecutionContext
-# ---------------------------------------------------------------------------
 
 
 def test_play_execution_context_carries_session_and_play_id() -> None:

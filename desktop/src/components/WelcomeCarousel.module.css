@@ -1,6 +1,3 @@
-/* Welcome carousel chrome — mirrors AppMenu.module.css's overlay/dialog/button
-   look so the first-run flow matches the rest of the app, and tracks the theme
-   variables in styles.css (light / dark / system). */
 .overlay {
   position: fixed;
   inset: 0;

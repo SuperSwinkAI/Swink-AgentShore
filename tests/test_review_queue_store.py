@@ -70,7 +70,6 @@ async def test_enqueue_review_idempotent(tmp_path) -> None:
         )
         assert qid1 > 0
 
-        # Second enqueue for same PR+session should be silently ignored.
         qid2 = await store.enqueue_review(
             ReviewQueueRecord(
                 pr_number=42,
@@ -181,7 +180,6 @@ async def test_complete_review_sets_done(tmp_path) -> None:
 async def test_drain_review_queue_for_prs_drains_pending_and_claimed(tmp_path) -> None:
     store = await _make_store(tmp_path)
     try:
-        # Two pending + one claimed across three PRs; drain two of them.
         for pr in (10, 11):
             await store.enqueue_review(
                 ReviewQueueRecord(
@@ -200,9 +198,8 @@ async def test_drain_review_queue_for_prs_drains_pending_and_claimed(tmp_path) -
         await store.claim_review(qid_claimed, "agent-x")
 
         drained = await store.drain_review_queue_for_prs("s1", [10, 12])
-        assert drained == 2  # one pending (10) + one claimed (12)
+        assert drained == 2
 
-        # Only PR 11's row remains live; 10 and 12 are done.
         pending = await store.list_pending_reviews("s1")
         assert [row.pr_number for row in pending] == [11]
     finally:
@@ -255,7 +252,6 @@ async def test_list_pending_reviews_ordered(tmp_path) -> None:
 
         pending = await store.list_pending_reviews("s1")
         assert len(pending) == 3
-        # Ordered by enqueued_at ASC.
         assert [r.pr_number for r in pending] == [20, 30, 10]
     finally:
         await store.close()
@@ -312,7 +308,6 @@ async def test_external_mutation_idempotency_no_error(tmp_path) -> None:
         )
         await store.record_external_mutation(mutation)
 
-        # Second insert with same idempotency_key should NOT raise.
         await store.record_external_mutation(mutation)
 
         existing = await store.get_external_mutation("s1", "key-abc")
@@ -348,20 +343,16 @@ async def test_mark_pull_request_absent_evicts_and_drains(tmp_path) -> None:
                 enqueued_at="2026-05-07T00:01:00+00:00",
             )
         )
-        # Precondition: the PR is open and a review is pending.
         assert [pr.pr_number for pr in await store.list_open_pull_requests("s1")] == [2665]
         assert len(await store.list_pending_reviews("s1")) == 1
 
         await store.mark_pull_request_absent("s1", 2665)
 
-        # The PR no longer matches the open/active eligibility filters...
         assert await store.list_open_pull_requests("s1") == []
         assert await store.list_active_pull_requests("s1") == []
-        # ...the row is marked absent (not deleted — auditable)...
         evicted = await store.get_pull_request("s1", 2665)
         assert evicted is not None
         assert evicted.state == "absent"
-        # ...and the pending review row was drained.
         assert await store.list_pending_reviews("s1") == []
     finally:
         await store.close()

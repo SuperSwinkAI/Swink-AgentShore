@@ -49,9 +49,6 @@ DEST = (
 
 
 def _default_source() -> Path:
-    # The global canonical is tagged with all three compatibility versions
-    # (action-space / observation / policy); reuse the single source of truth so
-    # this never drifts from the checkpoint-store naming again.
     return GLOBAL_WEIGHTS_DIR / canonical_weights_filename()
 
 
@@ -91,7 +88,6 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  set ${ENV_VAR}, pass --source, or train a canonical first.", file=sys.stderr)
         return 1
 
-    # Version gate: raises IncompatibleCheckpointError on any version drift.
     model = ActorCritic.load(source)
     src_num_configs = model.num_configs
 

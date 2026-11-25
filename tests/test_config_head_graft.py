@@ -73,7 +73,6 @@ def test_reload_from_headless_canonical_takes_trunk_keeps_head(tmp_path: Path) -
     assert torch.equal(live.actor.weight, seed.actor.weight)
     assert torch.equal(live.config_head.bias, head_before)
 
-    # The shared canonical stays head-stripped: the config head is roster-specific.
     canonical = tmp_path / canonical_weights_filename()
     write_global_canonical_blocking(
         live, outcome.reload_base, canonical, tmp_path / canonical_lock_filename()
@@ -124,7 +123,6 @@ def test_projects_with_different_rosters_keep_sharing(tmp_path: Path) -> None:
         b.actor.bias += 1.0
     write_global_canonical_blocking(b, b_out.reload_base, canonical, lock)
 
-    # Both deltas landed (A's +1 then B's +1) and the canonical stayed head-stripped.
     merged = ActorCritic.load(canonical)
     assert merged.num_configs == 0
     assert torch.allclose(merged.actor.bias, _seed().actor.bias + 2.0)

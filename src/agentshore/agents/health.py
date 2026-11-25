@@ -18,7 +18,6 @@ if TYPE_CHECKING:
 
 _logger = get_logger(__name__)
 
-# Context is considered "pressured" when utilisation exceeds this ratio
 _CONTEXT_PRESSURE_THRESHOLD = 0.80
 
 
@@ -73,10 +72,6 @@ class HealthMonitor:
         self._monotonic = monotonic_fn or time.monotonic
         self._task: asyncio.Task[None] | None = None
 
-    # -------------------------------------------------------------------------
-    # Public API
-    # -------------------------------------------------------------------------
-
     def start(self) -> None:
         """Launch the background poll task."""
         if self._task is None or self._task.done():
@@ -92,10 +87,6 @@ class HealthMonitor:
     @property
     def is_running(self) -> bool:
         return self._task is not None and not self._task.done()
-
-    # -------------------------------------------------------------------------
-    # Core poll loop
-    # -------------------------------------------------------------------------
 
     async def _run(self) -> None:
         _logger.debug("health_monitor_started", poll_interval_s=self._poll_interval)
@@ -125,7 +116,6 @@ class HealthMonitor:
             return
         rc = process.returncode
         if rc is not None:
-            # Process has exited on its own — unexpected crash
             _logger.warning(
                 "agent_crash_detected",
                 agent_id=agent_id,
@@ -173,9 +163,6 @@ class HealthMonitor:
                 handle.current_play_type.value if handle.current_play_type is not None else None
             ),
         )
-        # Best-effort kill of the leaked subprocess. The dispatch's own
-        # _kill_process is the primary reaper (and is now bounded); this is a
-        # belt-and-suspenders SIGKILL for any path where it never ran.
         if process is not None and process.returncode is None:
             with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
                 process.kill()

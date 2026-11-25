@@ -1,19 +1,6 @@
 """Cross-platform power assertion — keep the OS from idling our process.
 
-Why this exists
----------------
-While an AgentShore session is running, the OS must not throttle our disk
-I/O or put the system to sleep. macOS demotes I/O priority and coalesces
-fsyncs when the screen is locked, which has historically produced
-silent SQLite corruption (desktop-tvsb). Windows' equivalent is
-``SetThreadExecutionState`` — holding ``ES_SYSTEM_REQUIRED`` keeps the
-OS from sleeping the machine while we're writing.
-
-This module is the in-process replacement for the shell-level
-``caffeinate`` wrapper in :mod:`agentshore.cli.caffeinate` (desktop-n7ci).
-Both are safe to hold concurrently; the in-process assertion makes the
-guarantee independent of how agentshore was launched (TUI / IPC / from a
-script that doesn't go through the start command).
+Safe to hold concurrently with the CLI caffeinate wrapper.
 
 Platforms
 ---------
@@ -29,8 +16,7 @@ Platforms
 
 This module is import-safe on every platform: the native bindings
 are only loaded inside ``acquire()`` so importing on, e.g., Linux
-doesn't try to load libIOKit.
-"""
+doesn't try to load libIOKit."""
 
 from __future__ import annotations
 
@@ -41,11 +27,9 @@ from agentshore.logging import get_logger
 _logger = get_logger(__name__)
 
 
-# Windows kernel32.SetThreadExecutionState flags.
 _ES_CONTINUOUS = 0x80000000
 _ES_SYSTEM_REQUIRED = 0x00000001
 
-# macOS IOKit IOPMLib.h constants (kIOPMAssertionLevelOn, kIOReturnSuccess).
 _KIOPM_ASSERT_LEVEL_ON = 255
 _KIO_RETURN_SUCCESS = 0
 
@@ -62,8 +46,6 @@ class PowerAssertion:
     def __init__(self, reason: str) -> None:
         self._reason = reason
         self._held = False
-        # Platform-specific opaque state: macOS stores an IOPMAssertionID
-        # (uint32), Windows stores a bool, Linux stores nothing.
         self._mac_assertion_id: int | None = None
 
     @property
@@ -81,7 +63,6 @@ class PowerAssertion:
             self._release_macos()
         elif sys.platform == "win32":
             self._release_windows()
-        # Linux / other: nothing to release.
         self._held = False
         _logger.info("power_assertion_released", reason=self._reason, platform=sys.platform)
 
@@ -119,7 +100,6 @@ class PowerAssertion:
         ]
         cf.CFRelease.argtypes = [ctypes.c_void_p]
 
-        # kCFStringEncodingUTF8 == 0x08000100
         _utf8 = 0x08000100
         type_cf = cf.CFStringCreateWithCString(None, b"PreventUserIdleSystemSleep", _utf8)
         name_cf = cf.CFStringCreateWithCString(None, self._reason.encode("utf-8"), _utf8)
@@ -130,13 +110,7 @@ class PowerAssertion:
                 cf.CFRelease(name_cf)
             return False
 
-        # IOReturn IOPMAssertionCreateWithName(
-        #     CFStringRef assertionType,
-        #     IOPMAssertionLevel assertionLevel,  // uint32
-        #     CFStringRef assertionName,
-        #     IOPMAssertionID *assertionID        // uint32 *
-        # )
-        iokit.IOPMAssertionCreateWithName.restype = ctypes.c_int  # IOReturn = int32
+        iokit.IOPMAssertionCreateWithName.restype = ctypes.c_int
         iokit.IOPMAssertionCreateWithName.argtypes = [
             ctypes.c_void_p,
             ctypes.c_uint32,
@@ -150,7 +124,6 @@ class PowerAssertion:
             name_cf,
             ctypes.byref(assertion_id),
         )
-        # IOPMAssertionCreateWithName retains the CFStrings; release ours.
         cf.CFRelease(type_cf)
         cf.CFRelease(name_cf)
         if rc != _KIO_RETURN_SUCCESS:
@@ -187,9 +160,6 @@ class PowerAssertion:
             kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
         except AttributeError:  # pragma: no cover - non-Windows ctypes layout
             return False
-        # SetThreadExecutionState returns the previous flags on success
-        # and 0 on failure. The combined flag set means "keep the system
-        # awake until I tell you otherwise."
         prev = kernel32.SetThreadExecutionState(_ES_CONTINUOUS | _ES_SYSTEM_REQUIRED)
         if prev == 0:
             _logger.warning("power_assertion_set_thread_execution_state_failed")
@@ -205,8 +175,6 @@ class PowerAssertion:
             kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
         except AttributeError:  # pragma: no cover
             return
-        # Clear the SYSTEM_REQUIRED bit by passing ES_CONTINUOUS alone.
-        # The OS is free to schedule sleep again from this point on.
         kernel32.SetThreadExecutionState(_ES_CONTINUOUS)
 
 
@@ -224,7 +192,7 @@ def acquire(reason: str = "AgentShore session active") -> PowerAssertion:
     elif sys.platform == "win32":
         ok = handle._acquire_windows()
     else:
-        ok = True  # No-op platforms count as a successful (vacuous) acquire.
+        ok = True
     handle._held = ok
     if ok:
         _logger.info("power_assertion_acquired", reason=reason, platform=sys.platform)

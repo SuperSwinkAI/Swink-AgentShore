@@ -100,7 +100,6 @@ async def test_bead_in_progress_between_selector_and_confirm_is_clean_repick() -
     assert verdict.valid is False, "in_progress bead must invalidate the picked issue"
     assert verdict.reason is not None
     assert "in_progress" in str(verdict.reason)
-    # The clean-re-pick contract: the live candidate set no longer carries 123.
     assert all(c.params.issue_number != 123 for c in verdict.candidates)
 
 

@@ -73,9 +73,6 @@ def test_init_help_text() -> None:
     assert "--target-branch" in result.output
 
 
-# init --target-branch persists the value (desktop-3t62)
-
-
 def test_init_target_branch_flag_writes_value_and_skips_prompt(tmp_path: Path) -> None:
     """``agentshore init --target-branch <name>`` persists the value under
     ``project.target_branch`` and never prompts (non-interactive parity with
@@ -144,7 +141,6 @@ def test_init_without_target_branch_flag_in_non_tty_leaves_yaml_alone(tmp_path: 
         patch("agentshore.cli.commands.init._interactive_agent_select"),
         patch("agentshore.identity_wizard.run_identity_wizard"),
     ):
-        # CliRunner.invoke without input keeps stdin non-TTY.
         result = runner.invoke(main, ["init", "--project", str(repo), "--force"])
 
     assert result.exit_code == 0, result.output
@@ -182,7 +178,6 @@ def test_init_force_merges_config_preserving_user_keys(tmp_path: Path) -> None:
 
     assert result.exit_code == 0
     new_content = (repo / "agentshore.yaml").read_text()
-    # User-edited budget total + comment must survive the merge.
     assert "# original config" in new_content
     assert "total: 1.0" in new_content
     assert "claude_code" in new_content
@@ -385,7 +380,6 @@ def test_agent_setup_wizard_renders_boxes_and_confirms(
     monkeypatch.setattr(
         "agentshore.agents.model_catalog.models_for_agent", lambda *_a, **_k: _FAKE_MODELS
     )
-    # Press Enter immediately → confirm & write.
     monkeypatch.setattr(click, "prompt", lambda *_a, **_k: "")
 
     updated = _interactive_agent_select(cfg, ["claude", "codex"], config_path, force_run=True)
@@ -393,8 +387,8 @@ def test_agent_setup_wizard_renders_boxes_and_confirms(
     out = capsys.readouterr().out
     assert "AgentShore — Agent Setup" in out
     assert "┌" in out and "│" in out
-    assert "[a]" in out  # first tier cell letter
-    assert "[1]" in out  # first agent toggle number
+    assert "[a]" in out
+    assert "[1]" in out
     assert "toggle agent" in out and "confirm" in out
     for label in ("claude", "codex"):
         assert label in out
@@ -421,10 +415,8 @@ def test_agent_setup_wizard_edit_tier_cell_sets_max(
     monkeypatch.setattr(
         "agentshore.agents.model_catalog.models_for_agent", lambda *_a, **_k: _FAKE_MODELS
     )
-    # beaupy.select: enable toggle → "Enable", model picker → first model.
     monkeypatch.setattr(beaupy, "select", lambda options, **_k: options[0])
     monkeypatch.setattr(beaupy, "prompt", lambda *_a, **_k: "")
-    # click.prompt sequence: keystroke 'a' (claude·small) → max 7 → Enter (confirm).
     inputs = iter(["a", 7, ""])
     monkeypatch.setattr(click, "prompt", lambda *_a, **_k: next(inputs))
 
@@ -483,7 +475,6 @@ def test_agent_setup_wizard_swink_coding_skips_custom_model_sentinel(
 
     monkeypatch.setattr(beaupy, "select", _fake_select)
     monkeypatch.setattr(beaupy, "prompt", lambda *_a, **_k: "")
-    # click.prompt sequence: keystroke 'a' (swink_coding·small) → max 3 → Enter (confirm).
     inputs = iter(["a", 3, ""])
     monkeypatch.setattr(click, "prompt", lambda *_a, **_k: next(inputs))
 
@@ -493,8 +484,6 @@ def test_agent_setup_wizard_swink_coding_skips_custom_model_sentinel(
     assert small.enabled is True
     assert small.model == "small"
     assert small.max == 3
-    # None of the beaupy.select calls (enable/disable, model pick) offered the
-    # custom-entry sentinel for this agent type.
     for options in captured_options:
         assert "[ enter custom model... ]" not in options
 
@@ -637,7 +626,6 @@ def test_init_force_does_not_install_skills(tmp_path: Path) -> None:
 
 def test_init_install_skills_only(tmp_path: Path) -> None:
     repo = _make_git_repo(tmp_path)
-    # Removed to verify --install-skills does not (re)create the config.
     (repo / "agentshore.yaml").unlink()
 
     runner = CliRunner()
@@ -681,9 +669,6 @@ def test_init_install_skills_rejects_target_branch(tmp_path: Path) -> None:
     assert "--target-branch has no effect with --install-skills" in result.output
 
 
-# init manages .gitignore for .agentshore/ runtime artifacts
-
-
 def test_init_creates_gitignore_when_missing(tmp_path: Path) -> None:
     repo = _make_git_repo(tmp_path)
     assert not (repo / ".gitignore").exists()
@@ -702,8 +687,6 @@ def test_init_creates_gitignore_when_missing(tmp_path: Path) -> None:
     assert ".agentshore/" in contents
     assert ".agents/" in contents
     assert ".beads/" in contents
-    # The canonical owned-paths list is the single source of truth with the
-    # start-time git-safety sweep — agentshore.yaml must be covered too (#594).
     assert "agentshore.yaml" in contents
     assert "Created" in result.output and ".gitignore" in result.output
 
@@ -732,8 +715,6 @@ def test_init_idempotent_when_agentshore_already_ignored(tmp_path: Path) -> None
     from agentshore.core.git_safety import AGENTSHORE_OWNED_ROOT_PATHS
 
     repo = _make_git_repo(tmp_path)
-    # Seed the full canonical owned-paths list so init is a true no-op.
-    # Seed the full canonical owned-paths list so init is a true no-op.
     seeded = "*.pyc\n" + "".join(f"{entry}\n" for entry in AGENTSHORE_OWNED_ROOT_PATHS)
     (repo / ".gitignore").write_text(seeded)
     original = (repo / ".gitignore").read_text()
@@ -768,7 +749,6 @@ def test_init_recognises_agentshore_without_trailing_slash(tmp_path: Path) -> No
     assert result.exit_code == 0
     contents = (repo / ".gitignore").read_text()
     lines = contents.splitlines()
-    # .agentshore and .agentshore/ are git-equivalent — must not duplicate.
     assert lines.count(".agentshore") == 1
     assert lines.count(".agents") == 1
     assert lines.count(".beads") == 1
@@ -776,7 +756,7 @@ def test_init_recognises_agentshore_without_trailing_slash(tmp_path: Path) -> No
 
 def test_init_handles_gitignore_without_trailing_newline(tmp_path: Path) -> None:
     repo = _make_git_repo(tmp_path)
-    (repo / ".gitignore").write_text("*.pyc")  # no trailing newline
+    (repo / ".gitignore").write_text("*.pyc")
 
     runner = CliRunner()
     with (
@@ -796,7 +776,6 @@ def test_init_handles_gitignore_without_trailing_newline(tmp_path: Path) -> None
 
 
 def test_init_skips_gitignore_when_not_a_git_repo(tmp_path: Path) -> None:
-    # No .git directory: not a git repo.
     (tmp_path / "agentshore.yaml").write_text("budget:\n  enabled: true\n  total: 20.0\n")
 
     runner = CliRunner()
@@ -842,7 +821,7 @@ def test_invalid_yaml_error_message(tmp_path: Path) -> None:
         patch("agentshore.cli_helpers._detect_gh_remote", return_value={"nameWithOwner": "o/r"}),
         patch("agentshore.cli_helpers._detect_agents", return_value=["claude"]),
         patch("agentshore.cli_helpers._detect_api_keys", return_value={}),
-        patch("agentshore.cli.commands.start._run_solo_mode"),  # prevent TUI launch on fallback
+        patch("agentshore.cli.commands.start._run_solo_mode"),
     ):
         result = runner.invoke(main, ["start", "--project", str(repo)])
 
@@ -873,4 +852,3 @@ def test_all_subcommands_listed() -> None:
     assert result.exit_code == 0
     for cmd in ("start", "init", "identity", "dashboard", "stop"):
         assert cmd in result.output, f"Missing subcommand '{cmd}' in --help"
-    # Removed commands' absence is asserted in test_removed_commands_not_registered.

@@ -33,11 +33,6 @@ def _ts(offset_seconds: float = 0.0) -> str:
     return (datetime.now(UTC) + timedelta(seconds=offset_seconds)).isoformat(timespec="seconds")
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
 def _cfg(update_every: int = 3, checkpoint_every: int = 5) -> RuntimeConfig:
     cfg = RuntimeConfig()
     rl = dataclasses.replace(
@@ -81,9 +76,6 @@ def _mock_metrics(store: object, session_id: str) -> MagicMock:
 def _mock_registry() -> MagicMock:
     reg = MagicMock()
     reg.preconditions_met.return_value = True
-    # EligibilityAuthority reads validity via registry.get(pt).preconditions(state) +
-    # play.capability. Stub: no unmet preconditions, capability=None (internal play,
-    # agent-eligibility bypassed) so every action stays selectable.
     play_stub = MagicMock()
     play_stub.preconditions.return_value = []
     play_stub.capability = None
@@ -110,11 +102,6 @@ def _outcome(play_type: PlayType, play_id: int) -> PlayOutcome:
         alignment_delta=0.0,
         play_id=play_id,
     )
-
-
-# ---------------------------------------------------------------------------
-# Test 1: Cold-start session writes experience rows and checkpoints
-# ---------------------------------------------------------------------------
 
 
 def _register_idle_agent(orch: Orchestrator, agent_id: str = "agent-mock") -> None:
@@ -190,7 +177,6 @@ async def test_cold_start_session_writes_experience_and_checkpoint(
     _register_idle_agent(orch)
     await _prime_qa_gate(orch)
 
-    # Build PPOSelector with mocked dependencies
     from agentshore.rl.experience import RolloutBuffer
     from agentshore.rl.policy import ActorCritic
     from agentshore.rl.selector import PPOSelector
@@ -219,7 +205,6 @@ async def test_cold_start_session_writes_experience_and_checkpoint(
     orch._runtime.selector = selector
     orch._runtime.metrics = metrics
 
-    # Force END_SESSION on the 10th call so the loop terminates deterministically
     play_counter = 0
 
     async def _fake_execute(
@@ -252,7 +237,6 @@ async def test_cold_start_session_writes_experience_and_checkpoint(
         async with orch:
             await orch.run_until_idle()
 
-    # Verify experience rows
     import aiosqlite
 
     db_path = tmp_path / ".agentshore" / "agentshore.db"
@@ -271,25 +255,19 @@ async def test_cold_start_session_writes_experience_and_checkpoint(
         ) as cur:
             chk_row = await cur.fetchone()
 
-    assert exp_row is not None  # type-checker guard
+    assert exp_row is not None
     exp_count = exp_row["n"]
     assert isinstance(exp_count, int)
     assert exp_count >= 1, f"Expected ≥1 experience rows, got {exp_count}"
 
-    assert chk_row is not None  # type-checker guard
+    assert chk_row is not None
     chk_count = chk_row["n"]
     assert isinstance(chk_count, int)
     assert chk_count >= 1, f"Expected ≥1 checkpoint rows, got {chk_count}"
 
-    # Weights file must exist
     weights_dir = tmp_path / ".agentshore" / "weights"
     pts = list(weights_dir.glob("*.pt"))
     assert pts, "No .pt checkpoint file found"
-
-
-# ---------------------------------------------------------------------------
-# Test 2: Audit replay produces same actions
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -301,7 +279,6 @@ async def test_audit_replay_reproduces_action(tmp_path: Path) -> None:
 
     cfg = _cfg()
 
-    # Save a cold-start policy
     policy = ActorCritic()
     apply_cold_start_bias(policy)
     weights_path = tmp_path / "policy.pt"
@@ -311,7 +288,6 @@ async def test_audit_replay_reproduces_action(tmp_path: Path) -> None:
     try:
         metrics = _mock_metrics(orch._store, orch._session_id)
 
-        # Build audit-replay selectors from saved weights.
         sel1 = await PPOSelector.load(
             weights_path=weights_path,
             resolver=_mock_resolver(),
@@ -350,11 +326,6 @@ async def test_audit_replay_reproduces_action(tmp_path: Path) -> None:
         await orch.stop()
 
 
-# ---------------------------------------------------------------------------
-# Test 3: Offline training via ReplayLoader
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_offline_train_via_replay_loader(tmp_path: Path) -> None:
     """Write experience rows manually, train via ReplayLoader, assert non-NaN stats."""
@@ -373,7 +344,6 @@ async def test_offline_train_via_replay_loader(tmp_path: Path) -> None:
     await store.initialize()
 
     try:
-        # Create a dummy session + play so FK constraints pass
         from agentshore.data.store import PlayRecord, SessionRecord
 
         await store.create_session(
@@ -400,7 +370,6 @@ async def test_offline_train_via_replay_loader(tmp_path: Path) -> None:
         plays = await store.get_play_history("s-train")
         assert len(plays) == 8
 
-        # Write 8 experience rows
         rng = np.random.default_rng(42)
         for i, play in enumerate(plays):
             state = rng.random(OBSERVATION_DIM).astype(np.float32)
@@ -423,7 +392,6 @@ async def test_offline_train_via_replay_loader(tmp_path: Path) -> None:
                 )
             )
 
-        # Train
         policy = ActorCritic()
         apply_cold_start_bias(policy)
         updater = PPOUpdater(policy, lr=1e-3, ppo_epochs=1, mini_batch_size=4)
@@ -444,17 +412,11 @@ async def test_offline_train_via_replay_loader(tmp_path: Path) -> None:
 
         assert buffers_trained == 1, "Expected exactly 1 compatible session"
 
-        # Save checkpoint
         out_path = tmp_path / "trained.pt"
         policy.save(out_path)
         assert out_path.exists()
     finally:
         await store.close()
-
-
-# ---------------------------------------------------------------------------
-# Test 4: Phase 4 readiness import smoke
-# ---------------------------------------------------------------------------
 
 
 def test_phase4_readiness_import_smoke() -> None:
@@ -468,11 +430,6 @@ def test_phase4_readiness_import_smoke() -> None:
     assert OBSERVATION_DIM == 254
     assert NUM_ACTIONS == 22
     assert len(PLAY_TO_INDEX) == 22
-
-
-# ---------------------------------------------------------------------------
-# Test 5: V1 contract — experience rows have required fields
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -547,7 +504,6 @@ async def test_experience_rows_satisfy_v1_contract(tmp_path: Path) -> None:
         async with orch:
             await orch.run_until_idle()
 
-    # Check experience rows meet V1 schema requirements
     import aiosqlite
 
     db_path = tmp_path / ".agentshore" / "agentshore.db"
@@ -571,24 +527,20 @@ async def test_experience_rows_satisfy_v1_contract(tmp_path: Path) -> None:
 
     assert rows, "expected at least one rl_experience row"
     for row in rows:
-        # All required fields must be non-null with the expected types/ranges.
-        assert row["state_vector"] is not None  # type-checker guard
+        assert row["state_vector"] is not None
         assert isinstance(row["state_vector"], (bytes, bytearray, memoryview))
-        assert row["action"] is not None  # type-checker guard
+        assert row["action"] is not None
         action = int(row["action"])
         assert 0 <= action < NUM_ACTIONS, f"action {action} outside [0, {NUM_ACTIONS})"
-        assert row["reward"] is not None  # type-checker guard
+        assert row["reward"] is not None
         assert math.isfinite(float(row["reward"]))
-        assert row["next_state"] is not None  # type-checker guard
+        assert row["next_state"] is not None
         assert isinstance(row["next_state"], (bytes, bytearray, memoryview))
-        assert row["done"] is not None  # type-checker guard
+        assert row["done"] is not None
         assert int(row["done"]) in (0, 1)
         assert row["action_space_version"] == ACTION_SPACE_VERSION
-        assert row["policy_version"] is not None  # type-checker guard
-        # Policy version always starts with the schema prefix; the suffix is the
-        # config hash assigned by the orchestrator at bootstrap time.
+        assert row["policy_version"] is not None
         assert isinstance(row["policy_version"], str)
         assert row["policy_version"].startswith("ppo-v1")
-        # Blob size must match OBSERVATION_DIM
         assert len(row["state_vector"]) == OBSERVATION_DIM * 4
         assert len(row["next_state"]) == OBSERVATION_DIM * 4

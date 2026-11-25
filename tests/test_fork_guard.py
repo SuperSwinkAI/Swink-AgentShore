@@ -25,7 +25,6 @@ from agentshore.core.fork_guard import (
         ("jwesleye/myrepo", "jwesleye"),
         ("unseriousAI/zeke", "unseriousAI"),
         ("https://github.com/SuperSwinkAI/Swink-AgentShore.git", "SuperSwinkAI"),
-        # Unparseable
         ("not-a-url", None),
         ("", None),
     ],
@@ -61,8 +60,8 @@ def test_detect_cross_fork_pr_multiple_artifacts_mixed() -> None:
         {"type": "pr", "url": "https://github.com/unseriousAI/fork/pull/7"},
         {"type": "issue", "url": "https://github.com/unseriousAI/zeke/issues/3"},
         "not-a-dict",
-        {"type": "pr"},  # no url
-        {"type": "pr", "url": 42},  # non-string url
+        {"type": "pr"},
+        {"type": "pr", "url": 42},
     ]
     findings = detect_cross_fork_pr_artifacts(artifacts, origin_owner="jwesleye")
     assert len(findings) == 1
@@ -91,7 +90,6 @@ def git_repo_with_remotes(tmp_path: Path) -> Path:
     repo = tmp_path / "repo"
     repo.mkdir()
     subprocess.run(["git", "init", str(repo)], check=True, capture_output=True)
-    # Add origin — point to a local path so no network is needed.
     remote_origin = tmp_path / "origin.git"
     remote_origin.mkdir()
     subprocess.run(["git", "init", "--bare", str(remote_origin)], check=True, capture_output=True)
@@ -124,7 +122,6 @@ def git_repo_origin_only(tmp_path: Path) -> Path:
 
 @pytest.mark.asyncio
 async def test_detect_non_origin_remotes_with_fork_remote(git_repo_with_remotes: Path) -> None:
-    # Add a 'fork' remote on top of the fixture.
     subprocess.run(
         ["git", "remote", "add", "fork", "https://github.com/someone/fork.git"],
         cwd=str(git_repo_with_remotes),

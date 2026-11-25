@@ -17,7 +17,7 @@ import {
   type DetailModalState,
 } from "./kanban/IssueDetailModal";
 
-// Constants mirror render.ts.
+
 
 const EPIC_HUES: number[] = [
   232, 38, 286, 210, 195, 0, 100, 220, 142, 322, 30, 260,
@@ -31,7 +31,7 @@ const PHASE_BULLET_COLOR: Record<Phase, string> = {
   done: "var(--color-fm-ok)",
 };
 
-// Helpers mirror render.ts/detailModal.ts.
+
 
 function hueForEpic(
   epicId: string | null | undefined,
@@ -210,7 +210,7 @@ function KanbanCardButton({
     prNumber,
   } = resolved;
 
-  // Distinguish drag from click using pointerdown/click positions.
+
   const pointerStartRef = React.useRef<{ x: number; y: number } | null>(null);
 
   const handlePointerDown = (event: React.PointerEvent<HTMLButtonElement>) => {
@@ -306,12 +306,12 @@ export default function KanbanStage(): React.ReactElement | null {
   const { columns, graph } = buildColumns(internal.state);
   const epicIds = (graph?.epics ?? []).map((epic) => epic.bead_id);
 
-  // Open PRs hidden by the target-branch filter (base != target_branch),
-  // surfaced as a header badge so they're accounted for without cluttering the board.
+
+
   const hiddenPrCount =
     internal.state?.work_availability?.pull_requests_hidden_count ?? 0;
 
-  // Build a unique epic set in insertion order across all phases for the legend.
+
   const seenEpics = new Map<string, { title: string; hue: number }>();
   for (const phase of PHASES) {
     for (const card of columns[phase]) {
@@ -352,8 +352,8 @@ export default function KanbanStage(): React.ReactElement | null {
     boardStyle.bottom = `${internal.insets.bottom}px`;
   }
 
-  // Reproduce the imperative module's outer "stage" wrapper (div + `hidden`)
-  // so the same visibility CSS rules apply.
+
+
   return (
     <>
       <div hidden={!internal.visible}>

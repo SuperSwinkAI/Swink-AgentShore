@@ -20,7 +20,6 @@ def test_resolve_tool_honors_env_override(tmp_path: Path, monkeypatch: pytest.Mo
     fake_git = tmp_path / "git-override.exe"
     fake_git.write_text("")
     monkeypatch.setenv("AGENTSHORE_GIT_BIN", str(fake_git))
-    # which must never be consulted when the override resolves.
     monkeypatch.setattr(subprocess_env.shutil, "which", lambda _name: "/should/not/win")
     assert subprocess_env.resolve_tool("git") == str(fake_git)
 
@@ -34,7 +33,6 @@ def test_resolve_tool_falls_back_to_which(monkeypatch: pytest.MonkeyPatch) -> No
 def test_resolve_tool_returns_none_when_absent(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("AGENTSHORE_GIT_BIN", raising=False)
     monkeypatch.setattr(subprocess_env.shutil, "which", lambda _name: None)
-    # Force the non-Windows branch so canonical-path probing is skipped.
     monkeypatch.setattr(subprocess_env.sys, "platform", "linux")
     assert subprocess_env.resolve_tool("git") is None
 
@@ -51,7 +49,6 @@ def test_resolve_tool_caches_positive_hits_only(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.delenv("AGENTSHORE_GIT_BIN", raising=False)
     assert subprocess_env.resolve_tool("git") is None
     assert subprocess_env.resolve_tool("git") is None
-    # A miss is re-probed (so a later install is seen); two calls, not one.
     assert calls["n"] == 2
 
 
@@ -65,9 +62,6 @@ def test_hardened_env_git_is_non_interactive() -> None:
 
 
 def test_hardened_env_git_pins_noninteractive_editor() -> None:
-    # git's editor is a separate interactive surface; unpinned, a rebase-internal
-    # ``git commit -e`` opens vim and hangs forever, leaking the worktree (#168).
-    # ``true`` (not "") is the no-op editor git honours.
     env = subprocess_env.hardened_env(for_git=True)
     assert env[subprocess_env.GIT_EDITOR_ENV] == "true"
     assert env[subprocess_env.GIT_SEQUENCE_EDITOR_ENV] == "true"
@@ -76,7 +70,6 @@ def test_hardened_env_git_pins_noninteractive_editor() -> None:
 def test_hardened_env_non_git_does_not_pin_editor(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # Don't let a host-level GIT_EDITOR leak in and mask the assertion.
     monkeypatch.delenv(subprocess_env.GIT_EDITOR_ENV, raising=False)
     monkeypatch.delenv(subprocess_env.GIT_SEQUENCE_EDITOR_ENV, raising=False)
     env = subprocess_env.hardened_env(for_gh=True)
@@ -96,7 +89,6 @@ def test_hardened_env_grok_overlays_headless_keys(monkeypatch: pytest.MonkeyPatc
     assert env["CI"] == "1"
     assert env["NO_COLOR"] == "1"
     assert env["CLICOLOR"] == "0"
-    # TERM defaults to dumb only when unset.
     assert env["TERM"] == "dumb"
 
 

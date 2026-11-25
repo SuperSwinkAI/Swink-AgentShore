@@ -108,9 +108,6 @@ def build_default_registry(cfg: RuntimeConfig | None = None) -> PlayRegistry:
     )
 
     registry = PlayRegistry()
-    # Registration order mirrors PlayType enum definition order so the action
-    # space's V1_ACTION_ORDER and this registry stay in lockstep — easy to scan
-    # against ``src/agentshore/state.py:PlayType``.
     for play in (
         InstantiateAgentPlay(),
         UnblockPrPlay(),

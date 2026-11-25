@@ -13,8 +13,6 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 
-# Project state directory name (mirrors ``cli_helpers._PROJECT_DIR``); kept
-# local to avoid a CLI import from the package root.
 _PROJECT_DIR = ".agentshore"
 
 _SEED_DIR_MAX_TOTAL_BYTES = 512 * 1024
@@ -96,9 +94,6 @@ def resolve_seed_input(seed: str, repo_root: Path) -> tuple[Path, str]:
             continue
         take = min(len(encoded), remaining)
         snippet = encoded[:take].decode("utf-8", errors="ignore")
-        # Render with forward slashes: this bundle is markdown handed to the
-        # seed agent, so keep file headers portable/deterministic across OSes
-        # rather than emitting native backslashes on Windows.
         rel = path.relative_to(seed_path).as_posix()
         chunks.append(f"\n## {rel}\n\n{snippet}\n")
         included += 1

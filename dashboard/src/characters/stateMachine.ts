@@ -24,7 +24,7 @@ import {
   type NpcDefinition,
 } from "./types";
 
-const WALK_SPEED = 72; // pixels per second
+const WALK_SPEED = 72;
 const WALK_FRAME_DURATION = 0.15;
 const WORK_FRAME_DURATION = 0.3;
 const WANDER_MIN = 5;

@@ -39,7 +39,6 @@ def test_resolve_conversation_id_miss(tmp_path: Path) -> None:
 
 
 def test_resolve_conversation_id_missing_file(tmp_path: Path) -> None:
-    # home exists but no cache file at all.
     assert cli_antigravity.resolve_conversation_id("/wt", home=str(tmp_path)) is None
 
 
@@ -63,7 +62,6 @@ def test_resolve_conversation_id_empty_or_nonstring_value(tmp_path: Path) -> Non
     home = tmp_path / "home"
     _write_cache(home, {"/wt-empty": ""})
     assert cli_antigravity.resolve_conversation_id("/wt-empty", home=str(home)) is None
-    # a non-string value (defensive) also resolves to None
     cache = home / ".gemini" / "antigravity-cli" / "cache" / "last_conversations.json"
     cache.write_text(json.dumps({"/wt-num": 123}), encoding="utf-8")
     assert cli_antigravity.resolve_conversation_id("/wt-num", home=str(home)) is None
@@ -86,7 +84,6 @@ def test_build_resume_argv_injects_conversation_flag() -> None:
 
 
 def test_is_async_handoff_detects_manage_task_marker() -> None:
-    # #236: original variant — delegated to the internal manage_task async tool.
     raw = (
         "Obtaining command output... To check progress: `manage_task status "
         "0aaf5ef8-1242-46f9-ba7e-41bf3dcb47d0/task-14` or wait for notification."
@@ -95,7 +92,6 @@ def test_is_async_handoff_detects_manage_task_marker() -> None:
 
 
 def test_is_async_handoff_detects_background_task_wait() -> None:
-    # #236 resurfacing: no manage_task token; agent paused on a backgrounded command.
     raw = (
         "I will run cargo clippy with the isolated target directory to check for any "
         "errors or warnings. I will pause calling tools and wait for the cargo clippy "
@@ -109,13 +105,10 @@ def test_is_async_handoff_is_case_insensitive() -> None:
 
 
 def test_is_async_handoff_false_for_completed_work() -> None:
-    # A normal terminal turn that emitted a result block must not be misclassified.
     raw = '```json\n{"success": true, "summary": "opened PR #42"}\n```'
     assert cli_antigravity.is_async_handoff(raw) is False
 
 
-# #242: real-world tails the ORIGINAL markers all missed (0/16 detected). Each must
-# now classify as an async handoff so the play gets the synchronous re-run nudge.
 @pytest.mark.parametrize(
     "tail",
     [
@@ -128,11 +121,7 @@ def test_is_async_handoff_false_for_completed_work() -> None:
         "Since it was automatically sent to the background by the system, I will stop "
         "calling tools and wait for the system to notify me when it finishes.",
         "I have started the tests in the background. I will wait for them to complete.",
-        # #313: the named-noun-phrase form — one word from "pause calling tools" yet
-        # undetected, so a 19-min issue_pickup that ended here was never classified.
         "I will pause to wait for the git switch command to finish.",
-        # #313, session 16515f9b: the fresh agy issue_pickup tail (22KB of prose, no
-        # envelope). Regression guard — already matched via "in the background".
         "I will run `cargo test` to execute the full test suite. I will check the status "
         "of the test suite. I will wait for cargo test to finish in the background. The "
         "system will notify me.",
@@ -144,8 +133,6 @@ def test_is_async_handoff_detects_real_242_phrasings(tail: str) -> None:
     assert cli_antigravity.is_async_handoff(tail) is True
 
 
-# The detector only runs when no JSON block was produced, so it is deliberately
-# liberal — but it must not fire on prose describing work that actually completed.
 @pytest.mark.parametrize(
     "tail",
     [
@@ -160,9 +147,6 @@ def test_is_async_handoff_false_for_ordinary_prose(tail: str) -> None:
     assert cli_antigravity.is_async_handoff(tail) is False
 
 
-# decorate_initial_prompt (agy synchronous-execution directive, #242)
-
-
 def test_decorate_initial_prompt_appended_only_for_agy() -> None:
     """The agy auto-background directive is appended for ANTIGRAVITY only."""
     base_prompt = "## Skill body\n\n...result block..."
@@ -170,16 +154,11 @@ def test_decorate_initial_prompt_appended_only_for_agy() -> None:
     agy = cli_antigravity.decorate_initial_prompt(base_prompt, AgentType.ANTIGRAVITY)
     assert agy.endswith(cli_antigravity._ANTIGRAVITY_SYNCHRONOUS_DIRECTIVE)
     assert agy.startswith(base_prompt)
-    # The directive must name the failure mechanism so agy stops backgrounding.
     assert "manage_task" in agy
     assert "FOREGROUND" in agy
 
-    # Other agent types (and an unresolved type) are untouched.
     for other in (AgentType.CLAUDE_CODE, AgentType.CODEX, AgentType.GROK, None):
         assert cli_antigravity.decorate_initial_prompt(base_prompt, other) == base_prompt
-
-
-# ensure_low_verbosity_setting
 
 
 def _settings_path(home: Path) -> Path:
@@ -187,7 +166,6 @@ def _settings_path(home: Path) -> Path:
 
 
 def test_ensure_low_verbosity_writes_when_absent(tmp_path: Path) -> None:
-    # No settings file yet → creates dirs + file with verbosity: low.
     assert cli_antigravity.ensure_low_verbosity_setting(home=str(tmp_path)) is True
     data = json.loads(_settings_path(tmp_path).read_text())
     assert data == {"verbosity": "low"}
@@ -205,7 +183,6 @@ def test_ensure_low_verbosity_preserves_existing_keys(tmp_path: Path) -> None:
 
 
 def test_ensure_low_verbosity_respects_existing_value(tmp_path: Path) -> None:
-    # A user who set verbosity explicitly must not be overwritten.
     path = _settings_path(tmp_path)
     path.parent.mkdir(parents=True)
     path.write_text(json.dumps({"verbosity": "high"}))
@@ -214,7 +191,6 @@ def test_ensure_low_verbosity_respects_existing_value(tmp_path: Path) -> None:
 
 
 def test_ensure_low_verbosity_tolerates_malformed_file(tmp_path: Path) -> None:
-    # Malformed JSON → start from an empty object, still write the setting.
     path = _settings_path(tmp_path)
     path.parent.mkdir(parents=True)
     path.write_text("{not json")
@@ -222,11 +198,7 @@ def test_ensure_low_verbosity_tolerates_malformed_file(tmp_path: Path) -> None:
     assert json.loads(path.read_text()) == {"verbosity": "low"}
 
 
-# strip_ansi (ConPTY terminal-escape cleanup)
-
-
 def test_strip_ansi_removes_agy_conpty_prelude() -> None:
-    # Real agy ConPTY prelude: window-title stack, DA query, focus reporting, win32 input.
     raw = "\x1b[1t\x1b[c\x1b[?1004h\x1b[?9001hPONG"
     assert cli_antigravity.strip_ansi(raw) == "PONG"
 
@@ -251,7 +223,6 @@ def test_strip_ansi_is_noop_on_clean_text() -> None:
 
 
 def test_extract_output_strips_ansi_then_unwraps_task_block() -> None:
-    # Prelude + task-status wrapper: extract_output must strip escapes first, then unwrap.
     raw = (
         "\x1b[1t\x1b[c\x1b[?9001h[Task abc/task-1 Status Update]\r\n"
         "Status: COMPLETED\r\n"
@@ -265,9 +236,6 @@ def test_extract_output_strips_ansi_then_unwraps_task_block() -> None:
     assert "\r" not in result
     assert result == '```json\n{"success": true}\n```'
 
-
-# ---------------------------------------------------------------------------
-# parse_stream_json (agy --output-format stream-json, captured from agy 1.3.2)
 
 _FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -286,8 +254,6 @@ def test_parse_stream_json_fresh_run_fixture() -> None:
 
 
 def test_parse_stream_json_resume_counts_only_this_invocation() -> None:
-    # result.usage on a --conversation resume is cumulative (36334 in); the
-    # per-step usages are this invocation's spend only.
     raw = (_FIXTURES / "agy_stream_json_resume_1_3_2.jsonl").read_text(encoding="utf-8")
     text, usage, conv = cli_antigravity.parse_stream_json(raw)
     assert text == "OK\n"
@@ -332,7 +298,6 @@ def test_parse_stream_json_cut_off_before_result_joins_deltas() -> None:
 
 
 def test_parse_stream_json_error_result_yields_empty_text() -> None:
-    # Mirrors plain mode (empty stdout, error on stderr) so no-op detection holds.
     raw = _ev("result", conversation_id="", status="ERROR", response="", error="bad model")
     assert cli_antigravity.parse_stream_json(raw) == ("", cli_antigravity._UsageTotals(), None)
 

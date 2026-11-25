@@ -63,8 +63,8 @@ function parseBudgetSelection(value: unknown): BudgetSelection {
     typeof totalRaw === "number" && Number.isFinite(totalRaw) && totalRaw >= 0
       ? totalRaw
       : defaultSetupState.budget.total;
-  // Time dimension (independent). Older persisted snapshots predate these
-  // fields — fall back to the defaults so the wizard stays back-compatible.
+
+
   const timeMode: BudgetSelection["timeMode"] =
     value.timeMode === "capped" ? "capped" : "unlimited";
   const timeMinutesRaw = value.timeMinutes;

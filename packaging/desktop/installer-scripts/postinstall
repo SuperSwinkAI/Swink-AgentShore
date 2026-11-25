@@ -1,27 +1,4 @@
 #!/bin/bash
-# postinstall — runs after the .pkg payload has been written to /Applications.
-#
-# Three responsibilities:
-#
-#   1. If Python 3.12 isn't present, download + install python.org's signed
-#      pkg before anything else. Postinstall already runs as root so we can
-#      drive macOS `installer` directly (desktop-w618).
-#
-#   2. Provision the AgentShore managed Python venv at
-#      ~/Library/Application Support/AgentShore/venv from the agentshore wheel
-#      bundled into this .pkg. Without this, the .pkg only ships the
-#      Tauri shell and Python sidecar fixes never reach desktop users
-#      (desktop-vlx1 follow-up — was: a fresh .pkg installed the .app but
-#      left the user running whatever agentshore wheel they had installed
-#      weeks ago).
-#
-#   3. Launch the app in the original user's GUI session, then auto-close
-#      the Installer once it's up.
-#
-# Postinstall runs as root; resolve the console user so the venv lives in
-# their home dir and the app launches under their session, not root's.
-# pkgbuild places this script and the bundled wheel + helper into a tmp
-# scripts dir at install time; resolve them via $0's dirname.
 
 set -u
 
@@ -31,8 +8,6 @@ INSTALL_HELPER="$SCRIPT_DIR/install-agentshore-venv.sh"
 BUNDLED_WHEEL="$(ls -t "$SCRIPT_DIR"/agentshore-*-py3-none-any.whl 2>/dev/null | head -1 || true)"
 VENV_LOG="/tmp/agentshore-venv-install.log"
 
-# Python auto-install pin. The pkgutil signature check below is the security
-# anchor; the version string is the contract — bump deliberately, not blindly.
 PYTHON_AUTO_VERSION="3.12.8"
 PYTHON_AUTO_URL="https://www.python.org/ftp/python/${PYTHON_AUTO_VERSION}/python-${PYTHON_AUTO_VERSION}-macos11.pkg"
 PYTHON_AUTO_LOG="/tmp/agentshore-python-install.log"
@@ -41,7 +16,6 @@ PSF_DEVELOPER_ID_SUBSTRING="Python Software Foundation"
 
 CONSOLE_USER="$(stat -f '%Su' /dev/console 2>/dev/null || true)"
 if [[ -z "${CONSOLE_USER}" || "${CONSOLE_USER}" == "root" ]]; then
-  # Headless install (MDM push, ssh, etc) — nothing to provision or launch.
   exit 0
 fi
 CONSOLE_UID="$(id -u "${CONSOLE_USER}" 2>/dev/null || true)"
@@ -60,7 +34,6 @@ run_as_console_user() {
   launchctl asuser "${CONSOLE_UID}" /usr/bin/sudo -H -u "${CONSOLE_USER}" "$@"
 }
 
-# ── 0. Ensure Python 3.12 is installed (desktop-w618) ────────────────────────
 
 has_python312() {
   if command -v python3.12 >/dev/null 2>&1; then
@@ -109,16 +82,7 @@ if ! has_python312; then
   fi
 fi
 
-# ── 1. Provision managed venv from the bundled wheel ────────────────────────
 
-# Pre-clean any stale managed venv AS ROOT before handing off to the
-# console-user provision. install-agentshore-venv.sh runs as the console user
-# and its own `rm -rf` cannot delete a venv that an earlier install left
-# root-owned — every file fails with "Permission denied", the old tree
-# survives, and `uv venv` writes into the half-broken dir so the bundled wheel
-# never replaces the stale agentshore (the sidecar — and any opt-in timelapse
-# step that reuses this venv — then runs weeks-old code). postinstall runs as
-# root, so it can always clear the directory here regardless of prior owner.
 MANAGED_VENV="${USER_HOME}/Library/Application Support/AgentShore/venv"
 if [[ -d "$MANAGED_VENV" ]]; then
   rm -rf "$MANAGED_VENV" || true
@@ -133,8 +97,6 @@ if [[ -x "$INSTALL_HELPER" && -n "$BUNDLED_WHEEL" && -f "$BUNDLED_WHEEL" ]]; the
 fi
 
 if [[ "$VENV_OK" -eq 0 ]]; then
-  # The desktop app can't function without the Python sidecar. Surface a
-  # clear dialog instead of silently launching a broken app.
   if has_python312; then
     DIALOG_BODY="The installer could not provision AgentShore's managed Python sidecar.\\n\\nDetails: $VENV_LOG"
   else
@@ -146,16 +108,11 @@ if [[ "$VENV_OK" -eq 0 ]]; then
   exit 0
 fi
 
-# ── 2. Launch the app under the console user's session ──────────────────────
 
 if [[ ! -d "${APP_PATH}" ]]; then
   exit 0
 fi
 
-# A one-shot LaunchAgent runs from the user's GUI bootstrap namespace. It waits
-# for Installer.app to close when the CLI component is still running, opens the
-# freshly-installed app by absolute path (not Launch Services name lookup), and
-# then removes itself.
 FIRST_LAUNCH_LABEL="ai.agentshore.firstlaunch"
 USER_AGENTS_DIR="${USER_HOME}/Library/LaunchAgents"
 FIRST_LAUNCH_PLIST="${USER_AGENTS_DIR}/${FIRST_LAUNCH_LABEL}.plist"
@@ -188,13 +145,5 @@ run_as_console_user /bin/launchctl remove "${FIRST_LAUNCH_LABEL}" 2>/dev/null ||
 run_as_console_user /bin/launchctl load -w "${FIRST_LAUNCH_PLIST}" 2>/dev/null || \
   run_as_console_user /usr/bin/open "${APP_PATH}" 2>/dev/null || true
 
-# Auto-close logic intentionally lives in the CLI component's postinstall
-# (cli-postinstall), not here. The CLI component runs after this desktop
-# postinstall returns and can take 30s+ pulling extras (torch + friends);
-# firing `tell Installer to quit` here from a sleep-2 background subshell
-# races the CLI install and produces an "Installer is busy" alert. Letting
-# the LAST postinstall handle the close removes the race. If a user
-# unchecks the CLI box in Customize, Installer just shows Summary normally
-# and the user closes it manually.
 
 exit 0

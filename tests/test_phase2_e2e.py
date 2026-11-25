@@ -36,10 +36,6 @@ from agentshore.state import (
     PlayType,
 )
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 
 def _success(play_type: PlayType, **kwargs: object) -> PlayOutcome:
     return PlayOutcome(
@@ -82,11 +78,6 @@ async def _clear_cached_github_work(orch: Orchestrator) -> None:
     await orch._store._conn.commit()  # type: ignore[union-attr]
 
 
-# ---------------------------------------------------------------------------
-# Full scenario
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_phase2_full_session_runs_anti_confirmation_safe_workflow(
     tmp_path: Path,
@@ -102,9 +93,6 @@ async def test_phase2_full_session_runs_anti_confirmation_safe_workflow(
     codex_id = "codex-agent-2"
     codex_id_2 = "codex-agent-3"
 
-    # ------------------------------------------------------------------
-    # 1. Plan -- fixed sequence with prescribed params
-    # ------------------------------------------------------------------
     plan: list[tuple[PlayType, PlayParams]] = [
         (PlayType.INSTANTIATE_AGENT, PlayParams(target_agent_type="claude_code")),
         (PlayType.INSTANTIATE_AGENT, PlayParams(target_agent_type="codex")),
@@ -131,34 +119,21 @@ async def test_phase2_full_session_runs_anti_confirmation_safe_workflow(
     ]
     selector = FixedPlanSelector(plan)
 
-    # ------------------------------------------------------------------
-    # 2. Bootstrap orchestrator
-    # ------------------------------------------------------------------
     cfg = RuntimeConfig()
     orch = await Orchestrator.bootstrap(cfg=cfg, repo_root=tmp_path, selector=selector)
 
-    # ------------------------------------------------------------------
-    # 3. Pre-wire the DB: create session so executor FK constraints pass
-    #    (bootstrap already creates the session row in __aenter__)
-    # ------------------------------------------------------------------
-
-    # Build canned outcomes for each play in order
     outcomes = [
-        # 1. Instantiate Claude
         _success(
             PlayType.INSTANTIATE_AGENT,
             agent_id=claude_id,
             artifacts=[{"type": "agent", "agent_id": claude_id, "agent_type": "claude_code"}],
         ),
-        # 2. Instantiate Codex
         _success(
             PlayType.INSTANTIATE_AGENT,
             agent_id=codex_id,
             artifacts=[{"type": "agent", "agent_id": codex_id, "agent_type": "codex"}],
         ),
-        # 3. Intake
         _success(PlayType.SEED_PROJECT),
-        # 4. Issue pickup -> PR #42, branch "foo"
         _success(
             PlayType.ISSUE_PICKUP,
             agent_id=claude_id,
@@ -172,26 +147,20 @@ async def test_phase2_full_session_runs_anti_confirmation_safe_workflow(
                 {"type": "commit", "branch": "foo", "sha": "abc123", "author_agent_id": claude_id},
             ],
         ),
-        # 5. Code review -> anti-confirmation failure (Claude authored the PR)
         _failure(
             PlayType.CODE_REVIEW,
             "anti_confirmation_violation: agent 'claude-agent-1' authored PR #42",
         ),
-        # 6. END_AGENT -> terminate Claude
         _success(PlayType.END_AGENT, agent_id=claude_id),
-        # 7. Instantiate new Codex
         _success(
             PlayType.INSTANTIATE_AGENT,
             agent_id=codex_id_2,
             artifacts=[{"type": "agent", "agent_id": codex_id_2, "agent_type": "codex"}],
         ),
-        # 8. Code review by Codex -> success
         _success(PlayType.CODE_REVIEW, agent_id=codex_id),
-        # 9. Merge PR
         _success(
             PlayType.MERGE_PR, agent_id=codex_id, artifacts=[{"type": "merged_pr", "pr_number": 42}]
         ),
-        # 10. End session
         _success(PlayType.END_SESSION),
     ]
 
@@ -208,7 +177,6 @@ async def test_phase2_full_session_runs_anti_confirmation_safe_workflow(
         call_count += 1
         outcome = next(outcome_iter)
 
-        # Write a real play row so we can count them later
         from agentshore.data.store import PlayRecord
 
         await orch._store.record_play(
@@ -223,7 +191,6 @@ async def test_phase2_full_session_runs_anti_confirmation_safe_workflow(
             )
         )
 
-        # Wire the END_AGENT handoff manually (normally done by executor._wire_deferrals)
         if play_type == PlayType.END_AGENT:
             from agentshore.data.store import HandoffRecord
 
@@ -241,9 +208,6 @@ async def test_phase2_full_session_runs_anti_confirmation_safe_workflow(
 
         return outcome
 
-    # ------------------------------------------------------------------
-    # 4. Run with patched executor
-    # ------------------------------------------------------------------
     await _clear_cached_github_work(orch)
     with (
         patch.object(orch._completion, "refresh_issues", new=AsyncMock()),
@@ -252,16 +216,12 @@ async def test_phase2_full_session_runs_anti_confirmation_safe_workflow(
         async with orch:
             await orch.run_until_idle()
 
-    # ------------------------------------------------------------------
-    # 5. Assertions
-    # ------------------------------------------------------------------
     import aiosqlite
 
     db_path = tmp_path / ".agentshore" / "agentshore.db"
     async with aiosqlite.connect(db_path) as db:
         db.row_factory = aiosqlite.Row
 
-        # 10 play rows
         async with db.execute(
             "SELECT COUNT(*) AS n FROM plays WHERE session_id = ?", (orch._session_id,)
         ) as cur:
@@ -269,7 +229,6 @@ async def test_phase2_full_session_runs_anti_confirmation_safe_workflow(
         assert row is not None
         assert row["n"] == 10, f"Expected 10 play rows, got {row['n']}"
 
-        # 1 handoff row with non-null play_id
         async with db.execute(
             "SELECT COUNT(*) AS n FROM agent_handoffs WHERE session_id = ? AND play_id IS NOT NULL",
             (orch._session_id,),
@@ -278,7 +237,6 @@ async def test_phase2_full_session_runs_anti_confirmation_safe_workflow(
         assert row is not None
         assert row["n"] == 1, f"Expected 1 handoff row, got {row['n']}"
 
-        # Session completed
         async with db.execute(
             "SELECT status FROM sessions WHERE session_id = ?", (orch._session_id,)
         ) as cur:

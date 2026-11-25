@@ -55,16 +55,7 @@ def _build_formatter() -> structlog.stdlib.ProcessorFormatter:
     return structlog.stdlib.ProcessorFormatter(
         processors=[
             structlog.stdlib.ProcessorFormatter.remove_processors_meta,
-            # Render exc_info into a structured ``exception`` field so exc_info=True
-            # sites emit a real traceback in the NDJSON; without this only
-            # ``"exc_info": true`` survived. Must precede JSONRenderer.
             structlog.processors.dict_tracebacks,
-            # dict_tracebacks serialises exception *frame locals*, several of
-            # which (identity_env, git_overlay, token, AgentHandle reprs) carry
-            # live GH_TOKEN / GITHUB_TOKEN values on the agent-launch path.
-            # Scrub credentials out of the whole event dict — including nested
-            # traceback frames — before anything is rendered to NDJSON.
-            # Must sit between dict_tracebacks and JSONRenderer.
             redact_secrets,
             structlog.processors.JSONRenderer(),
         ],
@@ -186,7 +177,6 @@ def with_correlation(correlation_id: str) -> Iterator[None]:
         _correlation_id_var.reset(token)
 
 
-# Keys already emitted by ``first_time``. Process-wide; cleared by tests.
 _seen_once: set[tuple[object, ...]] = set()
 
 

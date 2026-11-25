@@ -18,9 +18,6 @@ pub struct UiState {
     pub theme: String,
     pub last_selected_tab: String,
     pub window: Option<WindowState>,
-    // `#[serde(default)]` is load-bearing: a pre-existing `ui-state.json` lacks
-    // this field, and without the default the whole struct would fail to
-    // deserialize and silently reset theme/tab/window. `false` == carousel unseen.
     #[serde(default)]
     pub onboarding_completed: bool,
 }
@@ -137,9 +134,6 @@ mod tests {
 
     #[test]
     fn ui_state_legacy_blob_without_onboarding_field_preserves_other_settings() {
-        // A `ui-state.json` written before `onboarding_completed` existed must
-        // still deserialize (via `#[serde(default)]`) rather than wiping the
-        // user's theme / tab / window through the `unwrap_or_default()` path.
         let legacy = "{\"theme\":\"dark\",\"lastSelectedTab\":\"stats\",\"window\":null}";
         let parsed = serde_json::from_str::<UiState>(legacy).expect("legacy blob deserializes");
         assert_eq!(parsed.theme, "dark");

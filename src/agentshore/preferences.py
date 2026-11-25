@@ -31,14 +31,6 @@ if TYPE_CHECKING:
     from collections.abc import Iterable
     from pathlib import Path
 
-# Curated allowlist of plays a user may disable. Every member is optional to
-# issue delivery; disabling all of them cannot stall PR throughput. Keep this in
-# lockstep with the documented Preferences surface — do NOT add delivery /
-# lifecycle / self-heal plays (issue_pickup, code_review, merge_pr,
-# reconcile_state, end_session, …). DESIGN_AUDIT is deliberately excluded: the
-# PPO's end-of-session path gates on a fresh terminal audit
-# (``terminal_audits_are_fresh``), so disabling it could prevent a session from
-# ever ending.
 USER_DISABLEABLE_PLAYS: Final[frozenset[PlayType]] = frozenset(
     {
         PlayType.RUN_QA,

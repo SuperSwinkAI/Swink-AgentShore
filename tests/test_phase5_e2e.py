@@ -35,10 +35,6 @@ from agentshore.ui.provider import TuiStateProvider
 
 type Endpoint = Path | IpcEndpoint
 
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
-
 
 @pytest.fixture()
 def sock_path() -> Iterator[Endpoint]:
@@ -52,11 +48,6 @@ def sock_path() -> Iterator[Endpoint]:
         yield Path(short_dir) / "test.sock"
     finally:
         shutil.rmtree(short_dir, ignore_errors=True)
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 
 async def _connect(sock_path: Endpoint) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
@@ -93,11 +84,6 @@ def _make_outcome(success: bool = True) -> PlayOutcome:
         alignment_delta=0.1,
         play_id=1,
     )
-
-
-# ===========================================================================
-# 1. IPC Agent-Mode E2E
-# ===========================================================================
 
 
 async def test_e2e_state_update_written_to_file(tmp_path: Path) -> None:
@@ -197,7 +183,6 @@ async def test_e2e_ipc_lifecycle_clean_shutdown(sock_path: Endpoint) -> None:
     _reader, writer = await _connect(sock_path)
     await asyncio.sleep(0.05)
 
-    # Send a command to confirm the connection is alive.
     writer.write((json.dumps({"command": "pause"}) + "\n").encode("utf-8"))
     await writer.drain()
     cmd = await asyncio.wait_for(server.command_queue.get(), timeout=2.0)
@@ -210,11 +195,6 @@ async def test_e2e_ipc_lifecycle_clean_shutdown(sock_path: Endpoint) -> None:
     await server.stop()
     if not isinstance(sock_path, IpcEndpoint):
         assert not sock_path.exists()
-
-
-# ===========================================================================
-# 2. Solo TUI E2E
-# ===========================================================================
 
 
 async def test_e2e_tui_state_update_tracked() -> None:
@@ -238,14 +218,6 @@ async def test_e2e_tui_help_keybinding() -> None:
         from agentshore.ui.screens.help import HelpOverlay
 
         assert any(isinstance(s, HelpOverlay) for s in app.screen_stack)
-
-
-# 'p' pause keybinding removed in c4f276b (TUI footer cleanup); pause-resume E2E test removed too.
-
-
-# ===========================================================================
-# 3. Phase 6 Readiness Smoke
-# ===========================================================================
 
 
 def test_ipc_package_imports() -> None:
@@ -285,11 +257,6 @@ def test_screens_package_imports() -> None:
     assert SessionStartupScreen is not None
     assert SessionEndScreen is not None
     assert EscalationModal is not None
-
-
-# ===========================================================================
-# 4. Cross-layer Integration
-# ===========================================================================
 
 
 def test_state_provider_protocol_compliance_ipc() -> None:

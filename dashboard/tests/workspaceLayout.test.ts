@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { readFileSync } from "fs";
 import { resolve } from "path";
 
-// process.cwd() is the dashboard/ directory when vitest runs via `npm run test:unit`
+
 const DASHBOARD_DIR = process.cwd();
 const ROOT_PKG = JSON.parse(
   readFileSync(resolve(DASHBOARD_DIR, "../package.json"), "utf-8"),

@@ -16,7 +16,6 @@ from agentshore.config import ConfigError, ModelTierConfig, RuntimeConfig, load_
 
 def test_play_timeouts_defaults_to_empty_mapping() -> None:
     cfg = RuntimeConfig()
-    # Frozen by __post_init__ via MappingProxyType.
     assert dict(cfg.play_timeouts) == {}
 
 
@@ -143,9 +142,6 @@ def test_agent_timeout_stays_at_default_when_only_play_timeouts_set(tmp_path: Pa
     assert cfg.effective_play_timeout("merge_pr") == 10800
 
 
-# Per-tier spawn max (replaces global agent_spawn.max_per_config)
-
-
 def test_model_tier_config_default_max_is_1() -> None:
     """Default per-tier max is 1 when not specified."""
     tier = ModelTierConfig()
@@ -202,7 +198,6 @@ def test_legacy_max_per_config_migrates_to_default_tiers_without_model_tiers(
     with pytest.warns(DeprecationWarning, match="agent_spawn is deprecated"):
         cfg = load_config(yaml_path)
     tiers = cfg.agents["claude_code"].model_tiers
-    # Every default tier (small/medium/large) is materialized with the cap.
     assert {"small", "medium", "large"} <= set(tiers)
     for tier_name in ("small", "medium", "large"):
         assert tiers[tier_name].max == 4, tier_name
@@ -220,7 +215,6 @@ def test_no_agent_spawn_block_leaves_default_tiers_at_max_1(tmp_path: Path) -> N
         encoding="utf-8",
     )
     cfg = load_config(yaml_path)
-    # No explicit model_tiers block and no migration → tiers stay unmaterialized.
     assert cfg.agents["claude_code"].model_tiers == {}
 
 
@@ -250,10 +244,8 @@ def test_timelapse_absent_block_uses_defaults(tmp_path: Path) -> None:
 
 
 def test_worktrees_disk_knobs_have_conservative_defaults() -> None:
-    # Disk-pressure governance ships on by default (#180): fresh installs protected.
     cfg = RuntimeConfig()
     assert cfg.worktrees.min_free_disk_mb == 2048
-    # None = relative default, max(4096, 10% of volume) (#522).
     assert cfg.worktrees.disk_high_water_mb is None
     assert cfg.worktrees.reap_failed_pr_after_n == 2
     assert cfg.worktrees.max_active_worktrees is None

@@ -16,7 +16,7 @@ class _SessionsMixin(_DataStoreBase):
     """Methods that operate on the ``sessions`` table."""
 
     if TYPE_CHECKING:
-        # Provided by sibling _PlaysMixin; resolved via DataStore MRO at runtime.
+
         async def session_play_totals(self, session_id: str) -> tuple[int, float]: ...
 
     @_serialized

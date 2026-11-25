@@ -7,10 +7,6 @@ from unittest.mock import AsyncMock, MagicMock
 from agentshore.ui.app import OrchestratorApp
 from agentshore.ui.screens.escalation import EscalationModal
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 
 def _make_mock_orch() -> MagicMock:
     orch = MagicMock()
@@ -23,11 +19,6 @@ def _make_mock_orch() -> MagicMock:
     return orch
 
 
-# ---------------------------------------------------------------------------
-# Help overlay
-# ---------------------------------------------------------------------------
-
-
 async def test_press_question_mark_opens_help() -> None:
     """Pressing '?' opens the HelpOverlay."""
     app = OrchestratorApp()
@@ -37,20 +28,6 @@ async def test_press_question_mark_opens_help() -> None:
         from agentshore.ui.screens.help import HelpOverlay
 
         assert any(isinstance(s, HelpOverlay) for s in app.screen_stack)
-
-
-# Note: 'p' (pause), 'o' (override), 'g' (goals), and 'd' (agent detail)
-# keybinding tests were removed. 'p' and 'o' point at features that were
-# intentionally deleted (commits c4f276b — Pause; fe9040c — PlayOverrideScreen).
-# 'g' and 'd' bindings still exist, but the action handlers short-circuit
-# unless the app is on the dashboard screen; reliable test setup for that
-# would mean seeding the full state pipeline. Worth restoring with proper
-# fixtures if dashboard-screen-routing tests become a priority.
-
-
-# ---------------------------------------------------------------------------
-# Quit session
-# ---------------------------------------------------------------------------
 
 
 async def test_press_ctrl_q_drains_session() -> None:
@@ -65,11 +42,6 @@ async def test_press_ctrl_q_drains_session() -> None:
         app._orch.begin_drain.assert_called_once_with("user_tui")
         count = sum(1 for s in app.screen_stack if isinstance(s, SessionEndScreen))
         assert count == 0
-
-
-# ---------------------------------------------------------------------------
-# EscalationModal
-# ---------------------------------------------------------------------------
 
 
 async def test_escalation_stop_drains() -> None:

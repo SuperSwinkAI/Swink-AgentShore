@@ -75,7 +75,6 @@ async def test_retrying_group_excluded_from_idle_release(tmp_path) -> None:
             "s1", {"idle-agent"}, exclude_claim_group_ids=protected
         )
 
-        # Only the non-retrying stale group is released.
         assert released == 1
         retry_claims = await store.get_work_claim_group("s1", retry_group)
         stale_claims = await store.get_work_claim_group("s1", stale_group)
@@ -96,7 +95,6 @@ async def test_retry_reacquires_released_group(tmp_path) -> None:
             "s1", "issue_pickup", ["issue:1"], status="running", agent_id="a1"
         )
         assert group is not None
-        # A real play row backs the play_id FK (executor records one first).
         play_id = await store.record_play(
             PlayRecord(
                 session_id="s1",
@@ -105,9 +103,7 @@ async def test_retry_reacquires_released_group(tmp_path) -> None:
                 success=False,
             )
         )
-        # Reaper releases it out from under the pending retry.
         await store.release_active_work_claims_for_agents("s1", {"a1"})
-        # start_work_claim_group now finds no active rows -> False.
         assert (
             await store.start_work_claim_group("s1", group, play_id=play_id, agent_id="a1") is False
         )
@@ -126,7 +122,6 @@ async def test_retry_reacquires_released_group(tmp_path) -> None:
         )
         assert ok is True
         claims = await store.get_work_claim_group("s1", group)
-        # The fresh active rows for the group are now running.
         assert any(c.status == "running" for c in claims)
     finally:
         await store.close()
@@ -144,7 +139,6 @@ async def test_retry_reacquire_fails_when_resource_truly_held(tmp_path) -> None:
         )
         assert group is not None
         await store.release_active_work_claims_for_agents("s1", {"a1"})
-        # A different live claim now holds the same resource.
         other = await store.acquire_work_claims(
             "s1", "issue_pickup", ["issue:1"], status="running", agent_id="a2"
         )

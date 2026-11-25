@@ -57,9 +57,6 @@ if TYPE_CHECKING:
 
 _INTERNAL_PLAY_VALUES = frozenset(pt.value for pt in INTERNAL_PLAY_TYPES)
 
-# ONLY hand-maintained part of the play-log table: PlayType -> (label, phase) in
-# render order (grouped by phase). Index/play-set/future flag are derived from
-# rl/action_space below, so an action-space rev can't silently drift this.
 _PLAY_LOG_PRESENTATION: tuple[tuple[PlayType, str, int], ...] = (
     (PlayType.INSTANTIATE_AGENT, "INSTANTIATE_AGENT", 1),
     (PlayType.SEED_PROJECT, "SEED_PROJECT", 1),
@@ -85,8 +82,6 @@ _PLAY_LOG_PRESENTATION: tuple[tuple[PlayType, str, int], ...] = (
     (PlayType.END_SESSION, "END_SESSION", 7),
 )
 
-# Import-time guard: presentation table must cover exactly the user-facing action
-# space, so an action-space rev that drifts it fails loudly instead of dropping a row.
 _EXPECTED_PLAY_LOG_KEYS = set(PlayType) - INTERNAL_PLAY_TYPES
 if {pt for pt, _, _ in _PLAY_LOG_PRESENTATION} != _EXPECTED_PLAY_LOG_KEYS:
     msg = (
@@ -95,8 +90,6 @@ if {pt for pt, _, _ in _PLAY_LOG_PRESENTATION} != _EXPECTED_PLAY_LOG_KEYS:
     )
     raise ValueError(msg)
 
-# Derived: (play_type_str, label, action_index, phase, is_future); index and future
-# flag single-sourced from rl/action_space.
 _PLAY_LOG_ORDER: tuple[tuple[str, str, int, int, bool], ...] = tuple(
     (play_type.value, label, PLAY_TO_INDEX[play_type], phase, play_type in RESERVED_PLAYS)
     for play_type, label, phase in _PLAY_LOG_PRESENTATION
@@ -200,11 +193,6 @@ class _PlayStatsAccumulator:
     total_duration_seconds: float = 0.0
 
 
-# ---------------------------------------------------------------------------
-# Aggregator functions (one per former @staticmethod on ReportDataCollector)
-# ---------------------------------------------------------------------------
-
-
 def compute_overview(session: SessionRecord, plays: list[PlayRecord]) -> OverviewData:
     """Compute high-level session overview from session record and plays."""
     duration = 0.0
@@ -218,7 +206,6 @@ def compute_overview(session: SessionRecord, plays: list[PlayRecord]) -> Overvie
 
     successful = sum(1 for p in plays if p.success)
     skipped = sum(1 for p in plays if _is_skip(p))
-    # Skips are gated no-ops, not failures — exclude them from the failed count.
     failed = len(plays) - successful - skipped
 
     return OverviewData(
@@ -228,7 +215,6 @@ def compute_overview(session: SessionRecord, plays: list[PlayRecord]) -> Overvie
         successful_plays=successful,
         failed_plays=failed,
         skipped_plays=skipped,
-        # Sum per-play costs (not session.total_cost) so every report agrees.
         total_cost=sum(p.dollar_cost for p in plays),
         final_alignment=session.final_alignment,
         started_at=session.started_at,
@@ -274,7 +260,6 @@ def compute_play_stats(plays: list[PlayRecord]) -> list[PlayStatsEntry]:
 
     result: list[PlayStatsEntry] = []
     for play_type, acc in by_type.items():
-        # Skips are gated no-ops: own bucket, success_rate over dispatched only.
         failed = acc.total - acc.successful - acc.skipped
         dispatched = acc.total - acc.skipped
         result.append(
@@ -360,8 +345,6 @@ def compute_play_log_rows(
     for play in plays:
         if play.play_type in _INTERNAL_PLAY_VALUES:
             continue
-        # Gated skips never reached an agent (0ms, $0); omit from the executed
-        # play-log timeline (stats table still counts them in its skipped bucket).
         if _is_skip(play):
             continue
         row_number += 1
@@ -454,7 +437,6 @@ def compute_cost_breakdown(
         running += p.dollar_cost
         cumulative.append((idx, running))
 
-    # Backfill agents with no plays.
     for a in agents:
         if a.agent_id not in by_agent:
             by_agent[a.agent_id] = a.total_cost
@@ -545,7 +527,6 @@ def compute_failure_analysis(plays: list[PlayRecord]) -> list[FailureAnalysisEnt
     """Group failed plays by failure category."""
     by_category: dict[str, list[FailurePlayEntry]] = {}
     for p in plays:
-        # Skips are gated no-ops (failure_category="skip:*"), not failures.
         if not p.success and not _is_skip(p):
             cat = p.failure_category or "unknown"
             entry = FailurePlayEntry(
@@ -806,7 +787,6 @@ def compute_recommendations(
     """Generate simple heuristic-based recommendations."""
     recs: list[str] = []
 
-    # High failure rate agents
     for a in agents:
         total = a.tasks_completed + a.tasks_failed
         if total > 0:
@@ -818,7 +798,6 @@ def compute_recommendations(
                     f"({a.tasks_failed}/{total}) — consider switching agent type"
                 )
 
-    # High cleanup ratio
     total_plays = len(plays)
     cleanups = sum(1 for p in plays if p.play_type == "cleanup")
     if total_plays > 0 and cleanups / total_plays > 0.15:
@@ -827,7 +806,6 @@ def compute_recommendations(
             f"consider reducing the cleanup cooldown or investigating recurring lint failures"
         )
 
-    # High overall failure rate
     failures = sum(1 for p in plays if not p.success)
     if total_plays > 0 and failures / total_plays > 0.4:
         recs.append(
@@ -907,5 +885,4 @@ def compute_epic_closure_timeline(
     )
 
 
-# Re-exported for collect_progress_report's inline use.
 __all__ = ["ActiveAgentEntry"]

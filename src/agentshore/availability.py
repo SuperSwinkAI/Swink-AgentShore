@@ -34,8 +34,6 @@ from agentshore.state import AgentType
 
 _VIA_GH_LOGIN = "gh_token_login"
 
-# Detection speaks CLI binary names ("claude"); the rest of the system speaks
-# AgentType ("claude_code"). One conversion layer here, not scattered.
 _BINARY_TO_AGENT_TYPE: dict[str, AgentType] = {
     "claude": AgentType.CLAUDE_CODE,
     "codex": AgentType.CODEX,
@@ -105,9 +103,6 @@ def refresh(path: Path = DEFAULT_AVAILABILITY_PATH) -> AvailabilityRecord:
         GhAccountAvailability(
             login=acc.login,
             active=acc.active,
-            # Best-effort: default any gh-authed account to "gh_token_login"
-            # (the safe ``gh auth token -u <login>`` path); we don't probe
-            # keychain/env here.
             token_via=_VIA_GH_LOGIN,
         )
         for acc in accounts
@@ -121,10 +116,6 @@ def refresh(path: Path = DEFAULT_AVAILABILITY_PATH) -> AvailabilityRecord:
     with contextlib.suppress(OSError):
         save(record, path)
     return record
-
-
-# Reading stays defensive: on-disk YAML is untrusted (hand-edited, partial, or
-# from an older build). Writing is just ``dataclasses.asdict`` (see ``save``).
 
 
 def _record_from_dict(raw: Mapping[str, object]) -> AvailabilityRecord:

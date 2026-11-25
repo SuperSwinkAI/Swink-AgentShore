@@ -200,15 +200,7 @@ class AgentHandle:
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     last_active: datetime | None = None
     task_history: list[TaskRecord] = field(default_factory=list)
-    # subprocess reference for CLI agents; not included in repr to avoid noise
     process: asyncio.subprocess.Process | None = field(default=None, repr=False)
-    # Monotonic-clock deadline by which the current dispatch must have finished
-    # (effective wall-clock timeout + kill grace + margin), stamped by
-    # ``AgentManager.dispatch`` at the BUSY transition. The HealthMonitor reaps
-    # any agent still BUSY past this deadline — the catch-all for a dispatch
-    # whose own timeout/kill machinery hung and left the agent pinned in BUSY
-    # (which would otherwise suppress every session-end backstop). Only read
-    # while ``status is BUSY``; a stale value on an idle agent is ignored.
     dispatch_deadline_monotonic: float | None = field(default=None, repr=False)
     current_play_type: PlayType | None = None
     current_play_id: int | None = None
@@ -218,25 +210,9 @@ class AgentHandle:
     current_play_branch: str | None = None
     last_error_class: ErrorClass | None = None
     timeout_count: int = 0
-    # Timeouts since this agent's last *successful* dispatch (reset to 0 on
-    # success). Distinct from the cumulative ``timeout_count`` telemetry: this is
-    # the consecutive-storm signal. A hung agent that produces no stdout returns
-    # to IDLE and — if it has prior completions — is not benched by the
-    # 0-completion circuit breaker, so reconcile_state re-selects it and it hangs
-    # for the full stream-idle window again (#161). Benching on this counter
-    # bounds the storm without disabling the self-heal play itself.
     consecutive_timeouts: int = 0
-    # Cumulative count of clean-exit empty no-op dispatches this agent returned
-    # (see is_noop_invocation). Telemetry/agent-health only — never reset — so a
-    # session report can show an agent's no-op rate instead of those dispatches
-    # showing up only as silent play failures. The consecutive-no-op streak that
-    # triggers a take_break is bounded by the in-play retry loop, not this field.
     noop_count: int = 0
     github_identity: str | None = None
-    # Identity env overlay resolved once at instantiate() and reused by every
-    # dispatch — never re-resolved per play. Empty when the agent has no bound
-    # identity. Treat as read-only; dispatch builds a per-call copy before adding
-    # transient keys like ``AGENTSHORE_PROJECT_PATH``.
     identity_env: dict[str, str] = field(default_factory=dict)
 
     def transition_to(self, new_status: AgentStatus) -> None:

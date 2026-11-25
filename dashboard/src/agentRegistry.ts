@@ -25,7 +25,7 @@ import grokSmallSpriteUrl from "./assets/agents/v2/grok-small-ball.png";
 import swinkCodingLargeSpriteUrl from "./assets/agents/v2/swink-large-humanoid.png";
 import swinkCodingMediumSpriteUrl from "./assets/agents/v2/swink-medium-humanoid.png";
 import swinkCodingSmallSpriteUrl from "./assets/agents/v2/swink-small-ball.png";
-// Copilot reuses the (otherwise unused) violet "strands" sprite set — no bespoke art.
+
 import copilotLargeSpriteUrl from "./assets/agents/v2/strands-large-humanoid.png";
 import copilotMediumSpriteUrl from "./assets/agents/v2/strands-medium-humanoid.png";
 import copilotSmallSpriteUrl from "./assets/agents/v2/strands-small-ball.png";

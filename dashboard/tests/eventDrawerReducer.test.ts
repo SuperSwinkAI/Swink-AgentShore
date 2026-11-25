@@ -7,13 +7,13 @@ import {
 } from "../src/components/EventDrawer";
 import type { ActivePlay, AgentSnapshot, PlayEvent } from "../src/types";
 
-// Regression: the left-panel activity tiles must keep the agent's display name
-// and type after the agent terminates. A terminated agent drops out of the
-// state snapshot's agent list; the reducer used to recompute name/type from the
-// live agent map on every update, so a play's started->completed transition (or
-// any subsequent state_update) clobbered "Cobalt Atlas / Large Codex" with the
-// "163080aa / Agent" id-slice fallback. Completed-play tiles are historical
-// records and must freeze the identity captured while the agent was live.
+
+
+
+
+
+
+
 
 function agent(overrides: Partial<AgentSnapshot> = {}): AgentSnapshot {
   return {
@@ -76,7 +76,7 @@ describe("EventDrawer reducer — terminated-agent identity preservation", () =>
   it("keeps name/type when the agent leaves the snapshot (state_update refresh path)", () => {
     let state = INITIAL_STATE;
 
-    // Agent live, running its play.
+
     state = reducer(state, {
       type: "state_update",
       agents: [agent({ current_play: activePlay() })],
@@ -84,11 +84,11 @@ describe("EventDrawer reducer — terminated-agent identity preservation", () =>
     expect(onlyCard(state).name).toBe("Cobalt Atlas");
     expect(onlyCard(state).type).toBe("Large Codex");
 
-    // Play completes (agent still in the last snapshot's map).
+
     state = reducer(state, { type: "play_event", event: completedEvent() });
 
-    // Agent is torn down -> absent from the next snapshot. The refresh block
-    // must NOT reset the completed card to the id-slice/"Agent" fallback.
+
+
     state = reducer(state, { type: "state_update", agents: [] });
 
     const card = onlyCard(state);
@@ -104,7 +104,7 @@ describe("EventDrawer reducer — terminated-agent identity preservation", () =>
       type: "state_update",
       agents: [agent({ current_play: activePlay() })],
     });
-    // Agent terminates and leaves the snapshot before the completed event.
+
     state = reducer(state, { type: "state_update", agents: [] });
     state = reducer(state, { type: "play_event", event: completedEvent() });
 
@@ -135,7 +135,7 @@ describe("EventDrawer reducer — terminated-agent identity preservation", () =>
   it("still upgrades name/type from the live snapshot while the agent exists", () => {
     let state = INITIAL_STATE;
 
-    // First snapshot has a provisional display name.
+
     state = reducer(state, {
       type: "state_update",
       agents: [
@@ -144,7 +144,7 @@ describe("EventDrawer reducer — terminated-agent identity preservation", () =>
     });
     expect(onlyCard(state).name).toBe("Provisional");
 
-    // Updated snapshot (agent still present) must refresh to the new name.
+
     state = reducer(state, {
       type: "state_update",
       agents: [

@@ -46,7 +46,7 @@ export interface EsrSummary {
   play_stats: EsrPlayStat[];
   closed_issues: EsrClosedIssue[];
   control_rejections: EsrControlRejection[];
-  // Other ESR fields are present on the wire but unused by the screen.
+
   [key: string]: unknown;
 }
 
@@ -151,8 +151,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const [esr, setEsr] = useState<EsrPayload | null>(null);
   const [lastProjectPath, setLastProjectPath] = useState<string | null>(null);
   const [sessionStarting, setSessionStarting] = useState(false);
-  // Starts true so the shell shows a splash instead of the project picker
-  // until the reattach probe in App resolves. Cleared in .finally.
+
+
   const [sessionReattaching, setSessionReattaching] = useState(true);
   return (
     <SessionContext.Provider

@@ -216,10 +216,10 @@ function upsertCardInList(
   const endedAt = endedAtForEvent(event, existing);
   const startedAt = startedAtForEvent(event, existing, endedAt);
 
-  // Resolve name/type from the live snapshot, falling back to values already on
-  // the card: a terminated agent drops out of agentsById, so recomputing would
-  // clobber a real name with the id-slice/"Agent" fallback. Completed tiles are
-  // historical records and must keep the identity captured while the agent was live.
+
+
+
+
   const resolvedAgent = lookupAgent(displayAgentId, agentsById);
   const resolvedName = resolvedAgent
     ? shortAgentName(resolvedAgent, displayAgentId?.slice(0, 8) ?? "Session")
@@ -270,8 +270,8 @@ function upsertCurrentAgentPlayInList(
   agentsById: Map<string, AgentSnapshot>,
   fallbackId: number,
 ): { cards: EventCard[]; fallbackId: number } {
-  // ActivePlay matches the wire contract (required-nullable), so no ?? null
-  // defensiveness needed mapping it onto PlayEventStarted.
+
+
   return upsertCardInList(
     {
       type: "play_event",
@@ -340,16 +340,16 @@ export function reducer(state: DrawerState, action: DrawerAction): DrawerState {
         }
       }
 
-      // Reconcile cards stuck on "Running" against authoritative agent state,
-      // two flip cases only: agent gone from a later snapshot → ended; agent
-      // moved to a DIFFERENT play → prior card stale → ended.
-      //
-      // Deliberately does NOT infer "Completed" from idle+null current_play:
-      // agent.status passes through brief idle snapshots mid-play (2026-05-22
-      // desktop-y3kq: design_audit running 0:19 but card flipped to "Completed").
-      // False-positive completions are worse than false-negatives (a wrong
-      // "Completed" looks correct and hides bugs); trust play_event "completed"
-      // to drive completion — if lost, fix WS delivery, not the reducer.
+
+
+
+
+
+
+
+
+
+
       cards = cards.map((card) => {
         if (card.status !== "started" || !card.agentId) return card;
         const agent = agentsById.get(card.agentId);
@@ -366,10 +366,10 @@ export function reducer(state: DrawerState, action: DrawerAction): DrawerState {
         return card;
       });
 
-      // Refresh name/type from the new agent map ONLY for cards whose agent is
-      // still present; a terminated agent drops out, and recomputing would reset
-      // its completed-play cards to the id-slice/"Agent" fallback, clobbering the
-      // identity captured while it was live.
+
+
+
+
       cards = cards.map((card) => {
         const displayAgentId = card.agentId ?? card.triggerAgentId;
         const resolvedAgent = lookupAgent(displayAgentId, agentsById);
@@ -446,11 +446,7 @@ export function notifyEventDrawerReplay(history: PlayEvent[]): void {
 }
 
 /**
- * Wipe all accumulated cards. Called from Dashboard.tsx on session
- * boundary (session_id change) so a fresh session doesn't display
- * cards from the prior session — symptom was phantom agents with
- * hash-id "names" because the new session's agent registry didn't
- * contain the old agent_ids.
+ * Wipe accumulated cards on a session_id change.
  */
 export function notifyEventDrawerReset(): void {
   store.dispatch({ type: "reset" });

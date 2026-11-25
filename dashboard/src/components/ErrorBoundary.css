@@ -1,5 +1,3 @@
-/* Top-level ErrorBoundary fallback — shown when a render throws so the app
- * degrades to a readable trace instead of a blank white screen. */
 .dashboard-error-boundary {
   position: fixed;
   inset: 0;

@@ -120,7 +120,7 @@ async def test_reharvest_reinforces_existing_entry(tmp_path: Path) -> None:
     matched = [e for e in entries if e.pattern == "pre-existing"]
     assert len(matched) == 1
     assert matched[0].id == "existing-1"
-    assert matched[0].confidence == pytest.approx(0.8)  # 0.7 + 0.1
+    assert matched[0].confidence == pytest.approx(0.8)
     assert matched[0].sessions_since_use == 0
     assert matched[0].last_reinforced_play_id == 42
 
@@ -221,8 +221,8 @@ async def test_malformed_entries_in_outcome_dropped(tmp_path: Path) -> None:
     outcome = _outcome(
         learnings=[
             "not a dict",  # type: ignore[list-item]
-            {"confidence": 0.5},  # missing pattern
-            {"pattern": "", "confidence": 0.5},  # empty pattern
+            {"confidence": 0.5},
+            {"pattern": "", "confidence": 0.5},
             {"pattern": "valid-entry", "confidence": 0.8, "category": "general"},
         ]
     )
@@ -301,14 +301,14 @@ async def test_compacted_replaces_store_and_folds_metadata(tmp_path: Path) -> No
     await h.update_learnings(outcome, PlayType.GROOM_BACKLOG)
 
     entries = load(path)
-    assert len(entries) == 1  # c was dropped (not carried forward)
+    assert len(entries) == 1
     merged = entries[0]
     assert merged.pattern == "run the tests before opening a PR"
-    assert merged.id == "a"  # first source id preserved
-    assert merged.confidence == pytest.approx(0.8)  # max
-    assert merged.sessions_since_use == 1  # min
-    assert merged.last_reinforced_play_id == 9  # most recent
-    assert merged.created_at == "2025-01-01T00:00:00+00:00"  # earliest
+    assert merged.id == "a"
+    assert merged.confidence == pytest.approx(0.8)
+    assert merged.sessions_since_use == 1
+    assert merged.last_reinforced_play_id == 9
+    assert merged.created_at == "2025-01-01T00:00:00+00:00"
 
 
 async def test_compacted_entry_without_merged_from_is_fresh(tmp_path: Path) -> None:
@@ -326,7 +326,7 @@ async def test_compacted_entry_without_merged_from_is_fresh(tmp_path: Path) -> N
     entries = load(tmp_path / ".agentshore/learnings.json")
     assert len(entries) == 1
     assert entries[0].pattern == "brand new synthesis"
-    assert entries[0].confidence == pytest.approx(0.5)  # DEFAULT
+    assert entries[0].confidence == pytest.approx(0.5)
     assert entries[0].sessions_since_use == 0
     assert entries[0].source_play_id == 7
 
@@ -335,7 +335,6 @@ async def test_compacted_empty_result_for_nonempty_store_is_rejected(tmp_path: P
     """A payload that would empty a non-empty store is rejected; store is kept."""
     path = _seed(tmp_path, [_learning("a", "keep me", confidence=0.9)])
     h = _harvester(tmp_path)
-    # Only an invalid (empty-pattern) entry → rebuilt would be empty.
     outcome = _outcome(play_id=5, learnings_compacted=[{"pattern": "", "merged_from": []}])
     await h.update_learnings(outcome, PlayType.GROOM_BACKLOG)
 

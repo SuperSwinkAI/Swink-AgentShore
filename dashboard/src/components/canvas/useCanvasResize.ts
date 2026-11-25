@@ -33,16 +33,16 @@ export function useCanvasResize(
     const camera = cameraRef.current;
     if (!canvas || !camera) return;
 
-    // Size backing-store to displayed size for crisp pixel art on HiDPI (else
-    // canvas defaults to 300x150). dpr is re-read in resize() (not frozen at
-    // mount) since it changes on cross-monitor moves; a stale value mis-sizes
-    // the backing store and blurs the upscale.
+
+
+
+
     let dpr = window.devicePixelRatio || 1;
 
     const measureViewport = (): ViewportBounds => {
-      // Physical-pixel bounds the office should fit within, measured from the
-      // surrounding HUD panels; falls back to full window for panels not yet
-      // mounted (e.g. first paint before the HUD subtree settles).
+
+
+
       const topBar = document.getElementById("top-bar");
       const bottomBar = document.getElementById("bottom-bar");
       const leftPanel = document.getElementById("left-panel");
@@ -74,9 +74,9 @@ export function useCanvasResize(
     fitToViewRef.current = fitToView;
 
     const resize = () => {
-      // Backing-store and all camera math operate in PHYSICAL pixels; no
-      // setTransform. Scaling the context by DPR would double every camera
-      // offset on HiDPI and paint the office off-center bottom-right.
+
+
+
       dpr = window.devicePixelRatio || 1;
       const rect = canvas.getBoundingClientRect();
       canvas.width = Math.round(rect.width * dpr);
@@ -84,9 +84,9 @@ export function useCanvasResize(
       fitToView();
     };
     resize();
-    // Defer a second fit a frame so HUD panels mount before we measure them;
-    // else the first resize misses #top-bar/#side-panel, falls back to
-    // full-window bounds, and paints too wide on initial load.
+
+
+
     const initialFitRaf = requestAnimationFrame(fitToView);
 
     const ro = new ResizeObserver(resize);
@@ -94,9 +94,9 @@ export function useCanvasResize(
     const onWindowResize = () => fitToView();
     window.addEventListener("resize", onWindowResize);
 
-    // Cross-monitor moves don't reliably fire `resize`, so watch dpr directly.
-    // The query targets the current dppx, so rebuild and re-arm it after each
-    // change; resize() then re-reads dpr and re-sizes the backing store.
+
+
+
     let dprQuery: MediaQueryList | null = null;
     const onDprChange = () => {
       resize();
@@ -115,9 +115,9 @@ export function useCanvasResize(
       window.removeEventListener("resize", onWindowResize);
       dprQuery?.removeEventListener("change", onDprChange);
     };
-    // canvasRef/cameraRef are stable ref objects populated by the parent's
-    // mount effect before this one runs; this effect intentionally runs once
-    // at mount, matching the original monolithic effect's `[]` deps.
+
+
+
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

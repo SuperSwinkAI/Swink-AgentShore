@@ -126,8 +126,6 @@ async def test_eligibility_confirm_agreement() -> None:
 
     for pt in V1_ACTION_ORDER:
         verdict = report.verdicts[pt]
-        # confirm() against the same state should reproduce the snapshot verdict.
-        # Use the authority's own resolved candidate as the confirm subject.
         params = verdict.candidates[0].params if verdict.candidates else PlayParams()
         confirmed = await authority.confirm(pt, params, state)
         assert confirmed.valid == verdict.valid, (
@@ -147,13 +145,11 @@ async def test_confirm_live_drift_is_clean_repick() -> None:
     confirm() itself acquires no work-claim and records nothing — we assert it
     is a pure verdict.
     """
-    # Snapshot state: issue is a live ISSUE_PICKUP candidate.
     snapshot_state = _work_state(graph=_graph(234, BeadStatus.OPEN))
     authority = EligibilityAuthority(snapshot_state, build_default_registry())
     report = authority.eligibility()
     assert report.verdicts[PlayType.ISSUE_PICKUP].valid is True
 
-    # Live state: the same issue's bead has flipped to in_progress.
     live_state = _work_state(graph=_graph(234, BeadStatus.IN_PROGRESS))
     verdict = await authority.confirm(
         PlayType.ISSUE_PICKUP, PlayParams(issue_number=234), live_state
@@ -161,7 +157,6 @@ async def test_confirm_live_drift_is_clean_repick() -> None:
 
     assert verdict.valid is False
     assert verdict.reason is not None
-    # Clean re-pick: the drifted target is gone from the live candidate set.
     assert all(c.params.issue_number != 234 for c in verdict.candidates)
 
 
@@ -207,7 +202,6 @@ async def test_idle_maintenance_plays_mask() -> None:
         verdict = report.verdicts[pt]
         assert verdict.valid is False, f"{pt.value} should mask via eligibility()"
         assert verdict.reason is not None
-    # The masked bits show up in the projected action mask too.
     mask = report.mask()
     for pt in (
         PlayType.RECONCILE_STATE,
@@ -231,8 +225,6 @@ def test_no_version_bump() -> None:
     assert NUM_ACTIONS == 22
     assert OBSERVATION_DIM == 254
     assert OBSERVATION_VERSION == 17
-    # encode_observation must NOT take a mask argument — the mask is derived
-    # separately by the EligibilityAuthority, never folded into the observation.
     params = inspect.signature(encode_observation).parameters
     assert "mask" not in params
     assert "action_mask" not in params

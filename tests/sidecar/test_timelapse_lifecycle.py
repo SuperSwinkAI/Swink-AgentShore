@@ -53,7 +53,6 @@ async def test_stop_timelapse_capture_stops_and_returns_output(
 
     assert out == "/runs/x/output.mp4"
     assert stopped["run_id"] == "swift-otter-042"
-    # Run-id is cleared so a second stop is a no-op.
     assert state.timelapse_run_id is None
 
 
@@ -69,6 +68,5 @@ async def test_stop_timelapse_capture_swallows_stop_error(
 
     monkeypatch.setattr(timelapse, "stop_capture", fake_stop)
 
-    # Must not raise — best-effort shutdown.
     assert await sl.stop_timelapse_capture(state) is None
     assert state.timelapse_run_id is None

@@ -22,7 +22,7 @@ import {
 import { CapSliderPanel } from "../components/CapSliderPanel";
 import styles from "./BudgetScreen.module.css";
 
-// Re-export constants/types so existing imports from this module keep working.
+
 export {
   BUDGET_DEFAULT_USD,
   BUDGET_DRAIN_RESERVE_USD,
@@ -76,10 +76,10 @@ export function BudgetScreen({
   const [saveError, setSaveError] = useState<string | null>(null);
   const [estimateInfoOpen, setEstimateInfoOpen] = useState(false);
 
-  // When a dimension is unlimited we keep its last picked value around so the
-  // slider snaps back to it (rather than the default) when re-selecting Capped.
-  // If it is below the minimum (the default-state case from App.tsx, which
-  // seeds 0 for unlimited), surface the typical starting point instead.
+
+
+
+
   const sliderValue =
     selection.total >= BUDGET_MIN_USD ? clampDollars(selection.total) : BUDGET_DEFAULT_USD;
   const timeSliderValue =
@@ -117,7 +117,7 @@ export function BudgetScreen({
     ? `Time cap: ${formatHours(timeSliderValue)}`
     : "Time: Unlimited";
 
-  // The canonical selection to persist — identical to onContinue's payload.
+
   const persistable: BudgetSelection = {
     mode: isCapped ? "capped" : "unlimited",
     total: isCapped ? sliderValue : selection.total,
@@ -125,18 +125,18 @@ export function BudgetScreen({
     timeMinutes: isTimeCapped ? timeSliderValue : selection.timeMinutes,
   };
 
-  // Flush the budget to agentshore.yaml when the user leaves this screen by
-  // ANY exit path. The left rail and Back navigate without clicking Continue,
-  // and onSave previously fired only from onContinue — so edits made then
-  // abandoned via the rail reached localStorage (onChange) but never the YAML.
-  // Keep the latest value + onSave in refs so the unmount cleanup writes the
-  // final selection without re-subscribing on every keystroke.
+
+
+
+
+
+
   const persistableRef = useRef(persistable);
   persistableRef.current = persistable;
   const onSaveRef = useRef(onSave);
   onSaveRef.current = onSave;
-  // onContinue already awaited an explicit save (and surfaced any error), so
-  // the unmount flush must not double-write after a successful Continue.
+
+
   const savedByContinueRef = useRef(false);
 
   useEffect(

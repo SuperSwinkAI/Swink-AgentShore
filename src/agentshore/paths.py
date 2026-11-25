@@ -15,15 +15,8 @@ GLOBAL_CONFIG_DIR: Final[Path] = Path(platformdirs.user_config_dir("agentshore",
 GLOBAL_WEIGHTS_DIR: Final[Path] = GLOBAL_CONFIG_DIR / "weights"
 GLOBAL_SESSIONS_DIR: Final[Path] = GLOBAL_CONFIG_DIR / "sessions"
 GLOBAL_AVAILABILITY_PATH: Final[Path] = GLOBAL_CONFIG_DIR / "availability.yaml"
-# Per-model token pricing; deep-merges over the wheel-bundled table. Edit + SIGHUP
-# reprices every project's next dispatch with no restart. See pricing.load_pricebook.
 GLOBAL_PRICING_PATH: Final[Path] = GLOBAL_CONFIG_DIR / "pricing.yaml"
-# Per-agent-harness known-model catalog; each agent key's list wholesale-replaces
-# the wheel-bundled default when present. See model_catalog.load_model_catalog.
 GLOBAL_MODELS_PATH: Final[Path] = GLOBAL_CONFIG_DIR / "models.yaml"
-# Machine-global user prefs (disabled non-critical plays, runtime timeouts), folded
-# into every project's RuntimeConfig at load; SIGHUP/reload re-reads mid-session.
-# Global-only by design — no per-project file. See agentshore.preferences.
 GLOBAL_PREFERENCES_PATH: Final[Path] = GLOBAL_CONFIG_DIR / "preferences.yaml"
 
 PROJECT_DIR_NAME: Final[str] = ".agentshore"

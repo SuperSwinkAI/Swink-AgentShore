@@ -1,24 +1,4 @@
-"""Live-drift confirmation moved from dispatch revalidation to the authority.
-
-Background: ``IssuePickupPlay.execute`` used to do a final live-beads-graph
-check after the PPO action had already been picked. When the bead had closed
-between selection and execute, the play returned a partial-failure outcome —
-counted as a play_completed (reason="skipped"), consuming a PPO action and
-contributing to the skip stalls observed in production.
-
-A later iteration moved that check to a dispatch-time revalidation pass
-(``_DispatchMixin._dispatch_revalidation_reason`` /
-``_refresh_live_graph_for_issue``, emitting ``dispatch_revalidation_blocked``).
-
-Eligibility refactor: that pass is gone too. ``EligibilityAuthority.confirm()``
-is now the single source of truth — it does ONE live re-derivation of the
-candidate plan from the freshly-refreshed ``state``. An issue whose bead flipped
-to ``in_progress`` drops out of the live candidate set, so ``confirm`` returns
-``valid=False`` and the selector cleanly re-picks: no plays-table skip row, no
-RL experience sample. A closed bead with an open GitHub issue stays valid
-(GitHub is canonical). PR-target plays are confirmed against the live PR set,
-not the beads graph.
-"""
+"""Live-drift confirmation moved from dispatch revalidation to the authority."""
 
 from __future__ import annotations
 
@@ -104,7 +84,6 @@ async def test_live_in_progress_invalidates_confirm_clean_repick() -> None:
 
     assert verdict.valid is False
     assert verdict.reason is not None
-    # Clean re-pick: the picked issue is no longer a live candidate.
     assert all(c.params.issue_number != 42 for c in verdict.candidates)
 
 
@@ -139,7 +118,6 @@ async def test_pr_play_confirms_against_live_pr_set_not_beads() -> None:
     A CODE_REVIEW pinned to a PR that no longer exists in the live plan is a
     clean re-pick; the beads graph status is irrelevant to PR confirmation.
     """
-    # No PRs in state → CODE_REVIEW has no live candidate for PR #99.
     state = _state(99, BeadStatus.CLOSED)
     authority = EligibilityAuthority(state, build_default_registry())
 

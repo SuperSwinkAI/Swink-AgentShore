@@ -60,7 +60,7 @@ export function useCanvasWallStickies(rendererRef: RefObject<OfficeRenderer | nu
       renderer.setWallStickies(stickies);
     };
     stickyListeners.add(onStickies);
-    // Apply any sticker payload that arrived before this canvas mounted.
+
     if (cachedStickies.length > 0) {
       renderer.setWallStickies(cachedStickies);
     }
@@ -68,8 +68,8 @@ export function useCanvasWallStickies(rendererRef: RefObject<OfficeRenderer | nu
     return () => {
       stickyListeners.delete(onStickies);
     };
-    // rendererRef is a stable ref object populated before this effect runs;
-    // intentionally runs once at mount.
+
+
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 }

@@ -105,9 +105,6 @@ class ProjectGraph:
         return len(self.epics) > 0
 
 
-# Preference order for picking the most-actionable bead when several point at
-# the same GitHub issue (duplicate-bead routing). OPEN beats anything else;
-# CLOSED is the last resort. Used by ``pick_bead_for_issue`` below.
 _BEAD_STATUS_PREFERENCE: tuple[BeadStatus, ...] = (
     BeadStatus.OPEN,
     BeadStatus.IN_PROGRESS,

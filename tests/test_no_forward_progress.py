@@ -26,19 +26,16 @@ from agentshore.state import (
 
 
 def _completion(limit: int = 2) -> types.SimpleNamespace:
-    # One shared SessionRuntime so autonomous-stop write-backs are visible to assertions.
     runtime = SessionRuntime(progress_monitor=ForwardProgressMonitor(no_progress_ticks=limit))
     host = types.SimpleNamespace(
         _runtime=runtime,
         _session_id="s1",
         _drain=types.SimpleNamespace(begin_drain=AsyncMock()),
     )
-    # Stop routes through host → loop.initiate_autonomous_stop → drain.begin_drain.
     loop = types.SimpleNamespace(_host=host, _drain=host._drain, _runtime=runtime)
     loop.initiate_autonomous_stop = types.MethodType(LoopRunner.initiate_autonomous_stop, loop)
     host._loop = loop
     host._initiate_autonomous_stop = types.MethodType(Orchestrator._initiate_autonomous_stop, host)
-    # Processor only needs shared _runtime + its own _session_id.
     return types.SimpleNamespace(_host=host, _runtime=runtime, _session_id="s1")
 
 
@@ -76,7 +73,6 @@ def _dispatched() -> PlayOutcome:
 async def test_drains_after_threshold_dead_ticks() -> None:
     completion = _completion(limit=2)
     state, outcome = _state(), _skip()
-    # baseline tick (no trip), then two dead ticks → trip on the second.
     for _ in range(3):
         await CompletionProcessor.check_no_forward_progress(completion, state, outcome)
     completion._host._drain.begin_drain.assert_awaited_once_with("no_forward_progress")
@@ -88,9 +84,8 @@ async def test_drains_after_threshold_dead_ticks() -> None:
 async def test_agent_dispatch_resets_and_prevents_drain() -> None:
     completion = _completion(limit=2)
     state = _state()
-    await CompletionProcessor.check_no_forward_progress(completion, state, _skip())  # baseline
-    await CompletionProcessor.check_no_forward_progress(completion, state, _skip())  # dead 1
-    # A real dispatch resets the counter, so the next skip is only dead-tick #1.
+    await CompletionProcessor.check_no_forward_progress(completion, state, _skip())
+    await CompletionProcessor.check_no_forward_progress(completion, state, _skip())
     await CompletionProcessor.check_no_forward_progress(completion, state, _dispatched())
     await CompletionProcessor.check_no_forward_progress(completion, state, _skip())
     completion._host._drain.begin_drain.assert_not_awaited()

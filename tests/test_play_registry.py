@@ -13,10 +13,6 @@ from agentshore.state import OrchestratorState, PlayType, SessionState
 if TYPE_CHECKING:
     from agentshore.plays.base import Play
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 
 def _make_play(play_type: PlayType, preconditions: list[str] | None = None) -> Play:
     """Return a minimal mock satisfying the Play protocol."""
@@ -43,11 +39,6 @@ def _make_state() -> OrchestratorState:
     )
 
 
-# ---------------------------------------------------------------------------
-# Basic register / get
-# ---------------------------------------------------------------------------
-
-
 def test_register_and_get_play() -> None:
     registry = PlayRegistry()
     play = _make_play(PlayType.ISSUE_PICKUP)
@@ -68,21 +59,11 @@ def test_covered_returns_registered_types() -> None:
     assert registry.covered() == {PlayType.ISSUE_PICKUP, PlayType.CODE_REVIEW}
 
 
-# ---------------------------------------------------------------------------
-# Duplicate registration
-# ---------------------------------------------------------------------------
-
-
 def test_duplicate_registration_raises() -> None:
     registry = PlayRegistry()
     registry.register(_make_play(PlayType.ISSUE_PICKUP))
     with pytest.raises(ValueError, match="Duplicate"):
         registry.register(_make_play(PlayType.ISSUE_PICKUP))
-
-
-# ---------------------------------------------------------------------------
-# Freeze
-# ---------------------------------------------------------------------------
 
 
 def test_register_after_freeze_raises() -> None:
@@ -95,12 +76,7 @@ def test_register_after_freeze_raises() -> None:
 def test_freeze_is_idempotent() -> None:
     registry = PlayRegistry()
     registry.freeze()
-    registry.freeze()  # second freeze should not raise
-
-
-# ---------------------------------------------------------------------------
-# preconditions_met
-# ---------------------------------------------------------------------------
+    registry.freeze()
 
 
 def test_preconditions_met_returns_true_when_empty() -> None:
@@ -119,11 +95,6 @@ def test_preconditions_met_raises_for_unregistered_play() -> None:
     registry = PlayRegistry()
     with pytest.raises(KeyError):
         registry.preconditions_met(PlayType.CODE_REVIEW, _make_state())
-
-
-# ---------------------------------------------------------------------------
-# Coverage (xfail until 2M wires all 20 plays)
-# ---------------------------------------------------------------------------
 
 
 def test_default_registry_covers_all_play_types() -> None:

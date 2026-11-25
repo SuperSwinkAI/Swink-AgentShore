@@ -83,8 +83,6 @@ TOOL_TIMEOUT_SCALE_ENV = "AGENTSHORE_TOOL_TIMEOUT_SCALE"
 GIT_EDITOR_ENV = "GIT_EDITOR"
 GIT_SEQUENCE_EDITOR_ENV = "GIT_SEQUENCE_EDITOR"
 
-# Env override knobs so support/enterprise can pin a tool path without a rebuild.
-# bd is not here — use agentshore.beads.resolve_bd_binary (single owner).
 _TOOL_ENV_OVERRIDE: dict[str, str] = {
     "git": "AGENTSHORE_GIT_BIN",
     "gh": "AGENTSHORE_GH_BIN",
@@ -102,9 +100,6 @@ def no_window_creationflags() -> int:
     if sys.platform == "win32":
         import subprocess
 
-        # ``getattr`` with a 0 default: the flags are Windows-only attributes, so
-        # tests that fake ``sys.platform == "win32"`` on a POSIX host (where the
-        # attributes are absent) exercise this branch without an AttributeError.
         return getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(
             subprocess, "CREATE_NEW_PROCESS_GROUP", 0
         )
@@ -143,7 +138,6 @@ def _canonical_windows_paths(name: str) -> Iterable[Path]:
         if local_appdata is not None:
             candidates.append(local_appdata / "Programs" / "GitHub CLI" / exe)
 
-    # Common to all: winget shim links.
     if local_appdata is not None:
         candidates.append(local_appdata / "Microsoft" / "WinGet" / "Links" / exe)
 
@@ -152,9 +146,6 @@ def _canonical_windows_paths(name: str) -> Iterable[Path]:
             yield candidate
 
 
-# Positive-hit cache only: a tool installed *after* launch must still be found,
-# so a miss is re-probed every call (cheap) while a hit is memoized for the
-# process lifetime to avoid re-scanning PATH (which AV re-inspects each time).
 _resolved_cache: dict[str, str] = {}
 
 
@@ -195,8 +186,6 @@ def reset_caches() -> None:
     _resolved_cache.clear()
 
 
-# Per-op-class base timeouts (seconds). Network ops are generous; local probes
-# are tight but Windows-scaled at call time.
 _BASE_TIMEOUTS: dict[str, float] = {
     "git.read": 15.0,
     "git.network": 120.0,
@@ -247,11 +236,8 @@ def git_global_args() -> list[str]:
     return args
 
 
-#: Default GitHub host. Most installs are github.com; GHE installs override via
-#: the ``host`` argument (derived from the repo's origin URL by the caller).
 GITHUB_HOST = "github.com"
 
-#: GitHub's required username when authenticating with a token over HTTPS.
 _GIT_TOKEN_USERNAME = "x-access-token"
 
 
@@ -324,12 +310,6 @@ def hardened_env(
         env["GCM_INTERACTIVE"] = "Never"
         env["GIT_CONFIG_NOSYSTEM"] = "1"
         env["GIT_OPTIONAL_LOCKS"] = "0"
-        # The editor is a separate interactive surface from the credential
-        # prompt: without these a rebase-internal ``git commit -e`` falls back to
-        # vi and hangs at 0 CPU on a detached subprocess, pinning the worktree
-        # (#168). ``true`` = succeed-without-editing; empty string is wrong (git
-        # reads it as "fall back to the next editor"). GIT_EDITOR propagates from
-        # a parent ``git rebase`` into its internal ``git commit``.
         env[GIT_EDITOR_ENV] = "true"
         env[GIT_SEQUENCE_EDITOR_ENV] = "true"
     if for_gh:
@@ -338,30 +318,16 @@ def hardened_env(
         env["GH_PAGER"] = "cat"
         env["CLICOLOR"] = "0"
     if for_grok or for_antigravity:
-        # Headless-CLI hardening for Grok / Antigravity: force non-interactive,
-        # colorless output so the binary never probes for a TTY/ANSI surface on a
-        # detached subprocess. Applied additively. ``TERM`` is only defaulted
-        # to ``dumb`` when the resolved env doesn't already carry one, so a
-        # caller/parent ``TERM`` is preserved.
         env["CI"] = "1"
         env["NO_COLOR"] = "1"
         env["CLICOLOR"] = "0"
         if not env.get("TERM"):
             env["TERM"] = "dumb"
     if for_grok:
-        # grok 1.0.50 imports the host user's Claude/Cursor skills and Claude
-        # MCP servers (~/.claude.json) into every dispatch. AgentShore's skills
-        # live in the project's grok-native ``.agents/skills/``, which these
-        # flags don't touch; project ``.mcp.json`` stays loaded too
-        # (``GROK_CURSOR_MCPS_ENABLED`` is left alone: it also drops project
-        # ``.cursor/mcp.json``). Verified with ``grok inspect``.
         env["GROK_CLAUDE_SKILLS_ENABLED"] = "false"
         env["GROK_CURSOR_SKILLS_ENABLED"] = "false"
         env["GROK_CLAUDE_MCPS_ENABLED"] = "false"
     if for_antigravity:
-        # agy self-updates silently mid-dispatch (1.2.1 -> 1.3.2 observed during
-        # a run), shifting the CLI contract under a live session. agy has no
-        # flag for this; the env var only honours the literal "true" (agy 1.3.2).
         env["AGY_CLI_DISABLE_AUTO_UPDATE"] = "true"
     if overlay:
         for key, value in overlay.items():
@@ -391,9 +357,5 @@ def kill_tree_sync(pid: int) -> None:
                 check=False,
             )
         return
-    # POSIX: kill only the target pid — never killpg, which could hit the
-    # sidecar's own process group (children are not session leaders here). This
-    # matches the pre-existing proc.kill() behavior, keeping macOS/Linux
-    # unchanged; Windows gets the real tree kill above via taskkill /T.
     with contextlib.suppress(ProcessLookupError, OSError):
         os.kill(pid, 9)

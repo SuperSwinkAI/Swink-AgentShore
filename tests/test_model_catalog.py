@@ -57,7 +57,7 @@ def test_claude_catalog_includes_fable_and_current_sonnet() -> None:
     claude_models = KNOWN_MODELS["claude_code"]
 
     assert "claude-fable-5" in claude_models
-    assert "fable" in claude_models  # CLI alias for the latest Fable model
+    assert "fable" in claude_models
     assert "claude-sonnet-5" in claude_models
     assert "claude-opus-4-6" in claude_models
     assert "claude-opus-4-8" in claude_models
@@ -107,16 +107,8 @@ def test_codex_known_models_exclude_legacy_and_deprecated_models() -> None:
     assert "o4-mini" not in KNOWN_MODELS["codex"]
     assert "gpt-5.2" not in KNOWN_MODELS["codex"]
     assert "gpt-5.3-codex" not in KNOWN_MODELS["codex"]
-    # gpt-5.5-pro 400s under ChatGPT-account auth (codex's default mode),
-    # which permanently kills the agent via INVALID_MODEL; API-key users
-    # still reach it through the live-fetch extras.
     assert "gpt-5.5-pro" not in KNOWN_MODELS["codex"]
-    # gpt-5.3-codex-spark is a Pro-tier-gated research preview
-    # ("supported_in_api": false, verified codex-cli 0.144.1) with the same
-    # non-eligible-account risk.
     assert "gpt-5.3-codex-spark" not in KNOWN_MODELS["codex"]
-    # gpt-5.4-nano was retired by OpenAI (absent from codex-cli 0.144.1
-    # `debug models`), removed from the catalog 2026-07-11.
     assert "gpt-5.4-nano" not in KNOWN_MODELS["codex"]
 
 
@@ -130,12 +122,10 @@ def test_codex_catalog_includes_current_lineup() -> None:
 
 
 def test_grok_known_models_include_default_tier_model() -> None:
-    # Offline fallback must still contain the default tier model.
     assert "grok-4.5" in KNOWN_MODELS["grok"]
 
 
 def test_grok_no_live_api_fetch(monkeypatch: pytest.MonkeyPatch) -> None:
-    # Without a CLI probe result, grok falls back to the catalog — never a live xAI API.
     monkeypatch.setenv("XAI_API_KEY", "xai-test")
     assert models_for_agent("grok") == KNOWN_MODELS["grok"]
 
@@ -157,14 +147,10 @@ def test_antigravity_known_models_include_non_google_backends() -> None:
 
 
 def test_swink_coding_known_models_are_tier_aliases() -> None:
-    # swink-coding's `--model` only accepts these three literal tier aliases;
-    # real model ids live in its own local config, out of AgentShore's view.
     assert KNOWN_MODELS["swink_coding"] == ["small", "medium", "large"]
 
 
 def test_swink_coding_no_live_fetch(monkeypatch: pytest.MonkeyPatch) -> None:
-    # models_for_agent for swink_coding must never call a live API — there is
-    # no known agent-key branch in models_for_agent_async that would fetch one.
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
     result = models_for_agent("swink_coding")
@@ -182,9 +168,6 @@ def test_copilot_known_models_include_auto_and_every_tier_default() -> None:
 
 
 def test_every_catalog_model_has_a_pricing_row() -> None:
-    # Catalog↔pricing invariant: a selectable model with no `models:` row in
-    # pricing.yaml bills at its agent_defaults rate — the wrong tier for
-    # anything not sonnet-priced (opus ~5x under-billed, haiku ~3x over).
     book = bundled_pricebook()
     missing = [
         (agent_key, model)
@@ -196,7 +179,6 @@ def test_every_catalog_model_has_a_pricing_row() -> None:
 
 
 def test_antigravity_no_live_fetch(monkeypatch: pytest.MonkeyPatch) -> None:
-    # agy has no httpx model endpoint; the list is the hand-maintained mirror.
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
     result = models_for_agent("antigravity")
@@ -316,7 +298,6 @@ def test_global_override_replaces_one_agent_key_wholesale(
     catalog = load_model_catalog()
 
     assert catalog["grok"] == ["grok-4.5", "grok-experimental"]
-    # Untouched agent keys keep the bundled default.
     assert catalog["claude_code"] == KNOWN_MODELS["claude_code"]
 
 

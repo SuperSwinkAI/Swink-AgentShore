@@ -54,11 +54,6 @@ def _envelope(**overrides: object) -> str:
     return json.dumps(base)
 
 
-# ---------------------------------------------------------------------------
-# _strip_markdown_fences / _parse_model_list unit tests
-# ---------------------------------------------------------------------------
-
-
 def test_strip_markdown_fences_removes_json_fence() -> None:
     text = '```json\n["a", "b"]\n```'
     assert _strip_markdown_fences(text) == '["a", "b"]'
@@ -95,11 +90,6 @@ def test_parse_model_list_rejects_prose() -> None:
 
 def test_parse_model_list_accepts_fenced_array() -> None:
     assert _parse_model_list('```json\n["sonnet", "opus"]\n```') == ("sonnet", "opus")
-
-
-# ---------------------------------------------------------------------------
-# discover_claude_code_models_via_agent
-# ---------------------------------------------------------------------------
 
 
 def test_discover_ok_parses_models_and_cost(tmp_path: Path) -> None:
@@ -200,6 +190,4 @@ def test_discover_passes_safety_flags_to_the_cli(tmp_path: Path) -> None:
 
 
 def test_default_max_budget_is_above_observed_successful_cost() -> None:
-    # Real successful dev runs cost up to ~$0.40; the default ceiling must
-    # leave headroom rather than truncating a legitimate run.
     assert DEFAULT_MAX_BUDGET_USD >= 0.5

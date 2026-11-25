@@ -75,10 +75,6 @@ class PolicyMode(StrEnum):
 class ProjectConfig:
     path: str = "."
     goals: str | None = None
-    # Branch new PRs target and merges land into. ``None`` ⇒ fall back to the
-    # repo's GitHub default branch (origin/HEAD), so projects with no key are
-    # unchanged. Set via desktop wizard, ``agentshore init`` / ``--target-branch``,
-    # or the sidecar ``project.set_target_branch`` RPC.
     target_branch: str | None = None
 
 
@@ -108,9 +104,6 @@ class BudgetConfig:
     enabled: bool = False
     total: float = 0.0
     warning_threshold: float = 0.20
-    # Wall-clock cap, independent of the dollar cap above. Off ⇒ no time limit;
-    # on ⇒ time_total_minutes validated to 60–4320 (1h–72h). 20-min graceful
-    # drain mirrors the dollar reserve; the deadline is the backstop.
     time_enabled: bool = False
     time_total_minutes: int = 0
 
@@ -169,16 +162,9 @@ class AgentConfig:
     model_tiers: Mapping[str, ModelTierConfig] = field(default_factory=dict)
     max_context: int = 200000
     timeout: int | None = None
-    # Allows long tool loops while still timing out genuinely silent agents.
     stream_idle_timeout: int = 1800
-    # Per-agent override for the launch-to-first-byte watchdog (#177/#204);
-    # overrides the per-type and global ``_FIRST_BYTE_DEADLINE_S`` floor (still
-    # clamped to ``timeout``). ``None`` ⇒ per-type default, then global default.
     first_byte_timeout_seconds: int | None = None
     max_output_size: int = 10_000_000
-    # Per-line buffer for create_subprocess_exec; a single stream-json result
-    # line can exceed asyncio's 64KB default (e.g. code_review evidence). 4MB
-    # gives headroom while staying well under max_output_size.
     line_limit_bytes: int = 4_194_304
     extra_flags: tuple[str, ...] = ()
     identity: str | None = None
@@ -274,9 +260,6 @@ class DataIntegrityConfig:
     canary_interval_seconds: int = 300
     snapshot_interval_seconds: int = 300
     snapshot_ring_size: int = 3
-    # Explicit wal_checkpoint(PASSIVE) cadence — complements the
-    # wal_autocheckpoint pragma so we always have a deterministic flush
-    # trigger regardless of write traffic shape (desktop-gkku).
     wal_checkpoint_interval_seconds: int = 30
 
 
@@ -299,20 +282,13 @@ class RewardConfig:
     issue_inflation_penalty: float = 2.0
     anti_confirmation_bonus: float = 0.3
     loop_penalty: float = 1.5
-    # Progress-play bonus (issue_pickup, code_review, merge_pr) — biases PPO
-    # toward moving issues forward over cheap planning loops.
     progress_play_bonus: float = 0.5
-    # QA-pass bonus; gated by the standard play cooldown so PPO can't farm it.
     qa_success_bonus: float = 2.0
-    # merge_pr terminal-win signal: 5× progress_play_bonus and above
-    # qa_success_bonus so merging is the strongest play reward short of completion.
     merge_pr_bonus: float = 2.5
-    # Multi-agent and velocity shaping (dispatch plays only)
     concurrent_agent_bonus: float = 0.1
     type_diversity_bonus: float = 0.3
     velocity_bonus: float = 0.5
     velocity_bonus_threshold: float = 0.05
-    # Tuning knobs
     inflation_window_size: int = 20
     inflation_window_min_plays: int = 5
     stagnation_threshold: int = 5
@@ -334,8 +310,6 @@ class PPOConfig:
 
 @dataclass(frozen=True)
 class StagnationConfig:
-    # Thresholds in WHOLE MINUTES of "all agents idle" wall-clock; a busy agent
-    # resets the counter.
     warn_after: int = 1
     alert_after: int = 3
     pause_after: int = 5
@@ -346,13 +320,6 @@ class LoopDetectionConfig:
     warn_after: int = 3
     force_switch_after: int = 5
     escalate_after: int = 7
-    # desktop-85ex: number of consecutive selector-returns-None ticks (with
-    # no in-flight work) before the loop emits ``fleet_idle_persistent``. The
-    # event fires exactly once per state transition (entering / leaving the
-    # persistent-idle window), never per-tick, to avoid the storm pattern
-    # documented in ``project_loop_detector_warning_storm`` memory. Tune
-    # downward for faster diagnostics, upward to reduce noise on legitimately
-    # slow GitHub-polling sessions.
     fleet_idle_threshold: int = 30
 
 
@@ -368,9 +335,6 @@ class RLConfig:
     entropy_coef: float = 0.05
     update_every: int = 16
     checkpoint_every: int = 16
-    # Coefficients for the second policy head that picks an agent config when
-    # the play head selects INSTANTIATE_AGENT. The config head fires on a
-    # minority of steps; raise these if the policy stops exploring config slots.
     config_policy_coef: float = 1.0
     config_entropy_coef: float = 0.05
     velocity_window_size: int = 20
@@ -397,35 +361,8 @@ class FeedbackConfig:
     on_budget_exhaustion: bool = True
     on_loop_escalation: bool = True
     on_ambiguous_intake: bool = True
-    # When the loop pauses to request human feedback (e.g. loop_detected) and no
-    # response arrives within this many seconds, the session auto-stops instead
-    # of wedging indefinitely (#9: an unanswered popup blocked the loop ~8h, and
-    # the drain RPC can't be serviced while wedged). None disables the backstop.
     unanswered_timeout_seconds: float | None = 120.0
-    # Loop-liveness watchdog (#9): the core loop stamps a monotonic heartbeat at
-    # the top of every iteration. An independent watchdog task — NOT on the
-    # loop's critical path — force-drains the session if that heartbeat has not
-    # advanced within this many seconds, catching a hard-frozen loop that the
-    # idle/unanswered-pause backstops above can never reach (they require the
-    # loop to keep ticking). Distinct from ``unanswered_timeout_seconds``: that
-    # covers a loop that is alive but waiting on a human; this covers a loop that
-    # has stopped iterating entirely (e.g. a deadlock in the play-mutation
-    # promotion path). None disables the watchdog.
     loop_liveness_timeout_seconds: float | None = 600.0
-    # Optional graceful-drain deadline (#180), OPT-IN — defaults to None
-    # (unbounded). A graceful drain only dispatches ``end_agent`` and waits for
-    # in-flight plays to finish; the core design intent is that a drain is
-    # unbounded so agents always complete their work before the session stops.
-    # When set to a positive value, an independent watchdog task — NOT on the
-    # loop's critical path — escalates to the bounded hard stop (cancels
-    # in-flight plays under the shutdown grace period) once that many seconds
-    # elapse with plays still in flight. This was added to reap a drain wedged on
-    # a single stuck in-flight play (a multi-hour play, or a never-finalizing
-    # broken-worktree play) that previously hung ``agentshore stop`` ~1h until
-    # SIGINT. It must stay opt-in: a wall-clock cap cannot distinguish a wedged
-    # drain from a healthy-but-slow one (e.g. a large fleet draining serially via
-    # ``end_agent``), so a non-None default hard-kills in-flight agent work
-    # mid-task. Leave None unless a deployment specifically needs the backstop.
     graceful_drain_timeout_seconds: float | None = None
 
 
@@ -474,13 +411,7 @@ class LearningsConfig:
     decay_after_sessions: int = 5
     inject_into_prompts: bool = True
     max_prompt_entries: int = 20
-    # Jaccard token-overlap at/above which two same-category learnings are
-    # merged during session-start consolidation. 0 disables consolidation.
     consolidate_overlap_threshold: float = 0.8
-    # Kill-switch for the groom re-distillation (Tier-2) agent compaction: when
-    # True, groom is allowed to read the full store and emit a wholesale
-    # ``learnings_compacted`` replacement; when False, that path is disabled and
-    # only the deterministic session-start consolidate() bounds the store.
     redistill_in_groom: bool = True
 
 
@@ -489,11 +420,6 @@ class SkillsConfig:
     install_on_start: bool = True
     path: str = ".agents/skills/"
     context_file: str = ".agentshore/context.json"
-    # Ask CLIs that can enforce a JSON Schema on the final message to enforce the
-    # result envelope (``result_parser.RESULT_ENVELOPE_JSON_SCHEMA``). Applies
-    # only to harnesses verified to support it; every harness keeps the prompt
-    # contract, text parser and retry as fallback. Set False to go back to
-    # prompt-only on all harnesses.
     enforce_result_schema: bool = True
 
 
@@ -501,63 +427,17 @@ class SkillsConfig:
 class WorktreeConfig:
     """AgentShore-managed git worktree lifecycle knobs (desktop-12g9)."""
 
-    # Seconds a row stays in ``status='stale'`` before the GitHub-poll
-    # tick reaps the on-disk worktree and transitions the row to
-    # ``reaped``. Default 3h matches the prune play's worktree min-age
-    # floor (``wedge_signals.collect_recent_worktree_paths``); a shorter
-    # window let the reaper free a ``pickup-<N>`` dir that a long
-    # re-dispatch was still using on the same path (#243).
     reap_ttl_seconds: int = 10800
 
-    # Base directory for AgentShore-managed worktrees. ``None`` (default) keeps
-    # them project-local under ``<repo>/.agentshore/worktrees/`` (gitignored,
-    # same filesystem, never the repo's parent). Set to an absolute path to
-    # centralize worktrees elsewhere; per-repo subdirs disambiguate by name.
     root: str | None = None
 
-    # --- disk-pressure governance (build-agnostic; #180) -----------------
-    # AgentShore can't dictate what agents build inside a worktree (Rust
-    # ``target/`` can dwarf the checkout 100×), but it owns how much disk its
-    # own worktree fleet is allowed to consume and how it degrades when the
-    # host fills. Conservative defaults are on (a fresh install is protected
-    # out of the box); set any knob to ``0``/``None`` in ``agentshore.yaml``
-    # to disable it.
-
-    # Pre-dispatch free-disk floor (MiB). When free disk under the worktree
-    # root is below this before a dispatch, AgentShore first reaps idle
-    # worktrees and, if still below, pauses dispatch instead of allocating
-    # into a nearly-full disk. ``0`` disables the guard.
     min_free_disk_mb: int = 2048
 
-    # High-water free-disk target (MiB) for the periodic disk-pressure reaper.
-    # When free disk drops below this, idle worktrees are reaped LRU (stale
-    # first, then oldest ``active``) until back above it. ``0`` disables.
-    # ``None`` (default) = relative: ``max(4096, 10% of the worktree volume)``
-    # (``reaper.resolve_high_water_mb``). A flat 4096 only fired at the edge of a
-    # full disk on large volumes (17 GiB free on 460 GiB never tripped it, #522);
-    # the 4096 floor keeps small disks from sitting permanently under pressure.
     disk_high_water_mb: int | None = None
 
-    # Consecutive-failure cap for a PR-scoped worktree before it is dropped to
-    # ``stale`` (and reclaimed by the TTL reaper) instead of kept warm. The
-    # first failure keeps the worktree active for a cheap retry; a worktree
-    # that keeps failing is not a useful warm cache. ``0`` keeps the old
-    # always-retain behavior.
     reap_failed_pr_after_n: int = 2
 
-    # Optional absolute cap on concurrently-``active`` worktrees, a coarse
-    # safety net beneath the disk-based governor. ``None`` (default) = no cap.
     max_active_worktrees: int | None = None
-
-
-# ---------------------------------------------------------------------------
-# Master availability record (platformdirs user_config_dir/agentshore/availability.yaml)
-# ---------------------------------------------------------------------------
-# Persisted inventory of "what's installable / authenticatable on this
-# machine." Both the agent-tier picker and the identity wizard refresh +
-# read this on every run, so the user-facing candidate lists come from a
-# single source instead of being re-detected per prompt. Lives beside the
-# platform-specific sessions/ and weights/ directories.
 
 
 @dataclass(frozen=True)
@@ -576,14 +456,14 @@ class GhAccountAvailability:
 
     login: str
     active: bool
-    token_via: str  # "gh_token_login" | "keychain" | "env" | "manual"
+    token_via: str
 
 
 @dataclass(frozen=True)
 class AvailabilityRecord:
     """Snapshot of detected agents + GitHub accounts."""
 
-    last_refreshed: str  # ISO-8601 UTC
+    last_refreshed: str
     agent_types: tuple[AgentTypeAvailability, ...] = ()
     github_accounts: tuple[GhAccountAvailability, ...] = ()
 
@@ -594,25 +474,15 @@ class RuntimeConfig:
     auto: AutoDetectConfig = field(default_factory=AutoDetectConfig)
     intake: IntakeConfig = field(default_factory=IntakeConfig)
     budget: BudgetConfig = field(default_factory=BudgetConfig)
-    # ``True`` when the YAML had NO ``budget:`` block. ``bootstrap.py``
-    # uses this flag instead of a value-equality sentinel to decide whether
-    # to apply safety defaults. A ``BudgetConfig()`` that was explicitly
-    # written to the YAML (e.g., ``agentshore start --unlimited``) should
-    # NOT trigger default application on the next plain ``agentshore start``.
     budget_absent: bool = False
     trusted_ids: TrustedIdsConfig = field(default_factory=TrustedIdsConfig)
     identities: Mapping[str, GitHubIdentity] = field(default_factory=dict)
     agents: Mapping[str, AgentConfig] = field(default_factory=dict)
-    # Per-model token pricing, loaded from data/pricing.yaml (+ global override).
-    # SIGHUP reload rebuilds this from disk so price edits apply mid-session.
     pricebook: PriceBook = field(default_factory=_default_pricebook)
     play_pacing: PlayPacingConfig = field(default_factory=PlayPacingConfig)
     bootstrap: BootstrapConfig = field(default_factory=BootstrapConfig)
     fresh_start: FreshStartConfig = field(default_factory=FreshStartConfig)
     agent_preferences: AgentPreferencesConfig = field(default_factory=AgentPreferencesConfig)
-    # Machine-global user preferences (disabled non-critical plays, …) folded in
-    # from the global ``preferences.yaml`` at load time. NOT sourced from
-    # ``agentshore.yaml``; see ``agentshore.preferences``.
     preferences: PreferencesConfig = field(default_factory=PreferencesConfig)
     circuit_breaker: CircuitBreakerConfig = field(default_factory=CircuitBreakerConfig)
     health: HealthConfig = field(default_factory=HealthConfig)
@@ -628,26 +498,7 @@ class RuntimeConfig:
     learnings: LearningsConfig = field(default_factory=LearningsConfig)
     skills: SkillsConfig = field(default_factory=SkillsConfig)
     worktrees: WorktreeConfig = field(default_factory=WorktreeConfig)
-    # Maximum agent runtime — the absolute wall-clock backstop for any single
-    # dispatch (in seconds), default 3h. This is NOT the primary timeout: a
-    # genuinely working agent that keeps streaming output runs until this cap;
-    # the primary kill is ``AgentConfig.stream_idle_timeout`` (silence, 30 min
-    # default), which resets on every stdout byte. This wall-clock only fires
-    # when an agent runs the full duration without finishing — its job is to
-    # bound a runaway that streams forever (e.g. a noise/poll loop making zero
-    # model calls, which defeats the byte-based idle watchdog). User-configurable
-    # via ``agent_timeout`` in agentshore.yaml; ``play_timeouts`` overrides it
-    # per play type, and per-agent ``AgentConfig.timeout`` still wins if set.
     agent_timeout: int = 10800
-    # Per-play-type timeout overrides (seconds). Resolved at dispatch time
-    # via ``effective_play_timeout(play_type)``. Keys are
-    # ``PlayType.value`` strings (e.g. ``"issue_pickup"``, ``"unblock_pr"``).
-    # Plays not listed fall back to ``agent_timeout``. Tracks
-    # desktop-3fiu: in session 2b8729bf the fleet hit 4 timeouts in 95
-    # minutes on ``issue_pickup``/``unblock_pr`` while smaller plays were
-    # nowhere near the global 1800s cap; per-play headroom lets the
-    # implementation/unblock plays get more room without raising the
-    # ceiling for fast plays.
     play_timeouts: Mapping[str, int] = field(default_factory=dict)
     mode: RunMode = RunMode.SOLO
     socket: str | None = None

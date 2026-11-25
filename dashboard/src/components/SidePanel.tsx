@@ -353,15 +353,15 @@ export function SidePanelComponent(): React.ReactElement {
           const playLabel = current
             ? `${formatPlayWithTarget(current.play_type, current)} · `
             : "";
-          // Use persisted serializer fields (agents.tasks_completed/tasks_failed)
-          // so a dashboard restart or browser refresh doesn't reset the tallies.
+
+
           const ok = agent.tasks_completed;
           const failed = agent.tasks_failed;
           const total = ok + failed;
           const costText = `${playLabel}${total} plays · ${ok}✓ ${failed}✗ | $${agent.total_cost.toFixed(2)}`;
 
-          // desktop-31h2: older sessions (pre agents.dispatch_count) send no
-          // dispatch_share; default to 0 so the badge renders 0% not NaN.
+
+
           const dispatchShare =
             typeof agent.dispatch_share === "number" ? agent.dispatch_share : 0;
           const dispatchPct = Math.round(dispatchShare * 100);

@@ -81,8 +81,8 @@ export function useCanvasClickSelect(
       canvas.removeEventListener("dblclick", onDblClick);
       notifySidePanelClickHandler(null);
     };
-    // canvasRef/cameraRef/stateRef/fitToViewRef are stable ref objects
-    // populated before this effect runs; intentionally runs once at mount.
+
+
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

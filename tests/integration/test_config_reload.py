@@ -30,17 +30,15 @@ async def test_config_is_replaceable() -> None:
     new_cfg = dataclasses.replace(cfg, budget=BudgetConfig(enabled=True, total=20.0))
     assert new_cfg.budget.enabled is True
     assert new_cfg.budget.total == 20.0
-    assert cfg.budget.total == 0.0  # original unchanged (frozen)
+    assert cfg.budget.total == 0.0
 
     new_cfg2 = dataclasses.replace(
         cfg,
         session=SessionConfig(max_plays=42),
     )
     assert new_cfg2.session.max_plays == 42
-    assert cfg.session.max_plays is None  # original untouched
+    assert cfg.session.max_plays is None
 
-    # The wall-clock cap now lives on the budget dimension (migrated off the
-    # former session.timeout_minutes).
     new_cfg3 = dataclasses.replace(
         cfg,
         budget=BudgetConfig(time_enabled=True, time_total_minutes=120),
@@ -114,7 +112,6 @@ async def test_orchestrator_uses_config_budget(tmp_path: Path) -> None:
 
     orch._executor.execute = mock_execute  # type: ignore[assignment]
 
-    # Clear bootstrap override queue so only the FixedPlanSelector drives plays
     while not orch._overrides.empty():
         orch._overrides.get_nowait()
 
@@ -159,5 +156,4 @@ scope:
     assert cfg.budget.time_total_minutes == 120
     assert cfg.session.max_plays == 100
     assert cfg.scope.strict_mode is True
-    # Unspecified fields retain defaults
     assert cfg.mode == "solo"

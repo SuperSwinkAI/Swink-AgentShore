@@ -83,9 +83,6 @@ __all__ = [
     "ready_tasks",
     "remember",
     "resolve_bd_binary",
-    # Leading-underscore names below are not part of the public API; they are
-    # re-exported only because tests import/patch them directly at these
-    # top-level paths (see beads/lock.py, beads/graph.py for the real owners).
     "_BD_GRAPH_TIMEOUT_SECONDS",
     "_GRAPH_CACHE_TTL_SECONDS",
     "_GRAPH_READ_RETRIES",

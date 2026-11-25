@@ -27,15 +27,6 @@ SkipCategory = Literal[
     "invalid_config",
 ]
 
-# desktop-85ex: why a selector tick produced no dispatch (distinct from
-# SkipCategory, which classifies executor-time skips on dispatched plays).
-# Pinned finite set so log→metrics can diagnose fleet idle storms.
-#   all_masked              — a play was eligible but every mask slot is False.
-#   no_eligible_targets     — mask permits a play but no concrete target resolves.
-#   cooldown_active         — masked by per-play cooldown / recency caps.
-#   value_dominated_by_idle — DEPRECATED post-rni0; reserved for a stable enum surface.
-#   engine_paused           — session_state ∈ {paused, draining, shutting_down}.
-#   selector_returned_none  — PPO ran but produced no pickable action (the wait path).
 PlaySkipReason = Literal[
     "all_masked",
     "no_eligible_targets",
@@ -77,9 +68,6 @@ class PlayType(enum.Enum):
     FUTURE_8 = "future_8"
 
 
-# Plays that are internal orchestrator activity, not user-visible work.
-# Currently empty: idle waits and post-error recovery are loop-side now,
-# not policy decisions, so no PlayType is dispatched as bookkeeping.
 INTERNAL_PLAY_TYPES: frozenset[PlayType] = frozenset()
 
 
@@ -94,10 +82,6 @@ class AgentType(enum.Enum):
     COPILOT = "copilot"
 
 
-# Single canonical definition of which AgentType values are CLI (subprocess)
-# agents — used by the health monitor to check liveness and by the agent
-# manager to gate identity resolution. Define it once here, adjacent to the
-# enum, so adding a new CLI agent type requires only one edit.
 CLI_AGENT_TYPES: frozenset[AgentType] = frozenset(
     {
         AgentType.CLAUDE_CODE,
@@ -119,59 +103,18 @@ class AgentStatus(enum.Enum):
     TERMINATED = "terminated"
 
 
-# Error classes (from ``cli_agent._classify_error``) that a TAKE_BREAK recovery
-# can plausibly clear, so an ERROR agent in one of these gets a recovery-first
-# path (TAKE_BREAK → recovery-exhausted → END_AGENT). An ERROR agent in ANY
-# other class (invalid_model, crash_oom, crash_signal, timeout, or None) is
-# terminal: no recovery path exists, so END_AGENT is unmasked for it immediately
-# rather than leaving it leaked until end_session (#20). Kept here so the
-# eligibility mask and the END_AGENT resolver agree. "transient_network" (socket
-# close / connection reset, #23) is recoverable — it is a precise carve-out of
-# the old "unknown" bucket, which was recoverable.
 RECOVERABLE_ERROR_CLASSES: frozenset[ErrorClass] = frozenset(
     {
         ErrorClass.RATE_LIMIT,
-        # A backend-auth failure (expired/rotated token, 401/403) is recoverable
-        # exactly like a quota/rate-limit hold: the agent takes a break and
-        # retries; a transient shared-credential blip clears on its own, and a
-        # genuinely-dead token simply keeps failing the break until
-        # recovery-exhausted unmasks END_AGENT — the same bounded path every
-        # other recoverable class follows. (Previously auth permanently benched
-        # the whole agent type for the session with no way back.)
         ErrorClass.AUTH,
         ErrorClass.UNKNOWN,
         ErrorClass.TRANSIENT_NETWORK,
-        # codex_rollout (the Codex CLI losing its on-disk rollout thread id) is
-        # recoverable: a fresh `codex exec` lands a new thread id. The completion
-        # path already enqueues an UNKNOWN_ERROR_RECOVERY take_break for it
-        # (recovery_tracker._RECOVERY_OVERRIDE_KIND), but this eligibility set used
-        # to omit it — so resolver/eligibility treated a codex_rollout agent as
-        # terminal while completion tried to recover it. Adding it here reconciles
-        # the two; the drift guard in tests/test_recovery_routing keeps them aligned.
         ErrorClass.CODEX_ROLLOUT,
-        # A clean-exit empty no-op (agy returns an empty task envelope) is
-        # recoverable: 3-in-a-row routes the agent into a standard take_break,
-        # exactly like a transient quota/throttle (desktop no-op resilience).
         ErrorClass.NO_OP,
     }
 )
 
-# Per-agent circuit breaker (#22): an agent that has produced ZERO successful
-# plays this session and has either hit a dispatch timeout or accumulated
-# repeated failures is treated as non-functional and masked/deprioritized from
-# work selection until it succeeds. Guards against routing critical plays
-# (e.g. code_review) to a known-dead agent (an agent where a
-# single failed dispatch burned a full ~30-min idle timeout). The mask lifts
-# automatically the moment the agent completes any play (``tasks_completed > 0``).
 CIRCUIT_BREAKER_FAILURE_LIMIT = 2
-# Consecutive stream-idle/wall-clock timeouts since an agent's last success that
-# bench it regardless of prior completions (#161). A previously-productive agent
-# that hangs producing no stdout returns to IDLE and is NOT caught by the
-# 0-completion breaker below, so reconcile_state (self-heal, deliberately never
-# play-benched) re-selects it and it hangs for the full stream-idle window again,
-# repeatedly. Two consecutive timeouts is a hung agent — bench it so dispatch
-# routes elsewhere; the counter resets on any success, so a one-off stall costs
-# at most a single retry.
 CONSECUTIVE_TIMEOUT_BENCH_LIMIT = 2
 
 
@@ -219,17 +162,8 @@ class PlayOutcome:
     skipped: bool = False
     skip_category: SkipCategory | None = None
     retry_requested: bool = False
-    # Typed cause set at the failure site when the play knows it. The persisted
-    # ``failure_category`` string is derived from this (see executor
-    # ``_infer_failure_category``); the substring inferer is the fallback when a
-    # play leaves this None.
     failure_kind: FailureKind | None = None
     learnings: list[JsonObject] = field(default_factory=list)
-    # Wholesale-replacement learning set emitted by the groom re-distillation
-    # step (top-level ``learnings_compacted``). Distinct from ``learnings``
-    # (incremental append/reinforce): when present and valid, the harvester
-    # replaces the on-disk store with this set, re-deriving numeric metadata
-    # from each entry's ``merged_from`` source ids.
     learnings_compacted: list[JsonObject] = field(default_factory=list)
 
     @classmethod
@@ -301,43 +235,16 @@ class SkillResult:
     error: str | None = None
     spec_compliance: str | None = None
     blocking_findings: int | None = None
-    # Prior-comment verdict surfaced by the agentshore-code-review skill on its
-    # dedup short-circuit. Lets the play backfill last_review_status from an
-    # existing AGENTSHORE_CODE_REVIEW comment when the current dispatch returns
-    # SKIP — without it, PRs whose first review crashed or filed as COMMENTED
-    # sit at NULL forever and never become merge_pr-eligible.
     prior_verdict: str | None = None
     prior_blocking_findings: int | None = None
-    # Issues that the skill marked closed during this play (top-level
-    # ``issues_closed`` in the result block). agentshore-merge-pr emits this
-    # list for issues referenced by ``Closes #N``/``Fixes #N``/``Resolves #N``
-    # in the merged PR; the merge_pr play uses it to write through closed-state
-    # to the SQLite cache so the dashboard's DONE column populates without
-    # waiting for the next periodic GitHub refresh (which only re-fetches
-    # state="open" and therefore can't update closed issues).
     issues_closed: list[int] = field(default_factory=list)
-    # Issue-pickup publish reconciliation signals. Agents may complete local
-    # work/tests and then fail while creating the PR; the executor uses these
-    # fields to find or create the missing PR before scoring the play.
     issue_picked_up: int | None = None
     branch: str | None = None
     tests_passed: bool | None = None
     verification_evidence: list[JsonObject] = field(default_factory=list)
     review_patterns: list[JsonObject] = field(default_factory=list)
-    # Parse-failure discriminator (#229): True when the output DID contain a
-    # balanced JSON object but it lacked a top-level boolean ``success`` (a
-    # near-miss), as opposed to no JSON at all. Lets the skill-backed retry pick
-    # a defect-specific nudge instead of the generic "emit the JSON block" prompt.
-    # Only meaningful when ``success`` is False.
     missing_success_envelope: bool = False
-    # Learnings extracted from the top-level ``learnings`` array in the agent's
-    # result block. Each entry is a normalized dict with ``pattern``,
-    # ``confidence``, and ``category`` keys (validated by result_parser).
     learnings: list[JsonObject] = field(default_factory=list)
-    # Wholesale-replacement learning set from the groom re-distillation step
-    # (top-level ``learnings_compacted``). Each entry is a normalized dict with
-    # ``pattern``, ``category`` and ``merged_from`` (source ids absorbed) keys;
-    # confidence is re-derived, not taken from the agent. See PlayOutcome.
     learnings_compacted: list[JsonObject] = field(default_factory=list)
 
 
@@ -351,10 +258,6 @@ class AgentSnapshot:
     context_size: int
     total_cost: float
     total_tokens: int
-    # Plays this agent has completed (success / failure) in the current session,
-    # derived from play_history at state-build time. Used by the end_agent
-    # precondition to gate termination on a minimum lifetime, and by the
-    # _resolve_end_agent scoring to prefer worst-performing idle agents.
     tasks_completed: int
     tasks_failed: int
     display_name: str = ""
@@ -369,15 +272,8 @@ class AgentSnapshot:
     current_play_branch: str | None = None
     last_error_class: ErrorClass | None = None
     timeout_count: int = 0
-    # Timeouts since this agent's last successful dispatch (reset on success).
-    # The consecutive-timeout-storm signal — see ``is_agent_circuit_broken`` (#161).
     consecutive_timeouts: int = 0
     github_identity: str | None = None
-    # desktop-31h2: cumulative dispatch count and the agent's share of the
-    # fleet-wide total. Built from the agents.dispatch_count column at
-    # snapshot time so dashboards can flag fleet-utilisation imbalance
-    # (e.g. one agent at 60% dispatch_share while another sits at 0%
-    # despite work being available).
     dispatch_count: int = 0
     dispatch_share: float = 0.0
 
@@ -631,150 +527,47 @@ class OrchestratorState:
     total_plays: int
     total_cost: float
     policy_mode: PolicyMode = PolicyMode.LEARNING
-    # Configured merge/PR target branch (``cfg.project.target_branch``). Carried
-    # on state so the candidate analyzer, mask, and merge_pr preconditions can
-    # deterministically refuse to merge a PR whose base != target — independent
-    # of whether the authoring/merging agent honored the skill's base step.
     target_branch: str | None = None
     agents: list[AgentSnapshot] = field(default_factory=list)
     open_issues: list[IssueSnapshot] = field(default_factory=list)
     pull_requests: list[PullRequestSnapshot] = field(default_factory=list)
-    # Count of open PRs dropped from ``pull_requests`` this tick because their
-    # base branch != the configured ``target_branch`` (Piece C target-branch
-    # filter). The PRs themselves are removed from the shared collection so they
-    # never reach the dashboard, candidate pool, or backpressure; this scalar is
-    # surfaced via WorkAvailability so the dashboard can render an "(N hidden)"
-    # badge. Zero when no filter is active or nothing was filtered.
     ignored_pr_count: int = 0
     pending_review_queue: list[PendingReviewSnapshot] = field(default_factory=list)
     budget: BudgetSnapshot | None = None
     trajectory: TrajectorySnapshot | None = None
-    # Live beads project graph loaded each tick. None when beads is not
-    # initialised for the project (no .beads/ directory).
     graph: ProjectGraph | None = None
     stats: SessionStatsSnapshot | None = None
-    # Typed snapshot of the play currently executing. ``None`` between plays.
     active_play: ActivePlay | None = None
     same_type_failure_streak: int = 0
     last_play_type: PlayType | None = None
-    # Precomputed loop-escalation level for ``same_type_failure_streak`` via
-    # :func:`loop_level_for_streak` (0 none, 1 warn, 2 force, 3 escalation).
-    # Computed once in StateBuilder so UI/IPC consumers read it directly instead
-    # of each re-applying the ladder.
     loop_level: int = 0
-    # Snapshot of the main-repo dispatch-pause latch
-    # (``MainRepoGuard.dispatch_paused``). When True the mask hides every play
-    # except END_AGENT and RECONCILE_STATE from PPO; ``dispatch_play`` gate 1
-    # keeps the live recheck as a backstop since state can flip between
-    # selection and dispatch.
     main_repo_dispatch_paused: bool = False
-    # Snapshot of ``MainRepoGuard.is_trunk_wedged()`` (#330): True after repeated
-    # merge_pr ``dirty_trunk`` failures blocked by the same unattributable
-    # root-untracked path(s). Only ever unmasks END_SESSION for the PPO's
-    # consideration — never forces a session action.
     trunk_wedged: bool = False
-    # Snapshot of whether END_SESSION is already started or in-flight. When True
-    # the mask hides END_SESSION from PPO; ``dispatch_play`` gate 2 keeps the
-    # live recheck as a backstop.
     end_session_in_flight: bool = False
-    # Agent IDs whose break-recovery counter has reached
-    # ``BREAK_RECOVERY_FAILURE_LIMIT``. END_AGENT is unmasked for these agents
-    # even when the normal min-plays / two-agent gate would block it, so the
-    # PPO can choose to retire a wedged agent. Derived each tick from the
-    # in-memory recovery counter intersected with currently-live agents.
     recovery_exhausted_agent_ids: frozenset[str] = field(default_factory=frozenset)
-    # True when the most recent completed play returned ``skipped_outcome("masked")``
-    # from the executor — i.e. preconditions failed at dispatch time due to state
-    # divergence between selection and execution. Surfaced as a diagnostic so
-    # operators can see the divergence in IPC state.
     recent_executor_skip: bool = False
     in_flight_plays: list[PlayType] = field(default_factory=list)
     in_flight_issues: list[int] = field(default_factory=list)
-    # Issues that have had a WRITE_IMPLEMENTATION_PLAN dispatched this session.
-    # Persists after completion to prevent re-planning before the GH label refresh.
     planned_issues: frozenset[int] = field(default_factory=frozenset)
-    # Opt-in issue-author trust gating (trusted_ids.restrict_issues_to_trusted_authors).
-    # Resolved once per tick at state assembly from config — so the state-only
-    # candidate analyzer can exclude issues opened by non-trusted authors without
-    # threading config through every call site. When the toggle is off the flag is
-    # False and the author set is empty (no gating).
     restrict_issues_to_trusted_authors: bool = False
     trusted_issue_authors: frozenset[str] = field(default_factory=frozenset)
-    # Resource keys (``pr:<n>`` / ``issue:<n>``) parked for the session because a
-    # worktree allocation against them failed repeatedly (Piece A backstop). The
-    # candidate analyzer treats these like in-flight resources and excludes every
-    # play that touches them, so a structurally-unallocatable PR can't be
-    # re-selected every tick (the unblock_pr hot-loop, issue #60). Snapshotted
-    # each tick from the orchestrator's in-memory park set; empty by default.
     parked_resource_keys: frozenset[str] = field(default_factory=frozenset)
-    # (play_type value, resource key) pairs withheld this tick because the same
-    # play already ran against that target repeatedly and left it unchanged
-    # (``plays.attempt_ledger``). Per-play, unlike ``parked_resource_keys``: a PR
-    # cooled down for unblock_pr stays reviewable and mergeable. Snapshotted each
-    # tick; an entry lapses as soon as the target changes or its window elapses.
     cooled_down_targets: frozenset[tuple[str, str]] = field(default_factory=frozenset)
-    # Agent-type values currently in a transient launch-wedge cooldown (Grok
-    # first-byte timeout). This is a
-    # DECAYING mask: the state-builder drops each entry once its cooldown expires,
-    # so the type auto-recovers without a new session/token (#202). The candidate
-    # analyzer masks plays resolving to a type in this set, with a distinct block
-    # reason. Snapshotted each tick (active, non-expired entries only); empty by
-    # default.
     wedge_cooldown_agent_types: frozenset[str] = field(default_factory=frozenset)
-    # Consecutive plays of the same type regardless of success/failure. Catches
-    # PPO collapses onto a cheap repeated play (where every play succeeds and
-    # `same_type_failure_streak` stays at 0). Used for masking + reward penalty
-    # at a higher threshold than failure streaks, since a few same-type plays
-    # in a row is often legitimate (e.g., reviewing 3 PRs).
     same_type_streak: int = 0
-    # Plays since the most recent successful INSTANTIATE_AGENT (None if no
-    # instantiate has happened yet). Used by InstantiateAgentPlay's cooldown
-    # precondition to keep the policy from spawning fleets every step.
     plays_since_last_instantiate: int | None = None
-    # Per-play-type "plays since last execution" counter, populated for any
-    # play that has appeared in play_history. House-keeping and cooldown-gated
-    # plays use this so PPO can't collapse onto repeated low-cost actions.
-    # Keys are play_type enum values.
     plays_since_last_play_type: dict[PlayType, int] = field(default_factory=dict)
-    # Latest completed success/failure value per play type. Work-availability
-    # gates use this for plays whose failure means the apparent backlog is not
-    # trustworthy enough to declare the session complete.
     last_play_success_by_type: dict[PlayType, bool] = field(default_factory=dict)
-    # Whether each play type's most-recent outcome was a no-op ``skip:*`` (vs a
-    # genuine failure). ``ArmedByFailureGate`` uses this so a skip — which is
-    # recorded success=False but is not a wedge — does not arm a self-heal play
-    # (the write_impl skip ↔ reconcile arm/run loop that drove the no-op spin).
     last_play_skipped_by_type: dict[PlayType, bool] = field(default_factory=dict)
-    # Tail run of consecutive non-productive (fail OR skip) outcomes per play
-    # type. The 3-strikes circuit breaker (rl/mask.py) masks a work play once
-    # this reaches its threshold, until the cooldown lifts — so a play that can
-    # only skip (e.g. write_implementation_plan losing the resolve-time TOCTOU
-    # race) stops being re-selected instead of spinning.
     consecutive_nonproductive_by_type: dict[PlayType, int] = field(default_factory=dict)
-    # Action mask and reasons for IPC consumers (e.g. dashboard Plays Panel).
-    # Populated by core after _build_state(); empty when registry is unavailable.
     action_mask: tuple[bool, ...] = field(default_factory=tuple)
-    # ``mask_reasons`` holds typed MaskReason values (carrying classification);
-    # the IPC serializer and UI consumers ``str()`` them at the surface
-    # boundary. Kept as ``dict`` (not ``Mapping``) for ergonomic mutation
-    # during state assembly.
     mask_reasons: dict[PlayType, MaskReason] = field(default_factory=dict)
-    # Precomputed candidate-plan work-availability counts, computed once per
-    # tick alongside action_mask/mask_reasons (same build_candidate_plan call)
-    # rather than re-derived by every consumer. IPC serializer converts via
-    # ``.to_dict()`` at the surface boundary. None when the registry is
-    # unavailable, mirroring action_mask's empty-tuple default.
     work_availability: WorkAvailability | None = None
     drain_reason: str | None = None
-    # V1 contract fields (V1_CONTRACT.md §"AgentShore State Snapshot"). These let
-    # IPC consumers (TUI status bar and dashboard HUD)
-    # render the contract surface.
     run_mode: RunMode = RunMode.SOLO
     action_space_version: int = 0
     policy_version: str = ""
     policy_checkpoint_id: str | None = None
-    # Plays since the most-recent successful SEED_PROJECT. ``None`` until the
-    # session has at least one successful seed in play_history.
     seed_freshness: int | None = None
     learnings_count: int = 0
     human_feedback_count: int = 0

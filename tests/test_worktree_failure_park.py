@@ -25,15 +25,12 @@ def test_parks_resource_after_threshold_failures() -> None:
     disp = _dispatcher()
     params = PlayParams(pr_number=103, extras={"resource_keys": ["pr:103"]})
 
-    # Below threshold: still transient (retrying), not parked yet.
     for _ in range(_WORKTREE_PARK_THRESHOLD - 1):
         assert disp.register_worktree_allocation_failure(params) is False
     assert "pr:103" not in disp._runtime.parked_resource_keys
 
-    # Crossing the threshold parks the key (structurally stuck).
     assert disp.register_worktree_allocation_failure(params) is True
     assert "pr:103" in disp._runtime.parked_resource_keys
-    # Already-parked: still reports parked, no double-counting churn.
     assert disp.register_worktree_allocation_failure(params) is True
 
 
@@ -44,7 +41,6 @@ def test_distinct_resources_are_counted_independently() -> None:
 
     for _ in range(_WORKTREE_PARK_THRESHOLD):
         disp.register_worktree_allocation_failure(p103)
-    # #104 has only failed once — not parked, #103 is.
     disp.register_worktree_allocation_failure(p104)
     assert disp._runtime.parked_resource_keys == {"pr:103"}
 

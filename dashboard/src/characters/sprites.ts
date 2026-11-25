@@ -24,7 +24,7 @@ const V2_SPRITE_SHEET_WIDTH = 2912;
 const V2_SPRITE_SHEET_HEIGHT = 2496;
 const AGENT_SPRITE_ASPECT = V2_SPRITE_FRAME_WIDTH / V2_SPRITE_FRAME_HEIGHT;
 const SPRITE_LOAD_EVENT = "agentshore:agent-sprite-loaded";
-// Measured from the accepted v2 idle/down frames at the visible alpha threshold.
+
 const V2_SIGNIFICANT_FRAME_HEIGHT_BY_TIER: Record<AgentModelTier, number> = {
   small: 275,
   medium: 570,
@@ -58,14 +58,14 @@ function v2SpriteSpec(key: string, url: string): AgentSpriteSpec {
   };
 }
 
-// Sprite key = asset filename stem; keeps keys in lockstep with PNG assets, no separate mapping.
+
 function spriteKeyFromUrl(url: string, fallback: string): string {
   const file = url.split(/[?#]/)[0].split("/").pop() ?? "";
   const stem = file.replace(/\.[a-z0-9]+$/i, "");
   return stem || fallback;
 }
 
-// Built from AGENT_REGISTRY: a new agent type needs only a registry entry + PNG assets.
+
 const V2_AGENT_SPRITE_SPECS: Partial<
   Record<string, Record<AgentModelTier, AgentSpriteSpec>>
 > = Object.fromEntries(

@@ -12,14 +12,10 @@ import pytest
 from agentshore.plays.registry import build_default_registry
 from agentshore.state import PlayType
 
-# The swink-coding CLI's full native tool surface, as reported by its own
-# startup validator (``--disallowed-tools <unknown>`` prints the valid set).
-# Denying a name outside this set exits the dispatch non-zero at startup, so a
-# typo is a wedged play, not a silently-ignored policy.
 _KNOWN_CLI_TOOLS = frozenset(
     {
         "bash",
-        "shell",  # alias of bash
+        "shell",
         "edit_file",
         "gh",
         "git",

@@ -117,7 +117,6 @@ async def test_archive_list_returns_records(tmp_path: Path) -> None:
     finally:
         await store.close()
     assert len(rows) == 2
-    # Newer archive first (ORDER BY created_at DESC)
     assert rows[0]["archive_id"] == "archive-new"
     assert rows[1]["archive_id"] == "archive-old"
     for row in rows:

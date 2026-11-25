@@ -106,21 +106,11 @@ def test_no_completion_bonus_without_cluster_signal():
     assert bd.completion_bonus == pytest.approx(0.0)
 
 
-# ---------------------------------------------------------------------------
-# desktop-lyfb: _INSTANTIATE_SUCCESS_BONUS retuned 0.05 → 0.01
-# ---------------------------------------------------------------------------
-
-
 def test_instantiate_success_bonus_pinned_at_001():
     """desktop-lyfb retuned the instantiate bonus 0.05 → 0.01 so that
     recycling (create → 5 plays → end → create) cannot farm reward above the
     noise floor of normal play rewards."""
     assert pytest.approx(0.01) == _INSTANTIATE_SUCCESS_BONUS
-
-
-# ---------------------------------------------------------------------------
-# desktop-8zzy: pr_pressure_bonus for merge_pr / code_review
-# ---------------------------------------------------------------------------
 
 
 def test_pr_pressure_bonus_zero_below_threshold():
@@ -169,11 +159,10 @@ def test_pr_pressure_bonus_at_full_saturation():
     sig = _signals(
         play_type=PlayType.MERGE_PR,
         success=True,
-        open_pr_count=12,  # above the cap
+        open_pr_count=12,
         max_open_prs=10.0,
     )
     _, bd = compute_reward(sig, RewardConfig())
-    # ratio = 1.2; pressure = 0.5; bonus = 0.5 * 0.05 = 0.025
     expected = (1.2 - _PR_PRESSURE_THRESHOLD) * _PR_PRESSURE_BONUS_SCALE
     assert bd.pr_pressure_bonus == pytest.approx(expected, abs=1e-6)
 
@@ -228,5 +217,4 @@ def test_pr_pressure_bonus_in_raw_total():
     )
     reward, bd = compute_reward(sig, RewardConfig())
     assert bd.pr_pressure_bonus > 0.0
-    # merge_pr_bonus (2.5) + pr_pressure_bonus + no penalties
     assert reward >= bd.pr_pressure_bonus + 2.5 - 1e-6

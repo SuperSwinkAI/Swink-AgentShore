@@ -77,8 +77,6 @@ def reload_shared_weights(policy: ActorCritic, global_weights_dir: Path) -> Relo
     except (FileNotFoundError, RuntimeError, ValueError) as exc:
         _logger.warning("ppo_selector.reload_failed", path=str(shared), error=str(exc))
         return ReloadOutcome(rejected=True, reload_base=None)
-    # The canonical is shared across projects and written head-stripped, so take
-    # only the roster-independent weights and keep this session's config head.
     shared_sd = shared_state(new_policy.state_dict())
     policy.load_state_dict(shared_sd, strict=False)
     reload_base = {k: v.clone() for k, v in shared_sd.items()}
@@ -126,7 +124,6 @@ async def save_checkpoint(
     weights_dir = Path(weights_dir)
     weights_dir.mkdir(parents=True, exist_ok=True)
 
-    # Numbered local checkpoint for crash recovery.
     weights_path = weights_dir / f"policy_{total_plays:06d}.pt"
     policy.save(weights_path)
 
@@ -155,7 +152,6 @@ async def save_checkpoint(
                 error=str(exc),
             )
 
-    # Keep local dir lean — crash recovery only needs the last few.
     _prune_local_checkpoints(weights_dir)
 
     record = CheckpointRecord(

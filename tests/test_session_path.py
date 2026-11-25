@@ -27,8 +27,6 @@ def _create_unix_socket_file(path: Path) -> None:
 @pytest.fixture(autouse=True)
 def isolated_sessions_dir(monkeypatch: pytest.MonkeyPatch) -> Path:
     """Redirect session metadata into a temp directory."""
-    # POSIX: force /tmp so AF_UNIX socket paths stay under the ~104-char
-    # sun_path limit (macOS). Windows has neither AF_UNIX nor /tmp.
     tmp_root = None if sys.platform.startswith("win") else "/tmp"
     sessions_dir = Path(tempfile.mkdtemp(prefix="fm_sessions_", dir=tmp_root))
     monkeypatch.setattr(sp, "_SESSIONS_DIR", sessions_dir)
@@ -74,7 +72,6 @@ def test_find_ipc_tcp_port_uses_stable_range() -> None:
     port = sp.find_ipc_tcp_port()
 
     assert 9411 <= port < 9512
-    # And it must be genuinely bindable, not just in-range.
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
         probe.bind(("127.0.0.1", port))
 
@@ -168,7 +165,6 @@ def test_cleanup_session_preserves_socket_with_live_listener(tmp_path: Path) -> 
         )
     finally:
         listener.close()
-        # After closing the listener, no-listener cleanup is now valid.
         if sp.is_unix_socket_path(socket_path):
             socket_path.unlink()
 
@@ -178,7 +174,7 @@ def test_cleanup_session_unlinks_socket_with_no_listener(tmp_path: Path) -> None
     project = tmp_path / "repo"
     project.mkdir()
     socket_path = sp.session_socket_path(project)
-    _create_unix_socket_file(socket_path)  # bound + closed, no listener
+    _create_unix_socket_file(socket_path)
 
     sp.cleanup_session(project)
 
@@ -294,9 +290,6 @@ def test_session_info_records_tcp_endpoint(tmp_path: Path) -> None:
     info = sp.read_session_info(project)
     assert info is not None
     assert info["ipc"] == {"kind": "tcp", "host": "127.0.0.1", "port": 54321}
-    # discover_ipc_endpoint lives in session_process now (staleness detection
-    # depends on process liveness); import lazily to keep this module free of
-    # a hard dependency on it.
     from agentshore.session_process import discover_ipc_endpoint
 
     assert discover_ipc_endpoint(project) == endpoint

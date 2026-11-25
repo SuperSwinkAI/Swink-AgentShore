@@ -11,10 +11,6 @@ use tauri::menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem, SubmenuBuild
 #[cfg(not(test))]
 use tauri::{AppHandle, Emitter, Runtime};
 
-// External Help-menu destinations, opened in the default browser via the OS
-// opener (see [`crate::diagnostics::spawn_open`]). The repo is the canonical
-// source for docs, release notes (the same tag the updater reads), and issue
-// intake.
 #[cfg(not(test))]
 const HELP_DOCS_URL: &str = "https://github.com/SuperSwinkAI/Swink-AgentShore#readme";
 #[cfg(not(test))]
@@ -45,14 +41,9 @@ pub fn build_app_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<tauri::me
         .accelerator("CmdOrCtrl+B")
         .build(app)?;
 
-    // Preferences lives in the macOS App menu and the non-macOS File menu.
     let preferences = MenuItemBuilder::with_id("preferences", "Preferences…")
         .accelerator("CmdOrCtrl+,")
         .build(app)?;
-    // Check for Updates is hidden until the updater is provisioned (a real
-    // signing keypair + a published `latest.json` release manifest). The React
-    // update machinery and the `menu:check_updates` handler stay in place, so
-    // re-adding this item to the menu is all that's needed to re-enable it.
 
     let edit = SubmenuBuilder::new(app, "Edit")
         .item(&PredefinedMenuItem::undo(app, None)?)
@@ -84,10 +75,6 @@ pub fn build_app_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<tauri::me
 
     let mut menu = MenuBuilder::new(app);
 
-    // macOS: the leading application menu (HIG convention). Building it
-    // explicitly replaces the menu macOS would auto-supply, so we re-add the
-    // standard About / Services / Hide / Show All / Quit items in their
-    // conventional positions. Preferences (Cmd+,) belongs here too.
     #[cfg(target_os = "macos")]
     {
         let app_menu = SubmenuBuilder::new(app, "AgentShore")
@@ -106,8 +93,6 @@ pub fn build_app_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<tauri::me
         menu = menu.item(&app_menu);
     }
 
-    // File holds the session/window commands. Preferences lives here only on
-    // Windows/Linux (no app menu there); on macOS it's in the app menu above.
     #[allow(unused_mut)]
     let mut file_builder = SubmenuBuilder::new(app, "File")
         .item(&adjust_budget)
@@ -134,8 +119,6 @@ pub fn build_app_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<tauri::me
         .item(&PredefinedMenuItem::fullscreen(app, None)?)
         .build()?;
 
-    // Help: documentation / support links plus the diagnostics helpers. Check
-    // for Updates is intentionally omitted until the updater is provisioned.
     let help = SubmenuBuilder::new(app, "Help")
         .item(&welcome_tour)
         .separator()
@@ -165,8 +148,6 @@ pub fn build_app_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<tauri::me
 #[cfg(not(test))]
 pub fn handle_menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
     match event.id().as_ref() {
-        // React's SessionDashboardScreen drives these against the
-        // running session; emitted unconditionally (no-op outside one).
         "stop_session" => {
             let _ = app.emit("menu:stop_session", ());
         }
@@ -185,9 +166,6 @@ pub fn handle_menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
         "help_keyboard_shortcuts" => {
             let _ = app.emit("menu:keyboard_shortcuts", ());
         }
-        // React resolves the active project path then invokes
-        // open_log_folder (it knows the selected project; Rust here
-        // does not).
         "help_open_logs" => {
             let _ = app.emit("menu:open_logs", ());
         }
@@ -204,7 +182,6 @@ pub fn handle_menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
         "help_report_issue" => {
             let _ = spawn_open(HELP_ISSUES_URL);
         }
-        // Handled inline in Rust — must work while the WebView is white.
         "reload_ui" => {
             let _ = reload_main_webview(app);
         }

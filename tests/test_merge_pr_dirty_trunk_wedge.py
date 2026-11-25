@@ -64,9 +64,6 @@ def _outcome(*, success: bool, error: str | None = None) -> PlayOutcome:
 
 
 def _patch_dirty_paths(entries: list[DirtyTrunkEntry]):
-    # TNQA wave-2 Task 3: the dirty-trunk wedge logic moved from
-    # CompletionProcessor into TrunkWedgeEscalator (core/trunk_wedge_escalator.py);
-    # the real call site to patch moved with it.
     return patch(
         "agentshore.core.trunk_wedge_escalator.collect_dirty_trunk_paths",
         return_value=entries,
@@ -146,9 +143,6 @@ async def test_tracked_modification_only_does_not_increment() -> None:
     assert h._main_repo._dirty_trunk_failure_count == 0
 
 
-# --- escalation on wedge: force-quarantine + needs-human (#330) --------------
-
-
 @pytest.mark.asyncio
 async def test_wedge_force_quarantines_the_offending_file(tmp_path: Path) -> None:
     """Once the 3rd same-cause failure wedges the trunk, the exact offending
@@ -163,7 +157,7 @@ async def test_wedge_force_quarantines_the_offending_file(tmp_path: Path) -> Non
     with _patch_dirty_paths(entries):
         await h._handle_merge_pr_outcome(_outcome(success=False, error="dirty_trunk: blocked"))
         await h._handle_merge_pr_outcome(_outcome(success=False, error="dirty_trunk: blocked"))
-        assert (tmp_path / "scratch_plan.md").exists()  # not yet wedged
+        assert (tmp_path / "scratch_plan.md").exists()
         await h._handle_merge_pr_outcome(_outcome(success=False, error="dirty_trunk: blocked"))
 
     assert h._main_repo.is_trunk_wedged() is True

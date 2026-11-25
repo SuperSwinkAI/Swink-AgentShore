@@ -53,9 +53,7 @@ async def test_latched_pause_auto_stops_after_grace(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_in_flight_work_does_not_trip_watchdog(tmp_path: Path) -> None:
-    # Pause latched but a play is in flight → not the wedge signature; counter resets, no stop.
     orch = _harness(tmp_path, paused=True, in_flight=True, ticks=_WEDGED_IDLE_STOP_TICKS - 1)
-    # Downstream candidate-plan path is unstubbed; only assert the watchdog branch didn't fire.
     orch._runtime.registry = None
     with contextlib.suppress(Exception):
         await orch._loop.continue_if_selector_idle_work_remains(_state(), reason="x")

@@ -1,9 +1,9 @@
 #!/usr/bin/env node
-// Build the dashboard package once and stage its assets where Tauri can bundle
-// them. The dashboard build emits into the Python package's static dir
-// (src/agentshore/dashboard/static), which keeps `agentshore dashboard` working.
-// We then mirror that tree into desktop/dist/dashboard so the WebView can
-// load it at tauri://localhost/dashboard/... offline.
+
+
+
+
+
 import { spawnSync } from "node:child_process";
 import {
   cpSync,
@@ -50,13 +50,13 @@ function isDirectory(path) {
   }
 }
 
-// The desktop Vite build consumes @agentshore/dashboard as a workspace lib.
-// Sprite PNGs are emitted by the desktop Vite build itself (via Rollup's
-// emitFile / new URL(path, import.meta.url) pattern in the lib code).
-// This script stages the bridge-static build into desktop/dist/dashboard/
-// for Tauri to embed. Run both builds; lib second so dist/ ends in the
-// bundled-lib state (bridge `npm run build` leaves raw tsc output in dist/
-// that the desktop vite build cannot resolve — see desktop-rbn).
+
+
+
+
+
+
+
 console.log("[prepare-tauri-assets] building @agentshore/dashboard (bridge static)");
 run("npm", ["run", "build"], dashboardDir);
 console.log("[prepare-tauri-assets] building @agentshore/dashboard (lib bundle)");

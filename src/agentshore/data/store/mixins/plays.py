@@ -26,7 +26,7 @@ class _PlaysMixin(_DataStoreBase):
     """Methods that operate on the ``plays`` table."""
 
     if TYPE_CHECKING:
-        # Sibling-mixin calls resolved by the concrete DataStore MRO.
+
         async def finish_work_claim_group(
             self,
             session_id: str,

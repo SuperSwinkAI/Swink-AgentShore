@@ -173,8 +173,6 @@ mod tests {
 
         kill_process_tree(&mut child);
 
-        // kill_process_tree wait()ed, so the child must be reaped: try_wait
-        // reports an exit status immediately.
         assert!(
             child.try_wait().expect("try_wait after kill").is_some(),
             "child must be terminated and reaped after kill_process_tree"

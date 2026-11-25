@@ -56,10 +56,6 @@ from agentshore.errors import ErrorClass
 if TYPE_CHECKING:
     from agentshore.state import AgentType
 
-# Explicit re-export surface (mypy strict ``implicit_reexport=False``): the
-# marker names imported-and-aliased from ``error_markers`` above, plus the local
-# classifiers, are pulled by ``agents/cli/watchdogs.py`` and the ``cli_agent``
-# shim from this module, so they must be declared exported here.
 __all__ = [
     "_AUTH_PATTERNS",
     "_AUTH_STDOUT",
@@ -84,22 +80,6 @@ __all__ = [
     "_process_error_detail",
 ]
 
-# ---------------------------------------------------------------------------
-# Marker tables
-# ---------------------------------------------------------------------------
-#
-# Error-class vocabularies live in the shared ``error_markers`` registry
-# (imported above). Each has two views: the *stderr* set matches broadly (a
-# CLI's stderr is pure diagnostics); the *stdout-safe* subset keeps only phrases
-# that never appear in legitimate agent work product (#19).
-#
-# These two stay CLI-transport local — they detect a Codex cache-renewal
-# EOF/stdin-hang blip's *shape*, not an error class, so they don't belong in the
-# shared registry.
-# #519: also covers serde *schema* parse failures — e.g. "failed to renew cache
-# TTL: unknown variant `audio`, expected `text` or `image`" when an older codex
-# CLI meets a newer model-list shape. Same class as the EOF blip: the local
-# cache couldn't decode the response, the credential is fine.
 _PARSE_EOF_MARKERS = (
     "eof while parsing",
     "parsing a value",
@@ -107,40 +87,20 @@ _PARSE_EOF_MARKERS = (
     "missing field",
     "invalid type:",
 )
-# Codex model-discovery subprocess can also hang (child never exits) rather than
-# returning bad JSON.  The resulting stderr shape is "failed to refresh available
-# models: timeout waiting for child process to exit" — same cache-renewal marker,
-# different suffix.  Treat it as transient alongside the EOF-parse variant.
 _CHILD_TIMEOUT_MARKERS = ("timeout waiting for child process",)
-# Third variant: the model-list HTTP request itself fails mid-flight, e.g.
-# "failed to refresh available models: stream disconnected before completion:
-# error sending request for url (https://chatgpt.com/backend-api/codex/models…)".
-# Same cache-renewal marker, a network suffix instead of a parse/hang one — and
-# equally not an auth rejection. A ~4-second blip of this shape parked a healthy
-# codex agent for the remaining 4 hours of a session while sibling agents on the
-# *same* identity kept dispatching normally, which is the proof it was never a
-# credential problem (#365).
 _MODEL_FETCH_NETWORK_MARKERS = (
     "stream disconnected before completion",
     "error sending request",
     "connection reset",
     "connection refused",
     "dns error",
-    # #520: "failed to refresh available models: request timed out"
     "request timed out",
     "operation timed out",
 )
 _STDIN_CLOSED_AFTER_CACHE_RENEWAL_MARKERS = ("write_stdin failed", "stdin closed")
 
-# Raw CLI prompt-wait artifacts an agent prints to stdout/stderr while stalled
-# (e.g. codex's "Reading additional input from stdin..."). These are not useful
-# failure feedback — they are the CLI's own input prompt — so they must not leak
-# verbatim into the play error / ESR / UI. ``_process_error_detail`` translates a
-# tail that is *only* such an artifact into a description of what happened.
 _STDIN_PROMPT_ARTIFACT_MARKERS = ("reading additional input from stdin",)
 
-# Claude Code tags a failed turn's ``assistant`` event with a machine-readable
-# ``error`` code (claude 2.1.x). Authoritative — checked before any text marker.
 _CLAUDE_ERROR_CODES: dict[str, ErrorClass] = {
     "authentication_failed": ErrorClass.AUTH,
     "model_not_found": ErrorClass.INVALID_MODEL,
@@ -148,12 +108,6 @@ _CLAUDE_ERROR_CODES: dict[str, ErrorClass] = {
     "billing_error": ErrorClass.RATE_LIMIT,
 }
 
-# Copilot ``session.error`` ``data.errorType`` categories (1.0.94
-# ``copilot-sdk/generated/session-events.d.ts`` ErrorData). ``rate_limit``
-# carries errorCode ``user_weekly_rate_limited``/``rate_limited``/...; ``quota``
-# carries ``quota_exceeded`` ("You've run out of your included AI credits for the
-# month"), ``session_quota_exceeded``, ``additional_spend_limit_reached``. Both
-# are holds, not failures — billing_error-equivalent, like claude's.
 _COPILOT_ERROR_TYPES: dict[str, ErrorClass] = {
     "rate_limit": ErrorClass.RATE_LIMIT,
     "quota": ErrorClass.RATE_LIMIT,
@@ -192,11 +146,6 @@ def _structured_cli_errors(stdout: str) -> tuple[ErrorClass | None, str]:
         elif etype == "turn.failed" and isinstance(err := event.get("error"), dict):
             texts.append(str(err.get("message", "")))
     return code_class, "\n".join(texts)
-
-
-# ---------------------------------------------------------------------------
-# Classification predicates
-# ---------------------------------------------------------------------------
 
 
 def _is_transient_cache_blip(lowered: str) -> bool:
@@ -296,9 +245,6 @@ def _classify_error(rc: int, stderr: str, stdout: str) -> ErrorClass:
     code_class, cli_error_text = _structured_cli_errors(stdout)
     if code_class is not None:
         return code_class
-    # codex wraps *every* 400 (unsupported effort, oversized request, ...) as
-    # invalid_request_error; only the specific model phrases may mark a model
-    # invalid, or one bad request would steer the tier off a working model.
     cli_error_text = cli_error_text.lower().replace("invalid_request_error", "")
     err = stderr.lower() + "\n" + cli_error_text
     out = stdout[-1000:].lower()
@@ -309,42 +255,25 @@ def _classify_error(rc: int, stderr: str, stdout: str) -> ErrorClass:
 
     if hit(_RATE_LIMIT_PATTERNS, _RATE_LIMIT_STDOUT):
         return ErrorClass.RATE_LIMIT
-    # ENOSPC is checked ahead of AUTH (#332) — see docstring above.
     if any(p in combined for p in _ENOSPC_PATTERNS):
         return ErrorClass.CRASH_ENOSPC
-    # stderr matches the broad canonical AUTH_MARKERS superset (Phase 4: all auth
-    # spellings share one table — adds the phrased "http 401/403" / GitHub-table
-    # strings, on top of the bare 401/403/forbidden tokens already present). stdout
-    # stays on the narrow high-precision subset so an agent's work product (code it
-    # edits mentioning 401/403/forbidden) is never misclassified (#19).
     if hit(tuple(AUTH_MARKERS), _AUTH_STDOUT) and not _auth_hit_is_cache_blip(err, out):
         return ErrorClass.AUTH
     if hit(_TIMEOUT_PATTERNS, _TIMEOUT_STDOUT):
         return ErrorClass.TIMEOUT
     if hit(_INVALID_MODEL_PATTERNS, _INVALID_MODEL_STDOUT):
         return ErrorClass.INVALID_MODEL
-    # codex_rollout + OOM signatures are distinctive enough to match in either
-    # stream (an OOM "Out of memory" notice legitimately lands on stdout).
     if any(p in combined for p in _CODEX_ROLLOUT_PATTERNS):
         return ErrorClass.CODEX_ROLLOUT
     if any(p in combined for p in _TRANSIENT_NETWORK_PATTERNS):
         return ErrorClass.TRANSIENT_NETWORK
     if any(p in combined for p in _OOM_PATTERNS):
         return ErrorClass.CRASH_OOM
-    # Negative return codes are POSIX signal deaths. SIGKILL (-9) from the OS
-    # OOM killer or an external kill is a crash, NOT a rate limit — bucketing it
-    # as "unknown" routed it into rate-limit take_break recovery (#7). SIGTERM
-    # (-15) and SIGINT (-2) are graceful AgentShore/OS-initiated stops and keep
-    # falling through to "unknown".
     if rc < 0 and rc not in (-2, -15):
         return ErrorClass.CRASH_SIGNAL
     return ErrorClass.UNKNOWN
 
 
-#: Substring marking a Claude Code SessionEnd-hook line in stderr. SessionEnd
-#: hooks run at teardown — strictly AFTER the model's final response is printed
-#: to stdout in headless ``claude -p`` — so a non-zero exit caused solely by a
-#: hook failure/cancellation does not invalidate the already-emitted response.
 _SESSION_END_HOOK_MARKER = "sessionend hook"
 
 
@@ -394,9 +323,6 @@ def _process_error_detail(
             f"break and retries; if it keeps failing, refresh this agent's token."
         )
 
-    # A tail that is only the CLI's stdin prompt-wait artifact (e.g. codex's
-    # "Reading additional input from stdin...") is the CLI's input prompt, not
-    # failure feedback — describe what happened instead of leaking it.
     if _is_stdin_prompt_artifact(f"{stderr}\n{stdout}".lower()):
         return (
             f"{agent_type.value} stalled waiting for input on stdin and produced "

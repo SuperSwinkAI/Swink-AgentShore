@@ -92,7 +92,6 @@ def decode_counts(blob: bytes) -> tuple[int, int, bool]:
     c_busy = int(round(float(busy_c.sum()) * _MAX_AGENTS))
     c_idle = int(round(float(idle_c.sum()) * _MAX_AGENTS))
     cfg_sat = bool((idle_c >= 1.0).any() or (busy_c >= 1.0).any())
-    # Each source is a lower bound once saturated; take the larger.
     return max(busy, c_busy), max(busy + idle, c_busy + c_idle), cfg_sat
 
 
@@ -122,7 +121,6 @@ def load(db: str, session: str | None) -> list[Play]:
         if len(nxt) != OBSERVATION_DIM * 4:
             continue
         busy, live, sat = decode_counts(nxt)
-        # Reward counts the just-finished agent as busy (core.helpers._build_reward_signals).
         busy = min(busy + 1, live) if live else busy
         play = Play(pid, sid, ptype, bool(ok), cost or 0.0, reward, busy, live, sat)
         _parse_artifacts(play, arts)
@@ -255,8 +253,6 @@ def report(plays: list[Play], cfg: RewardConfig, scale: float, window: int) -> N
             f"current {fmt(rc)}  candidate {fmt(rk)}"
         )
 
-        # Per play type, dispatch plays only: a pooled mean hides one cheap play
-        # out-earning pickup behind lifecycle plays (end_agent etc.) dragging "other" down.
         for name, rs in (("current", cur), ("candidate", cand)):
             means = {
                 t: statistics.fmean(rs[i] for i in idx)

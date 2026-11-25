@@ -40,12 +40,10 @@ from agentshore.session_path import (
 
 _logger = get_logger(__name__)
 
-# Win32 constants for the no-side-effect liveness probe (_process_alive_windows).
 _WIN_SYNCHRONIZE = 0x00100000
 _WIN_WAIT_TIMEOUT = 0x00000102
 _WIN_ERROR_INVALID_PARAMETER = 87
 
-# Time we'll wait for SIGTERM to land before escalating to SIGKILL.
 _STOP_GRACE_SECONDS = 60.0
 _STOP_POLL_INTERVAL = 0.1
 _DASHBOARD_STOP_GRACE_SECONDS = 5.0
@@ -165,24 +163,14 @@ def _process_alive(pid: int) -> bool:
 
 
 def _signal_group(pid: int, sig: int) -> None:
-    """Signal the process's group, falling back to the bare PID.
-
-    A desktop-spawned sidecar may not be a process-group leader (the
-    launcher didn't call setsid / start_new_session), so ``killpg(pid)``
-    raises ``ProcessLookupError`` even though the process is alive.
-    Previously that early-returned and the sidecar was never signalled —
-    ``agentshore stop`` reported success while the orchestrator kept
-    running (#31). Fall back to ``os.kill(pid)`` whenever the group signal
-    doesn't land.
-    """
+    """Signal the process group, falling back to the bare PID if the group
+    signal does not land."""
     killpg = getattr(os, "killpg", None)
     if killpg is not None:
         try:
             killpg(pid, sig)
             return
         except OSError:
-            # No group with this pgid (non-leader pid) or not permitted —
-            # signal the individual process instead.
             pass
     with contextlib.suppress(OSError):
         os.kill(pid, sig)
@@ -202,12 +190,7 @@ def _terminate_process_tree(pid: int, *, force: bool) -> None:
                 check=False,
             )
         except (OSError, subprocess.SubprocessError):
-            # taskkill could not be launched at all — never raise from teardown.
             return
-        # taskkill returns non-zero for an already-dead PID (e.g. 128 "process
-        # not found") as well as for genuine privilege failures. Only the
-        # latter is worth a warning — if the process is actually gone, teardown
-        # succeeded regardless of the exit code.
         if completed.returncode != 0 and _process_alive(pid):
             _logger.warning(
                 "taskkill_failed",
@@ -436,8 +419,6 @@ def hard_stop_session(project_path: Path) -> bool:
     for pid in survivors:
         _terminate_process_tree(pid, force=True)
 
-    # SIGKILL is delivered asynchronously — poll briefly to confirm the
-    # process actually exited before claiming success (#31).
     kill_deadline = time.monotonic() + _DASHBOARD_STOP_GRACE_SECONDS
     survivors = [pid for _label, pid in live if _process_alive(pid)]
     while survivors and time.monotonic() < kill_deadline:

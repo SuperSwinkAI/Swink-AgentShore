@@ -116,7 +116,6 @@ async def test_stale_socket_cleanup(sock_path: Endpoint) -> None:
     server = IpcServer(sock_path)
     await server.start()
     try:
-        # Server should have replaced the stale socket and be listening.
         _reader, writer = await _connect(sock_path)
         writer.close()
         await writer.wait_closed()
@@ -219,7 +218,6 @@ async def test_abrupt_disconnect_no_crash(sock_path: Endpoint) -> None:
         await writer.wait_closed()
         await asyncio.sleep(0.1)
 
-        # Server still accepting connections.
         _reader2, writer2 = await _connect(sock_path)
         writer2.close()
         await writer2.wait_closed()

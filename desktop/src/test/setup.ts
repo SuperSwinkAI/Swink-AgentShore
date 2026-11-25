@@ -1,17 +1,17 @@
 import "@testing-library/jest-dom/vitest";
 
-// Node 25+ exposes an experimental ``globalThis.localStorage`` gated by
-// ``--localstorage-file=PATH``. When the flag is missing (the default
-// for vitest), Node still installs a stub global whose API is
-// incomplete (no ``setItem``/``clear``) and that stub also shadows
-// jsdom's complete Web Storage implementation on
-// ``window.localStorage``. Replace both with a tiny in-memory storage
-// shim so production code that uses bare ``localStorage`` behaves the
-// way browsers do during tests.
-//
-// This is purely a vitest concern — production code never sees the
-// Node 25 stub because the Tauri runtime is a WebView with its own
-// real Web Storage.
+
+
+
+
+
+
+
+
+
+
+
+
 function makeStorageShim(): Storage {
   let store = new Map<string, string>();
   const shim: Storage = {
@@ -54,8 +54,8 @@ if (typeof globalThis.sessionStorage === "undefined" ||
     value: makeStorageShim(),
   });
 }
-// Also patch the jsdom window so component code that reaches through
-// ``window.localStorage`` sees the same store as bare ``localStorage``.
+
+
 if (typeof window !== "undefined") {
   if (typeof window.localStorage?.setItem !== "function") {
     Object.defineProperty(window, "localStorage", {

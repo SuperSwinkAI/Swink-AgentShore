@@ -38,10 +38,7 @@ if TYPE_CHECKING:
     from agentshore.plays.base import PlayParams
     from agentshore.state import OrchestratorState, PlayOutcome
 
-# Attempts at one unchanged fingerprint before the pair is cooled down. Two, so a
-# single transient failure (agent crash, flaky network) still gets one retry.
 NO_PROGRESS_THRESHOLD: Final[int] = 2
-# First cooldown window, in plays (``state.total_plays``); doubles per re-arm.
 BASE_COOLDOWN_PLAYS: Final[int] = 15
 MAX_COOLDOWN_PLAYS: Final[int] = 120
 
@@ -57,7 +54,6 @@ _ISSUE_TARGET_PLAYS: Final[frozenset[PlayType]] = frozenset(
 )
 TARGETED_PLAY_TYPES: Final[frozenset[PlayType]] = _PR_TARGET_PLAYS | _ISSUE_TARGET_PLAYS
 
-# (play_type.value, resource key such as "pr:42" / "issue:17")
 TargetKey = tuple[str, str]
 
 
@@ -144,8 +140,6 @@ class TargetAttemptLedger:
 
         entry = self._entries.get(key)
         if entry is None or entry.fingerprint != fingerprint:
-            # First attempt, or the target changed since the last one: progress
-            # was possible, so start counting afresh.
             entry = _Entry(fingerprint=fingerprint)
             self._entries[key] = entry
         entry.attempts += 1
@@ -164,16 +158,11 @@ class TargetAttemptLedger:
             entry = self._entries[key]
             current = _fingerprint(state, key)
             if current is None or current != entry.fingerprint:
-                # Target closed/merged/left the snapshot, or it changed: the
-                # premise of the cooldown no longer holds.
                 del self._entries[key]
                 continue
             if entry.armed_until is None:
                 continue
             if state.total_plays >= entry.armed_until:
-                # Window elapsed with the target still unchanged: allow another
-                # attempt but remember how often this pair has armed, so the
-                # next window is longer.
                 entry.armed_until = None
                 continue
             withheld.add(key)

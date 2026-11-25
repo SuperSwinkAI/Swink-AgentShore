@@ -7,9 +7,6 @@ from unittest.mock import patch
 
 import pytest
 
-# Import the CLI package first so the start <-> bootstrap module pair initializes
-# in dependency order; importing bootstrap in isolation as the first agentshore
-# submodule trips a pre-existing circular-import ordering sensitivity.
 import agentshore.cli.commands.start  # noqa: F401
 from agentshore.agents.git_auth_probe import (
     GIT_AUTH_ERROR,
@@ -98,7 +95,6 @@ def test_probe_ok_on_clean_ls_remote() -> None:
     ) as gs:
         r = probe_git_auth("alice", {"GH_TOKEN": "tok"}, remote=_HTTPS_REMOTE)
     assert r.status == GIT_AUTH_OK
-    # Token must inject the auth overlay (HTTPS path).
     overlay = gs.call_args.kwargs["env_overlay"]
     assert overlay["GIT_TERMINAL_PROMPT"] == "0"
     assert "GIT_CONFIG_COUNT" in overlay
@@ -177,7 +173,6 @@ def test_ssh_remote_does_not_inject_token_header() -> None:
             remote=_SSH_REMOTE,
         )
     overlay = gs.call_args.kwargs["env_overlay"]
-    # SSH path relies on GIT_SSH_COMMAND, never the token Basic header.
     assert "GIT_CONFIG_COUNT" not in overlay
     assert overlay["GIT_SSH_COMMAND"] == "ssh -i /key"
 
@@ -247,7 +242,7 @@ def test_preflight_ok_does_not_exit() -> None:
         "agentshore.agents.git_auth_probe.probe_all_identities",
         return_value=[_ok()],
     ):
-        preflight_git_auth(cfg, Path("."))  # must not raise
+        preflight_git_auth(cfg, Path("."))
 
 
 def test_preflight_nonblocking_warns_but_does_not_exit() -> None:
@@ -256,7 +251,7 @@ def test_preflight_nonblocking_warns_but_does_not_exit() -> None:
         "agentshore.agents.git_auth_probe.probe_all_identities",
         return_value=[_timeout()],
     ):
-        preflight_git_auth(cfg, Path("."))  # timeout is non-blocking — must not raise
+        preflight_git_auth(cfg, Path("."))
 
 
 def test_preflight_no_identities_is_noop() -> None:
@@ -264,7 +259,7 @@ def test_preflight_no_identities_is_noop() -> None:
         "agentshore.agents.git_auth_probe.probe_all_identities",
         return_value=[],
     ):
-        preflight_git_auth(RuntimeConfig(), Path("."))  # no identities → return cleanly
+        preflight_git_auth(RuntimeConfig(), Path("."))
 
 
 def _invoke_start(args: list[str]):
@@ -285,8 +280,6 @@ def _invoke_start(args: list[str]):
         patch.object(start_mod, "preflight_cli_agent_auth"),
         patch.object(start_mod, "preflight_git_auth") as mock_git_auth,
     ):
-        # Raise on cfg_path (deref'd just after the preflight block) to stop
-        # there; cfg/project_path consumed by the preflights stay clean MagicMocks.
         type(mock_bootstrap.return_value).cfg_path = property(
             lambda self: (_ for _ in ()).throw(RuntimeError("stop-after-preflight"))
         )

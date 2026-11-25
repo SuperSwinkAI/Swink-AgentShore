@@ -18,10 +18,6 @@ from agentshore.state import (
     StateProvider,
 )
 
-# ---------------------------------------------------------------------------
-# NullStateProvider: updated signature for on_play_started
-# ---------------------------------------------------------------------------
-
 
 @pytest.mark.asyncio
 async def test_null_provider_on_play_started_new_signature() -> None:
@@ -40,11 +36,6 @@ async def test_null_provider_all_hooks_new() -> None:
 
 def test_null_provider_is_state_provider_runtime_check() -> None:
     assert isinstance(NullStateProvider(), StateProvider)
-
-
-# ---------------------------------------------------------------------------
-# Orchestrator: events emitted in correct order
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -109,7 +100,6 @@ async def test_orchestrator_emits_on_play_started_before_execute(tmp_path: Path)
         play_id=1,
     )
 
-    # Selector returns one play then None
     call_count = 0
 
     class OneShotSelector:
@@ -203,8 +193,6 @@ async def test_orchestrator_emits_on_play_started_before_execute(tmp_path: Path)
     )
     await orch.run_until_idle()
 
-    # Order: state_update (with current_play set), play_started, then after play:
-    # play_completed, state_update (post-completion)
     assert "state_update" in events
     play_started_idx = next(i for i, e in enumerate(events) if e.startswith("play_started:"))
     state_update_idx = events.index("state_update")
@@ -212,7 +200,6 @@ async def test_orchestrator_emits_on_play_started_before_execute(tmp_path: Path)
 
     assert state_update_idx < play_started_idx < play_completed_idx, f"Event order wrong: {events}"
 
-    # There should be a second state_update after play_completed
     post_state_updates = [i for i, e in enumerate(events) if e == "state_update"]
     assert len(post_state_updates) >= 2, f"Expected 2+ state_updates, got: {events}"
     assert post_state_updates[-1] > play_completed_idx, (

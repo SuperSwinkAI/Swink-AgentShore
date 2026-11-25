@@ -59,18 +59,15 @@ def test_wedge_records_cooldown_that_expires_after_n_ticks() -> None:
     manager = SimpleNamespace(wedge_cooldown_types={"grok"})
     builder = _fake_builder(manager, runtime)
 
-    # First drain at tick 100: seeds an active cooldown expiring at 100 + N.
     active = builder._drain_wedge_cooldowns()
     assert active == frozenset({"grok"})
     assert runtime.wedge_cooldown_until["grok"] == 100 + _GROK_WEDGE_COOLDOWN_TICKS
 
-    # Mid-cooldown: still active, not re-seeded to a later expiry.
     runtime.last_play_id = 100 + _GROK_WEDGE_COOLDOWN_TICKS - 1
     active_mid = builder._drain_wedge_cooldowns()
     assert active_mid == frozenset({"grok"})
     assert runtime.wedge_cooldown_until["grok"] == 100 + _GROK_WEDGE_COOLDOWN_TICKS
 
-    # At expiry tick: cooldown drops, type becomes re-eligible.
     runtime.last_play_id = 100 + _GROK_WEDGE_COOLDOWN_TICKS
     active_after = builder._drain_wedge_cooldowns()
     assert active_after == frozenset()
@@ -146,12 +143,9 @@ def test_cooldown_is_not_reseeded_after_expiry() -> None:
     assert builder._drain_wedge_cooldowns() == frozenset({"antigravity"})
     expiry = 100 + _GROK_WEDGE_COOLDOWN_TICKS
 
-    # Expiry tick: the type recovers.
     runtime.last_play_id = expiry
     assert builder._drain_wedge_cooldowns() == frozenset()
 
-    # Every drain PAST expiry must leave it eligible — no silent re-seed, and no
-    # re-emitted cooldown warning.
     for tick in (expiry + 1, expiry + 5, expiry + _GROK_WEDGE_COOLDOWN_TICKS + 1):
         runtime.last_play_id = tick
         with structlog.testing.capture_logs() as captured:
@@ -177,7 +171,6 @@ def test_retrip_during_cooldown_does_not_extend_the_window() -> None:
     builder._drain_wedge_cooldowns()
     expiry = 100 + _GROK_WEDGE_COOLDOWN_TICKS
 
-    # An in-flight dispatch times out mid-cooldown and re-trips the manager.
     runtime.last_play_id = 105
     manager.wedge_cooldown_types.add("grok")
     manager.wedge_cooldown_reasons["grok"] = "launch_wedge"
@@ -185,12 +178,10 @@ def test_retrip_during_cooldown_does_not_extend_the_window() -> None:
         active = builder._drain_wedge_cooldowns()
 
     assert active == frozenset({"grok"})
-    # Window unchanged (not slid to 105 + N), and no duplicate warning.
     assert runtime.wedge_cooldown_until["grok"] == expiry
     assert [e for e in captured if e["event"] == "agent_type_wedge_cooldown"] == []
     assert manager.wedge_cooldown_types == set()
 
-    # The re-trip did not survive to re-seed: the type still recovers on schedule.
     runtime.last_play_id = expiry
     assert builder._drain_wedge_cooldowns() == frozenset()
 
@@ -206,7 +197,6 @@ def test_fresh_wedge_after_recovery_seeds_a_new_window() -> None:
     runtime.last_play_id = 100 + _GROK_WEDGE_COOLDOWN_TICKS
     assert builder._drain_wedge_cooldowns() == frozenset()
 
-    # The recovered type is dispatched again and wedges again.
     runtime.last_play_id = 130
     manager.wedge_cooldown_types.add("grok")
     assert builder._drain_wedge_cooldowns() == frozenset({"grok"})

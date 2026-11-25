@@ -277,7 +277,6 @@ async def finalize_nonzero_exit(
     error_class = _classify_error(rc, stderr_text, raw_output)
     handle.last_error_class = error_class
     if error_class == ErrorClass.INVALID_MODEL:
-        # Steer the next spawn of this tier to a model the CLI still offers.
         from agentshore.agents.model_resolver import mark_model_invalid
 
         mark_model_invalid(handle.agent_type, handle.model)

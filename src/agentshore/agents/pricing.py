@@ -40,18 +40,11 @@ __all__ = [
 
 _logger = structlog.get_logger(__name__)
 
-# Optional rate fields that may be omitted per entry (the multipliers fill in).
 _OPTIONAL_RATE_FIELDS = ("cost_per_1k_cached_input", "cost_per_1k_cache_write_input")
 _REQUIRED_RATE_FIELDS = ("cost_per_1k_input", "cost_per_1k_output")
 
-# Fallback-warning dedup; module-level to survive config reloads — one warning
-# per distinct gap, not one per dispatch.
 _WARNED_FALLBACKS: set[tuple[str, str]] = set()
 
-# Harnesses billed per request, not per token: their adapters report the dollar
-# cost themselves, and their model ids are shared with token-billed harnesses
-# (copilot serves gpt-5.6-* like codex), so the per-model table must never
-# apply — the agent-type default (token rates $0) always wins.
 _PER_REQUEST_BILLED_AGENT_TYPES: frozenset[str] = frozenset({"copilot"})
 
 
@@ -110,7 +103,6 @@ class PriceBook:
         if model and model in self.models:
             return self.models[model]
         if model:
-            # A model was named but isn't enumerated — surface the gap once.
             self._warn_fallback(agent_type, model, "agent_default" if agent_default else "default")
         if agent_default is not None:
             return agent_default
@@ -147,11 +139,6 @@ def default_quote() -> PricingQuote:
     from the live :class:`PriceBook`.
     """
     return bundled_pricebook().quote(None, None)
-
-
-# ---------------------------------------------------------------------------
-# Loading
-# ---------------------------------------------------------------------------
 
 
 def load_pricebook() -> PriceBook:
@@ -271,8 +258,6 @@ def _coerce_pricing(entry: object, *, ctx: str) -> AgentPricing:
         rates[field] = _coerce_rate(entry.get(field), ctx=f"{ctx}.{field}", required=True)
     for field in _OPTIONAL_RATE_FIELDS:
         rates[field] = _coerce_rate(entry.get(field), ctx=f"{ctx}.{field}", required=False)
-    # Output usually costs more than input; warn (not reject) so a transposed
-    # edit is noticed without blocking a deliberately odd table.
     if (rates["cost_per_1k_output"] or 0) < (rates["cost_per_1k_input"] or 0):
         _logger.warning(
             "pricing_output_cheaper_than_input",

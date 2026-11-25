@@ -19,24 +19,20 @@ class BuildContext:
     """Everything a phase needs: paths, build mode, and platform flags."""
 
     root: Path
-    build_mode: str = "release"  # "release" | "debug"
+    build_mode: str = "release"
 
-    # Shared flags
     skip_dashboard: bool = False
     no_sign: bool = False
 
-    # macOS flags
     build_pkg: bool = True
     do_install: bool = False
     notarize: bool = False
     keychain_profile: str = "agentshore-notary"
 
-    # Resolved at runtime
     app_signing_id: str = ""
     installer_signing_id: str = ""
     bundled_wheel: Path | None = None
 
-    # Extra args forwarded verbatim to platform-specific tooling (e.g. Windows).
     extra: list[str] = field(default_factory=list)
 
     @property

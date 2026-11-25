@@ -36,9 +36,6 @@ class RefineTaskBreakdownPlay(SkillBackedPlay):
                     source=MaskSource.CANDIDATE,
                 )
             ]
-        # Gate stops the play no-opping for dispatch reward when no issue carries
-        # the label (was 25/138 plays, 18%). Mirror candidates.issue_available_
-        # for_refine: eligible = needs-refinement AND not already refined.
         if not any(
             "agentshore/needs-refinement" in i.labels and "agentshore/refined" not in i.labels
             for i in state.open_issues

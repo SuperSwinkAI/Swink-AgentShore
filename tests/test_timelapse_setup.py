@@ -27,8 +27,6 @@ def test_node_major(text: str, expected: int | None) -> None:
 async def test_install_cli_uses_pinned_npm_package(
     monkeypatch: pytest.MonkeyPatch, tmp_path: object
 ) -> None:
-    # Installer must pull a pinned npm-registry version (currently 0.5.0), not the
-    # GitHub releases/latest tarball (which lagged at the broken 0.3.0).
     seen: dict[str, object] = {}
 
     monkeypatch.setattr(setup.shutil, "which", lambda _name: "/usr/bin/npm")
@@ -49,9 +47,6 @@ async def test_install_timelapse_linux_returns_failure(
 ) -> None:
     monkeypatch.setattr(setup.sys, "platform", "linux")
 
-    # No existing install: a real timelapse-capture at the 0.5.0 pin on the host
-    # would otherwise take the already-current fast path and never hit the
-    # platform gate.
     async def no_existing_install(cwd: object) -> str | None:
         return None
 
@@ -104,14 +99,12 @@ async def test_install_timelapse_windows_uses_winget_deps_without_homebrew(
     result = await setup.install_timelapse(tmp_path)  # type: ignore[arg-type]
 
     assert result.success is True
-    # Pin verified before doctor; Windows hardening runs against the just-installed pin.
     assert calls == ["ffmpeg", "node", "cli", "verify_version", "harden", "doctor"]
 
 
 async def test_install_steps_skip_heavy_work_when_already_current(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    # Already at pin: skip ffmpeg/node/npm provisioning, only re-assert hardening + health.
     calls: list[str] = []
 
     async def current_version(cwd: object) -> str | None:
@@ -144,7 +137,6 @@ async def test_install_steps_skip_heavy_work_when_already_current(
 async def test_install_steps_upgrade_when_version_drifts(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    # A stale installed version must trigger the full install/upgrade path.
     calls: list[str] = []
 
     async def stale_version(cwd: object) -> str | None:
@@ -329,8 +321,6 @@ async def test_install_timelapse_reports_step_failure(
 ) -> None:
     monkeypatch.setattr(setup.sys, "platform", "darwin")
 
-    # No existing install: a real timelapse-capture at the 0.5.0 pin on the host
-    # would otherwise take the already-current fast path and skip _ensure_ffmpeg.
     async def no_existing_install(cwd: object) -> str | None:
         return None
 
@@ -345,8 +335,6 @@ async def test_install_timelapse_reports_step_failure(
     assert "Homebrew" in result.message
 
 
-# A slice of winget's CR progress stream (block glyphs U+2588/U+2592) — the exact
-# shape that crashed structlog on cp1252.
 _WINGET_NOOP_OUTPUT = (
     "-  \\  |  ███▒▒▒  50%  "
     "██████  100%\r"
@@ -360,7 +348,6 @@ def test_clean_command_output_strips_progress_glyphs() -> None:
     cleaned = setup._clean_command_output(_WINGET_NOOP_OUTPUT)
     assert "Found an existing package already installed" in cleaned
     assert "No newer package versions are available" in cleaned
-    # Progress glyphs must be gone so the message is safe to print on a legacy code page.
     assert "█" not in cleaned
     assert "▒" not in cleaned
 
@@ -368,7 +355,6 @@ def test_clean_command_output_strips_progress_glyphs() -> None:
 async def test_winget_install_treats_no_upgrade_as_noop(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    # winget exits non-zero when already latest; must not raise (caller re-verifies).
     monkeypatch.setattr(
         setup.shutil, "which", lambda name: "C:/tools/winget.exe" if name == "winget" else None
     )
@@ -382,14 +368,13 @@ async def test_winget_install_treats_no_upgrade_as_noop(
     async def fake_run(cmd: list[str], **kwargs: object) -> setup.CommandResult:
         return setup.CommandResult(
             args=tuple(cmd),
-            returncode=-1978335189,  # 0x8A15002B UPDATE_NOT_APPLICABLE (signed)
+            returncode=-1978335189,
             stdout="",
             stderr=_WINGET_NOOP_OUTPUT,
         )
 
     monkeypatch.setattr(setup, "_run", fake_run)
 
-    # Must not raise.
     await setup._winget_install("OpenJS.NodeJS", cwd=tmp_path, label="Node.js 24+")
     assert refreshed["count"] == 1
 
@@ -439,7 +424,7 @@ def test_winget_node_bin_dirs_orders_newest_first_and_filters_old(
 
     dirs = setup._winget_node_bin_dirs()
 
-    assert dirs == [newest, supported]  # newest first, below-minimum excluded
+    assert dirs == [newest, supported]
     assert too_old not in dirs
 
 
@@ -464,7 +449,6 @@ def test_refresh_windows_tool_paths_prefers_winget_node_over_program_files(
     monkeypatch.setenv("LOCALAPPDATA", str(local))
     monkeypatch.setenv("PROGRAMFILES", str(program_files))
     monkeypatch.delenv("APPDATA", raising=False)
-    # winget appended the new Node to the END of PATH, behind the older Program Files Node.
     monkeypatch.setenv("PATH", os.pathsep.join([str(pf_node), str(node_dir)]))
 
     setup._refresh_windows_tool_paths()
@@ -473,7 +457,6 @@ def test_refresh_windows_tool_paths_prefers_winget_node_over_program_files(
     assert entries.index(str(node_dir)) < entries.index(str(pf_node))
 
 
-# The exact daemon-spawn block from the pinned timelapse-capture@0.5.0 source.
 _DAEMON_SPAWN_SOURCE = (
     "async function spawnDetachedCapture(runDir) {\n"
     '  const command = [process.execPath, __filename, "capture", "--run", runDir];\n'
@@ -491,20 +474,17 @@ def test_patch_text_for_windows_hide_adds_flag_to_daemon_spawn() -> None:
     patched = setup._patch_text_for_windows_hide(_DAEMON_SPAWN_SOURCE)
     assert patched is not None
     assert "windowsHide: true," in patched
-    # The flag lands inside the spawn options block, right after env.
     assert "env: process.env,\n    windowsHide: true,\n" in patched
 
 
 def test_patch_text_for_windows_hide_is_idempotent() -> None:
     once = setup._patch_text_for_windows_hide(_DAEMON_SPAWN_SOURCE)
     assert once is not None
-    # A second pass over already-patched source is a no-op, never a double flag.
     assert setup._patch_text_for_windows_hide(once) is None
     assert once.count("windowsHide: true,") == 1
 
 
 def test_patch_text_for_windows_hide_refuses_unknown_layout() -> None:
-    # An unexpected CLI layout (anchor absent) must not be blind-patched.
     assert setup._patch_text_for_windows_hide("function spawn() { /* different */ }") is None
 
 
@@ -517,7 +497,6 @@ async def test_harden_installed_cli_noop_off_windows(
         raise AssertionError("must not touch the filesystem off Windows")
 
     monkeypatch.setattr(setup, "_run", fail_run)
-    # Must return without resolving or patching anything.
     await setup.harden_installed_cli(tmp_path)
 
 
@@ -540,7 +519,6 @@ async def test_harden_installed_cli_patches_installed_source(
 
     patched = cli_src.read_text(encoding="utf-8")
     assert "windowsHide: true," in patched
-    # Re-running is idempotent — no second flag.
     await setup.harden_installed_cli(tmp_path)
     assert cli_src.read_text(encoding="utf-8").count("windowsHide: true,") == 1
 
@@ -551,11 +529,9 @@ async def test_harden_installed_cli_warns_when_source_missing(
     monkeypatch.setattr(setup.sys, "platform", "win32")
 
     async def fake_run(cmd: list[str], **kwargs: object) -> setup.CommandResult:
-        # npm root points at an empty tree — no installed CLI source there.
         return setup.CommandResult(args=tuple(cmd), returncode=0, stdout=f"{tmp_path}\n", stderr="")
 
     monkeypatch.setattr(setup, "_run", fake_run)
-    # Best-effort: a missing source must not raise.
     await setup.harden_installed_cli(tmp_path)
 
 
@@ -571,7 +547,6 @@ async def test_verify_pinned_version_accepts_matching_pin(
         )
 
     monkeypatch.setattr(setup, "_run", fake_run)
-    # Must not raise when the resolved binary is exactly the pin.
     await setup._verify_pinned_version(tmp_path)
 
 

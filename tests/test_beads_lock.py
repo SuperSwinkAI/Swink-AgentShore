@@ -69,8 +69,6 @@ async def test_writers_are_mutually_exclusive() -> None:
             timeline.append(f"{tag}_end")
 
     await asyncio.gather(_writer("a"), _writer("b"))
-    # Whichever writer goes first must fully finish before the other starts —
-    # no interleaving of the two writers' start/end pairs.
     assert timeline[0].endswith("_start")
     assert timeline[1].endswith("_end")
     assert timeline[0].split("_")[0] == timeline[1].split("_")[0], timeline
@@ -102,7 +100,7 @@ async def test_pending_writer_blocks_a_reader_that_arrives_after_it() -> None:
     async def _writer() -> None:
         await reader1_active.wait()
         write_task = asyncio.ensure_future(_do_write())
-        await asyncio.sleep(0.005)  # let the writer register itself as waiting
+        await asyncio.sleep(0.005)
         writer_waiting.set()
         await write_task
 

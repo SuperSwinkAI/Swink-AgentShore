@@ -15,16 +15,8 @@ from agentshore.state import PlayType
 
 _logger = get_logger(__name__)
 
-# Match the SHA inside a skill error like "already reviewed at <sha>".
-# Hex range is intentionally permissive (4–40) — the message format already
-# constrains us, and very short test SHAs should still match.
 _ALREADY_REVIEWED_SHA_RE = re.compile(r"already reviewed at ([0-9a-f]{4,40})")
 
-# A code_review that fast-failed because the target doesn't resolve to a real PR
-# on GitHub (phantom — an agent-reported number that was never opened, or an
-# issue number). Deliberately narrow: transient failures (timeout, network,
-# rate-limit) must still retry, so only definitive "the PR isn't there"
-# signatures match. Substring-matched against the lowercased outcome error.
 _PHANTOM_PR_ERROR_MARKERS: tuple[str, ...] = (
     "does not exist",
     "could not resolve to a pullrequest",
@@ -86,11 +78,6 @@ def _verdict_from_prior(result: SkillResult | None) -> str | None:
     return None
 
 
-# Tool names denied to the reviewing agent (see ``CodeReviewPlay``). These are
-# swink-coding's native tool names; the CLI validates them at startup and exits
-# non-zero on an unknown one, so a rename upstream surfaces as a hard dispatch
-# failure rather than a silently-dropped denial. Adapters whose CLI has no
-# deny flag ignore the list entirely.
 _CODE_REVIEW_DENIED_TOOLS: tuple[str, ...] = ("write_file", "edit_file")
 
 
@@ -109,25 +96,9 @@ class CodeReviewPlay(SkillBackedPlay):
 
     gates = (CapabilityGate("can_review"),)
 
-    # PR-scoped: self-heal the PR base before review so the diff bases correctly.
     retarget_pr_base = True
-    # Anti-confirmation violations are a transient timing race (reviewer reassigned
-    # between resolve and dispatch); requeue to a later tick instead of penalizing.
     requeue_on_anti_confirmation = True
 
-    # Anti-confirmation, enforced a third time at the tool layer. The identity
-    # and executor checks above stop the *wrong reviewer* from being chosen;
-    # this stops the *right* reviewer from quietly fixing what it was sent to
-    # judge. A review's whole output is a verdict plus comments, posted through
-    # ``gh`` — it has no legitimate reason to write or edit a file, so denying
-    # both costs the play nothing.
-    #
-    # Deliberately NOT denied: ``gh`` and ``git`` (the review is posted with
-    # one and read with the other) and ``bash``. Denying ``bash`` would block
-    # legitimate review work — building the branch, running a test to check a
-    # claim — and it is a wide enough tool to write a file anyway
-    # (``echo > f``). This is a hardening measure against the honest failure
-    # mode, not a sandbox: an agent set on writing can still get there.
     disallowed_tools = _CODE_REVIEW_DENIED_TOOLS
 
     @property
@@ -151,10 +122,6 @@ class CodeReviewPlay(SkillBackedPlay):
     ) -> PlayOutcome:
         outcome = await super().execute(state, params, ctx=ctx)
         verdict = _verdict(self._last_skill_result)
-        # The skill reports "already reviewed at <sha>" when a prior AgentShore
-        # review comment exists for the current HEAD. Persist the SHA + prior
-        # verdict so the candidate pipeline routes the PR forward: PASS →
-        # merge_pr eligible, BLOCK → unblock_pr eligible.
         if outcome.success and outcome.error and "already reviewed" in outcome.error:
             prior_status = _verdict_from_prior(self._last_skill_result)
             if params.pr_number is not None:
@@ -172,8 +139,6 @@ class CodeReviewPlay(SkillBackedPlay):
                 partial=True,
                 error=f"already reviewed — PR routes to {next_step}",
             )
-        # Persist reviewed SHA + verdict so the precondition masks this PR and
-        # merge_pr can gate on internal approval when GitHub reviewDecision is unavailable.
         if outcome.success:
             persisted = False
             for artifact in outcome.artifacts:
@@ -186,8 +151,6 @@ class CodeReviewPlay(SkillBackedPlay):
                         )
                         persisted = True
                         break
-            # Fallback: zero-diff SKIPs omit the type=pr artifact; look up SHA
-            # from state to prevent indefinite re-picks on the same PR.
             if not persisted and params.pr_number is not None:
                 pr_num = params.pr_number
                 for pr in state.pull_requests:
@@ -196,7 +159,6 @@ class CodeReviewPlay(SkillBackedPlay):
                             pr_num, ctx.session_id, pr.head_sha, status=verdict
                         )
                         break
-        # Mark the review queue row as done so the resolver stops picking this PR.
         if outcome.success and params.pr_number is not None:
             queue_id = params.extras.get("review_queue_id")
             if isinstance(queue_id, int):
@@ -217,12 +179,6 @@ class CodeReviewPlay(SkillBackedPlay):
             )
             if records:
                 await ctx.store.record_review_patterns(records)
-        # Phantom-target backstop (#278): a code_review that fast-failed because
-        # the PR doesn't resolve to a real PR on GitHub would otherwise be
-        # re-offered every tick — the review-queue row stays pending and any
-        # lingering open PR record keeps matching eligibility. Evict it from the
-        # mirror so it's offered at most once. #279's confirm-then-write prevents
-        # most phantoms at the source; this bounds any that slip through.
         if (
             not outcome.success
             and params.pr_number is not None

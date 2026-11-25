@@ -6,9 +6,9 @@ import {
   shouldAutoStop,
 } from "../src/components/FeedbackModal";
 
-// Guards the unanswered-prompt auto-stop policy (#9). Mirrors the engine-side
-// _AUTO_STOP_PAUSE_REASONS so the visible dashboard countdown and the engine
-// backstop agree on which prompts auto-stop.
+
+
+
 describe("FeedbackModal auto-stop policy", () => {
   it("auto-stops automated escalations", () => {
     for (const reason of [

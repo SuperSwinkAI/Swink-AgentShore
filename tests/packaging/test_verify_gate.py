@@ -17,7 +17,6 @@ _VERIFY_PATH = _REPO / "scripts" / "buildkit" / "verify.py"
 
 
 def _load() -> ModuleType:
-    # Load as part of the scripts.buildkit package so its relative imports resolve.
     pkg_spec = importlib.util.spec_from_file_location(
         "scripts_buildkit_pkg",
         _REPO / "scripts" / "buildkit" / "__init__.py",
@@ -53,7 +52,7 @@ def test_expected_payload_excludes_provisioner() -> None:
     verify = _load()
     expected = verify.expected_macos_payload(_REPO)
     assert "agentshore-desktop" in expected
-    assert "agentshore-bd" not in expected  # bd is the system's, never bundled
+    assert "agentshore-bd" not in expected
     assert "agentshore-provisioner" not in expected
 
 

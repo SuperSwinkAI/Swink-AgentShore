@@ -194,8 +194,6 @@ def test_ready_beads_tasks_without_actionable_candidate_do_not_block_terminal_no
 
 
 def test_unreviewed_pr_without_manual_required_is_reviewable() -> None:
-    # Baseline for the manual-required test below: an ordinary unreviewed PR
-    # (review_decision=None) IS a reviewable, actionable target.
     summary = build_candidate_plan(
         _state(graph=_seeded_graph(), pull_requests=[_pr(20)])
     ).work_availability
@@ -207,9 +205,6 @@ def test_unreviewed_pr_without_manual_required_is_reviewable() -> None:
 
 
 def test_manual_required_pr_is_not_reviewable_so_terminal_no_work() -> None:
-    # A manual-required PR is parked for a human: it must not leak into the
-    # reviewable set (the bug that pinned END_SESSION masked). With no other
-    # work, the session reaches terminal no-work.
     summary = build_candidate_plan(
         _state(graph=_seeded_graph(), pull_requests=[_pr(20, labels=[MANUAL_REQUIRED_LABEL])])
     ).work_availability
@@ -231,8 +226,6 @@ def test_pr_queue_human_blocked_at_cap_minus_one() -> None:
 
 
 def test_pr_queue_not_human_blocked_below_threshold() -> None:
-    # Below the cap AND not every open PR is manual-required (one plain PR keeps
-    # the queue drainable), so neither hatch path fires — a pure cap-boundary check.
     prs = [_pr(100 + i, labels=[MANUAL_REQUIRED_LABEL]) for i in range(MAX_OPEN_PRS - 2)]
     prs.append(_pr(900))
     summary = build_candidate_plan(
@@ -267,9 +260,6 @@ def _agent(
 
 
 def test_review_only_pr_not_actionable_without_cross_identity_reviewer() -> None:
-    # The wedge: every PR authored by "alice", the only large agent is also
-    # "alice" (a "bob" medium can't review). Review is infeasible, so the PRs
-    # must not hold END_SESSION shut via actionable_pr_work.
     summary = build_candidate_plan(
         _state(
             graph=_seeded_graph(),
@@ -317,7 +307,6 @@ def test_review_infeasible_when_cross_identity_reviewer_out_of_service() -> None
 
 
 def test_review_infeasible_pr_still_actionable_when_mergeable() -> None:
-    # Merge-ready work isn't review work: it still counts with no cross-identity reviewer.
     summary = build_candidate_plan(
         _state(
             graph=_seeded_graph(),
@@ -342,10 +331,6 @@ def test_review_infeasible_pr_still_actionable_when_mergeable() -> None:
 
 
 def test_pr_queue_human_blocked_when_all_open_prs_manual_required_and_no_work() -> None:
-    # End-session-wedge fix: every open PR manual-required AND no other actionable
-    # work → the queue cannot drain without a human even well below the cap, so
-    # pr_queue_human_blocked is True (this is what lets END_SESSION unmask and the
-    # session end cleanly instead of parking).
     prs = [_pr(100 + i, labels=[MANUAL_REQUIRED_LABEL]) for i in range(4)]
     summary = build_candidate_plan(
         _state(graph=_seeded_graph(), pull_requests=prs)

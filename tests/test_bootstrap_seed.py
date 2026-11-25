@@ -28,15 +28,11 @@ def test_bootstrap_seed_is_shipped() -> None:
 
 
 def test_bootstrap_seed_matches_build_versions() -> None:
-    # A passing load is the version-pin guard: ActorCritic.load raises on any
-    # action_space / policy / observation drift, breaking CI on a bump.
     model = ActorCritic.load(_seed_path())
     assert model is not None
 
 
 def test_bootstrap_seed_is_roster_portable() -> None:
-    # Config head is roster-specific (shape-mismatches act_config on a different
-    # roster); shipped seed must strip it (num_configs == 0) to load warm anywhere.
     model = ActorCritic.load(_seed_path())
     assert model.num_configs == 0, (
         "shipped seed carries a config head — re-export without --keep-config-head "

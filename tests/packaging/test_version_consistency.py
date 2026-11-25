@@ -71,7 +71,5 @@ def test_write_refreshes_cargo_lock_round_trip(tmp_path: Path) -> None:
         "agentshore-desktop": "9.9.9",
         "agentshore-provisioner": "9.9.9",
     }
-    # An unrelated dependency's version is untouched.
     assert 'name = "some-dep"\nversion = "1.2.3"' in lock.read_text(encoding="utf-8")
-    # Idempotent: a second sync at the same version is a no-op.
     assert version._write_cargo_lock(tmp_path, "9.9.9") is False

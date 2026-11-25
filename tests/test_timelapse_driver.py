@@ -25,10 +25,8 @@ def _result(
 
 @pytest.fixture(autouse=True)
 def _force_binary(monkeypatch: pytest.MonkeyPatch) -> None:
-    # Pretend the CLI is installed so resolve_timelapse_binary() returns a path.
     monkeypatch.setattr(timelapse, "resolve_timelapse_binary", lambda: "timelapse-capture")
 
-    # Stub the Windows daemon-spawn hardening so driver tests never shell out to npm.
     async def _noop_harden(cwd: object) -> None:
         return None
 
@@ -51,9 +49,7 @@ async def test_start_capture_parses_alias_and_run_dir(
     run = await timelapse.start_capture("http://localhost:9400/", tmp_path)
 
     assert run.run_id == "swift-otter-042"
-    # run_dir is the tool's native path (backslashes on Windows); assert the final component.
     assert Path(run.run_dir).name == "x"
-    # start uses the default runs dir (no --out) so the alias resolves later.
     assert "--out" not in captured["args"]
     assert "start" in captured["args"]
     assert captured["cwd"] == tmp_path
@@ -62,7 +58,6 @@ async def test_start_capture_parses_alias_and_run_dir(
 async def test_start_capture_hardens_before_spawning_daemon(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # windowsHide patch must land before ``start`` spawns the daemon (else a console flashes).
     order: list[str] = []
 
     async def record_harden(cwd: object) -> None:
@@ -127,7 +122,6 @@ async def test_await_output_returns_path_once_rendered(
 
     async def fake_run(*args: str, **kwargs: object) -> CommandResult:
         calls["n"] += 1
-        # First poll: still rendering (no outputPath). Second: done.
         if calls["n"] < 2:
             return _result(args, stdout=json.dumps({"state": "rendering", "outputPath": None}))
         return _result(

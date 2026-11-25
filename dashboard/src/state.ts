@@ -112,20 +112,20 @@ export class AgentShoreStateManager {
   connected = true;
   sessionEnded = false;
 
-  // The session_id this manager is bound to. With session_id stamped on every
-  // frame (Tier 1), any frame naming a different id marks a new orchestrator
-  // run and triggers a full reset. Null until the first id-bearing frame.
+
+
+
   currentSessionId: string | null = null;
-  // Host hook (set by Dashboard) to run component-level resets — play bar,
-  // event drawer, agent stats, bootstrap modal — when the manager crosses a
-  // session boundary. Invoked from handleMessage before the new frame is
-  // processed, so the UI is cleared before the new session repopulates it.
+
+
+
+
   onSessionReset: (() => void) | null = null;
 
-  // Bootstrap progress (desktop-afp). bootstrapPhase is the currently-running
-  // step name, or null once bootstrap has emitted its final ("ready", "completed").
-  // bootstrapStartedAt is wall-clock ms when the first bootstrap_phase event
-  // arrived, used by the modal to render an elapsed counter.
+
+
+
+
   bootstrapPhase: string | null = null;
   bootstrapStartedAt: number | null = null;
 
@@ -162,9 +162,9 @@ export class AgentShoreStateManager {
     this.latestState = null;
     this.feedbackPending = null;
     this.sessionEnded = false;
-    // Reset the seq de-dup floor: the new session's bridge restarts at
-    // seq=1, so a stale-high lastSeenSeq from the prior run would drop the
-    // new session's low-seq frames (the missing-bootstrap-modal bug).
+
+
+
     this.lastSeenSeq = 0;
     this.bootstrapPhase = null;
     this.bootstrapStartedAt = null;
@@ -187,11 +187,11 @@ export class AgentShoreStateManager {
   }
 
   handleMessage(msg: AgentShoreMessage): boolean {
-    // Session boundary (Tier 1): with session_id stamped on every frame, a new
-    // id means a new orchestrator run. Reset everything (incl. seq + bootstrap,
-    // via resetSession) before processing so the new run's low-seq frames are
-    // accepted and the modal re-shows. The first id-bearing frame of a fresh
-    // mount only adopts the id — there is nothing to reset yet.
+
+
+
+
+
     const sid = (msg as { session_id?: unknown }).session_id;
     if (typeof sid === "string" && sid !== this.currentSessionId) {
       if (this.currentSessionId !== null) {
@@ -201,8 +201,8 @@ export class AgentShoreStateManager {
       this.currentSessionId = sid;
     }
 
-    // Drop out-of-order or replayed messages using the monotonic seq number.
-    // Not all message types carry seq (ConnectionLost/Restored are client-synthetic).
+
+
     if ("seq" in msg && typeof msg.seq === "number") {
       if (msg.seq <= this.lastSeenSeq) return false;
       this.lastSeenSeq = msg.seq;
@@ -236,8 +236,8 @@ export class AgentShoreStateManager {
         return false;
       case "session_ended":
         this.sessionEnded = true;
-        // A surviving manager (the instance persists across reconnects)
-        // must accept the next run's seq=1 frames, so drop the de-dup floor.
+
+
         this.lastSeenSeq = 0;
         return false;
       case "connection_lost":
@@ -246,9 +246,9 @@ export class AgentShoreStateManager {
       case "connection_restored":
         this.connected = true;
         this.sessionEnded = false;
-        // A reconnect may attach to a new orchestrator whose seq restarts at
-        // 1; the bridge only replays the current session, so clearing the
-        // floor here is safe and avoids dropping the fresh stream.
+
+
+
         this.lastSeenSeq = 0;
         return false;
       case "active_play_replay":
@@ -267,8 +267,8 @@ export class AgentShoreStateManager {
           if (char) {
             char.status = msg.status;
             if (msg.status === "busy") {
-              // Route from canonical state — current_play is set by patchStartedPlay
-              // when the paired play_event(started) arrives.
+
+
               const agent = this.latestState?.agents.find(
                 (a) => a.agent_id === msg.agent_id,
               );
@@ -313,7 +313,7 @@ export class AgentShoreStateManager {
     this.latestState = merged;
     const currentAgents = new Map(merged.agents.map((a) => [a.agent_id, a]));
 
-    // Spawn new agents
+
     for (const [id, agent] of currentAgents) {
       if (!this.characters.has(id)) {
         const char = spawnCharacter(
@@ -332,7 +332,7 @@ export class AgentShoreStateManager {
       }
     }
 
-    // Mark agents no longer present for fade-out.
+
     for (const [id, char] of this.characters) {
       if (
         !currentAgents.has(id) &&
@@ -343,7 +343,7 @@ export class AgentShoreStateManager {
       }
     }
 
-    // Diff statuses (workaround for issue #5)
+
     for (const [id, agent] of currentAgents) {
       const prev = this.previousAgents.get(id);
       const char = this.characters.get(id);
@@ -374,11 +374,11 @@ export class AgentShoreStateManager {
       }
 
       if (prev && previousDisplayStatus !== displayStatus) {
-        // When status flips to idle, route to Zen Garden unless the character
-        // is already heading there (targetState=IDLE) or being despawned.
-        // The previous guard required char.state === WORK, which left agents
-        // stranded in workshop seats when the play_event(completed) was lost
-        // or when state_update outpaced it mid-walk.
+
+
+
+
+
         if (
           displayStatus === "idle" &&
           char.targetState !== CharacterState.IDLE &&
@@ -479,8 +479,8 @@ export class AgentShoreStateManager {
       this.patchStartedPlay(msg);
       if (msg.agent_id) {
         const char = this.characters.get(msg.agent_id);
-        // Route from canonical state after patching — latestState now has the
-        // current_play set for this agent.
+
+
         const agent = this.latestState?.agents.find(
           (a) => a.agent_id === msg.agent_id,
         );
@@ -512,8 +512,8 @@ export class AgentShoreStateManager {
             );
             return;
           }
-          // Seq-based filtering guarantees this message is not stale, so we
-          // unconditionally route from the canonical patched state.
+
+
           const agent = this.latestState?.agents.find(
             (a) => a.agent_id === msg.agent_id,
           );
@@ -534,8 +534,8 @@ export class AgentShoreStateManager {
   private patchStartedPlay(msg: PlayEvent): void {
     if (msg.status !== "started" || !this.latestState) return;
 
-    // PlayEventStarted fields are all required-nullable on the wire, so no
-    // ?? null defensiveness is needed; makeActivePlay fills the rest.
+
+
     const currentPlay = makeActivePlay({
       play_type: msg.play_type,
       agent_id: msg.agent_id,
@@ -553,9 +553,9 @@ export class AgentShoreStateManager {
       ...this.latestState,
       active_play: makeActivePlay({
         ...currentPlay,
-        // active_play synthesises a started_at so the play-bar timer can run
-        // even when the event omitted one; the per-agent current_play keeps
-        // the raw (possibly null) value.
+
+
+
         started_at: msg.started_at ?? new Date().toISOString(),
       }),
       agents: this.latestState.agents.map((agent) =>
@@ -668,10 +668,10 @@ export class AgentShoreStateManager {
 
     const zoneId = PLAY_TO_ZONE[playType];
     if (zoneId === undefined) {
-      // Zen Garden is reserved for idle agents — never route a working
-      // play there. An unmapped play_type is a bug (likely a new play
-      // missing a PLAY_TO_ZONE entry); leave the character where they
-      // are rather than visually misclassify them.
+
+
+
+
       console.warn("routeStartedPlay: no PLAY_TO_ZONE entry", { playType });
       return;
     }
@@ -685,9 +685,9 @@ export class AgentShoreStateManager {
       active &&
       samePlay(active, { ...agent.current_play, agent_id: agent.agent_id })
     ) {
-      // active_play carries the canonical trigger metadata; fold it onto the
-      // per-agent current_play. All fields are required-nullable now, so no
-      // ?? null defensiveness is needed.
+
+
+
       return {
         ...agent.current_play,
         agent_id: active.agent_id,

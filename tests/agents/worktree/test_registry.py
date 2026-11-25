@@ -22,8 +22,6 @@ from agentshore.agents.worktree.registry import (
 )
 from agentshore.data.store import DataStore
 
-# --- insert + lookup ---------------------------------------------------------
-
 
 async def test_insert_and_lookup_by_branch(store: DataStore) -> None:
     row = await insert_worktree(
@@ -72,9 +70,6 @@ async def test_insert_invalid_status_rejected(store: DataStore) -> None:
             head_sha=None,
             status="bogus",  # type: ignore[arg-type]
         )
-
-
-# --- partial unique index coverage -------------------------------------------
 
 
 async def test_unique_branch_index_blocks_double_insert(store: DataStore) -> None:
@@ -176,9 +171,6 @@ async def test_partial_index_skips_terminal_rows(store: DataStore) -> None:
     assert second.worktree_id != first.worktree_id
 
 
-# --- status transitions + touch ---------------------------------------------
-
-
 async def test_mark_status_durable_and_idempotent(store: DataStore) -> None:
     row = await insert_worktree(
         store,
@@ -201,7 +193,6 @@ async def test_mark_status_durable_and_idempotent(store: DataStore) -> None:
     assert fetched.status == "stale"
     assert fetched.failure_reason == "branch_gone"
 
-    # Idempotent re-mark.
     await mark_status(store, worktree_id=row.worktree_id, status="stale")
     fetched2 = await lookup_by_id(store, worktree_id=row.worktree_id)
     assert fetched2 is not None
@@ -242,11 +233,7 @@ async def test_touch_updates_last_used_at(store: DataStore) -> None:
     fetched = await lookup_by_id(store, worktree_id=row.worktree_id)
     assert fetched is not None
     assert fetched.head_sha == "def456"
-    # last_used_at must advance or at least be re-stamped (string compare ok ISO).
     assert fetched.last_used_at >= initial_last_used
-
-
-# --- rekey -------------------------------------------------------------------
 
 
 async def test_rekey_clears_prebranch_key(store: DataStore) -> None:
@@ -270,7 +257,6 @@ async def test_rekey_clears_prebranch_key(store: DataStore) -> None:
     assert promoted.pre_branch_key is None
     assert promoted.worktree_path == "/tmp/wt/fix-issue-99"
 
-    # The pre-branch key is now reusable.
     reused = await insert_worktree(
         store,
         session_id="sess-1",
@@ -312,9 +298,6 @@ async def test_rekey_conflict_when_branch_taken(store: DataStore) -> None:
             branch_name="fix/issue-1",
             new_path="/tmp/wt/fix-issue-1-collide",
         )
-
-
-# --- listing helpers ---------------------------------------------------------
 
 
 async def test_list_active_excludes_terminal_rows(store: DataStore) -> None:

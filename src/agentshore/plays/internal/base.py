@@ -38,18 +38,12 @@ class InternalPlay(ABC):
     skill_name: str | None = None
     capability: str | None = None
 
-    # Declarative executor-behavior flags (see ``Play`` for semantics). Inert by
-    # default; ``end_agent`` overrides ``is_handoff``.
     authors_prs: bool = False
     retarget_pr_base: bool = False
     is_handoff: bool = False
     is_observation: bool = False
     requeue_on_anti_confirmation: bool = False
 
-    # Tool-denial policy (see ``Play``). Always empty here and not overridable
-    # in practice: internal plays wrap AgentManager operations directly and
-    # never dispatch to a CLI, so there is no tool surface to deny. Declared
-    # only to keep the structural ``Play`` match intact.
     disallowed_tools: tuple[str, ...] = ()
 
     def estimated_cost(self, state: OrchestratorState) -> float:

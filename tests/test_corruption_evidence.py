@@ -48,7 +48,7 @@ def test_evidence_corruption_event_id_is_fresh_uuid(tmp_path: Path) -> None:
     out1 = capture_corruption_evidence(db)
     out2 = capture_corruption_evidence(db)
     assert out1["corruption_event_id"] != out2["corruption_event_id"]
-    uuid.UUID(out1["corruption_event_id"])  # must parse
+    uuid.UUID(out1["corruption_event_id"])
 
 
 def test_evidence_includes_db_file_stats(tmp_path: Path) -> None:
@@ -85,7 +85,6 @@ def test_evidence_returns_partial_dict_when_subprocess_missing(
         out = capture_corruption_evidence(db)
     assert "corruption_event_id" in out
     assert "power_state" in out
-    # Sub-step errors are recorded inline.
     if out["platform"] == "darwin":
         assert "pmset_ps_error" in out["power_state"]
 
@@ -96,7 +95,7 @@ def test_evidence_truncates_long_output(tmp_path: Path) -> None:
 
     huge = "x" * 50_000
     truncated = _truncate(huge, 8 * 1024)
-    assert len(truncated.encode("utf-8")) <= 8 * 1024 + 32  # +marker
+    assert len(truncated.encode("utf-8")) <= 8 * 1024 + 32
     assert "truncated" in truncated
 
 

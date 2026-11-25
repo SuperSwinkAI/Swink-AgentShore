@@ -103,8 +103,6 @@ def _resolve_fetch_overlay(cfg: RuntimeConfig) -> dict[str, str] | None:
     return overlay
 
 
-# --- Play-to-worktree routing -------------------------------------------------
-
 _PR_SCOPED_PLAYS: frozenset[PlayType] = frozenset(
     {
         PlayType.CODE_REVIEW,
@@ -126,37 +124,12 @@ _TRUNK_SCOPED_PLAYS: frozenset[PlayType] = frozenset(
         PlayType.GROOM_BACKLOG,
         PlayType.REFINE_TASK_BREAKDOWN,
         PlayType.WRITE_IMPLEMENTATION_PLAN,
-        # CLEANUP runs as a project-wide quality sweep against the target
-        # branch. It creates its own ``chore/cleanup-*`` branch + PR
-        # inside the skill (see ``agentshore-cleanup`` Step 5), so AgentShore
-        # should not pre-allocate a worktree+branch for it. Pre-allocating
-        # produced a ``WorktreeAllocation`` carrying ``play_type:
-        # PlayType.CLEANUP``, which leaked an enum through the dispatch
-        # JSON serializer and failed the play.
         PlayType.CLEANUP,
-        # RECONCILE_STATE inspects + repairs project state (dirty trunk,
-        # orphan worktrees, zombie subprocesses) — runs in the main checkout
-        # so it sees the state it's trying to fix. Pure trunk-scoped, no
-        # branch creation.
         PlayType.RECONCILE_STATE,
     }
 )
 
 
-# Plays that actually *mutate* the trunk working tree (merge into the default
-# branch, rewrite/clean the checkout, repair a dirty trunk). These — and only
-# these — take the exclusive ``trunk:main_repo`` work-claim so concurrent
-# trunk mutations can't race each other into a dirty/half-merged checkout.
-#
-# This is DELIBERATELY narrower than ``_TRUNK_SCOPED_PLAYS``. Membership there
-# means "execute in the main checkout, don't allocate a per-PR worktree" — an
-# *allocation* concern. Membership here means "needs an exclusive writer lock
-# on trunk" — a *serialization* concern. Read-only / metadata-only trunk plays
-# (RUN_QA, DESIGN_AUDIT, CALIBRATE_ALIGNMENT, GROOM_BACKLOG, SEED_PROJECT, and
-# the planning plays) run in the main checkout but only read it / update beads
-# + GitHub issues, so they must NOT hold the writer lock — holding it for their
-# full (multi-minute) duration starved MERGE_PR for 10–20 min at a stretch and
-# left approved+mergeable PRs unmerged (issue #17).
 _TRUNK_MUTATING_PLAYS: frozenset[PlayType] = frozenset(
     {
         PlayType.MERGE_PR,
@@ -164,9 +137,6 @@ _TRUNK_MUTATING_PLAYS: frozenset[PlayType] = frozenset(
         PlayType.RECONCILE_STATE,
     }
 )
-
-
-# --- Public allocation results -----------------------------------------------
 
 
 @dataclass(frozen=True, slots=True)
@@ -245,37 +215,13 @@ class WorktreeManager:
         self._main_repo = main_repo.resolve()
         self._worktree_root = worktree_root.resolve()
         self._cfg = cfg
-        # Per-(scope, key) locks serialize lookup → materialize → insert
-        # so two concurrent dispatches against the same branch / prebranch
-        # share one worktree instead of racing through the unique index.
-        # _locks_guard protects the dict itself; the per-key locks are
-        # held by ``async with`` blocks during allocation.
         self._alloc_locks: dict[str, asyncio.Lock] = {}
         self._alloc_locks_guard = asyncio.Lock()
-        # Memoized git-auth overlay for the shared (agent-agnostic) worktree
-        # fetch; resolved once on first allocation. ``None`` == unauthenticated.
         self._fetch_overlay: dict[str, str] | None = None
         self._fetch_overlay_resolved = False
-        # Consecutive PR-play failures per worktree_id, for the retention cap
-        # (``worktrees.reap_failed_pr_after_n``). A successful finalize clears
-        # the entry; once the count crosses the cap the row is dropped to
-        # ``stale`` instead of kept warm (#180).
         self._pr_failure_counts: dict[int, int] = {}
-        # worktree_id → canonical on-disk path for every dispatch currently in
-        # flight. The manager is the SOLE owner of "is this worktree live?":
-        # reap paths read this internally (``_protected_ids``/``_protected_paths``),
-        # so no caller can reap without protection. Storing BOTH id and path holds
-        # back the #203 dup-path alias (a stale old-id row sharing the live path).
-        # Replaces the silently-failing ``getattr(ctx.params._runtime_allocation…)``
-        # chains that reconstructed this set at every reap site.
         self._inflight: dict[int, str] = {}
-        # ``stale`` worktree_ids whose gitignored build output was already
-        # stripped (#522) — each row is cleaned once, not every poll tick.
         self._build_output_stripped: set[int] = set()
-
-    # ------------------------------------------------------------------
-    # In-flight dispatch registry (single owner of the reap-protection invariant)
-    # ------------------------------------------------------------------
 
     def register_dispatch(self, allocation: WorktreeAllocation) -> None:
         """Mark a worktree in-flight for the duration of a dispatch.
@@ -395,9 +341,6 @@ class WorktreeManager:
             row.worktree_id: row
             for row in await list_active(self._store, session_id=self._session_id)
         }
-        # branch → (pr_number, linked issue numbers) for every PR still live in
-        # the mirror. A row whose branch is absent here has no open/approved PR
-        # to be working on — merged, closed, or never mirrored.
         active_prs: dict[str, tuple[int, tuple[int, ...]]] = {}
         if any(rows.get(wid) is not None and rows[wid].branch_name is not None for wid in missing):
             for pr in await self._store.list_active_pull_requests(self._session_id):
@@ -603,8 +546,6 @@ class WorktreeManager:
     def worktree_root(self) -> Path:
         return self._worktree_root
 
-    # -- routing -------------------------------------------------------------
-
     def _classify(
         self, play_type: PlayType, params: PlayParams
     ) -> Literal["pr", "branch_creating", "trunk", "internal"]:
@@ -612,20 +553,11 @@ class WorktreeManager:
             return "pr"
         if play_type in _BRANCH_CREATING_PLAYS:
             return "branch_creating"
-        # SYSTEMATIC_DEBUGGING is the only play whose scope is routed
-        # dynamically: every other play has a static scope membership in the
-        # _PR_SCOPED_PLAYS / _BRANCH_CREATING_PLAYS / _TRUNK_SCOPED_PLAYS
-        # frozensets above. Debugging splits because a dispatch carrying a PR
-        # number is continuing-debug work against an existing PR worktree
-        # (pr-scoped), while a dispatch without a PR is a fresh pickup-style
-        # investigation against trunk (trunk-scoped).
         if play_type == PlayType.SYSTEMATIC_DEBUGGING:
             return "pr" if _systematic_debugging_is_pr_scoped(params) else "trunk"
         if play_type in _TRUNK_SCOPED_PLAYS:
             return "trunk"
         return "internal"
-
-    # -- public surface ------------------------------------------------------
 
     async def allocate_for_dispatch(
         self, *, play_type: PlayType, params: PlayParams
@@ -671,9 +603,6 @@ class WorktreeManager:
         ``pickup-<N>`` worktree that ``reconcile_state`` can't clear and that
         accumulates disk across short sessions (#33).
         """
-        # The dispatch is finalizing — clear its in-flight protection mark. The
-        # row transitions below (touch / rekey / stale) set its terminal
-        # disposition; from here it is eligible for reaping like any other row.
         self.release_dispatch(allocation)
         if allocation.scope == "pr":
             wt_id = allocation.worktree_id
@@ -681,11 +610,6 @@ class WorktreeManager:
                 self._pr_failure_counts.pop(wt_id, None)
                 await touch(self._store, worktree_id=wt_id)
                 return None
-            # Failure path. Keep the worktree warm for a cheap retry on the
-            # first failures; after the configured cap, a worktree that keeps
-            # failing is not a useful cache — drop it to ``stale`` so the TTL
-            # reaper reclaims its disk instead of holding it until PR close
-            # (the worktree-sprawl contributor in #180).
             fails = self._pr_failure_counts.get(wt_id, 0) + 1
             self._pr_failure_counts[wt_id] = fails
             cap = self._cfg.worktrees.reap_failed_pr_after_n
@@ -713,7 +637,6 @@ class WorktreeManager:
                 )
             return None
 
-        # branch_creating
         branch = result.branch if result is not None else None
         if branch is None and play_outcome.success:
             branch = await detect_branch_in_worktree(allocation.path)
@@ -737,13 +660,8 @@ class WorktreeManager:
                     await self._evict_lock("prebranch", allocation.pre_branch_key)
                 return branch
             return None
-        # Row moved to stale (no branch or play failure) — evict the
-        # prebranch lock; the row is on its way out (desktop-kdl5).
         if allocation.pre_branch_key is not None:
             await self._evict_lock("prebranch", allocation.pre_branch_key)
-        # Remove the leaked checkout now (git + disk + prune) so a declined or
-        # failed pickup doesn't leave a git-registered pickup-<N> worktree
-        # behind (#33). Never raises.
         await _best_effort_remove(self._main_repo, allocation.path)
         await mark_status(
             self._store,
@@ -794,13 +712,7 @@ class WorktreeManager:
             current_session_id=self._session_id,
             main_repo=self._main_repo,
         )
-        # One-shot migration: AgentShore used to quarantine orphans into a
-        # ``<root>-orphan`` sibling that was never reliably reaped (a monitored
-        # machine accumulated 116 GB of Rust build caches there). Orphans are
-        # now deleted in reconcile, so remove any pre-existing quarantine dir.
         await self._remove_legacy_orphan_dir()
-        # Prune locks whose (scope, key) no longer maps to a live row in
-        # the current session (desktop-kdl5).
         await self._prune_locks()
         return report
 
@@ -860,15 +772,12 @@ class WorktreeManager:
         for row in rows:
             if row.status != "stale" or row.worktree_id in self._build_output_stripped:
                 continue
-            # Re-snapshot protection per row: an earlier clean can take minutes,
-            # and a re-dispatch may have claimed this path meanwhile (#243).
             protected_paths = self._protected_paths() | await self._live_alias_paths()
             if (
                 row.worktree_id in self._protected_ids()
                 or _canon_path(row.worktree_path) in protected_paths
             ):
                 continue
-            # Claim before the await so an overlapping sweep can't clean it twice.
             self._build_output_stripped.add(row.worktree_id)
             if await strip_ignored_build_output(Path(row.worktree_path)):
                 cleaned.append(row.worktree_id)
@@ -901,8 +810,6 @@ class WorktreeManager:
         if report.total:
             await self._prune_locks()
         return report
-
-    # -- internals -----------------------------------------------------------
 
     async def _verify_worktree_registered(self, allocate: AllocateResult, *, scope: str) -> None:
         """Confirm ``git worktree add`` registration actually landed.
@@ -1022,9 +929,6 @@ class WorktreeManager:
                     ),
                 )
             except WorktreeAllocationFailed as exc:
-                # Existing-row reuse failed (disk gone, target dirty, etc).
-                # Mark the row stale so the next reap pass can drop it
-                # instead of leaving an "active" row pointing at nothing.
                 await mark_status(
                     self._store,
                     worktree_id=existing.worktree_id,
@@ -1043,16 +947,6 @@ class WorktreeManager:
             )
 
         target = worktree_target_path(self._worktree_root, target_key)
-        # Per-attempt unique path (#203). The prebranch key (e.g. ``pickup-<N>``)
-        # is intentionally STABLE so ``lookup_by_prebranch_key`` reuse /
-        # resumability keeps working: a second dispatch for the same issue
-        # before the branch is cut shares the existing row (handled above). But
-        # the canonical directory ``pickup-<N>`` is reused across *attempts* —
-        # many distinct worktree_id rows can share one path — and a stale
-        # OLD-id row at that path lets the closed-PR TTL reaper remove the
-        # directory a LIVE new-id row is using. So when the canonical path is
-        # already held by a live row in this session, give this fresh
-        # allocation a unique sibling directory instead of aliasing it.
         if await self._canon_path_live_in_session(target):
             target = self._uniquify_target_path(target)
         allocate = await ensure_worktree(
@@ -1096,18 +990,8 @@ class WorktreeManager:
                 scope=scope,
             )
         except Exception:
-            # Insert failed for a non-conflict reason (DB connection,
-            # operational error, ...). The on-disk worktree we just
-            # materialised has no owning row and would leak — drop it.
             await _best_effort_remove(self._main_repo, allocate.path)
             raise
-        # Coalesce any lingering non-terminal row that still points at the same
-        # stored path (#203). The unique-path guard above keeps NEW allocations
-        # off a live row's path, but pre-existing dup-path rows from before this
-        # fix (or from a reused canonical path whose old row was never retired)
-        # would still alias the new directory. Retiring them to ``stale`` here
-        # stops dup-path rows from accumulating; the path-aware reap skip
-        # (below) guards the live row in the meantime.
         await self._coalesce_dup_path_rows(row)
         return WorktreeAllocation(
             worktree_id=row.worktree_id,
@@ -1162,13 +1046,6 @@ class WorktreeManager:
             )
 
 
-#: Directory-name prefix the manager keys a branch-creating ISSUE_PICKUP
-#: allocation with (see :func:`_make_prebranch_key`). A *colliding* worktree
-#: with this prefix is a crashed-session branch-creating orphan that never
-#: rekeyed, so it is safe to force-remove and retry the add. The convention
-#: lives here, in the manager, because the manager is the only layer that
-#: assigns these keys — the allocator delegates the decision via the
-#: ``safe_to_force_remove`` predicate it is handed.
 _RECLAIMABLE_COLLISION_PREFIX = "pickup-"
 
 
@@ -1224,9 +1101,6 @@ __all__ = [
 ]
 
 
-# Public re-exports so other modules can ask "is this play type trunk-scoped?"
-# (allocation) or "does this play mutate trunk?" (serialization) without
-# reaching into the private constants.
 TRUNK_SCOPED_PLAYS: frozenset[PlayType] = _TRUNK_SCOPED_PLAYS
 TRUNK_MUTATING_PLAYS: frozenset[PlayType] = _TRUNK_MUTATING_PLAYS
 

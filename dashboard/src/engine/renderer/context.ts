@@ -17,7 +17,7 @@ export interface ScreenPoint {
 
 export interface WallSticky {
   issueNumber: number;
-  sectionIndex: number; // 0=todo, 1=in_progress, 2=reviewing, 3=done
+  sectionIndex: number;
 }
 
 /**

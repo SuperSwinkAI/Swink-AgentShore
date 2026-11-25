@@ -72,8 +72,6 @@ class SessionStartupScreen(Screen[None]):
             f"  Session ID:  {session_id}\n  Project:     {project}\n  Mode:        {mode}"
         )
 
-    # ---- watchers ----
-
     def watch__checks(self, checks: list[tuple[str, str, str]]) -> None:
         from textual.css.query import QueryError
 

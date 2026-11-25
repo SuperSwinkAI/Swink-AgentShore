@@ -22,10 +22,6 @@ from agentshore.state import AgentType
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-# ---------------------------------------------------------------------------
-# _ReadOutput
-# ---------------------------------------------------------------------------
-
 
 @dataclass(frozen=True, slots=True)
 class _ReadOutput:
@@ -34,16 +30,6 @@ class _ReadOutput:
     session_id: str | None
 
 
-# ---------------------------------------------------------------------------
-# Terminal-event detection
-# ---------------------------------------------------------------------------
-
-# The terminal stream event each CLI emits once its response is fully written.
-# Detecting it lets the idle watcher apply the short _POST_RESPONSE_GRACE_S
-# (60s) instead of waiting the full stream_idle_timeout (default 1800s) for a
-# finished-but-unexited subprocess. Previously only Claude was wired up, so a
-# finished codex lingered up to 30 min — stacking memory across
-# plays toward OOM (#21). Codex emits ``turn.completed``; Claude emits ``type: "result"``.
 _TERMINAL_EVENT_TYPES: Final[dict[AgentType, frozenset[str]]] = {
     AgentType.CLAUDE_CODE: frozenset({"result"}),
     AgentType.CODEX: frozenset({"turn.completed"}),
@@ -53,7 +39,6 @@ _TERMINAL_EVENT_TYPES: Final[dict[AgentType, frozenset[str]]] = {
     AgentType.COPILOT: frozenset({"result"}),
 }
 
-# CLIs whose stream keys the event type as ``event`` rather than ``type``.
 _EVENT_KEYED_TYPES: Final[frozenset[AgentType]] = frozenset({AgentType.GROK, AgentType.ANTIGRAVITY})
 
 
@@ -67,7 +52,6 @@ def _is_terminal_event(line: bytes, agent_type: AgentType) -> bool:
     terminal_types = _TERMINAL_EVENT_TYPES.get(agent_type)
     if not terminal_types:
         return False
-    # Cheap pre-filter: skip json.loads unless a terminal type name appears.
     if not any(t.encode() in line for t in terminal_types):
         return False
     try:
@@ -76,15 +60,9 @@ def _is_terminal_event(line: bytes, agent_type: AgentType) -> bool:
         return False
     if not isinstance(event, dict):
         return False
-    # Grok (some shapes) and agy use ``event`` (not ``type``) as the event-type key.
     return event.get("type") in terminal_types or (
         agent_type in _EVENT_KEYED_TYPES and event.get("event") in terminal_types
     )
-
-
-# ---------------------------------------------------------------------------
-# Parsing helpers
-# ---------------------------------------------------------------------------
 
 
 def _extract_session_id_from_jsonl(raw: str) -> str | None:
@@ -114,10 +92,6 @@ def _maybe_parse_usage(line: bytes, current: _UsageTotals) -> _UsageTotals:
     if not isinstance(usage, dict):
         return current
     parsed = _usage_totals_from_dict(usage, input_includes_cache=False)
-    # Claude Code stamps an authoritative ``total_cost_usd`` on the terminal
-    # ``result`` event. Prefer it over token-derivation: it bills the exact model
-    # and the 5m/1h ephemeral-cache tiers the static pricing table can't see, and
-    # was observed ~2x higher than the token-derived figure (dashboard undercount).
     if event.get("type") == "result":
         reported = event.get("total_cost_usd")
         if isinstance(reported, int | float) and not isinstance(reported, bool) and reported > 0:
@@ -209,10 +183,6 @@ def _extract_text_from_stream_json(raw: str) -> str:
             last_result = str(event["result"])
         if isinstance(event.get("structured_output"), dict):
             structured = event["structured_output"]
-    # A schema-enforced dispatch (``--json-schema``) reports the validated object
-    # as ``structured_output``. It is the authoritative result: use it whenever the
-    # result text does not already carry that JSON, so prose around or instead of
-    # the envelope can never cost a completed play its result.
     if structured is not None and (last_result is None or not last_result.lstrip().startswith("{")):
         return json.dumps(structured)
     if last_result is not None:
@@ -263,11 +233,6 @@ def _extract_text_value(value: object) -> str | None:
     return None
 
 
-# ---------------------------------------------------------------------------
-# Parser protocol + registry
-# ---------------------------------------------------------------------------
-
-
 class CliOutputFormat(Protocol):
     """A per-agent-type parser: raw stdout -> (text, usage totals, session id)."""
 
@@ -284,8 +249,6 @@ class _FunctionFormat:
         return self._parse(raw)
 
 
-# Registry: adding a fourth agent type is one entry here, not an if/elif edit
-# in ``_read_output``.
 _PARSERS: dict[AgentType, CliOutputFormat] = {
     AgentType.CLAUDE_CODE: _FunctionFormat(_parse_claude_output),
     AgentType.CODEX: _FunctionFormat(_extract_text_from_codex_jsonl),

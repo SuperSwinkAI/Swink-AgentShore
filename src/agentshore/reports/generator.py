@@ -57,7 +57,7 @@ class ReportGenerator:
         except ValueError:
             return value[:16]
         if parsed.tzinfo is not None:
-            parsed = parsed.astimezone()  # no-arg astimezone() -> machine-local tz
+            parsed = parsed.astimezone()
         return parsed.strftime("%Y-%m-%d %H:%M")
 
     @staticmethod

@@ -42,11 +42,6 @@ def _make_fake_cli(tmp_path: Path, name: str, *, body: str) -> str:
     return str(script)
 
 
-# ---------------------------------------------------------------------------
-# codex
-# ---------------------------------------------------------------------------
-
-
 def test_discover_codex_ok_filters_hidden_models(tmp_path: Path) -> None:
     payload = json.dumps(
         {
@@ -65,7 +60,6 @@ def test_discover_codex_ok_filters_hidden_models(tmp_path: Path) -> None:
     result = discover_codex_models(binary=binary)
     assert result.status == "ok"
     assert result.models == ("gpt-5.6-luna", "gpt-5.5")
-    # Per-model effort levels ride along for model_resolver.resolve_effort.
     assert result.efforts == {"gpt-5.6-luna": ("low", "max")}
 
 
@@ -98,11 +92,6 @@ def test_discover_codex_timeout_returns_promptly_and_tree_kills(tmp_path: Path) 
     assert elapsed < 10.0, f"probe blocked for {elapsed:.1f}s instead of tree-killing"
 
 
-# ---------------------------------------------------------------------------
-# grok
-# ---------------------------------------------------------------------------
-
-
 def test_discover_grok_ok_parses_bullets_and_strips_default_marker(tmp_path: Path) -> None:
     body = (
         "print('You are logged in with grok.com.')\n"
@@ -132,13 +121,7 @@ def test_discover_grok_missing_binary_is_unavailable(tmp_path: Path) -> None:
     assert result.status == "unavailable"
 
 
-# ---------------------------------------------------------------------------
-# antigravity
-# ---------------------------------------------------------------------------
-
-
 def test_discover_antigravity_keeps_display_name_from_tabbed_lines(tmp_path: Path) -> None:
-    # agy >= 1.3 prints "<id>\t<Display Name>"; --model takes the display name.
     body = (
         "print('gemini-3.8-flash-high\\tGemini 3.8 Flash (High)')\n"
         "print('gpt-oss-120b-medium\\tGPT-OSS 120B (Medium)')\n"
@@ -178,11 +161,6 @@ def test_discover_antigravity_missing_binary_is_unavailable(tmp_path: Path) -> N
     assert result.status == "unavailable"
 
 
-# ---------------------------------------------------------------------------
-# swink-coding
-# ---------------------------------------------------------------------------
-
-
 def test_discover_swink_coding_ok_returns_aliases_then_reachable_provider_models(
     tmp_path: Path,
 ) -> None:
@@ -195,8 +173,6 @@ def test_discover_swink_coding_ok_returns_aliases_then_reachable_provider_models
                 "detail": None,
                 "models": [
                     {"name": "qwen3.5:4b", "mapped_to": ["small", "medium", "large"]},
-                    # Colon-bearing model names must not confuse the
-                    # provider:model join — Ollama tags routinely look like this.
                     {"name": "qwen2.5-coder:7b", "mapped_to": ["medium"]},
                 ],
             },
@@ -212,8 +188,6 @@ def test_discover_swink_coding_ok_returns_aliases_then_reachable_provider_models
     binary = _make_fake_cli(tmp_path, "fake-swink", body=f"print({payload!r}); sys.exit(0)")
     result = discover_swink_coding_models(binary=binary)
     assert result.status == "ok"
-    # Tier aliases lead (always selectable), then reachable concrete models —
-    # now dispatchable directly via `provider:model` (SuperSwink-Coding#282/#283).
     assert result.models == (
         "small",
         "medium",
@@ -247,7 +221,6 @@ def test_discover_swink_coding_all_unreachable_is_still_ok_with_aliases_only(
     )
     binary = _make_fake_cli(tmp_path, "fake-swink", body=f"print({payload!r}); sys.exit(0)")
     result = discover_swink_coding_models(binary=binary)
-    # No endpoint reachable is not an error — dispatch via alias still works.
     assert result.status == "ok"
     assert result.models == ("small", "medium", "large")
     assert "ollama@http://localhost:11434: unreachable" in result.detail
@@ -273,13 +246,9 @@ def test_discover_swink_coding_missing_binary_is_unavailable(tmp_path: Path) -> 
     assert result.status == "unavailable"
 
 
-# ---------------------------------------------------------------------------
-# copilot (Copilot API catalog GET, no CLI list verb)
-# ---------------------------------------------------------------------------
-
 _COPILOT_CATALOG = {
     "data": [
-        {  # enabled, pickable, tool-calling -> kept with its efforts
+        {
             "id": "mai-code-1.1-flash",
             "model_picker_category": "lightweight",
             "policy": {"state": "enabled"},
@@ -288,17 +257,17 @@ _COPILOT_CATALOG = {
                 "supports": {"tool_calls": True, "reasoning_effort": ["low", "high"]},
             },
         },
-        {  # policy-disabled for this seat -> CLI rejects it -> dropped
+        {
             "id": "claude-opus-5.5",
             "model_picker_category": "powerful",
             "policy": {"state": "disabled"},
             "capabilities": {"type": "chat", "supports": {"tool_calls": True}},
         },
-        {  # internal (no picker category) -> dropped
+        {
             "id": "copilot-search-a",
             "capabilities": {"type": "chat", "supports": {"tool_calls": True}},
         },
-        {  # embeddings -> dropped
+        {
             "id": "text-embedding-3-small",
             "model_picker_category": "versatile",
             "capabilities": {"type": "embeddings", "supports": {}},
@@ -361,14 +330,7 @@ def test_discover_copilot_without_token_is_unavailable(
     assert "token" in result.detail
 
 
-# ---------------------------------------------------------------------------
-# discover_all
-# ---------------------------------------------------------------------------
-
-
 def test_discover_all_covers_the_free_harnesses_and_excludes_claude() -> None:
-    # Real PATH lookup (no fakes) — just verifies shape/keys, not live content,
-    # since CI has no guarantee any of these binaries are installed.
     results = discover_all(timeout=1.0)
     assert set(results) == {"codex", "grok", "antigravity", "swink_coding", "copilot"}
     assert "claude_code" not in results

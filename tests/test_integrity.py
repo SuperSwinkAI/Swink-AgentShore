@@ -27,13 +27,10 @@ from agentshore.data.integrity import (
 from agentshore.data.store import DataStore, SessionRecord
 from tests.ci_support import requires_sqlite3_cli
 
-# Helpers
-
 
 async def _make_store(tmp_path: Path, name: str = "agentshore.db") -> DataStore:
     store = DataStore(tmp_path / name)
     await store.initialize()
-    # Insert one row so we have actual user-data pages to corrupt later.
     await store.create_session(
         SessionRecord(
             session_id="s1",
@@ -57,9 +54,6 @@ def _corrupt_file(path: Path, *, offset: int = 4096, n_bytes: int = 256) -> None
         fh.write(b"\xff" * n_bytes)
 
 
-# DataStore methods
-
-
 async def test_integrity_check_returns_ok_for_clean_db(tmp_path: Path) -> None:
     store = await _make_store(tmp_path)
     try:
@@ -78,12 +72,10 @@ async def test_snapshot_to_writes_valid_file(tmp_path: Path) -> None:
     finally:
         await store.close()
     assert dest.exists() and dest.stat().st_size > 0
-    # The snapshot is a real SQLite DB and quick_check passes on it.
     conn = sqlite3.connect(str(dest))
     try:
         rows = conn.execute("PRAGMA quick_check").fetchall()
         assert rows == [("ok",)]
-        # The row we inserted is present in the snapshot.
         cur = conn.execute("SELECT session_id FROM sessions WHERE session_id=?", ("s1",))
         assert cur.fetchone() == ("s1",)
     finally:
@@ -101,9 +93,6 @@ async def test_snapshot_to_overwrites_existing_dest(tmp_path: Path) -> None:
     assert dest.read_bytes()[:16].startswith(b"SQLite format 3")
 
 
-# restore_from_snapshot_ring
-
-
 async def test_restore_is_noop_when_main_db_is_clean(tmp_path: Path) -> None:
     store = await _make_store(tmp_path)
     await store.close()
@@ -112,28 +101,22 @@ async def test_restore_is_noop_when_main_db_is_clean(tmp_path: Path) -> None:
 
 
 async def test_restore_swaps_in_newest_clean_snapshot(tmp_path: Path) -> None:
-    # 1. Build a clean DB and take a snapshot via the DataStore method.
     store = await _make_store(tmp_path)
     snap = tmp_path / "agentshore.db.snapshot.0"
     await store.snapshot_to(snap)
     await store.close()
 
     db_path = tmp_path / "agentshore.db"
-    # 2. Corrupt the main file.
     _corrupt_file(db_path)
-    # 3. Run restore.
     chosen = restore_from_snapshot_ring(db_path, tmp_path)
     assert chosen == snap
-    # 4. The corrupt original was preserved alongside.
     corrupts = list(tmp_path.glob("agentshore.db.corrupt.*"))
     assert len(corrupts) == 1
-    # 5. The new main file passes quick_check.
     conn = sqlite3.connect(str(db_path))
     try:
         assert conn.execute("PRAGMA quick_check").fetchall() == [("ok",)]
     finally:
         conn.close()
-    # 6. The snapshot itself is preserved as a fallback (we copy, not move).
     assert snap.exists()
 
 
@@ -143,9 +126,7 @@ async def test_restore_skips_corrupt_snapshots_and_picks_newer(tmp_path: Path) -
     newer = tmp_path / "agentshore.db.snapshot.1"
     await store.snapshot_to(older)
     await store.snapshot_to(newer)
-    # Make the newer one a fresher mtime AND corrupt it; older is clean.
     _corrupt_file(newer)
-    # newer gets the fresher mtime but is corrupt → restore falls through to clean older.
     now = time.time()
     import os
 
@@ -156,7 +137,7 @@ async def test_restore_skips_corrupt_snapshots_and_picks_newer(tmp_path: Path) -
     db_path = tmp_path / "agentshore.db"
     _corrupt_file(db_path)
     chosen = restore_from_snapshot_ring(db_path, tmp_path)
-    assert chosen == older  # newer was corrupt → fell through
+    assert chosen == older
 
 
 @requires_sqlite3_cli
@@ -173,22 +154,15 @@ async def test_restore_falls_through_to_recovery_when_no_clean_snapshot(
     _corrupt_file(db_path)
     _corrupt_file(snap)
     chosen = restore_from_snapshot_ring(db_path, tmp_path)
-    # Recovery path returns the main db_path itself (not the snapshot) since
-    # the recovered file is swapped in atomically.
     assert chosen == db_path
-    # The DB at the main slot now passes quick_check.
     conn = sqlite3.connect(str(db_path))
     try:
         rows = conn.execute("PRAGMA quick_check").fetchall()
         assert [r[0] for r in rows] == ["ok"]
     finally:
         conn.close()
-    # The corrupt original is preserved for post-mortem.
     corrupts = sorted(tmp_path.glob("agentshore.db.corrupt.*"))
     assert len(corrupts) == 1
-
-
-# IntegrityMonitor scheduling
 
 
 class _FakeStore:
@@ -208,7 +182,6 @@ class _FakeStore:
 
     async def snapshot_to(self, dest: Path) -> None:
         self.snapshot_calls.append(dest)
-        # Make the file exist so the monitor's stat() doesn't blow up.
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_bytes(b"snap")
 
@@ -222,9 +195,6 @@ async def test_monitor_fires_canary_and_snapshot_on_schedule(tmp_path: Path) -> 
 
     async def fake_sleep(s: float) -> None:
         now[0] += s
-        # Yield so the test loop below regains control and can inspect
-        # state / cancel; without this the monitor's tight loop would
-        # starve the event loop.
         await asyncio.sleep(0)
 
     monitor = IntegrityMonitor(
@@ -237,7 +207,6 @@ async def test_monitor_fires_canary_and_snapshot_on_schedule(tmp_path: Path) -> 
         time_fn=lambda: now[0],
     )
     monitor.start()
-    # Wait until the schedule has reached canary fire #2 and snapshot #1.
     for _ in range(50):
         await asyncio.sleep(0)
         if fake.check_calls >= 2 and len(fake.snapshot_calls) >= 1:
@@ -276,8 +245,6 @@ async def test_monitor_takes_extra_snapshot_on_canary_failure(tmp_path: Path) ->
     with pytest.raises(asyncio.CancelledError):
         await monitor._task  # type: ignore[union-attr]
 
-    # Canary failure forces an immediate snapshot even though the
-    # snapshot timer hasn't elapsed.
     assert fake.check_calls >= 1
     assert len(fake.snapshot_calls) >= 1
 
@@ -310,8 +277,6 @@ async def test_monitor_fires_wal_checkpoint_on_schedule(tmp_path: Path) -> None:
         await monitor._task  # type: ignore[union-attr]
 
     assert fake.wal_checkpoint_calls >= 2
-    # The other timers must NOT have fired (their intervals are 1000s, sim
-    # time only advanced ~15s).
     assert fake.check_calls == 0
     assert fake.snapshot_calls == []
 
@@ -322,14 +287,12 @@ async def test_monitor_snapshot_ring_rotates_through_indices(tmp_path: Path) -> 
         fake,
         tmp_path,
         canary_interval_seconds=1000.0,
-        snapshot_interval_seconds=1.0,  # snapshot every "second"
+        snapshot_interval_seconds=1.0,
         snapshot_ring_size=3,
     )
-    # Call the rotate path directly to keep the test deterministic.
     for _ in range(7):
         await monitor._rotate_snapshot()  # type: ignore[reportPrivateUsage]
     names = [p.name for p in fake.snapshot_calls]
-    # ring_size=3 → indices cycle 0,1,2,0,1,2,0
     assert names == [
         "agentshore.db.snapshot.0",
         "agentshore.db.snapshot.1",
@@ -342,14 +305,8 @@ async def test_monitor_snapshot_ring_rotates_through_indices(tmp_path: Path) -> 
 
 
 def test_restore_handles_missing_main_db(tmp_path: Path) -> None:
-    # No main DB at all (first-run scenario after the user deleted .agentshore/
-    # but the snapshots happen to still be present). The check should report
-    # failure and try the ring; an empty ring returns None.
     chosen = restore_from_snapshot_ring(tmp_path / "agentshore.db", tmp_path)
     assert chosen is None
-
-
-# recover_via_sqlite_recover + recovery fallback in restore_from_snapshot_ring
 
 
 def _make_seeded_db_sync(path: Path) -> None:
@@ -384,18 +341,14 @@ def test_recover_via_sqlite_recover_salvages_localized_corruption(
 ) -> None:
     db_path = tmp_path / "src.db"
     _make_seeded_db_sync(db_path)
-    _corrupt_file(db_path)  # mid-page corruption — header still intact
+    _corrupt_file(db_path)
 
     dest = tmp_path / "recovered.db"
     ok, errors = recover_via_sqlite_recover(db_path, dest)
     assert ok, f"recovery should succeed for header-intact corruption; errors={errors}"
     assert dest.exists()
-    # Recovered DB passes quick_check.
     rows = sqlite3.connect(str(dest)).execute("PRAGMA quick_check").fetchall()
     assert [r[0] for r in rows] == ["ok"]
-    # Schema came over; row count varies with corruption location (B-tree
-    # pages may be fully shredded). The recovery succeeding at all is the
-    # interesting signal, not the exact salvage rate.
     conn = sqlite3.connect(str(dest))
     table_names = {
         row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
@@ -411,10 +364,7 @@ def test_recover_via_sqlite_recover_fails_on_shredded_header(tmp_path: Path) -> 
     dest = tmp_path / "recovered.db"
     ok, errors = recover_via_sqlite_recover(db_path, dest)
     assert ok is False
-    assert errors  # at least one error line
-    # The dest may or may not exist depending on which subprocess failed first;
-    # but if it does, it should be empty / unhealthy. Either way, the function
-    # must NOT report success on a shredded source.
+    assert errors
 
 
 @requires_sqlite3_cli
@@ -441,14 +391,10 @@ def test_restore_moves_corrupt_aside_when_recovery_fails(tmp_path: Path) -> None
     db_path = tmp_path / "agentshore.db"
     _make_seeded_db_sync(db_path)
     _shred_file_header(db_path)
-    # Empty snapshot ring AND unrecoverable main → ladder falls through to
-    # the final fallback.
 
     chosen = restore_from_snapshot_ring(db_path, tmp_path)
     assert chosen is None
-    # Main slot is now empty; store.initialize() will create a fresh DB.
     assert not db_path.exists()
-    # Corrupt file preserved for post-mortem.
     corrupts = sorted(tmp_path.glob("agentshore.db.corrupt.*"))
     assert len(corrupts) == 1
 
@@ -469,11 +415,8 @@ def test_restore_prefers_snapshot_over_recovery_when_both_viable(
         snap = tmp_path / "agentshore.db.snapshot.0"
         await store.snapshot_to(snap)
         await store.close()
-        # Corrupt only the main DB; snapshot remains clean.
         _corrupt_file(tmp_path / "agentshore.db")
 
     asyncio.run(_setup())
     chosen = restore_from_snapshot_ring(tmp_path / "agentshore.db", tmp_path)
-    # Snapshot path is what's returned (not the main db_path that the
-    # recovery branch would have returned).
     assert chosen == tmp_path / "agentshore.db.snapshot.0"

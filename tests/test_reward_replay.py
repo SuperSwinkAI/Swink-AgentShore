@@ -16,7 +16,6 @@ from tests.test_rl_observation import _NULL_CTX, _agent, _state
 
 @pytest.mark.parametrize(("busy", "idle"), [(0, 0), (3, 2), (9, 1), (14, 4)])
 def test_decode_counts_round_trips(busy: int, idle: int) -> None:
-    # Spread across tiers so 18 agents fit under the per-tier saturation point.
     tiers = ("small", "medium", "large")
     agents = [
         dataclasses.replace(_agent(f"b{i}", AgentStatus.BUSY), model_tier=tiers[i % 3])

@@ -40,14 +40,6 @@ if TYPE_CHECKING:
 
 _logger = structlog.get_logger(__name__)
 
-# Lowest bd (beads) release AgentShore is validated against. It is the floor —
-# an older system bd makes ensure_bd_installed offer an upgrade — and the
-# version AgentShore asks a package manager for when it must install one.
-# Newer releases are accepted with a warning: bd's CLI semantics shift between
-# releases (`bd link`'s default dependency type, exit codes, --json shapes), so
-# bumping this means re-verifying the skill-template `bd` calls against the new
-# release. AgentShore never ships its own bd; it uses the system one. Override
-# with the AGENTSHORE_BD_VERSION env var (set it empty to disable the check).
 SUPPORTED_BD_VERSION = "1.1.0"
 
 
@@ -66,8 +58,6 @@ def bd_version(bd_binary: str) -> str:
             text=True,
             timeout=10,
             check=True,
-            # Never inherit the sidecar's stdin (the live Tauri JSON-RPC pipe);
-            # a subprocess probing it can wedge session startup (#155).
             stdin=subprocess.DEVNULL,
         )
     except (OSError, subprocess.SubprocessError) as exc:
@@ -94,7 +84,7 @@ def _check_bd_version(bd_binary: str) -> None:
         raise RuntimeError(f"AGENTSHORE_BD_VERSION={expected!r} is not an x.y.z version")
     found = bd_version(bd_binary)
     found_parsed = parse_bd_version(found)
-    assert found_parsed is not None  # bd_version only returns x.y.z
+    assert found_parsed is not None
     if found_parsed < expected_parsed:
         raise RuntimeError(
             f"bd {found} at {bd_binary} is older than AgentShore's supported version "
@@ -111,8 +101,6 @@ def _check_bd_version(bd_binary: str) -> None:
         )
 
 
-# Map AgentType enum values to the bd hooks actor name.  API-only agents
-# have no bd setup target and are omitted.
 _BD_ACTOR_NAMES: dict[AgentType, str] = {
     AgentType.CLAUDE_CODE: "claude",
     AgentType.CODEX: "codex",
@@ -181,7 +169,7 @@ def _warn_on_bd_path_skew(bd_binary: str) -> None:
     path_version = match.group(0) if match else (completed.stdout or "").strip()
     expected = os.environ.get("AGENTSHORE_BD_VERSION", SUPPORTED_BD_VERSION).strip()
     if path_version == expected:
-        return  # different binary, same version — not a drift risk
+        return
     _logger.warning(
         "bd_path_skew_detected",
         resolved_bd=bd_binary,
@@ -197,23 +185,10 @@ def _warn_on_bd_path_skew(bd_binary: str) -> None:
     )
 
 
-# Opt-in env var for headless/CI consent to the one dangerous recovery path:
-# migrating a *remote-backed* store's schema and pushing it. Mirrors
-# AGENTSHORE_AUTO_INSTALL_BD's shape (install.py) — must be explicitly set,
-# default is conservative (never silently fork a shared schema).
 _ALLOW_REMOTE_MIGRATE_ENV_VAR = "AGENTSHORE_ALLOW_REMOTE_MIGRATE"
 
 _REMOTE_MIGRATE_COMMAND = "BD_ALLOW_REMOTE_MIGRATE=1 bd migrate && bd dolt push"
 
-# Marker file recording that this clone was, at some point, granted consent
-# (via any of the three gates in _remote_migrate_consented) to run the
-# dangerous remote migrate+push path. Once written, every future session on
-# THIS SAME CLONE skips the consent gate and auto-migrates silently (still
-# bootstrap-first — see reconcile_beads_schema) instead of re-prompting or
-# raising forever. It lives under .beads/, which bd_init_project already
-# gitignores wholesale (".beads/.gitignore" containing "*"), so it is
-# inherently clone-local and never travels to another clone via git — the
-# human decision is made exactly once per clone, never automatically.
 _SCHEMA_MIGRATOR_MARKER_NAME = ".agentshore_schema_migrator"
 
 
@@ -359,7 +334,7 @@ async def reconcile_beads_schema(project_path: Path, *, assume_yes: bool = False
     """
     try:
         await bd("list", "--all", "--json", "--limit", "0", cwd=project_path)
-        return  # healthy store — nothing to reconcile
+        return
     except BdError as exc:
         probe_error = str(exc)
 
@@ -381,7 +356,7 @@ async def reconcile_beads_schema(project_path: Path, *, assume_yes: bool = False
             try:
                 await bd("list", "--all", "--json", "--limit", "0", cwd=project_path)
             except BdError as exc:
-                probe_error = str(exc)  # still drifted — fall through to the consent gate
+                probe_error = str(exc)
             else:
                 _logger.info("beads_bootstrap_recovery_ran", project_path=str(project_path))
                 return
@@ -417,8 +392,6 @@ async def reconcile_beads_schema(project_path: Path, *, assume_yes: bool = False
         return
 
     if not _beads_store_has_remote(project_path):
-        # No remote configured — a local schema mismatch can't fork a shared
-        # store, so it's always safe to migrate automatically and silently.
         try:
             await bd("migrate", cwd=project_path)
         except BdError as exc:
@@ -476,7 +449,6 @@ async def bd_init_project(project_path: Path) -> None:
     await bd("init", cwd=project_path)
     _logger.info("bd_init_done", path=str(beads_dir))
 
-    # Ensure the store is gitignored.
     gitignore = beads_dir / ".gitignore"
     if not gitignore.exists():
         gitignore.write_text("*\n", encoding="utf-8")
@@ -521,12 +493,12 @@ def _pin_bd_in_hook_scripts(project_path: Path, bd_binary: str) -> None:
             _logger.warning("bd_hook_pin_read_failed", hook=str(hook_path), error=str(exc))
             continue
         if "BEGIN BEADS INTEGRATION" not in original:
-            continue  # not a bd-generated hook — leave it alone
+            continue
         patched = original.replace(
             "command -v bd >/dev/null 2>&1", f'command -v "{quoted}" >/dev/null 2>&1'
         ).replace("bd hooks run", f'"{quoted}" hooks run')
         if patched == original:
-            continue  # already pinned, or a template shape this doesn't recognize
+            continue
         try:
             hook_path.write_text(patched, encoding="utf-8")
         except OSError as exc:
@@ -554,16 +526,12 @@ async def bd_setup_for_agent_types(
         _logger.warning("bd_setup_skipped", reason="no_beads_dir")
         return []
 
-    # Install git hooks (idempotent in bd).
     try:
         await bd("hooks", "install", cwd=project_path)
         _logger.info("bd_hooks_installed", project_path=str(project_path))
     except BdError as exc:
         _logger.warning("bd_hooks_install_failed", error=str(exc))
     else:
-        # Route the hooks we just installed through the pinned bd (see
-        # _pin_bd_in_hook_scripts) so commit-time hook runs can't silently
-        # drift onto a different bd version than everything else uses.
         bd_binary = resolve_bd_binary()
         if bd_binary is not None:
             try:

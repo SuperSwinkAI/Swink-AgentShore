@@ -1,5 +1,3 @@
-/* Shared styles for a capped/unlimited cap-slider panel.
-   Used by CapSliderPanel (AdjustBudgetDialog) and BudgetScreen. */
 
 .panel {
   border: 1px solid var(--border, #d1d5db);

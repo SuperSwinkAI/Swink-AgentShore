@@ -1,12 +1,4 @@
-"""Pin: the configured standard cooldown reaches each cooldown play's CooldownGate.
-
-The blocky #344 session ran cleanup/prune well inside the configured 42-play
-window because the live build's *effective* cooldown matched the old hardcoded
-~20, not the configured value — i.e. the config value was not reaching the gate
-that enforces it. The config layer itself is covered in ``test_config_models``;
-this pins the registry → gate plumbing so a future refactor can't silently drop
-the value (or revert to a hardcoded constant) before it reaches the gate.
-"""
+"""Pin: the configured standard cooldown reaches each cooldown play's CooldownGate."""
 
 from __future__ import annotations
 
@@ -19,7 +11,6 @@ from agentshore.plays.registry import build_default_registry
 from agentshore.plays.skill_backed.gates import CooldownGate
 from agentshore.state import PlayType
 
-# Every play the registry constructs with ``cooldown_plays=standard_cooldown_plays``.
 _COOLDOWN_PLAYS = (
     PlayType.RUN_QA,
     PlayType.DESIGN_AUDIT,

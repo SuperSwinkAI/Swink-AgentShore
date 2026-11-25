@@ -33,10 +33,6 @@ from agentshore.core.helpers import (
     _logger,
 )
 from agentshore.core.mixins.drain import SHUTDOWN_GRACE_PERIOD_SECONDS
-
-# Tests patch phase functions at their binding home ``agentshore.core.phases._phase_X``
-# (bootstrap reaches them via the lazily-imported ``phases`` module); ``setup_logging``
-# is patched at ``agentshore.core.orchestrator.setup_logging``.
 from agentshore.data.store import SessionRecord
 from agentshore.logging import setup_logging
 from agentshore.paths import project_db_path, project_dir
@@ -101,7 +97,6 @@ class Orchestrator(_OrchestratorBase):
         """
         sid = session_id or str(uuid.uuid4())
 
-        # Setup logging first so all subsequent steps emit structured logs.
         from agentshore.core import phases
 
         log_path = (
@@ -113,9 +108,6 @@ class Orchestrator(_OrchestratorBase):
             session_id=sid,
         )
 
-        # Transient seed_path (CLI --seed / sidecar) wins; else fall back to the
-        # persisted ``intake.seed_paths`` so every start path honors a configured
-        # seed. (policy_path has the analogous fallback in ``_resolve_policy_path``.)
         effective_seed = phases._resolve_seed_path(cfg, seed_path, repo_root)
 
         provider: StateProvider = state_provider or NullStateProvider()
@@ -133,7 +125,6 @@ class Orchestrator(_OrchestratorBase):
                 cfg=cfg, repo_root=repo_root, sid=sid, store=store, provider=provider
             )
 
-            # Placeholder selector; PPO init below replaces it unless a test passed one.
             orch = cls(
                 cfg=cfg,
                 repo_root=repo_root,
@@ -150,7 +141,6 @@ class Orchestrator(_OrchestratorBase):
             orch._runtime.embedded_mode = embedded_mode
             orch._runtime.log_path = log_path
 
-            # Wire the requeue callback now that orch owns the override queue.
             executor._requeue_callback = lambda pt, p: orch._overrides.put_nowait(
                 OverrideEntry(
                     play_type=pt,
@@ -159,7 +149,6 @@ class Orchestrator(_OrchestratorBase):
                     enqueue_classification=MaskClassification.TRANSIENT,
                 )
             )
-            # Let sleeping plays (take_break) abort promptly once drain begins (#30).
             executor._is_draining = lambda: orch._runtime.draining
 
             await phases._phase_init_metrics(
@@ -180,53 +169,29 @@ class Orchestrator(_OrchestratorBase):
             await phases._phase_create_session_row(
                 store=store, sid=sid, repo_root=repo_root, seed_path=effective_seed
             )
-            # Worktree manager must exist before any FK-referencing worktree insert;
-            # the sweep must run after the session row exists so list_orphans excludes it.
             await phases._phase_init_worktree_manager(
                 orch=orch, cfg=cfg, store=store, sid=sid, repo_root=repo_root
             )
             await phases._phase_session_start_worktree_sweep(orch=orch, sid=sid)
             await phases._phase_clear_beads_in_progress(repo_root=repo_root, sid=sid)
-            # Snapshot dirty trunk before _phase_git_safety_sweep restores branch state:
-            # RECONCILE_STATE uses this sidecar to attribute dirty paths to prior
-            # sessions even after DB/log recovery or rotation.
             await phases._phase_session_start_dirty_baseline(repo_root=repo_root, sid=sid)
-            # Reclaim untracked root artifacts orphaned by killed trunk-scoped plays so
-            # they don't wedge merge_pr / reconcile (#162/#164). After the baseline (so it
-            # still records pre-reclaim state), before dispatch opens.
             await phases._phase_session_start_trunk_artifacts(
                 store=store, cfg=cfg, repo_root=repo_root, sid=sid
             )
-            # Cache default branch + sweep main-repo HEAD before _phase_install_skills
-            # (which needs the cached value) and before dispatch opens.
             await phases._phase_git_safety_sweep(orch=orch, repo_root=repo_root, sid=sid)
             phases._phase_install_skills(repo_root)
             await phases._phase_fetch_github(
                 gh=gh, store=store, sid=sid, cfg=cfg, repo_root=repo_root
             )
-            # Stamp refresh clock so the first _build_state tick doesn't re-run
-            # _refresh_issues (bootstrap already fetched).
             orch._runtime.last_refresh_time = time.monotonic()
             await phases._phase_ensure_labels(gh=gh, cfg=cfg)
             await phases._phase_load_learnings(cfg=cfg, repo_root=repo_root)
             if selector is None:
                 open_issues_at_bootstrap = await store.get_open_issues(sid)
-                # An epic-less graph on the no-seed path must route to the seed recipe
-                # (seedless SEED_PROJECT bootstraps epics) instead of grooming an empty
-                # graph and deadlocking.
                 from agentshore.beads import BeadsSchemaDriftError, GraphReadError
                 from agentshore.beads import load_graph as _load_graph
 
                 _bootstrap_graph = None
-                # Distinct from a genuinely empty graph (_bootstrap_graph is None /
-                # has_epics=False): the read itself failed because this clone's
-                # schema has drifted, not because there's nothing there. Conflating
-                # the two previously let a live session seedless-bootstrap
-                # (SEED_PROJECT) over a project that already had real epics/tasks
-                # — see beads.setup.reconcile_beads_schema for the preflight that
-                # heals what it safely can before this ever runs, and
-                # phases._phase_queue_agent_instantiation for the other half: a
-                # failed read must never be treated as "no epics, go seed".
                 graph_read_failed = False
                 try:
                     _bootstrap_graph = await _load_graph(repo_root)
@@ -259,19 +224,11 @@ class Orchestrator(_OrchestratorBase):
             return orch
         finally:
             _bootstrap_phase_publisher.reset(token)
-            # #283: if a phase after datastore-init raised (e.g. UNIQUE on the
-            # session row from a reused session_id, or the schema lock-retry
-            # budget), close the partially-opened DataStore. Otherwise its
-            # SQLite connection + WAL writer-lock leak into the long-lived
-            # sidecar and block every subsequent session.start until the app is
-            # quit. orch is never returned on this path, so nobody else closes it.
             if not bootstrap_returned and store is not None:
                 with suppress(Exception):
                     await store.close()
 
     async def __aenter__(self) -> Orchestrator:
-        # Bootstrap creates the session row; recreate it here if bootstrap was
-        # skipped (e.g. tests using __new__).
         existing = await self._store.get_session(self._session_id)
         if existing is None:
             await self._store.create_session(
@@ -297,21 +254,12 @@ class Orchestrator(_OrchestratorBase):
         )
         self._runtime.health.start()
 
-        # Loop-liveness watchdog (#9): force-drains if the core loop heartbeat goes
-        # stale — a hard freeze the idle/unanswered-pause backstops can't catch. No-op
-        # when feedback.loop_liveness_timeout_seconds is null; cancelled in _stop_inner.
         self.start_loop_liveness_watchdog()
 
-        # Keep the OS from idling the process while a session is active (macOS
-        # IOPMAssertion, Windows SetThreadExecutionState; no-op elsewhere). The macOS
-        # assertion also closes the screen-lock corruption window from desktop-tvsb.
         from agentshore.power import acquire as _acquire_power
 
         self._runtime.power_assertion = _acquire_power("AgentShore session active")
 
-        # Defense-in-depth against silent SQLite corruption: canary runs PRAGMA
-        # quick_check on a schedule, snapshot ring keeps a known-good image, and
-        # restore_from_snapshot_ring auto-swaps at next startup if quick_check fails.
         integrity_cfg = self._runtime.cfg.data_integrity
         if integrity_cfg.enabled:
             from agentshore.data.integrity import IntegrityMonitor

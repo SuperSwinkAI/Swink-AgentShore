@@ -283,9 +283,6 @@ def _grok_json_lines() -> list[bytes]:
     ]
 
 
-# build_argv
-
-
 def test_build_argv_claude_code_shape() -> None:
     argv = build_argv(AgentType.CLAUDE_CODE, "do the thing", binary="claude")
     assert argv[0] == "claude"
@@ -307,7 +304,6 @@ def test_build_argv_claude_code_reasoning_effort() -> None:
 
     assert "--effort" in argv
     assert argv[argv.index("--effort") + 1] == "high"
-    # --effort must appear before extra_flags / prompt.
     assert argv[-1] == "do the thing"
 
 
@@ -315,7 +311,6 @@ def test_build_argv_codex_shape() -> None:
     argv = build_argv(AgentType.CODEX, "do the thing", binary="codex", project_dir="/work")
     assert argv[0] == "codex"
     assert "exec" in argv
-    # Default YOLO flag for codex; the sandbox mode is skipped when bypass is set.
     assert "--ignore-user-config" in argv
     assert "--ignore-rules" in argv
     assert "--dangerously-bypass-approvals-and-sandbox" in argv
@@ -334,24 +329,18 @@ def test_build_argv_prompt_on_stdin_omits_prompt_from_argv() -> None:
     codex = build_argv(
         AgentType.CODEX, huge, binary="codex", project_dir="/work", prompt_on_stdin=True
     )
-    # Grok has no stdin prompt mode, so the dispatch layer hands it a prompt-file
-    # path instead (issue #160); that is what keeps the prompt out of argv.
     grok = build_argv(
         AgentType.GROK, huge, binary="grok", prompt_on_stdin=True, prompt_file="/tmp/p.txt"
     )
-    # copilot reads piped stdin when -p is omitted (verified 1.0.94).
     copilot = build_argv(AgentType.COPILOT, huge, binary="copilot", prompt_on_stdin=True)
 
     for argv in (claude, codex, grok, copilot):
         assert huge not in argv
     assert "-p" not in copilot
 
-    # claude -p with no prompt arg reads stdin (last token stays a flag/value).
     assert "-p" in claude
     assert claude[-1] != huge
-    # codex exec reads the prompt from stdin when handed "-".
     assert codex[-1] == "-"
-    # grok reads the prompt from a file (no stdin mode; empty -p errors).
     assert grok[-2:] == ["--prompt-file", "/tmp/p.txt"]
 
 
@@ -398,8 +387,6 @@ def test_build_argv_grok_shape() -> None:
         "--no-auto-update",
         "--no-subagents",
         "--verbatim",
-        # Ephemeral single-turn dispatches: cross-session memory is meaningless
-        # and slow, and plan mode adds an unwanted planning round.
         "--no-memory",
         "--no-plan",
         "--cwd",
@@ -507,7 +494,6 @@ async def test_read_output_antigravity_passthrough_returns_raw_verbatim() -> Non
         agent_id="agy-1",
     )
 
-    # Raw stdout is returned byte-for-byte; no token usage is parsed.
     assert out.raw == raw_text
     assert out.usage.tokens_in == 0
     assert out.usage.tokens_out == 0
@@ -540,7 +526,7 @@ async def test_read_output_emits_cli_first_byte_once_with_elapsed() -> None:
         )
 
     first_byte = [e for e in logs if e.get("event") == "cli_first_byte"]
-    assert len(first_byte) == 1  # only the first byte, not every line
+    assert len(first_byte) == 1
     evt = first_byte[0]
     assert evt["agent_id"] == "codex-1"
     assert evt["agent_type"] == str(AgentType.CODEX)
@@ -556,7 +542,7 @@ async def test_read_output_no_first_byte_event_without_dispatch_context() -> Non
 
     from agentshore.agents.cli.watchdogs import _StdoutActivity
 
-    activity = _StdoutActivity(last_stdout_at=time.monotonic())  # dispatch_start=0.0
+    activity = _StdoutActivity(last_stdout_at=time.monotonic())
     proc = _FakeProcess(_codex_json_lines())
     with structlog.testing.capture_logs() as logs:
         await _read_output(
@@ -569,7 +555,7 @@ async def test_read_output_no_first_byte_event_without_dispatch_context() -> Non
         )
 
     assert not any(e.get("event") == "cli_first_byte" for e in logs)
-    assert activity.received_any is True  # mark() still flipped
+    assert activity.received_any is True
 
 
 def test_antigravity_first_byte_deadline_is_1800s() -> None:
@@ -590,13 +576,9 @@ def test_resolve_first_byte_deadline_per_dispatch_override() -> None:
 
     cfg = AgentConfig()
 
-    # No override → agy keeps its 1800s structural carve-out.
     assert resolve_first_byte_deadline(AgentType.ANTIGRAVITY, cfg, 3600.0) == 1800.0
-    # A short override beats the 1800s per-type default for this one dispatch.
     assert resolve_first_byte_deadline(AgentType.ANTIGRAVITY, cfg, 3600.0, 120.0) == 120.0
-    # The override still can't outlive the wall-clock timeout.
     assert resolve_first_byte_deadline(AgentType.ANTIGRAVITY, cfg, 90.0, 120.0) == 90.0
-    # An explicit per-agent config override is itself overridden by the per-dispatch one.
     cfg_override = AgentConfig(first_byte_timeout_seconds=900)
     assert resolve_first_byte_deadline(AgentType.ANTIGRAVITY, cfg_override, 3600.0, 120.0) == 120.0
 
@@ -714,9 +696,7 @@ def test_build_argv_codex_inherits_env_to_shell_subprocesses() -> None:
     argv = build_argv(AgentType.CODEX, "do the thing", binary="codex")
     assert "-c" in argv
     inherit_index = argv.index("-c")
-    # The -c before the policy value must be paired correctly.
     assert "shell_environment_policy.inherit=all" in argv
-    # And the paired -c must be immediately before its value.
     while inherit_index < len(argv) - 1:
         if argv[inherit_index] == "-c" and argv[inherit_index + 1].startswith(
             "shell_environment_policy"
@@ -739,9 +719,6 @@ def test_build_argv_codex_explicit_flags_disable_yolo_default() -> None:
     assert "--ignore-user-config" not in argv
     assert "--ignore-rules" not in argv
     assert "--dangerously-bypass-approvals-and-sandbox" not in argv
-    # Without the bypass, the workspace-write sandbox IS set — via the config
-    # key, since the deprecated --full-auto is gone and `codex exec resume`
-    # rejects --sandbox.
     assert "--full-auto" not in argv
     assert "--sandbox" not in argv
     assert argv[argv.index('sandbox_mode="workspace-write"') - 1] == "-c"
@@ -789,9 +766,6 @@ def test_build_argv_codex_reasoning_effort() -> None:
     assert "gpt-5.5" in argv
     assert "-c" in argv
     assert 'model_reasoning_effort="xhigh"' in argv
-
-
-# build_resume_argv — narrow JSON-retry re-entry shape, per agent (desktop-dy2j)
 
 
 def test_build_resume_argv_claude_shape() -> None:
@@ -1065,7 +1039,6 @@ async def test_dispatch_cli_swink_coding_pins_session_id_and_falls_back_to_it(
 
     async def fake_create_subprocess_exec(*argv: str, **kwargs: Any) -> _FakeProcess:
         captured.append(list(argv))
-        # Unparseable garbage: no session.started, no result event, no id.
         return _FakeProcess([b"the model rambled and never emitted an event\n"])
 
     monkeypatch.setattr(
@@ -1083,7 +1056,6 @@ async def test_dispatch_cli_swink_coding_pins_session_id_and_falls_back_to_it(
 
     assert "--session-id" in captured[0]
     pinned = captured[0][captured[0].index("--session-id") + 1]
-    # No id was observable on stdout, so the pin is what makes the run resumable.
     assert result.session_id == pinned
 
 
@@ -1285,16 +1257,12 @@ async def test_dispatch_cli_antigravity_resolves_session_id_from_cache(
     monkeypatch.setenv("HOME", str(home))
 
     async def fake_create_subprocess_exec(*argv: str, **kwargs: Any) -> _FakeProcess:
-        # agy emits plain text (no parser → session_id starts None).
         return _FakeProcess([b'```json\n{"success": true, "artifacts": []}\n```\n'])
 
     monkeypatch.setattr(
         "agentshore.agents.cli.supervisor.asyncio.create_subprocess_exec",
         fake_create_subprocess_exec,
     )
-    # Pin the plain-pipe spawn so this session-id-resolution test exercises the
-    # create_subprocess_exec mock identically on every platform (on Windows agy
-    # would otherwise route through the ConPTY path).
     monkeypatch.setattr(
         "agentshore.agents.cli.supervisor.conpty.should_use_conpty", lambda _at: False
     )
@@ -1321,7 +1289,6 @@ async def test_dispatch_cli_antigravity_session_id_none_when_cache_absent(
         "agentshore.agents.cli.supervisor.asyncio.create_subprocess_exec",
         fake_create_subprocess_exec,
     )
-    # Pin the plain-pipe spawn (see sibling test) so this is platform-independent.
     monkeypatch.setattr(
         "agentshore.agents.cli.supervisor.conpty.should_use_conpty", lambda _at: False
     )
@@ -1382,7 +1349,6 @@ def test_build_argv_codex_no_resume() -> None:
     )
 
     assert argv[:3] == ["codex", "exec", "--json"]
-    # YOLO bypass is the default, so the sandbox mode is omitted (yolo replaces it).
     assert "--ignore-user-config" in argv
     assert "--ignore-rules" in argv
     assert "--dangerously-bypass-approvals-and-sandbox" in argv
@@ -1534,12 +1500,12 @@ async def test_dispatch_cli_feeds_prompt_via_stdin_on_windows(
     cfg = AgentConfig(enabled=True, binary="codex", timeout=10)
     handle = _make_handle(agent_type=AgentType.CODEX)
 
-    big_prompt = "groom the backlog " * 2000  # ~36 KB â€” over cmd.exe's ~8191 limit
+    big_prompt = "groom the backlog " * 2000
     result = await dispatch_cli(handle, big_prompt, cfg=cfg)
 
     assert result.exit_code == 0
     assert big_prompt not in captured_argv[0]
-    assert captured_argv[0][-1] == "-"  # codex reads the prompt from stdin
+    assert captured_argv[0][-1] == "-"
     assert captured_kwargs[0]["stdin"] is asyncio.subprocess.PIPE
     assert procs[0].stdin.data == big_prompt.encode("utf-8")
     assert procs[0].stdin.closed is True
@@ -1564,18 +1530,13 @@ async def test_dispatch_cli_never_resumes(
     cfg = AgentConfig(enabled=True, binary="claude", timeout=10)
     handle = _make_handle(agent_type=AgentType.CLAUDE_CODE)
 
-    # First dispatch should not include --resume even though Claude reports a
-    # session_id back via _claude_json_lines() that older code stashed on the
-    # handle and replayed on subsequent dispatches.
     await dispatch_cli(handle, "prompt", cfg=cfg)
     await dispatch_cli(handle, "prompt", cfg=cfg)
 
     for argv in captured:
         assert "--resume" not in argv
-        assert "resume" not in argv  # Codex codepath would emit `exec resume`
+        assert "resume" not in argv
 
-
-# #253 — SessionEnd-hook teardown failure must not discard completed work
 
 _SESSION_END_HOOK_STDERR = (
     'SessionEnd hook [node "${CLAUDE_PLUGIN_ROOT}/scripts/session-lifecycle-hook.mjs" '
@@ -1624,7 +1585,6 @@ async def test_dispatch_cli_recovers_session_end_hook_exit_1(
 
     result = await dispatch_cli(handle, "prompt", cfg=cfg)
 
-    # Exit normalised to 0 (teardown-only failure) and the result block survived.
     assert result.exit_code == 0
     assert parse_skill_result(result.raw_output).success is True
 
@@ -1651,9 +1611,6 @@ async def test_dispatch_cli_real_nonzero_exit_still_raises(
 
     with pytest.raises(AgentProcessError):
         await dispatch_cli(handle, "prompt", cfg=cfg)
-
-
-# Happy path â€” plain output (Codex-style)
 
 
 async def test_dispatch_cli_success_plain(mock_agent_path: Path) -> None:
@@ -1768,10 +1725,8 @@ async def test_dispatch_cli_claude_prefers_vendor_total_cost_usd(
         pricing=_price_quote(cost_per_1k_input=0.003, cost_per_1k_output=0.015),
     )
 
-    # Token counts are still captured for stats/display...
-    assert result.tokens_in == 1000  # 100 + 700 cache-read + 200 cache-write
+    assert result.tokens_in == 1000
     assert result.tokens_out == 50
-    # ...but the billed cost is the vendor figure, not the token derivation.
     assert result.dollar_cost == pytest.approx(0.063115)
 
 
@@ -1796,7 +1751,6 @@ async def test_dispatch_cli_claude_falls_back_to_token_cost_without_total_cost_u
         pricing=_price_quote(cost_per_1k_input=0.003, cost_per_1k_output=0.015),
     )
 
-    # uncached 100 @ .003 + cache-read 700 @ .0003 + cache-write 200 @ .00375 + out 50 @ .015
     expected = (
         (100 / 1000) * 0.003 + (700 / 1000) * 0.0003 + (200 / 1000) * 0.00375 + (50 / 1000) * 0.015
     )
@@ -1815,7 +1769,6 @@ async def test_dispatch_cli_codex_json_discounts_cached_input_and_does_not_doubl
     )
     cfg = AgentConfig(enabled=True, binary="codex", timeout=10)
     handle = _make_handle(agent_type=AgentType.CODEX)
-    # No explicit cached rate → cache_read_multiplier (0.1) yields 0.0003.
     result = await dispatch_cli(
         handle,
         "prompt",
@@ -1851,9 +1804,6 @@ async def test_dispatch_cli_codex_json_records_cumulative_and_per_turn_usage(
     assert result.tokens_out == 40
     assert result.turn_count == 2
     assert result.max_turn_input_tokens == 500
-
-
-# Happy path â€” stream-json output (Claude-style)
 
 
 async def test_dispatch_cli_success_stream_json(
@@ -1908,9 +1858,6 @@ async def test_dispatch_cli_claude_json_accounts_for_cache_read_and_write_tokens
     assert result.dollar_cost == pytest.approx(expected)
 
 
-# Failure result (agent exits 0, result block has success=false)
-
-
 async def test_dispatch_cli_failure_result(
     mock_agent_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1924,9 +1871,6 @@ async def test_dispatch_cli_failure_result(
     assert sr.error is not None
 
 
-# Non-zero exit â†’ AgentProcessError
-
-
 async def test_dispatch_cli_nonzero_exit_raises(tmp_path: Path) -> None:
     script = tmp_path / "exit1.py"
     script.write_text("import sys; sys.exit(1)\n", encoding="utf-8")
@@ -1936,9 +1880,6 @@ async def test_dispatch_cli_nonzero_exit_raises(tmp_path: Path) -> None:
         await dispatch_cli(handle, "p", cfg=cfg, python_executable=sys.executable)
 
 
-# Output overflow â†’ AgentOutputInvalid
-
-
 async def test_dispatch_cli_output_overflow_raises(
     mock_agent_path: Path,
 ) -> None:
@@ -1946,14 +1887,11 @@ async def test_dispatch_cli_output_overflow_raises(
         enabled=True,
         binary=str(mock_agent_path),
         timeout=10,
-        max_output_size=10,  # tiny cap â€” mock output will exceed this
+        max_output_size=10,
     )
     handle = _make_handle(agent_type=AgentType.CODEX)
     with pytest.raises(AgentOutputInvalid, match="max_output_size"):
         await dispatch_cli(handle, "prompt", cfg=cfg, python_executable=sys.executable)
-
-
-# Per-line buffer cap (asyncio readline limit) â†’ AgentOutputInvalid
 
 
 async def test_dispatch_cli_long_line_below_default_limit_succeeds(
@@ -1981,7 +1919,7 @@ async def test_dispatch_cli_line_exceeds_limit_raises(
         enabled=True,
         binary=str(mock_agent_path),
         timeout=10,
-        line_limit_bytes=10_000,  # well below mock output line size
+        line_limit_bytes=10_000,
     )
     handle = _make_handle(agent_type=AgentType.CODEX)
     with pytest.raises(AgentOutputInvalid, match="line_limit_bytes"):
@@ -1996,7 +1934,7 @@ async def test_dispatch_cli_warns_on_large_line(
 ) -> None:
     """A line larger than 1MB but under line_limit_bytes emits a drift warning once."""
     monkeypatch.setenv("MOCK_AGENT_MODE", "long_line")
-    monkeypatch.setenv("MOCK_AGENT_LINE_BYTES", str(1_200_000))  # >1MB
+    monkeypatch.setenv("MOCK_AGENT_LINE_BYTES", str(1_200_000))
     cfg = AgentConfig(
         enabled=True,
         binary=str(mock_agent_path),
@@ -2006,15 +1944,10 @@ async def test_dispatch_cli_warns_on_large_line(
     handle = _make_handle(agent_type=AgentType.CODEX)
     with caplog.at_level("WARNING"):
         await dispatch_cli(handle, "prompt", cfg=cfg, python_executable=sys.executable)
-    # structlog routing varies by test ordering â€” accept the warning surfacing
-    # via either capsys (printed structlog) or caplog (stdlib propagation).
     captured = capsys.readouterr()
     in_capsys = "cli_agent_large_line" in (captured.out + captured.err)
     in_caplog = any("cli_agent_large_line" in r.getMessage() for r in caplog.records)
     assert in_capsys or in_caplog
-
-
-# Timeout â†’ PlayTimeoutError + SIGTERM/SIGKILL
 
 
 async def test_dispatch_cli_timeout_raises(
@@ -2024,7 +1957,7 @@ async def test_dispatch_cli_timeout_raises(
     cfg = AgentConfig(
         enabled=True,
         binary=str(mock_agent_path),
-        timeout=1,  # 1 second â€” mock sleeps forever
+        timeout=1,
     )
     handle = _make_handle(agent_type=AgentType.CODEX)
     with pytest.raises(PlayTimeoutError, match="timed out"):
@@ -2065,8 +1998,6 @@ async def test_dispatch_cli_wallclock_timeout_raises_while_stream_active(tmp_pat
     cfg = AgentConfig(
         enabled=True,
         binary=str(script),
-        # Leave enough launch margin under xdist so the child is demonstrably
-        # streaming before the wall-clock deadline is evaluated.
         timeout=1.0,
         stream_idle_timeout=0.5,
     )
@@ -2080,9 +2011,6 @@ async def test_dispatch_cli_wallclock_timeout_raises_while_stream_active(tmp_pat
 
 
 async def test_dispatch_cli_stream_activity_resets_idle_watchdog(tmp_path: Path) -> None:
-    # Inter-line sleep vs stream_idle_timeout kept well-separated (40 ms vs 500 ms)
-    # so the watchdog has margin under xdist CPU contention; tighter values flaked
-    # (passes solo, fails parallel).
     script = tmp_path / "active_then_complete.py"
     script.write_text(
         "import json, sys, time\n"
@@ -2176,9 +2104,6 @@ async def test_dispatch_cli_cleans_up_process_for_cancellation(
     assert handle.process is None
 
 
-# _kill_process â€” Windows teardown path (no os.killpg / os.getpgid)
-
-
 class _FakeKillProcess:
     """Minimal proc stand-in for _kill_process: a pid and an awaitable wait()."""
 
@@ -2201,7 +2126,6 @@ async def test_kill_process_uses_taskkill_on_windows(
 
     import agentshore.agents.cli.supervisor as ps
 
-    # Simulate Windows: hasattr(os, "killpg") is False, getpgid absent too.
     monkeypatch.delattr(_os, "killpg", raising=False)
     monkeypatch.delattr(_os, "getpgid", raising=False)
 
@@ -2212,11 +2136,8 @@ async def test_kill_process_uses_taskkill_on_windows(
     )
 
     proc = _FakeKillProcess(pid=4321)
-    # Must not raise AttributeError despite os.killpg being absent.
     await ps.kill_process(proc, "agent-win")  # type: ignore[arg-type]
 
-    # The process tree was torn down by pid; the process exited within grace so
-    # there is no post-grace retry.
     assert killed_pids == [4321]
 
 
@@ -2238,8 +2159,6 @@ async def test_kill_process_windows_no_warn_when_process_already_gone(
     mock_logger = MagicMock()
     monkeypatch.setattr(ps, "_logger", mock_logger)
 
-    # _FakeKillProcess.returncode is 0 -> the process exited, so teardown
-    # succeeded and nothing is logged.
     proc = _FakeKillProcess(pid=4321)
     await ps.kill_process(proc, "agent-win")  # type: ignore[arg-type]
 
@@ -2263,8 +2182,6 @@ async def test_kill_process_windows_bounds_wait_when_force_kill_fails(
     monkeypatch.setattr(ps, "_SIGKILL_GRACE", 0.01)
 
     killed_pids: list[int] = []
-    # taskkill is a no-op here: the process never dies, simulating an
-    # unkillable tree.
     monkeypatch.setattr(
         "agentshore.agents.cli.supervisor.subprocess_env.kill_tree_sync",
         lambda pid: killed_pids.append(pid),
@@ -2274,17 +2191,12 @@ async def test_kill_process_windows_bounds_wait_when_force_kill_fails(
 
     class _HangingProc(_FakeKillProcess):
         async def wait(self) -> int:
-            await asyncio.sleep(3600)  # never exits on its own
+            await asyncio.sleep(3600)
             return 0
 
-    # returncode stays None — the process never dies, so the tree kill genuinely
-    # failed and the warning must fire (unlike the already-gone benign case).
     proc = _HangingProc(pid=4321, returncode=None)  # type: ignore[arg-type]
-    # Guard the test itself: a regression would hang here instead of returning.
     await asyncio.wait_for(ps.kill_process(proc, "agent-win"), timeout=5)  # type: ignore[arg-type]
 
-    # The tree kill was attempted twice (initial + post-grace retry) and the
-    # unrecoverable failure was surfaced as a warning, not raised.
     assert killed_pids == [4321, 4321]
     warnings = [
         c for c in mock_logger.warning.call_args_list if c.args and c.args[0] == "taskkill_failed"
@@ -2332,10 +2244,10 @@ def test_resolve_executable_noop_when_absolute(monkeypatch: pytest.MonkeyPatch) 
     monkeypatch.setattr(sys, "platform", "win32")
     called: list[str] = []
     monkeypatch.setattr(shutil, "which", lambda n: called.append(n) or None)
-    abs_path = os.path.abspath("python")  # absolute on the test runner
+    abs_path = os.path.abspath("python")
 
     assert ca._resolve_executable([abs_path, "script"]) == [abs_path, "script"]
-    assert called == []  # absolute paths are not re-resolved
+    assert called == []
 
 
 @pytest.mark.real_resolve_executable
@@ -2350,9 +2262,6 @@ def test_resolve_executable_noop_when_unresolved(monkeypatch: pytest.MonkeyPatch
     assert ca._resolve_executable(["missing", "arg"]) == ["missing", "arg"]
 
 
-# multi_block â€” parser uses last result block
-
-
 async def test_dispatch_cli_multi_block_uses_last(
     mock_agent_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2362,11 +2271,7 @@ async def test_dispatch_cli_multi_block_uses_last(
     result = await dispatch_cli(handle, "prompt", cfg=cfg, python_executable=sys.executable)
     sr = parse_skill_result(result.raw_output)
     assert sr.success is True
-    # The real result has PR #42, the example block had #0
     assert sr.artifacts[0]["number"] == 42  # type: ignore[index]
-
-
-# Identity env injection
 
 
 async def test_dispatch_cli_no_identity_env_inherits_parent(
@@ -2388,10 +2293,6 @@ async def test_dispatch_cli_no_identity_env_inherits_parent(
     monkeypatch.setenv("PRE_EXISTING", "kept")
     await dispatch_cli(handle, "prompt", cfg=cfg)
 
-    # With no identity_env the child still inherits the full parent environment
-    # — but env is now an explicit superset dict (not None) so the
-    # non-interactive git editor can be pinned to stop a rebase-internal
-    # ``git commit -e`` opening vim and hanging (#168).
     env = captured["env"]
     assert env is not None
     assert env["PRE_EXISTING"] == "kept"
@@ -2468,9 +2369,6 @@ async def test_dispatch_cli_emits_subprocess_callbacks(
     assert exited == [(4242, 0)]
 
 
-# _classify_error
-
-
 def test_classify_error_rate_limit() -> None:
     assert _classify_error(1, "429 Too Many Requests", "") == "rate_limit"
 
@@ -2491,9 +2389,6 @@ def test_classify_error_claude_session_limit_from_stdout() -> None:
 
 
 def test_classify_error_codex_usage_limit_from_stdout() -> None:
-    # Codex prints its weekly-quota miss on stdout with the reset timestamp; it
-    # must classify as RATE_LIMIT (not UNKNOWN) so it rides the same provider-wide
-    # eligibility hold + take_break path Claude's session-limit uses (#276).
     assert (
         _classify_error(
             1,
@@ -2513,11 +2408,6 @@ def test_classify_error_codex_usage_limit_from_stderr() -> None:
 
 
 def test_classify_error_grok_spending_limit_is_rate_limit_not_auth() -> None:
-    # Grok prints its quota exhaustion as a 403/Forbidden, but it is a RECOVERABLE
-    # billing-quota miss (the Grok analogue of Codex's usage limit), not an auth
-    # death. The quota markers must win over the coexisting 403/Forbidden auth
-    # tokens so it rides the transient rate_limit cooldown, not a permanent
-    # session-wide auth suppression.
     stderr = (
         "responses API error status=403 Forbidden "
         "error_message=personal-team-blocked:spending-limit: "
@@ -2532,7 +2422,6 @@ def test_classify_error_auth() -> None:
 
 
 def test_process_error_detail_auth_is_humanized() -> None:
-    # An AUTH failure produces an actionable message, not a raw stderr/stdout dump.
     detail = _process_error_detail(
         agent_type=AgentType.CODEX,
         model="o3",
@@ -2546,8 +2435,6 @@ def test_process_error_detail_auth_is_humanized() -> None:
 
 
 def test_process_error_detail_stdin_prompt_artifact_is_replaced() -> None:
-    # The raw "Reading additional input from stdin..." prompt must not leak as the
-    # failure reason — it is replaced with a description of what happened.
     detail = _process_error_detail(
         agent_type=AgentType.CODEX,
         model="o3",
@@ -2560,7 +2447,6 @@ def test_process_error_detail_stdin_prompt_artifact_is_replaced() -> None:
 
 
 def test_process_error_detail_falls_back_to_stderr_for_plain_errors() -> None:
-    # A normal error still surfaces its (cleaned) stderr.
     detail = _process_error_detail(
         agent_type=AgentType.CODEX,
         model="o3",
@@ -2583,15 +2469,10 @@ def test_classify_error_github_repo_access_as_auth() -> None:
 
 
 def test_classify_error_repository_not_found_on_stderr_is_auth() -> None:
-    # Phase 4: stderr auth detection now uses the canonical AUTH_MARKERS superset,
-    # so the GitHub-table spelling "repository not found" (absent from the old
-    # cli-stderr table) classifies as AUTH on stderr.
     assert _classify_error(1, "fatal: repository not found", "") is ErrorClass.AUTH
 
 
 def test_classify_error_repository_not_found_on_stdout_only_is_not_auth() -> None:
-    # stdout stays on the narrow high-precision subset: the same phrase in an
-    # agent's work product must NOT classify as auth.
     assert _classify_error(1, "", "fatal: repository not found") is not ErrorClass.AUTH
 
 
@@ -2692,7 +2573,6 @@ def test_classify_error_stdout_work_product_not_misclassified() -> None:
     """#19: generic tokens in a coding agent's stdout (its work product) must
     NOT be classified as rate_limit/auth/timeout/invalid_model. These are the
     failure modes that corrupted the RL signal and tore down working agents."""
-    # A failed file edit whose surrounding diff/output happens to mention these.
     assert (
         _classify_error(
             1,
@@ -2702,16 +2582,13 @@ def test_classify_error_stdout_work_product_not_misclassified() -> None:
         )
         == "unknown"
     )
-    # Agent editing HTTP/error-handling code; 403/forbidden/401 are work product.
     assert (
         _classify_error(1, "", "added handler for 403 Forbidden and 401 Unauthorized") == "unknown"
     )
-    # "timeout" is ubiquitous in code/test names.
     assert (
         _classify_error(1, "", "def test_request_timeout(): ...  # deadline exceeded path")
         == "unknown"
     )
-    # Generic invalid-model phrasing inside written code, not a CLI verdict.
     assert _classify_error(1, "", 'raise ModelNotFoundError("model not found")') == "unknown"
 
 
@@ -2735,20 +2612,16 @@ def test_classify_error_timestamp_digits_are_not_auth() -> None:
     )
     assert _classify_error(1, codex_skill_noise, "") == "unknown"
     assert _classify_error(1, "boot at 18:40:20.319403Z ready", "") == "unknown"
-    # A genuinely phrased rejection still classifies as auth.
     assert _classify_error(1, "HTTP 401 Unauthorized", "") == "auth"
 
 
 def test_classify_error_high_precision_stdout_phrases_still_match() -> None:
     """Distinctive phrases (real CLI/tool verdicts) are still caught in stdout."""
-    # Claude reports quota exhaustion on stdout with nothing on stderr.
     assert _classify_error(1, "", "...\nrate limit exceeded\n") == "rate_limit"
-    # gh tool auth failure echoed into the agent's stdout JSONL.
     assert (
         _classify_error(1, "", "GraphQL: Could not resolve to a Repository with the name 'o/r'")
         == "auth"
     )
-    # Codex prints this model error to stdout.
     assert (
         _classify_error(
             1, "", "The 'o4-mini' model is not supported when using Codex with a ChatGPT account."
@@ -2765,18 +2638,11 @@ def test_classify_error_empty_both() -> None:
     assert _classify_error(1, "", "") == "unknown"
 
 
-# stderr auth-sniffer (#zeke auth-hang): a backend session-token expiry that
-# hangs the process on stdin must be killed as AUTH in well under the idle
-# timeout, not after the full stream_idle_timeout as TIMEOUT_STREAM_IDLE.
-
-
 def test_stderr_sniffer_feed_flags_auth_tail() -> None:
     sniffer = _StderrSniffer()
     assert sniffer.feed("starting up\n") is False
-    # First auth marker flips the flag and returns True exactly once.
     assert sniffer.feed("ERROR failed to renew cache TTL\n") is True
     assert sniffer.auth_hit is True
-    # Subsequent feeds (even more markers) do not re-fire.
     assert sniffer.feed("failed to refresh available models\n") is False
 
 
@@ -2810,10 +2676,6 @@ def test_stderr_sniffer_feed_no_match_on_clean_stderr() -> None:
 
 
 def test_stderr_sniffer_does_not_auth_abort_on_grok_spending_limit() -> None:
-    # Grok's quota exhaustion carries a 403/Forbidden that matches the auth
-    # markers, but it is a recoverable rate-limit. The sniffer must NOT fire a
-    # live auth abort: the dispatch should exit normally and classify as
-    # rate_limit rather than a permanent auth suppression.
     sniffer = _StderrSniffer()
     line = (
         "ERROR responses API error status=403 Forbidden "
@@ -2822,31 +2684,21 @@ def test_stderr_sniffer_does_not_auth_abort_on_grok_spending_limit() -> None:
     )
     assert sniffer.feed(line) is False
     assert sniffer.auth_hit is False
-    # The text is still captured so _finalize_nonzero_exit can classify it.
     assert "spending-limit" in sniffer.captured
 
 
 def test_stderr_sniffer_does_not_auth_abort_on_enospc() -> None:
-    # #332: Codex's disk-full stderr pairs "No space left on device (os error
-    # 28)" with "failed to renew cache TTL" (a cache-renewal AUTH marker). The
-    # sniffer must NOT fire a live auth abort here — a full disk is never fixed
-    # by the auth-abort/take_break recovery path. The dispatch should exit
-    # normally and let _classify_error bucket it as CRASH_ENOSPC.
     sniffer = _StderrSniffer()
     line = "ERROR failed to renew cache TTL: No space left on device (os error 28)\n"
     assert sniffer.feed(line) is False
     assert sniffer.auth_hit is False
-    # The text is still captured so _finalize_nonzero_exit can classify it.
     assert "os error 28" in sniffer.captured
 
 
 def test_stderr_sniffer_tail_is_bounded() -> None:
-    # The tail never grows unbounded regardless of how much stderr is fed, and
-    # a marker landing within the live window is still caught.
     sniffer = _StderrSniffer(tail_window=64)
-    assert sniffer.feed("x" * 4096) is False  # no marker, far exceeds the window
+    assert sniffer.feed("x" * 4096) is False
     assert len(sniffer.tail) <= 64
-    # Marker landing now (fits the 64-byte window) is still caught.
     assert sniffer.feed("failed to renew cache ttl") is True
 
 
@@ -3091,8 +2943,6 @@ def test_classify_error_codex_os_error_28_is_enospc_not_auth() -> None:
     )
     assert _classify_error(1, stderr, "") is ErrorClass.CRASH_ENOSPC
     assert _classify_error(1, stderr, "") is not ErrorClass.AUTH
-    # Bare "No space left on device (os error 28)" alone (no cache-renewal text)
-    # must classify the same way.
     assert (
         _classify_error(1, "No space left on device (os error 28)", "") is ErrorClass.CRASH_ENOSPC
     )
@@ -3104,9 +2954,6 @@ def test_classify_error_graceful_signals_stay_unknown() -> None:
     assert _classify_error(-2, "", "") == "unknown"
 
 
-# _is_terminal_event (#21 â€” response-complete fast-kill for all agent types)
-
-
 def test_is_terminal_event_detects_each_agent_type() -> None:
     """Claude emits type:result; Codex emits turn.completed. CLI agents
     must be recognized so the 60s post-response grace applies (not the 30-min
@@ -3115,22 +2962,17 @@ def test_is_terminal_event_detects_each_agent_type() -> None:
     assert _is_terminal_event(
         b'{"type":"turn.completed","usage":{"input_tokens":1}}', AgentType.CODEX
     )
-    # Grok's real terminal event uses type:"end".
     assert _is_terminal_event(
         b'{"type":"end","stopReason":"EndTurn","sessionId":"grok-session"}',
         AgentType.GROK,
     )
-    # Grok CLI may also use the ``event`` key instead of ``type``.
     assert _is_terminal_event(b'{"event":"end","stopReason":"EndTurn"}', AgentType.GROK)
 
 
 def test_is_terminal_event_ignores_non_terminal_and_cross_type() -> None:
-    # Mid-stream events are not terminal.
     assert not _is_terminal_event(b'{"type":"assistant","message":{}}', AgentType.CLAUDE_CODE)
     assert not _is_terminal_event(b'{"type":"item.completed","item":{}}', AgentType.CODEX)
-    # Codex's terminal type must not fire for Claude and vice versa.
     assert not _is_terminal_event(b'{"type":"result"}', AgentType.CODEX)
-    # Non-JSON lines never raise.
     assert not _is_terminal_event(b"not json at all", AgentType.CLAUDE_CODE)
 
 
@@ -3140,8 +2982,6 @@ def test_classify_error_content_wins_over_signal() -> None:
 
 
 def test_classify_error_codex_rollout_thread_missing() -> None:
-    # Real stderr captured in desktop-yxlj. The Codex CLI's rollout-recording
-    # layer references a thread id it can't find on disk and exits with code 1.
     stderr = (
         "Reading additional input from stdin...\n"
         "2026-05-21T00:07:07.213928Z ERROR codex_core::session: "
@@ -3152,9 +2992,6 @@ def test_classify_error_codex_rollout_thread_missing() -> None:
 
 
 def test_socket_close_classifies_as_transient_network() -> None:
-    # claude_code's "socket connection was closed unexpectedly" used to fall
-    # into the generic "unknown" bucket and log a misleading rate-limit recovery
-    # (#23). It is now its own transient_network class.
     stderr = "API Error: The socket connection was closed unexpectedly"
     assert _classify_error(1, stderr, "") == "transient_network"
 
@@ -3178,12 +3015,6 @@ def test_transient_network_is_recoverable_and_in_unknown_path() -> None:
 
 
 def test_codex_rollout_is_in_take_break_recovery_set() -> None:
-    # If this assertion ever fails, the classifier name changed but the recovery
-    # routing did not — the agent will skip the take_break override and surface a
-    # permanent ERROR instead of rotating to a fresh codex process. codex_rollout
-    # routes through the unknown-error recovery path (split from rate-limit
-    # recovery in #23/#24), not the rate-limit set, and is recoverable for
-    # eligibility (reconciled with the routing map — see test_recovery_routing).
     from agentshore.core.recovery_tracker import _RECOVERY_OVERRIDE_KIND
     from agentshore.errors import ErrorClass
     from agentshore.plays.override import OverrideKind
@@ -3330,8 +3161,6 @@ def test_extract_text_from_grok_jsonl_result_extraction_succeeds_94() -> None:
 
     text, usage, session_id = _extract_text_from_grok_jsonl(raw)
 
-    # Result block must be parseable — if this fails the play retries with
-    # agent_json_retry (the #94 symptom).
     parsed = parse_skill_result(text)
     assert parsed.success is True
     assert session_id == "grok-94-regression"
@@ -3358,7 +3187,7 @@ async def test_watch_stream_idle_error_includes_tier_and_prompt_bytes() -> None:
     with pytest.raises(PlayTimeoutError) as excinfo:
         await _watch_stream_idle(
             activity,
-            timeout=0.01,  # tiny â€” fires immediately on first poll
+            timeout=0.01,
             agent_id="agent-abc",
             agent_type="claude_code",
             model_tier="medium",
@@ -3387,7 +3216,7 @@ async def test_watch_stream_idle_error_omits_unknown_prompt_bytes() -> None:
             timeout=0.01,
             agent_id="agent-xyz",
             agent_type="codex",
-            model_tier=None,  # unknown tier
+            model_tier=None,
         )
     msg = str(excinfo.value)
     assert "codex/?" in msg
@@ -3409,14 +3238,13 @@ async def test_watch_stream_idle_kills_silent_subprocess() -> None:
     from agentshore.agents.cli.watchdogs import _StdoutActivity, _watch_stream_idle
     from agentshore.errors import PlayTimeoutError
 
-    # received_any stays False â€” no stdout ever arrived.
     activity = _StdoutActivity(last_stdout_at=time.monotonic() - 10.0)
     assert activity.received_any is False
 
     with pytest.raises(PlayTimeoutError) as excinfo:
         await _watch_stream_idle(
             activity,
-            timeout=0.01,  # tiny â€” fires on first poll
+            timeout=0.01,
             agent_id="agent-silent",
             agent_type="claude_code",
             model_tier="large",
@@ -3424,9 +3252,6 @@ async def test_watch_stream_idle_kills_silent_subprocess() -> None:
     msg = str(excinfo.value)
     assert "never produced any stdout" in msg
     assert "agent-silent" in msg
-
-
-# #176 — missing dispatch cwd (reclaimed worktree) maps to a recoverable error
 
 
 @pytest.mark.asyncio
@@ -3443,7 +3268,7 @@ async def test_dispatch_cli_missing_cwd_raises_recoverable_not_filenotfound(
     """
     from agentshore.errors import AgentProcessCrashed
 
-    missing = tmp_path / "worktrees" / "pickup-159"  # never created
+    missing = tmp_path / "worktrees" / "pickup-159"
     assert not missing.exists()
 
     cfg = AgentConfig(enabled=True, binary="codex", timeout=10)
@@ -3452,7 +3277,6 @@ async def test_dispatch_cli_missing_cwd_raises_recoverable_not_filenotfound(
     with pytest.raises(AgentProcessCrashed) as exc_info:
         await dispatch_cli(handle, "prompt", cfg=cfg, cwd_override=missing)
 
-    # Must NOT be a bare FileNotFoundError leaking through.
     assert not isinstance(exc_info.value, FileNotFoundError)
     assert "no longer exists" in str(exc_info.value)
     assert str(missing) in str(exc_info.value)
@@ -3474,9 +3298,6 @@ async def test_dispatch_cli_cwd_is_file_raises_recoverable(tmp_path: Path) -> No
         await dispatch_cli(handle, "prompt", cfg=cfg, cwd_override=not_a_dir)
 
 
-# #177 — launch-to-first-byte watchdog + stream_idle clamp
-
-
 @pytest.mark.asyncio
 async def test_watch_first_byte_kills_silent_launch() -> None:
     """A child that never produces a first byte is killed at the short deadline."""
@@ -3491,7 +3312,7 @@ async def test_watch_first_byte_kills_silent_launch() -> None:
     with pytest.raises(PlayTimeoutError) as excinfo:
         await _watch_first_byte(
             activity,
-            deadline=0.05,  # tiny — fires fast
+            deadline=0.05,
             agent_id="agent-wedged",
             agent_type="codex",
             model_tier="medium",
@@ -3513,11 +3334,9 @@ async def test_watch_first_byte_hands_off_after_first_byte() -> None:
     from agentshore.agents.cli.watchdogs import _StdoutActivity, _watch_first_byte
 
     activity = _StdoutActivity(last_stdout_at=time.monotonic())
-    activity.mark()  # first byte arrived
+    activity.mark()
     assert activity.received_any is True
 
-    # With a byte already received it parks indefinitely; a short wait must time
-    # out (i.e. the watchdog did NOT raise its launch-wedge error).
     task = asyncio.create_task(_watch_first_byte(activity, deadline=0.02, agent_id="agent-live"))
     with pytest.raises(TimeoutError):
         await asyncio.wait_for(asyncio.shield(task), timeout=0.1)
@@ -3540,12 +3359,9 @@ async def test_dispatch_cli_first_byte_watchdog_caps_silent_launch(
     import agentshore.agents.cli.supervisor as ps
     from agentshore.errors import ErrorClass, PlayTimeoutError
 
-    # Child sleeps long without ever writing to stdout.
     script = tmp_path / "silent_launch.py"
     script.write_text("import time\ntime.sleep(10)\n", encoding="utf-8")
 
-    # Tiny first-byte deadline; generous wall-clock + stream-idle so neither of
-    # those fires first.
     monkeypatch.setattr(ps, "_FIRST_BYTE_DEADLINE_S", 0.1)
     cfg = AgentConfig(
         enabled=True,
@@ -3562,7 +3378,6 @@ async def test_dispatch_cli_first_byte_watchdog_caps_silent_launch(
 
     assert "never produced first byte" in str(exc_info.value)
     assert exc_info.value.error_class == ErrorClass.TIMEOUT_STREAM_IDLE
-    # Fired at the first-byte bound, nowhere near the 5s wall-clock.
     assert elapsed < 2.0
     assert handle.process is None
 
@@ -3579,7 +3394,6 @@ async def test_dispatch_cli_clamps_stream_idle_to_wallclock(
     """
     import agentshore.agents.cli.supervisor as ps
 
-    # Disable the first-byte watchdog so this test exercises the idle clamp alone.
     monkeypatch.setattr(ps, "_FIRST_BYTE_DEADLINE_S", 10_000.0)
 
     captured: dict[str, float] = {}
@@ -3599,7 +3413,6 @@ async def test_dispatch_cli_clamps_stream_idle_to_wallclock(
         "sys.stdout.flush()\n",
         encoding="utf-8",
     )
-    # stream_idle_timeout (100) deliberately exceeds the wall-clock timeout (2).
     cfg = AgentConfig(
         enabled=True,
         binary=str(script),
@@ -3610,7 +3423,6 @@ async def test_dispatch_cli_clamps_stream_idle_to_wallclock(
 
     await dispatch_cli(handle, "prompt", cfg=cfg, python_executable=sys.executable)
 
-    # Clamped to the wall-clock timeout (2.0), not the configured 100.
     assert captured["stream_idle_timeout"] == 2.0
 
 
@@ -3658,9 +3470,6 @@ async def test_dispatch_arms_both_watchdogs_unconditionally(
     assert armed == {"first_byte", "stream_idle"}
 
 
-# _kill_process — bounded post-SIGKILL reap (session a3202694 wedge)
-
-
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups (os.killpg)")
 async def test_kill_process_does_not_hang_when_sigkill_never_reaps(
     monkeypatch: pytest.MonkeyPatch,
@@ -3684,7 +3493,6 @@ async def test_kill_process_does_not_hang_when_sigkill_never_reaps(
             self.wait_calls = 0
 
         async def wait(self) -> int:
-            # Never reaps — every wait() blocks until cancelled by wait_for.
             self.wait_calls += 1
             await asyncio.Event().wait()
             return 0  # pragma: no cover
@@ -3694,8 +3502,6 @@ async def test_kill_process_does_not_hang_when_sigkill_never_reaps(
 
     def _fake_killpg(pgid: int, sig: int) -> None:
         if sig == 0:
-            # finally-block liveness probe: report the group as already gone so
-            # the survivor-ps path is skipped in the test.
             raise ProcessLookupError
         killpg_signals.append(sig)
 
@@ -3704,15 +3510,12 @@ async def test_kill_process_does_not_hang_when_sigkill_never_reaps(
     monkeypatch.setattr(ps, "_SIGKILL_GRACE", 0.05)
 
     with structlog.testing.capture_logs() as captured:
-        # The whole point: this must complete. If the unbounded wait regressed,
-        # the outer wait_for raises TimeoutError and the test fails.
         await asyncio.wait_for(ps.kill_process(proc, "agy-stuck"), timeout=3.0)  # type: ignore[arg-type]
 
     events = {e.get("event") for e in captured}
     assert "sending_sigkill" in events
     assert "subprocess_unreaped_after_sigkill" in events
     assert signal.SIGKILL in killpg_signals
-    # Both the SIGTERM-grace wait and the bounded post-SIGKILL wait ran.
     assert proc.wait_calls >= 2
 
 
@@ -3747,7 +3550,6 @@ async def test_kill_process_survivor_probe_swallows_permission_error(
     monkeypatch.setattr(ps.os, "getpgid", lambda pid: 12345)
     monkeypatch.setattr(ps.os, "killpg", _fake_killpg)
 
-    # Must return normally rather than raising PermissionError.
     await ps.kill_process(proc, "agent-eperm")  # type: ignore[arg-type]
 
 
@@ -3793,5 +3595,4 @@ async def test_kill_process_announces_every_agentshore_initiated_sigterm(
     assert len(announced) == 1
     assert announced[0]["agent_id"] == "agent-term"
     assert announced[0]["pid"] == 5150
-    # Announced *before* the signal actually went out.
     assert signal.SIGTERM in signals

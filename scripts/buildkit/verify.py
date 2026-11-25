@@ -56,11 +56,10 @@ def _diff_manifest(actual: set[str], expected: set[str], *, component: str) -> l
 def expected_macos_payload(root: Path) -> set[str]:
     """The exact file set Contents/MacOS must contain, derived from config."""
     cargo = tomllib.loads((root / _APP_CARGO).read_text(encoding="utf-8"))
-    app_bin = cargo["package"]["name"]  # e.g. "agentshore-desktop"
+    app_bin = cargo["package"]["name"]
     conf = json.loads((root / _TAURI_CONF).read_text(encoding="utf-8"))
     external = conf.get("bundle", {}).get("externalBin", []) or []
     payload = {app_bin}
-    # "binaries/agentshore-bd/agentshore-bd" -> "agentshore-bd"
     payload.update(Path(b).name for b in external)
     return payload
 
@@ -68,7 +67,7 @@ def expected_macos_payload(root: Path) -> set[str]:
 def expected_windows_app_payload(root: Path) -> set[str]:
     """The exact file the staged Windows app directory (`stage/app`) must contain."""
     cargo = tomllib.loads((root / _APP_CARGO).read_text(encoding="utf-8"))
-    app_bin = cargo["package"]["name"]  # "agentshore-desktop"
+    app_bin = cargo["package"]["name"]
     return {f"{app_bin}.exe"}
 
 
@@ -77,7 +76,7 @@ def expected_windows_installer_payload(root: Path) -> set[str]:
     must contain. The bundled wheel is checked separately (`_wheel_version_problems`)
     since its filename is version-dependent."""
     cargo = tomllib.loads((root / _PROVISIONER_CARGO).read_text(encoding="utf-8"))
-    provisioner_bin = cargo["package"]["name"]  # "agentshore-provisioner"
+    provisioner_bin = cargo["package"]["name"]
     return {f"{provisioner_bin}.exe", "uv.exe"}
 
 
@@ -124,13 +123,10 @@ def verify_macos(app: Path, root: Path, *, require_signature: bool) -> list[str]
     if not macos_dir.is_dir():
         return [f"{macos_dir} does not exist — not a valid .app bundle"]
 
-    # 1. Payload manifest — exact match, so any stray binary (e.g. a stale
-    #    agentshore-provisioner) or a missing expected binary fails the build.
     expected = expected_macos_payload(root)
     actual = {p.name for p in macos_dir.iterdir() if p.is_file()}
     problems.extend(_diff_manifest(actual, expected, component="Contents/MacOS"))
 
-    # 2. Embedded version must match the canonical source version.
     canonical = read_canonical(root)
     try:
         embedded = _macos_embedded_version(app)
@@ -143,7 +139,6 @@ def verify_macos(app: Path, root: Path, *, require_signature: bool) -> list[str]
                 f"canonical (pyproject.toml) is {canonical}"
             )
 
-    # 3. Signature — only when the build was signed (release/distribution).
     if require_signature:
         result = subprocess.run(
             ["codesign", "--verify", "--deep", "--strict", "--verbose=2", str(app)],
@@ -174,13 +169,10 @@ def verify_windows(
 
     problems: list[str] = []
 
-    # 1. App-stage manifest — exact match against the compiled desktop exe.
     app_expected = expected_windows_app_payload(root)
     app_actual = {p.name for p in app_dir.iterdir() if p.is_file()}
     problems.extend(_diff_manifest(app_actual, app_expected, component="app stage"))
 
-    # 2. Installer-stage manifest — provisioner + uv are exact names; the bundled
-    #    wheel is version-dependent, so it's excluded here and checked in step 3.
     installer_expected = expected_windows_installer_payload(root)
     installer_actual = {p.name for p in installer_dir.iterdir() if p.is_file()}
     non_wheel_actual = {name for name in installer_actual if not name.endswith(".whl")}
@@ -188,16 +180,9 @@ def verify_windows(
         _diff_manifest(non_wheel_actual, installer_expected, component="installer stage")
     )
 
-    # 3. Version — see _wheel_version_problems for why the wheel filename, not a
-    #    PE version resource, is the checked artifact.
     canonical = read_canonical(root)
     problems.extend(_wheel_version_problems(installer_actual, canonical))
 
-    # 4. Signature — best-effort. Unlike `codesign`, there's no cross-platform way
-    #    to verify an Authenticode signature; `signtool.exe` only exists on a
-    #    Windows host with the Windows SDK installed. When it's absent (macOS/CI-
-    #    linux, including this test suite) this step is a silent no-op rather than
-    #    a false failure — the real check only ever runs on the Windows build host.
     if require_signature:
         signtool = shutil.which("signtool")
         if signtool is not None:
@@ -206,7 +191,7 @@ def verify_windows(
             for name, directory in ((app_bin, app_dir), (provisioner_bin, installer_dir)):
                 target = directory / name
                 if not target.is_file():
-                    continue  # already reported as missing in step 1/2
+                    continue
                 result = subprocess.run(
                     [signtool, "verify", "/pa", "/v", str(target)],
                     capture_output=True,

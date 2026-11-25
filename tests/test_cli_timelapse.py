@@ -17,7 +17,6 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from click.testing import CliRunner
 
-# Establish the cli<->session.bootstrap import order (see test_cli_config_overrides).
 import agentshore.cli  # noqa: F401
 import agentshore.session_path as sp
 from agentshore.cli import main
@@ -27,14 +26,10 @@ from agentshore.timelapse import TimelapseError, TimelapseRun
 
 @pytest.fixture
 def sessions_dir(monkeypatch: pytest.MonkeyPatch) -> Path:
-    # POSIX uses /tmp to keep AF_UNIX socket paths short; Windows has no /tmp.
     tmp_root = None if sys.platform.startswith("win") else "/tmp"
     d = Path(tempfile.mkdtemp(prefix="tl_sessions_", dir=tmp_root))
     monkeypatch.setattr(sp, "_SESSIONS_DIR", d)
     return d
-
-
-# session_path persistence
 
 
 def test_timelapse_info_round_trip(tmp_path: Path, sessions_dir: Path) -> None:
@@ -51,16 +46,13 @@ def test_clear_timelapse_info_removes_file(tmp_path: Path, sessions_dir: Path) -
     sp.write_timelapse_info(tmp_path, run_id="x", runs_cwd=tmp_path)
     sp.clear_timelapse_info(tmp_path)
     assert sp.read_timelapse_info(tmp_path) is None
-    sp.clear_timelapse_info(tmp_path)  # idempotent
+    sp.clear_timelapse_info(tmp_path)
 
 
 def test_cleanup_session_removes_timelapse_info(tmp_path: Path, sessions_dir: Path) -> None:
     sp.write_timelapse_info(tmp_path, run_id="x", runs_cwd=tmp_path)
     sp.cleanup_session(tmp_path)
     assert sp.read_timelapse_info(tmp_path) is None
-
-
-# start: _maybe_start_cli_timelapse
 
 
 def test_start_capture_persists_run_id(tmp_path: Path, sessions_dir: Path) -> None:
@@ -98,12 +90,9 @@ def test_start_capture_error_is_swallowed(tmp_path: Path, sessions_dir: Path) ->
             new=AsyncMock(side_effect=TimelapseError("boom")),
         ),
     ):
-        _maybe_start_cli_timelapse(tmp_path, "http://localhost:9400")  # must not raise
+        _maybe_start_cli_timelapse(tmp_path, "http://localhost:9400")
 
     assert sp.read_timelapse_info(tmp_path) is None
-
-
-# finalize: _finalize_cli_timelapse
 
 
 def test_finalize_stops_renders_and_clears(tmp_path: Path, sessions_dir: Path) -> None:
@@ -135,13 +124,10 @@ def test_finalize_swallows_stop_error_and_clears(tmp_path: Path, sessions_dir: P
         ),
         patch("agentshore.timelapse.await_output", new=AsyncMock(return_value=None)),
     ):
-        out = _finalize_cli_timelapse(tmp_path)  # must not raise
+        out = _finalize_cli_timelapse(tmp_path)
 
     assert out is None
     assert sp.read_timelapse_info(tmp_path) is None
-
-
-# stop command backstop
 
 
 def _make_git_repo(tmp_path: Path) -> Path:

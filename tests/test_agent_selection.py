@@ -51,19 +51,13 @@ def test_no_idle_agents_raises() -> None:
         select_agent_for(PlayType.ISSUE_PICKUP, _handles(busy))
 
 
-# Circuit breaker (#22): deprioritize a known-dead agent.
 def test_is_agent_circuit_broken_predicate() -> None:
     from agentshore.state import is_agent_circuit_broken
 
-    # Healthy: any success clears it, regardless of failures/timeouts.
     assert not is_agent_circuit_broken(tasks_completed=1, tasks_failed=5, timeout_count=9)
-    # Fresh agent with no history is not broken.
     assert not is_agent_circuit_broken(tasks_completed=0, tasks_failed=0, timeout_count=0)
-    # One non-timeout failure is below the limit.
     assert not is_agent_circuit_broken(tasks_completed=0, tasks_failed=1, timeout_count=0)
-    # A single timeout with 0 successes trips it.
     assert is_agent_circuit_broken(tasks_completed=0, tasks_failed=0, timeout_count=1)
-    # Two failures with 0 successes trips it.
     assert is_agent_circuit_broken(tasks_completed=0, tasks_failed=2, timeout_count=0)
 
 
@@ -77,7 +71,7 @@ def _broken_handle(agent_id: str) -> AgentHandle:
 
 def test_circuit_broken_agent_deprioritized_in_favor_of_healthy() -> None:
     broken = _broken_handle("dead")
-    healthy = _make_handle("ok", tasks=1)  # one successful task → healthy
+    healthy = _make_handle("ok", tasks=1)
     result = select_agent_for(PlayType.ISSUE_PICKUP, _handles(broken, healthy))
     assert result.agent_id == "ok"
 
@@ -90,9 +84,7 @@ def test_circuit_broken_agent_still_selected_when_only_option() -> None:
     assert result.agent_id == "dead"
 
 
-# Anti-confirmation: CodeReview reviewer must differ from PR author.
 def test_code_review_excludes_pr_author_by_github_identity() -> None:
-    # code_review is large-only (#254); these identity tests use large reviewers.
     author = _make_handle("author", model_tier="large", github_identity="alice")
     reviewer = _make_handle("reviewer", model_tier="large", github_identity="bob")
 
@@ -119,7 +111,6 @@ def test_code_review_identity_filter_is_case_insensitive() -> None:
 def test_code_review_no_pr_github_author_does_not_filter() -> None:
     author = _make_handle("author", model_tier="large", github_identity="alice")
 
-    # No pr_github_author → anti-confirmation filter doesn't apply.
     result = select_agent_for(
         PlayType.CODE_REVIEW,
         _handles(author),
@@ -150,7 +141,6 @@ def test_code_review_different_identity_not_blocked() -> None:
 
 
 def test_code_review_agent_without_github_identity_not_blocked() -> None:
-    # An agent with no resolved github_identity matches no author.
     no_id = _make_handle("no-id", model_tier="large", github_identity=None)
     result = select_agent_for(
         PlayType.CODE_REVIEW,
@@ -160,7 +150,6 @@ def test_code_review_agent_without_github_identity_not_blocked() -> None:
     assert result.agent_id == "no-id"
 
 
-# RUN_QA: no anti-confirmation — runs against the merged trunk.
 def test_run_qa_picks_last_branch_implementer_when_offered() -> None:
     """QA has no anti-confirmation; the last implementer is just as eligible
     as anyone else (QA exercises the merged trunk, not a specific commit)."""
@@ -204,11 +193,11 @@ def test_exclude_list_removes_matching_agent_type() -> None:
 def test_exclude_list_different_play_type_not_excluded() -> None:
     codex = _make_handle("codex-1", AgentType.CODEX)
     prefs = AgentPreferencesConfig(
-        exclude={"code_review": ["codex"]},  # only excluded from code_review
+        exclude={"code_review": ["codex"]},
     )
 
     result = select_agent_for(
-        PlayType.ISSUE_PICKUP,  # different play type
+        PlayType.ISSUE_PICKUP,
         _handles(codex),
         preferences=prefs,
     )
@@ -256,7 +245,6 @@ def test_least_busy_agent_preferred() -> None:
     assert result.agent_id == "idle"
 
 
-# Rule ordering: anti-confirmation applies before soft preferences.
 def test_anti_confirmation_overrides_type_affinity() -> None:
     """Even if the author's type is preferred, they must still be excluded."""
     author = _make_handle(
@@ -379,8 +367,6 @@ def test_tier_filter_unknown_tier_treated_as_medium() -> None:
     """Agents with model_tier=None are treated as medium (DEFAULT_MODEL_TIER)."""
     no_tier = _make_handle("notier", model_tier=None)
 
-    # ISSUE_PICKUP is medium ∪ large, so a None-tier (=medium) agent qualifies;
-    # this exercises the default-tier coercion. (CODE_REVIEW is large-only — #254.)
     coding = select_agent_for(PlayType.ISSUE_PICKUP, _handles(no_tier))
     cheap = select_agent_for(PlayType.CLEANUP, _handles(no_tier))
     assert coding.agent_id == "notier"
@@ -416,11 +402,9 @@ def test_tier_filter_requires_large_for_code_review() -> None:
     medium = _make_handle("medium-1", model_tier="medium", tasks=0)
     large = _make_handle("large-1", model_tier="large", tasks=10)
 
-    # Even though the medium agent is idle and cheaper, only large qualifies.
     result = select_agent_for(PlayType.CODE_REVIEW, _handles(medium, large))
     assert result.agent_id == "large-1"
 
-    # With no large agent available, code_review has no eligible reviewer at all.
     with pytest.raises(AntiConfirmationViolation):
         select_agent_for(PlayType.CODE_REVIEW, _handles(medium))
 
@@ -456,8 +440,6 @@ def test_blocked_logs_per_rule(
             preferences=prefs,
         )
 
-    # structlog routing varies by test ordering — accept either capsys
-    # (PrintLogger) or caplog (stdlib). Both should carry the structured fields.
     captured = capsys.readouterr()
     capsys_text = captured.out + captured.err
     caplog_text = "\n".join(rec.getMessage() for rec in caplog.records)
@@ -467,7 +449,6 @@ def test_blocked_logs_per_rule(
         f"missing agent_selection_blocked event (capsys={capsys_text!r}, caplog={caplog.records!r})"
     )
     assert "code_review" in combined
-    # Each rule's eliminated agent_id must appear in the rendered event.
     assert "anti_confirmation" in combined
     assert "exclude" in combined
     assert "tier" in combined

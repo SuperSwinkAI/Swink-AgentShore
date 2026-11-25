@@ -46,10 +46,6 @@ if TYPE_CHECKING:
 
 _logger = get_logger(__name__)
 
-# Cold-start placeholder cost for a no-usage agent (grok/antigravity) that
-# completes before any measured (usage-reporting) dispatch has, so there is no
-# running mean yet. Matches snapshots.COLD_START_COST_ESTIMATE / MIN_COST_PER_PLAY
-# (kept as a local literal to avoid an agents→core import edge).
 _PLACEHOLDER_COLD_START_COST: float = 0.05
 
 _GROK_LAUNCH_WEDGE_MARKERS: tuple[str, ...] = (
@@ -57,39 +53,10 @@ _GROK_LAUNCH_WEDGE_MARKERS: tuple[str, ...] = (
     "launch wedge",
 )
 
-# A Grok first-byte launch wedge burns the first-byte deadline (600s, see
-# cli_agent._FIRST_BYTE_DEADLINE_S) without producing output, but —
-# unlike a backend-auth failure — it is transient. Rather than permanently
-# disabling the agent type for the session (the old grow-only behavior, #196),
-# a wedge records a bounded cooldown so the type auto-recovers after this many
-# selector ticks (#202). No config field: this is a fixed backstop, not a
-# tunable, and keeping it module-local avoids a config-schema dependency.
-#
-# CLOCK: this horizon is measured in ``last_play_id`` ticks (cooldown.Clock.TICKS),
-# decayed in core/mixins/state.py:_drain_wedge_cooldowns. It is deliberately NOT
-# the same clock as the like-valued issue-pickup skip cooldown
-# (_SKIP_CIRCUIT_COOLDOWN_PLAYS, measured in state.total_plays / Clock.PLAYS) — the
-# shared literal ``20`` is a coincidence, not a relationship. Do not merge them.
 _GROK_WEDGE_COOLDOWN_TICKS = 20
 
-# Consecutive zero-stdout stream-idle timeouts for one agent TYPE before the type
-# is benched into the same decaying wedge cooldown (#233). In practice only
-# antigravity hits this: its async task system emits no stdout until the task
-# completes, so a hung dispatch is indistinguishable from a slow one mid-flight and
-# rides the full (load-bearing) 1800s first-byte deadline — codex/grok/claude stream
-# within seconds, so a single hang there is noise, not a cluster. A streak gate (not
-# a single hang) avoids benching a type for one unlucky timeout. Reuses the Grok
-# wedge cooldown horizon so the type auto-recovers rather than being disabled for the
-# session.
 _STREAM_HANG_CLUSTER_LIMIT = 3
 
-# Slack added to a dispatch's effective wall-clock timeout to compute the
-# HealthMonitor busy-watchdog deadline (handle.dispatch_deadline_monotonic). It
-# must comfortably exceed the worst-case teardown after the wall-clock timeout
-# fires: SIGTERM → _SIGKILL_GRACE → SIGKILL → bounded reap (_SIGKILL_GRACE) →
-# survivor probe. 120s is generous against ~20s of real grace, so the watchdog
-# never reaps a dispatch whose timeout/kill machinery is working — only one
-# where it hung (cli_agent._kill_process wedge, session a3202694).
 _BUSY_WATCHDOG_MARGIN_S = 120.0
 
 
@@ -127,10 +94,6 @@ class AgentManager:
         self._store = store
         self._cfg = cfg
         self._working_dir = working_dir
-        # WorktreeManager: when not injected, build one anchored on the
-        # canonical worktree root (project-local ``<repo>/.agentshore/worktrees/``
-        # by default, or ``cfg.worktrees.root`` when set). Constructed lazily-
-        # cheap, no I/O — heavy work happens inside allocate_for_dispatch.
         if worktree_manager is None:
             from agentshore.agents.worktree import default_worktree_root
 
@@ -143,74 +106,20 @@ class AgentManager:
                 cfg=cfg,
             )
         self._worktrees = worktree_manager
-        # Test shim: when set, CLI dispatch invokes cfg.binary as a Python script
-        # through this interpreter rather than executing the binary directly.
         self._python_executable = python_executable
         self._handles: dict[str, AgentHandle] = {}
         self._circuit_breakers: dict[str, CircuitBreaker] = {}
-        # Cancellation signals for in-flight break-recovery waits (#367). A
-        # TAKE_BREAK play sleeps up to break_duration_minutes (default 30) before
-        # attempting to recover its target; when that target is cleared meanwhile
-        # the wait is pointless, so ``clear`` fires the agent's event and the play
-        # returns immediately instead of logging a stale ``break_recovery_failed``
-        # half an hour after ``agent_cleared``.
         self._break_recovery_cancels: dict[str, asyncio.Event] = {}
-        # Agent-type values whose backend hit a *transient* launch wedge (Grok
-        # first-byte timeout) this session. The state-builder mixin drains this
-        # into a DECAYING per-tick cooldown so the type auto-recovers rather than
-        # being disabled for the whole session (#202). Membership here only marks
-        # "a wedge was recorded since the last snapshot" — the actual expiry is
-        # tracked tick-relative in the runtime, not here.
-        #
-        # WRITE-ONLY INBOX: this is a one-shot signal, not durable state. The drain
-        # (core/mixins/state.py:_drain_wedge_cooldowns) CONSUMES every entry it
-        # observes, so it is normally empty; do not read it to ask "is this type
-        # benched?" (the answer lives in SessionState.wedge_cooldown_agent_types)
-        # and do not add a reader that expects entries to persist across a drain.
-        # Letting entries linger here re-seeds the cooldown forever and defeats the
-        # decay.
         self.wedge_cooldown_types: set[str] = set()
-        # Reason tag per type currently in ``wedge_cooldown_types`` ("launch_wedge"
-        # for a Grok first-byte wedge, "stream_hang_cluster" for an agy hang cluster,
-        # #233). Read by the state-builder drain only to label the cooldown event;
-        # has no effect on the decay itself. Consumed alongside the set above.
         self.wedge_cooldown_reasons: dict[str, str] = {}
-        # Consecutive zero-stdout stream-idle timeouts per agent TYPE (reset on any
-        # successful dispatch of that type). Trips ``wedge_cooldown_types`` at
-        # ``_STREAM_HANG_CLUSTER_LIMIT`` (#233). Distinct from per-agent
-        # ``AgentHandle.consecutive_timeouts``, which benches one instance.
         self._type_stream_hang_streak: dict[str, int] = {}
-        # Phase-1 in-memory cache — written by record_branch_exposure / record_branch_commit,
-        # read by _selection.py to bias away from branch-exposed agents.
-        self.branch_exposure: dict[str, str] = {}  # branch → agent_id
+        self.branch_exposure: dict[str, str] = {}
         self._on_subprocess_spawned = on_subprocess_spawned
         self._on_subprocess_exited = on_subprocess_exited
 
-        # Placeholder-cost accounting for no-usage agents. Grok (live binary) and
-        # Antigravity emit no token-usage block, so their parsed dollar_cost is
-        # $0 — billing those plays at zero dragged the session total (budget +
-        # reward) far below reality. Instead we charge them the running mean
-        # measured cost-per-play of the agents that DO report usage. These two
-        # running totals accumulate only *measured* (non-zero-cost) dispatches.
         self._measured_cost_total: float = 0.0
         self._measured_play_count: int = 0
 
-        # Safety net for desktop-ieql: if the sidecar process dies for any
-        # reason (signal, crash, lost stdio pipe) without the Tauri
-        # shell's RunEvent::ExitRequested handler getting to
-        # kill_all_agents first, atexit fires and we walk the tracked
-        # subprocess PIDs and SIGTERM them.
-        #
-        # Narrower than it looks, on two counts (#363). Neither SIGKILL nor
-        # SIGTERM runs atexit: the sidecar installs no signal handlers
-        # (``sidecar/server.py`` is a bare ``asyncio.run``), so default
-        # disposition terminates it outright and this never fires. It covers
-        # only a *clean interpreter exit* — not `kill -TERM <sidecar_pid>` and
-        # not a SIGTERM at OS sleep, which an earlier version of this comment
-        # wrongly claimed. And ``_kill_tracked_subprocesses_atexit`` skips every
-        # agent with a ``current_play_id``, which busy agents always have, so it
-        # can never reap the working fleet. The real fleet-wide teardown is
-        # ``asyncio.run`` cancelling in-flight dispatch tasks on stdin EOF.
         import atexit
 
         atexit.register(self._kill_tracked_subprocesses_atexit)
@@ -229,7 +138,6 @@ class AgentManager:
         import signal
 
         for handle in list(self._handles.values()):
-            # Do not kill agents that are still mid-play.
             if handle.current_play_id is not None:
                 _logger.debug(
                     "atexit_skip_active_play_agent",
@@ -247,12 +155,7 @@ class AgentManager:
                 if proc.returncode is None:
                     os.kill(pid, signal.SIGTERM)
             except (OSError, ProcessLookupError):
-                # Already dead or never spawned — fine.
                 continue
-
-    # -------------------------------------------------------------------------
-    # Lifecycle
-    # -------------------------------------------------------------------------
 
     async def instantiate(
         self,
@@ -264,8 +167,6 @@ class AgentManager:
         agent_id = str(uuid.uuid4())
         agent_cfg = self._cfg.agents.get(agent_type.value, AgentConfig())
         tier = model_tier or DEFAULT_MODEL_TIER
-        # Live model list first, so a retired configured model resolves to its
-        # current replacement instead of spawning a dead agent.
         await model_resolver.ensure_discovered(agent_type)
         tier_cfg = effective_model_tier_config(agent_type, agent_cfg, tier)
 
@@ -296,12 +197,6 @@ class AgentManager:
             github_identity=github_login,
         )
 
-        # Resolve the identity overlay exactly once and verify repo access
-        # *before* registering the handle into circuit breakers / DataStore /
-        # _handles. On preflight failure we mark the (unregistered) handle ERROR
-        # and return it without leaving a half-constructed agent live in the
-        # manager. On success the validated overlay is cached on the handle so
-        # dispatch() never re-resolves the token or re-runs `gh repo view`.
         if agent_type in CLI_AGENT_TYPES and ident_name:
             try:
                 identity_env = resolve_identity_env(self._cfg, agent_cfg, strict=True)
@@ -321,10 +216,6 @@ class AgentManager:
                     github_identity=github_login,
                     error=str(exc),
                 )
-                # gh-476: sideline the type on the same decaying cooldown as a
-                # launch wedge so instantiate_agent isn't re-picked every tick
-                # for a token that can't resolve; it retries once the cooldown
-                # expires (e.g. after `gh auth login`).
                 self.wedge_cooldown_types.add(agent_type.value)
                 self.wedge_cooldown_reasons[agent_type.value] = "identity_auth"
                 return handle
@@ -404,47 +295,21 @@ class AgentManager:
             )
 
         agent_cfg = self._cfg.agents.get(handle.agent_type.value, AgentConfig())
-        # Per-play-type timeout overrides (desktop-3fiu). ``play_timeouts``
-        # only fires when there's no explicit ``AgentConfig.timeout``;
-        # per-agent overrides still win to preserve existing behaviour.
         effective_timeout = (
             agent_cfg.timeout
             if agent_cfg.timeout is not None
             else self._cfg.effective_play_timeout(play_type)
         )
         dispatch_started_at = time.perf_counter()
-        # Stamp the busy-watchdog deadline before flipping to BUSY: the latest
-        # monotonic time by which this dispatch must have finished (wall-clock
-        # timeout + teardown slack). The HealthMonitor reaps the agent if it is
-        # still BUSY past this — the backstop for a hung timeout/kill that would
-        # otherwise pin the agent in BUSY forever (selector fleet_quiescent wedge).
         handle.dispatch_deadline_monotonic = (
             time.monotonic() + float(effective_timeout) + _BUSY_WATCHDOG_MARGIN_S
         )
         handle.transition_to(AgentStatus.BUSY)
 
-        # desktop-31h2: Increment cumulative dispatch counter before invoking
-        # the adapter. Counted regardless of success/failure/timeout so the
-        # per-agent `dispatch_share` reflects work attempts, not just
-        # completions. ``increment_agent_tasks`` (further down) still tracks
-        # the verdict-based counters separately. The handle's ``dispatches``
-        # counter is also bumped here so ``build_agent_snapshots`` can read
-        # the live value without a per-tick DB round-trip (cli_agent.py used
-        # to bump this only on CLI dispatches; centralising it in the
-        # manager makes API agents tracked too).
         handle.dispatches += 1
         await self._store.increment_agent_dispatch_count(agent_id)
 
-        # The identity overlay was resolved and repo-access-verified once at
-        # instantiate(); reuse the cached copy rather than re-shelling `gh` on
-        # the dispatch hot path. Copy before adding the per-dispatch
-        # AGENTSHORE_PROJECT_PATH key so the handle's cached overlay stays pristine.
         identity_env = dict(handle.identity_env)
-        # Inject the canonical absolute project root so skill agents can anchor
-        # `MAIN_REPO` against a value AgentShore controls instead of the
-        # subprocess's pwd (which can be a leftover worktree path). See
-        # agentshore-issue-pickup/SKILL.md and siblings for the
-        # `${AGENTSHORE_PROJECT_PATH:-$(pwd)}` consumer pattern.
         identity_env["AGENTSHORE_PROJECT_PATH"] = str(self._working_dir.resolve())
 
         try:
@@ -482,30 +347,11 @@ class AgentManager:
             cb.record_failure()
             if isinstance(exc, AgentTimeout):
                 raw_error_class = getattr(exc, "error_class", ErrorClass.TIMEOUT_TRANSIENT)
-                # PlayTimeoutError.error_class carries the precise timeout
-                # sub-class (timeout_wallclock / _stream_idle / _post_response);
-                # a bare AgentTimeout has no attribute, so the default applies.
-                # Coerce to ErrorClass, collapsing any unexpected value to
-                # UNKNOWN rather than persisting an unclassified string.
                 handle.last_error_class = ErrorClass.coerce(raw_error_class)
-                # The stderr auth-sniffer surfaces a backend session-token expiry
-                # as PlayTimeoutError(error_class=AUTH) (an AgentTimeout), so it
-                # lands here rather than in the generic-error branch below. AUTH
-                # needs no special handling now: the ERROR-status handle carries
-                # ErrorClass.AUTH, and the completion path routes it through the
-                # standard take_break recovery (recovery_tracker), exactly like a
-                # quota/rate-limit hold. A Grok launch wedge is transient, so it
-                # records a bounded COOLDOWN (#202).
                 if _is_grok_launch_wedge_timeout(handle, exc):
                     self.wedge_cooldown_types.add(handle.agent_type.value)
                     self.wedge_cooldown_reasons[handle.agent_type.value] = "launch_wedge"
                 elif handle.last_error_class == ErrorClass.TIMEOUT_STREAM_IDLE:
-                    # #233: a zero-stdout stream-idle hang that isn't a Grok launch
-                    # wedge. Track a per-TYPE streak; a cluster (in practice agy,
-                    # which can't be probed for liveness mid-task) benches the whole
-                    # type into the same decaying cooldown so the fleet routes around
-                    # it and it auto-recovers. The load-bearing 1800s agy first-byte
-                    # deadline is deliberately NOT lowered (cli_agent #217 carve-out).
                     atype = handle.agent_type.value
                     streak = self._type_stream_hang_streak.get(atype, 0) + 1
                     self._type_stream_hang_streak[atype] = streak
@@ -515,13 +361,6 @@ class AgentManager:
                         self._type_stream_hang_streak[atype] = 0
                 handle.timeout_count += 1
                 handle.consecutive_timeouts += 1
-                # A backend-auth failure surfaced by the stderr sniffer arrives as
-                # PlayTimeoutError(AUTH). Land it in ERROR (not IDLE) so the
-                # completion path routes it through the standard take_break
-                # recovery — break, then back to work — exactly like a non-zero-exit
-                # rate-limit/auth failure, instead of leaving it IDLE for immediate
-                # re-dispatch into the same dead/blipping backend. Genuine timeouts
-                # stay IDLE.
                 if handle.last_error_class == ErrorClass.AUTH:
                     handle.transition_to(AgentStatus.ERROR)
                 else:
@@ -535,9 +374,6 @@ class AgentManager:
                     error_class=handle.last_error_class,
                     error=str(exc),
                 )
-                # desktop-3fiu: classified companion event so the
-                # histogram of timeouts can be sliced by play type +
-                # tier without re-parsing the freeform ``error`` field.
                 _logger.warning(
                     "agent_dispatch_timeout_classified",
                     agent_id=agent_id,
@@ -552,10 +388,6 @@ class AgentManager:
                 raise
             if isinstance(exc, AgentOutputInvalid):
                 handle.last_error_class = ErrorClass.OUTPUT_INVALID
-            # A non-zero-exit AUTH (AgentProcessError) is classified inside
-            # cli_agent and stamped on the handle before re-raising here; the
-            # completion path then routes the ERROR handle through the standard
-            # take_break recovery, same as a quota/rate-limit hold.
             handle.transition_to(AgentStatus.ERROR)
             await self._store.increment_agent_tasks(agent_id, failed=1)
             _logger.warning(
@@ -566,12 +398,6 @@ class AgentManager:
             )
             raise
         except Exception as exc:
-            # #385: an exception outside the expected tuple (e.g. a ValueError
-            # raised during argv construction) must not escape with the handle
-            # still BUSY — that benches the agent until the ~3h busy-watchdog
-            # and can block a graceful drain. Same recovery as the generic
-            # branch above, classified UNKNOWN so the completion path routes it
-            # through the standard take_break recovery.
             cb.record_failure()
             handle.last_error_class = ErrorClass.UNKNOWN
             handle.transition_to(AgentStatus.ERROR)
@@ -587,13 +413,7 @@ class AgentManager:
 
         cb.record_success()
         handle.consecutive_timeouts = 0
-        # #233: any productive dispatch of this type clears its stream-hang cluster
-        # signal so a recovered backend isn't benched on stale streak count.
         self._type_stream_hang_streak[handle.agent_type.value] = 0
-        # A clean-exit empty no-op (agy empty task envelope) reaches this success
-        # path — the process didn't crash or time out, it just produced nothing.
-        # Count it for agent-health telemetry; the bounded no-op retry +
-        # take_break trigger live in skill_backed/base.py.
         if is_noop_invocation(result):
             handle.noop_count += 1
         result = self._apply_placeholder_cost(result, agent_type=handle.agent_type)
@@ -691,10 +511,6 @@ class AgentManager:
         def _ms(t0: float) -> float:
             return round((time.perf_counter() - t0) * 1000, 1)
 
-        # Kill any running subprocess. Capture the handle's process into a
-        # local; a concurrent dispatch_cli finally-block can null
-        # handle.process between the guard and the second .returncode read,
-        # which used to raise `'NoneType' object has no attribute 'returncode'`.
         _t = time.perf_counter()
         proc = handle.process
         if proc is not None and proc.returncode is None:
@@ -722,10 +538,6 @@ class AgentManager:
         del self._circuit_breakers[agent_id]
         self.cancel_break_recovery(agent_id, reason="agent_cleared")
         _logger.info("agent_cleared", agent_id=agent_id)
-
-    # -------------------------------------------------------------------------
-    # Break-recovery cancellation (#367)
-    # -------------------------------------------------------------------------
 
     def register_break_recovery(self, agent_id: str) -> asyncio.Event:
         """Register (and return) the cancel signal for a pending break recovery.
@@ -761,10 +573,6 @@ class AgentManager:
         event.set()
         _logger.info("break_recovery_cancelled", agent_id=agent_id, reason=reason)
         return True
-
-    # -------------------------------------------------------------------------
-    # Error recovery
-    # -------------------------------------------------------------------------
 
     async def _auth_restored(self, handle: AgentHandle) -> bool:
         """Re-check an AUTH-errored agent's credentials after its break.
@@ -825,8 +633,6 @@ class AgentManager:
             )
             return False
         if handle.last_error_class == ErrorClass.AUTH and not await self._auth_restored(handle):
-            # Still failing: the break counts as failed, and after
-            # BREAK_RECOVERY_FAILURE_LIMIT the agent is retired via END_AGENT.
             return False
 
         if cb.allows_dispatch:
@@ -876,10 +682,6 @@ class AgentManager:
             reason=reason[:500],
         )
 
-    # -------------------------------------------------------------------------
-    # Branch tracking (written here, read by _selection.py for branch exposure affinity)
-    # -------------------------------------------------------------------------
-
     def record_branch_exposure(self, branch: str, agent_id: str) -> None:
         """Record that *agent_id* last worked on *branch* (branch-exposure signal)."""
         self.branch_exposure[branch] = agent_id
@@ -888,10 +690,6 @@ class AgentManager:
         """Record that *agent_id* committed *sha* to *branch*."""
         self.branch_exposure[branch] = agent_id
         _logger.debug("branch_commit_recorded", branch=branch, agent_id=agent_id, sha=sha)
-
-    # -------------------------------------------------------------------------
-    # Helpers
-    # -------------------------------------------------------------------------
 
     def get_handle(self, agent_id: str) -> AgentHandle:
         """Return the live handle for *agent_id*; raises ``PreconditionFailed`` if unknown."""

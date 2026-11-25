@@ -36,9 +36,6 @@ def _task(bead_id: str, *, depends_on: frozenset[str] = frozenset()) -> GraphTas
     )
 
 
-# _would_create_cycle — pure BFS reachability
-
-
 def test_would_create_cycle_direct_reverse_edge() -> None:
     """The blocker already depends_on the blocked bead (the opposite edge exists)."""
     graph = ProjectGraph(
@@ -77,9 +74,6 @@ def test_would_create_cycle_returns_false_for_empty_graph() -> None:
     assert _would_create_cycle(ProjectGraph(), "blocked", "blocker") is False
 
 
-# add_blocking_dependency — integration with the fallback
-
-
 @pytest.mark.asyncio
 async def test_fast_path_skips_reachability_check_entirely(tmp_path: Path) -> None:
     """A stderr match short-circuits — no extra graph reload is attempted."""
@@ -108,7 +102,6 @@ async def test_fallback_confirms_cycle_on_reworded_bd_error(tmp_path: Path) -> N
         if args[0] == "link":
             raise BdError("bd link failed (rc=1): dependency graph rejects this edge")
         assert args[0] == "list", f"unexpected bd call: {args}"
-        # blocker already depends on blocked -> direct reverse edge.
         return json.dumps(
             [
                 {"id": "blocked", "title": "Blocked", "type": "task", "status": "open"},

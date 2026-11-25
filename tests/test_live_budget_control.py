@@ -57,7 +57,6 @@ def _mock_state(orch: object, snap: SimpleNamespace) -> None:
 
 
 def _mock_budget_only(orch: object, snap: SimpleNamespace) -> None:
-    # current_budget uses the cheap side-effect-free build_budget_only path (#281).
     orch._state_builder.build_budget_only = AsyncMock(  # type: ignore[attr-defined]
         return_value=snap.budget
     )
@@ -86,7 +85,6 @@ def test_effective_caps_overrides_shadow_cfg(tmp_path: Path) -> None:
     assert caps.total == 500.0
     assert caps.time_enabled is True
     assert caps.time_total_minutes == 720
-    # cfg itself is never mutated.
     assert orch._runtime.cfg.budget.total == 150.0
 
 
@@ -157,7 +155,6 @@ async def test_set_budget_bounds_rejected(tmp_path: Path, kwargs: dict, match: s
     orch = make_test_orchestrator(tmp_path)
     with pytest.raises(OrchestratorError, match=match):
         await orch.set_budget(persist=False, **kwargs)
-    # No override applied on rejection.
     assert orch._runtime.budget_override_enabled is None or kwargs["dollars_enabled"] is False
 
 
@@ -196,7 +193,6 @@ async def test_add_budget_rejects_over_max_time(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_set_budget_pushes_state_update_for_live_dashboard(tmp_path: Path) -> None:
-    # A live cap change must repaint the dashboard immediately, not wait for the next tick.
     orch = make_test_orchestrator(tmp_path)
     orch._runtime.state_provider = AsyncMock()
     _mock_state(orch, _snap(total=40.0, time_enabled=True, time_total=120, time_elapsed=0))
@@ -218,7 +214,6 @@ async def test_add_budget_pushes_state_update(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_current_budget_does_not_push_state(tmp_path: Path) -> None:
-    # Read-only prefill must not emit a state_update.
     orch = make_test_orchestrator(tmp_path)
     orch._runtime.state_provider = AsyncMock()
     _mock_budget_only(orch, _snap(total=200.0, spent=10.0))
@@ -241,8 +236,6 @@ async def test_current_budget_echoes_effective(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_current_budget_uses_cheap_read_not_build_state(tmp_path: Path) -> None:
-    # #281: prefill must use build_budget_only, not build_state (which abandons work /
-    # releases claims and stalled the desktop "Adjust Budget…" dialog under load).
     orch = make_test_orchestrator(tmp_path)
     orch._state_builder.build_state = AsyncMock(  # type: ignore[attr-defined]
         side_effect=AssertionError("current_budget must not call build_state (#281)")
@@ -256,8 +249,6 @@ async def test_current_budget_uses_cheap_read_not_build_state(tmp_path: Path) ->
 
 @pytest.mark.asyncio
 async def test_build_budget_only_sources_spend_from_cheap_aggregate(tmp_path: Path) -> None:
-    # #281: build_budget_only reads spend from the single-query session_play_totals
-    # aggregate (COUNT(*)/SUM(dollar_cost)), not the ten-read build_state fan-out.
     store = AsyncMock()
     store.session_play_totals = AsyncMock(return_value=(7, 18.5))
     orch = make_test_orchestrator(
@@ -274,17 +265,13 @@ async def test_build_budget_only_sources_spend_from_cheap_aggregate(tmp_path: Pa
 
 @pytest.mark.asyncio
 async def test_raising_time_cap_reverses_drain(tmp_path: Path) -> None:
-    # Additive add_budget (CLI escape hatch) is the only path that reverses a reserve
-    # drain; absolute set_budget is hard-rejected while draining.
     cfg = RuntimeConfig(budget=BudgetConfig(time_enabled=True, time_total_minutes=60))
     orch = make_test_orchestrator(tmp_path, cfg=cfg)
     orch._runtime.config_path = None
-    # Session is draining because the 1h time reserve was reached.
     orch._runtime.draining = True
     orch._runtime.drain_initialized = True
     orch._runtime.drain_reason = "time_budget_reserve_reached"
     orch._runtime.end_session_report_requested = True
-    # Extending to 4h with ~45m elapsed clears the reserve.
     _mock_state(orch, _snap(time_enabled=True, time_total=240, time_elapsed=45))
     applied = await orch.add_budget(delta_minutes=180, persist=False)
     assert applied["resumed"] is True
@@ -302,7 +289,6 @@ async def test_raising_cap_while_still_in_reserve_does_not_reverse(tmp_path: Pat
     orch._runtime.draining = True
     orch._runtime.drain_initialized = True
     orch._runtime.drain_reason = "time_budget_reserve_reached"
-    # Still within the 20-min reserve even after the bump (55m elapsed of 60m).
     _mock_state(orch, _snap(time_enabled=True, time_total=60, time_elapsed=55))
     applied = await orch.add_budget(delta_minutes=1, persist=False)
     assert applied["resumed"] is False
@@ -311,8 +297,6 @@ async def test_raising_cap_while_still_in_reserve_does_not_reverse(tmp_path: Pat
 
 @pytest.mark.asyncio
 async def test_set_budget_rejected_while_draining(tmp_path: Path) -> None:
-    # #244: absolute set_budget is hard-rejected once winding down (the loop only
-    # dispatches end_agent past drain, so it would silently no-op).
     orch = make_test_orchestrator(tmp_path)
     orch._runtime.config_path = None
     orch._runtime.draining = True
@@ -326,7 +310,6 @@ async def test_set_budget_rejected_while_draining(tmp_path: Path) -> None:
             time_minutes=None,
             persist=False,
         )
-    # No override mutated on rejection.
     assert orch._runtime.budget_override_enabled == before_enabled
     assert orch._runtime.budget_override_total == before_total
 
@@ -348,7 +331,6 @@ async def test_set_budget_rejected_while_stop_requested(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_add_budget_not_blocked_by_drain(tmp_path: Path) -> None:
-    # add_budget is the escape hatch — must work while draining (reverses a reserve drain).
     cfg = RuntimeConfig(budget=BudgetConfig(enabled=True, total=50.0))
     orch = make_test_orchestrator(tmp_path, cfg=cfg)
     orch._runtime.config_path = None

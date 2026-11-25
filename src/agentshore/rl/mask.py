@@ -59,8 +59,6 @@ if TYPE_CHECKING:
 
 _TERMINAL_QA_RECENT_WINDOW: Final[int] = TERMINAL_SHUTDOWN_EVIDENCE_WINDOW_PLAYS
 
-# Stay hard-masked even on the reverse-failsafe path: non-progress plays and
-# reserved tensor slots.
 _REVERSE_FAILSAFE_HARD_MASKS: Final[frozenset[PlayType]] = (
     frozenset(
         {
@@ -75,21 +73,8 @@ _REVERSE_FAILSAFE_HARD_MASKS: Final[frozenset[PlayType]] = (
 _REVERSE_FAILSAFE_CONTROL_PLAYS: Final[frozenset[PlayType]] = frozenset(
     {PlayType.END_AGENT, PlayType.END_SESSION}
 )
-# 3-strikes circuit breaker: a work play with this many consecutive
-# non-productive (fail OR skip) outcomes is benched for _CIRCUIT_BREAKER_
-# COOLDOWN_PLAYS, then the policy may retry once (a fresh strike re-arms it) —
-# stops re-selecting a play that can only skip (e.g. a resolve-time TOCTOU race).
-# Separate from play_pacing.standard_cooldown_plays: a nonproductive-outcome
-# retry bench, not a normal post-run cadence. RECONCILE_STATE (self-heal) and
-# control plays are excluded.
 _CIRCUIT_BREAKER_THRESHOLD: Final[int] = 3
 _CIRCUIT_BREAKER_COOLDOWN_PLAYS: Final[int] = 20
-# SEED_PROJECT (#357): its only cooldown, seed_audit_is_fresh(), keys off a
-# prior *success* and never engages on failure, so a persistently-failing
-# seed_project (e.g. an unreadable/schema-drifted beads store) had zero
-# backoff and could re-dispatch every few minutes. Circuit-breaker membership
-# gives it the same 3-consecutive-fail/skip -> benched-for-20-plays -> retry
-# pattern every other candidate-required play already has.
 _CIRCUIT_BREAKER_ELIGIBLE_PLAYS: Final[frozenset[PlayType]] = CANDIDATE_REQUIRED_PLAY_TYPES | {
     PlayType.RUN_QA,
     PlayType.DESIGN_AUDIT,
@@ -97,16 +82,9 @@ _CIRCUIT_BREAKER_ELIGIBLE_PLAYS: Final[frozenset[PlayType]] = CANDIDATE_REQUIRED
     PlayType.SEED_PROJECT,
 }
 
-# Lifecycle-churn breaker (#163): when work is undispatchable the PPO can
-# oscillate INSTANTIATE_AGENT <-> END_AGENT with zero dispatches, burning budget.
-# Masking lifecycle plays (when tail is all-lifecycle + idle capacity + a work
-# play has run but gone stale) lets the engine idle quiescent until work unblocks.
 _LIFECYCLE_PLAY_TYPES: Final[frozenset[PlayType]] = frozenset(
     {PlayType.INSTANTIATE_AGENT, PlayType.END_AGENT}
 )
-# "Productive work" for staleness detection. RECONCILE_STATE excluded so a
-# repeatedly-failing self-heal can't reset the staleness guard (as are
-# control/terminal/reserved plays).
 _WORK_PLAY_TYPES: Final[frozenset[PlayType]] = _CIRCUIT_BREAKER_ELIGIBLE_PLAYS | {
     PlayType.SEED_PROJECT,
     PlayType.CLEANUP,
@@ -190,8 +168,6 @@ def compute_terminal_no_work_decision(
     if not availability.terminal_no_work:
         return None
 
-    # Block terminal plays while beads has open tasks. GitHub workable-issue
-    # counts can lag calibrate_alignment syncs, so beads takes precedence here.
     if availability.ready_task_count > 0:
         return None
 
@@ -339,17 +315,8 @@ def compute_reverse_failsafe_mask(
     for play_type in hard_masks:
         if play_type in V1_ACTION_ORDER:
             lifted[V1_ACTION_ORDER.index(play_type)] = False
-    # END_SESSION carries no terminal-readiness preconditions on the failsafe
-    # path (#240): the terminal-evidence guards are for the normal path. The
-    # failsafe only fires once the session is demonstrably wedged, where those
-    # guards would keep END_SESSION masked exactly when a clean handoff is needed.
-    # When control plays are allowed, END_SESSION stays lifted for the PPO to decide.
 
     if PlayType.INSTANTIATE_AGENT in V1_ACTION_ORDER:
-        # Don't grow the fleet via the failsafe when idle capacity already exists
-        # (bottleneck is masked dispatch, not fleet size; #163) or no config is
-        # spawnable (empty/saturated config_index; #159). Failsafe only runs with
-        # an idle agent present, so genuine cold-start spawns from the base mask.
         idle_agent_exists = any(a.status == AgentStatus.IDLE for a in state.agents)
         no_spawnable_config = cfg is not None and (
             not config_index or not compute_config_mask(state, cfg, config_index).any()
@@ -362,21 +329,11 @@ def compute_reverse_failsafe_mask(
         if candidate_pt in V1_ACTION_ORDER and not candidate_plan.candidates_for(candidate_pt):
             lifted[V1_ACTION_ORDER.index(candidate_pt)] = False
 
-    # Overlay invariant: any base-mask-enabled action stays enabled — the
-    # failsafe can ADD opportunities, never REMOVE them.
     result = lifted | base_mask if base_mask is not None else lifted
 
-    # The one exception to the additive invariant: a user-disabled play must
-    # survive the failsafe (#240). The selector calls this without re-running the
-    # builder's _stage_user_disabled, so enforce it here so both call sites are safe.
     for pt in _resolve_user_disabled_plays(cfg):
         result[V1_ACTION_ORDER.index(pt)] = False
     return result
-
-
-# ---------------------------------------------------------------------------
-# ActionMaskBuilder — staged pipeline for action mask computation
-# ---------------------------------------------------------------------------
 
 
 class ActionMaskBuilder:
@@ -432,8 +389,6 @@ class ActionMaskBuilder:
     @property
     def candidate_plan(self) -> PlayCandidatePlan:
         return self._candidate_plan
-
-    # -- policy-overlay stages (mutate self._mask in place) ------------------
 
     def _user_disabled_plays(self) -> frozenset[PlayType]:
         """Plays the user turned off via global Preferences (allowlist-guarded).
@@ -513,8 +468,6 @@ class ActionMaskBuilder:
         if self._state.end_session_in_flight and PlayType.END_SESSION in V1_ACTION_ORDER:
             self._mask[V1_ACTION_ORDER.index(PlayType.END_SESSION)] = False
 
-    # -- short-circuit stages (finalize the mask and skip reverse-failsafe) ----
-
     def _stage_drain_mode(self) -> bool:
         if (
             self._state.session_state == SessionState.DRAINING
@@ -543,8 +496,6 @@ class ActionMaskBuilder:
             if pt not in (PlayType.END_AGENT, PlayType.RECONCILE_STATE):
                 self._mask[i] = False
         return True
-
-    # -- pipeline entry points -----------------------------------------------
 
     def _eligibility_report(self) -> EligibilityReport:
         """Compute (and cache) the one authority report — base A-type validity."""
@@ -583,10 +534,6 @@ class ActionMaskBuilder:
         self._stage_user_disabled()
         self._stage_end_session_in_flight()
 
-        # Short-circuit stages run before the reverse-failsafe so the failsafe
-        # can never re-enable a play they removed. Drain takes precedence over a
-        # main-repo pause (mirrors dispatch: a draining session winds down even
-        # with a paused trunk).
         if self._stage_drain_mode():
             if include_reasons:
                 self._reasons = self._compute_reasons()
@@ -607,8 +554,6 @@ class ActionMaskBuilder:
                 config_index=self._config_index,
                 base_mask=self._mask,
             )
-            # The failsafe may lift a play the user disabled — re-apply the
-            # user-disabled mask as the final, authoritative word.
             self._stage_user_disabled()
 
         if include_reasons:
@@ -632,8 +577,6 @@ class ActionMaskBuilder:
         """
         state = self._state
 
-        # Drain short-circuit: every play but END_AGENT is masked with the
-        # SESSION_DRAINING reason, overriding any other B-type reason.
         if state.session_state == SessionState.DRAINING:
             return {pt: SESSION_DRAINING for pt in V1_ACTION_ORDER if pt != PlayType.END_AGENT}
 
@@ -646,14 +589,10 @@ class ActionMaskBuilder:
             if self._mask[i]:
                 continue
 
-            # User preference (B-type overlay) is authoritative: an explicit
-            # user choice explains the mask before any policy/validity reason.
             if pt in user_disabled:
                 reasons[pt] = USER_DISABLED
                 continue
 
-            # Circuit breaker (B-type overlay) takes priority: it benches a play
-            # even when the authority deemed it valid.
             if self._breaker_benched(pt):
                 strikes = state.consecutive_nonproductive_by_type.get(pt, 0)
                 reasons[pt] = MaskReason(
@@ -666,8 +605,6 @@ class ActionMaskBuilder:
                 )
                 continue
 
-            # Lifecycle-churn breaker (B-type overlay): a lifecycle play masked to
-            # stop instantiate<->end_agent churn while no work is dispatchable.
             if pt in _LIFECYCLE_PLAY_TYPES and (
                 _lifecycle_churn_active(state, availability=availability)
                 or _growth_pointless_no_work(state, availability=availability)
@@ -682,13 +619,10 @@ class ActionMaskBuilder:
                 )
                 continue
 
-            # Reserved tensor slots (B-type overlay).
             if pt in (PlayType.FUTURE_4, PlayType.FUTURE_7, PlayType.FUTURE_8):
                 reasons[pt] = RESERVED_SLOT
                 continue
 
-            # Main-repo dispatch paused (B-type overlay): every play but
-            # END_AGENT / RECONCILE_STATE is masked while the latch is set.
             if state.main_repo_dispatch_paused and pt not in (
                 PlayType.END_AGENT,
                 PlayType.RECONCILE_STATE,
@@ -696,12 +630,10 @@ class ActionMaskBuilder:
                 reasons[pt] = MAIN_REPO_DISPATCH_PAUSED
                 continue
 
-            # END_SESSION already in-flight (B-type overlay).
             if pt == PlayType.END_SESSION and state.end_session_in_flight:
                 reasons[pt] = END_SESSION_IN_FLIGHT
                 continue
 
-            # A-type validity reason from the single authority computation.
             verdict = verdicts.get(pt)
             if verdict is not None and verdict.reason is not None:
                 reasons[pt] = verdict.reason

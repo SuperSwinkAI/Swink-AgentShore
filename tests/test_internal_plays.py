@@ -23,8 +23,6 @@ from agentshore.state import (
     SessionState,
 )
 
-# Fixtures
-
 
 def _snap(
     agent_id: str = "a1",
@@ -70,9 +68,6 @@ def _ctx() -> MagicMock:
     return ctx
 
 
-# Reserved action slots
-
-
 def test_reserved_slots_are_unavailable() -> None:
     state = _state()
     assert FutureFourPlay().preconditions(state) != []
@@ -96,14 +91,9 @@ async def test_reserved_slot_execute_mutates_nothing() -> None:
     ctx.manager.get_handle.assert_not_called()
 
 
-# EndAgentPlay (terminates agent)
-
-
 def test_end_agent_precondition_requires_two_agents() -> None:
     play = EndAgentPlay()
-    # 1 agent with plenty of plays — still masked (need 2+ agents)
     assert play.preconditions(_state(agents=[_snap("a1", tasks_completed=20)])) != []
-    # 2 agents, at least one above the play-count threshold (>10)
     assert play.preconditions(_state(agents=[_snap("a1", tasks_completed=20), _snap("a2")])) == []
 
 
@@ -117,8 +107,6 @@ def test_end_agent_precondition_requires_one_veteran() -> None:
         before the bootstrap cleanup had finished its first run).
     """
     play = EndAgentPlay()
-    # 2 agents, neither above 10 plays (total = tasks_completed + tasks_failed) — masked.
-    # _snap defaults tasks_failed=1, so tasks_completed=3 → total=4, tasks_completed=8 → total=9.
     assert (
         play.preconditions(
             _state(agents=[_snap("a1", tasks_completed=3), _snap("a2", tasks_completed=8)])
@@ -140,9 +128,6 @@ async def test_end_agent_calls_manager_clear() -> None:
     )
 
     assert outcome.success is True
-    # force=True is load-bearing: the executor marks the target agent in-flight
-    # with this play's own END_AGENT marker before execute() runs, so a
-    # force-less clear() would always hit the active-play guard (#154).
     ctx.manager.clear.assert_awaited_once_with("a1", force=True)
 
 
@@ -158,10 +143,6 @@ async def test_end_agent_returns_failure_on_exception() -> None:
         ctx=ctx,
     )
     assert outcome.success is False
-
-
-# Reserved future slots (4, 7, 8) — kept for policy shape compatibility.
-# Always fail preconditions; execute returns success=False.
 
 
 @pytest.mark.asyncio
@@ -194,9 +175,6 @@ async def test_future_eight_is_reserved_no_op() -> None:
     assert outcome.success is False
 
 
-# EndSessionPlay
-
-
 @pytest.mark.asyncio
 async def test_end_session_succeeds_and_emits_draining_artifact() -> None:
     play = EndSessionPlay()
@@ -224,9 +202,6 @@ async def test_end_session_is_idempotent() -> None:
     await play.execute(state, PlayParams(), ctx=_ctx())
     outcome = await play.execute(state, PlayParams(), ctx=_ctx())
     assert outcome.success is True
-
-
-# EndAgentPlay edge cases
 
 
 @pytest.mark.asyncio

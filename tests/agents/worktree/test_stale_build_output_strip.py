@@ -73,10 +73,8 @@ async def test_stale_transition_strips_build_output_and_keeps_checkout_until_ttl
     assert (wt / "README.md").exists()
     assert (wt / ".git").is_file()
     assert (wt / "notes.txt").exists()
-    # Cleaned once — not revisited on the next tick.
     assert await wm.strip_stale_build_output() == []
 
-    # Within the TTL the checkout survives; past it the dir is reaped as before.
     assert (await wm.reap_closed_prs(ttl_seconds=3600)).total == 0
     assert wt.exists()
     row = await lookup_by_id(store, worktree_id=wid)
@@ -104,7 +102,6 @@ async def test_in_flight_stale_worktree_is_not_cleaned(
     assert await wm.strip_stale_build_output() == []
     assert (wt / "target" / "big.bin").exists()
 
-    # Retried once the dispatch releases.
     wm.release_dispatch(alloc)
     assert await wm.strip_stale_build_output() == [wid]
     assert not (wt / "target").exists()
@@ -151,7 +148,6 @@ def test_high_water_default_is_relative_with_4gib_floor(
     assert resolve_high_water_mb(None, tmp_path) == 46_000
     monkeypatch.setattr(reaper_mod.shutil, "disk_usage", lambda _p: _Usage(20_000 * mib, 0, 0))
     assert resolve_high_water_mb(None, tmp_path) == 4096
-    # Explicit values (including 0 = disabled) are honored verbatim.
     assert resolve_high_water_mb(0, tmp_path) == 0
     assert resolve_high_water_mb(1234, tmp_path) == 1234
 

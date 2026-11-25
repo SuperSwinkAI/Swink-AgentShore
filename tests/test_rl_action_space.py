@@ -113,11 +113,6 @@ def test_prune_is_index_19():
     assert PLAY_TO_INDEX[PlayType.FUTURE_8] == 21
 
 
-# ---------------------------------------------------------------------------
-# Config-head index (POLICY_VERSION-gated)
-# ---------------------------------------------------------------------------
-
-
 def test_policy_version_default_is_5():
     assert POLICY_VERSION == 5
 
@@ -143,7 +138,6 @@ def test_build_config_index_uses_config_order_and_tier_order():
     )
     index = build_config_index(cfg)
 
-    # Agent type follows config order; tier order follows MODEL_TIER_PRIORITY.
     assert index == (
         ("codex", "medium"),
         ("claude_code", "medium"),

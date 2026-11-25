@@ -25,7 +25,6 @@ def _posix(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_schema_pins_only_what_the_parser_requires() -> None:
     assert RESULT_ENVELOPE_JSON_SCHEMA["required"] == ["success", "artifacts"]
-    # Play-specific fields must stay open so one schema serves every skill.
     assert "additionalProperties" not in RESULT_ENVELOPE_JSON_SCHEMA
     assert json.loads(RESULT_ENVELOPE_SCHEMA_JSON) == RESULT_ENVELOPE_JSON_SCHEMA
 
@@ -38,7 +37,6 @@ def test_claude_fresh_argv_gets_the_flag_before_the_prompt() -> None:
     assert out[i + 1] == RESULT_ENVELOPE_SCHEMA_JSON
     assert out[i - 2 : i] == ["--output-format", "stream-json"]
     assert out[-1] == "do the thing"
-    # Everything else is untouched.
     assert [a for a in out if a not in ("--json-schema", RESULT_ENVELOPE_SCHEMA_JSON)] == argv
 
 
@@ -80,7 +78,6 @@ def _result_event(**fields: object) -> str:
 
 
 def test_result_text_already_json_is_used_as_is() -> None:
-    # Shape observed live (claude 2.1.330): result text is the serialized object.
     envelope = {"success": True, "artifacts": [{"type": "pr", "url": "u"}], "issue_picked_up": 7}
     raw = _result_event(result=json.dumps(envelope), structured_output=envelope)
     text = _extract_text_from_stream_json(raw)
@@ -107,7 +104,6 @@ def test_structured_output_used_when_result_text_is_absent() -> None:
 def test_without_structured_output_the_text_path_is_unchanged() -> None:
     fenced = 'work done\n```json\n{"success": true, "artifacts": []}\n```'
     assert _extract_text_from_stream_json(_result_event(result=fenced)) == fenced
-    # ...and a prose-only result still fails the way the retry path expects.
     prose = parse_skill_result(_extract_text_from_stream_json(_result_event(result="done")))
     assert prose.success is False
     assert "no valid result block" in (prose.error or "")

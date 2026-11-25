@@ -17,7 +17,7 @@ import {
   type IdentityRow,
 } from "../src/components/IdentitiesScreen";
 
-// ---- helpers ---------------------------------------------------------------
+
 
 function makeSidecar(rows: IdentityRow[] = []): IdentitiesSidecar & {
   _rows: IdentityRow[];
@@ -69,7 +69,7 @@ function requireTestId(container: HTMLElement, id: string): HTMLElement {
   return el;
 }
 
-// ---- test setup ------------------------------------------------------------
+
 
 let container: HTMLDivElement;
 let root: Root;
@@ -104,7 +104,7 @@ async function renderWithRowsChange(
   });
 }
 
-// ---- tests -----------------------------------------------------------------
+
 
 describe("IdentitiesScreen", () => {
   it("shows loading state initially and resolves to empty message", async () => {
@@ -119,14 +119,14 @@ describe("IdentitiesScreen", () => {
       remove: vi.fn(),
     };
 
-    // Start render — list() hasn't resolved yet
+
     await act(async () => {
       root.render(<IdentitiesScreen sidecar={lazySidecar} />);
     });
 
     expect(getTestId(container, "identities-loading")).not.toBeNull();
 
-    // Resolve the list
+
     await act(async () => {
       resolveList([]);
     });
@@ -311,12 +311,12 @@ describe("IdentitiesScreen", () => {
     const sidecar = makeSidecar([]);
     await render(sidecar);
 
-    // Open the add form
+
     await act(async () => {
       requireTestId(container, "show-add-form-btn").click();
     });
 
-    // Fill in login using the native value setter so React's input event handler fires
+
     const loginInput = requireTestId(
       container,
       "add-login-input",
@@ -330,7 +330,7 @@ describe("IdentitiesScreen", () => {
       loginInput.dispatchEvent(new Event("input", { bubbles: true }));
     });
 
-    // Submit via the form's submit event to avoid relying on button click routing
+
     const form = requireTestId(
       container,
       "add-identity-form",
@@ -341,7 +341,7 @@ describe("IdentitiesScreen", () => {
       );
     });
 
-    // After add, form hides and list shows
+
     expect(sidecar.addCalls).toHaveLength(1);
     expect(sidecar.addCalls[0].tokenSource).toBe("gh_token_login");
     expect(getTestId(container, "add-identity-form")).toBeNull();
@@ -356,14 +356,14 @@ describe("IdentitiesScreen", () => {
       requireTestId(container, "show-add-form-btn").click();
     });
 
-    // Submit without filling in login
+
     await act(async () => {
       requireTestId(container, "add-submit-btn").click();
     });
 
     expect(getTestId(container, "add-login-error")).not.toBeNull();
     expect(sidecar.addCalls).toHaveLength(0);
-    // Form stays open
+
     expect(getTestId(container, "add-identity-form")).not.toBeNull();
   });
 
@@ -395,14 +395,14 @@ describe("IdentitiesScreen", () => {
     ]);
     await render(sidecar);
 
-    // Click Edit
+
     await act(async () => {
       requireTestId(container, "edit-btn-octocat").click();
     });
 
     expect(getTestId(container, "edit-form-octocat")).not.toBeNull();
 
-    // Change token source
+
     const select = container.querySelector(
       "[data-testid='edit-form-octocat'] select",
     ) as HTMLSelectElement;
@@ -411,7 +411,7 @@ describe("IdentitiesScreen", () => {
       select.dispatchEvent(new Event("change", { bubbles: true }));
     });
 
-    // Save
+
     await act(async () => {
       requireTestId(container, "save-edit-octocat").click();
     });
@@ -421,7 +421,7 @@ describe("IdentitiesScreen", () => {
       login: "octocat",
       patch: { token_source: "gh_token_env" },
     });
-    // Edit form closes
+
     expect(getTestId(container, "edit-form-octocat")).toBeNull();
   });
 
@@ -469,9 +469,9 @@ describe("IdentitiesScreen", () => {
     });
 
     expect(sidecar.removeCalls).toEqual(["octocat"]);
-    // Row no longer rendered
+
     expect(getTestId(container, "identity-row-octocat")).toBeNull();
-    // Other row remains
+
     expect(getTestId(container, "identity-row-bot-user")).not.toBeNull();
   });
 
@@ -513,7 +513,7 @@ describe("IdentitiesScreen", () => {
       requireTestId(container, "show-add-form-btn").click();
     });
 
-    // Switch to the Keychain source and enter a login.
+
     const sourceSelect = container.querySelector(
       "#add-token-source",
     ) as HTMLSelectElement;
@@ -534,11 +534,11 @@ describe("IdentitiesScreen", () => {
       sourceSelect.dispatchEvent(new Event("change", { bubbles: true }));
     });
 
-    // Source change with a populated login probes the Keychain.
+
     expect(checkKeychain).toHaveBeenCalledWith("octocat");
     expect(getTestId(container, "keychain-existing-pat")).not.toBeNull();
 
-    // Submit with a blank PAT — allowed because one is already stored.
+
     const form = requireTestId(
       container,
       "add-identity-form",
@@ -601,7 +601,7 @@ describe("IdentitiesScreen", () => {
       );
     });
 
-    // Blank PAT with no stored token is rejected.
+
     expect(getTestId(container, "add-login-error")).not.toBeNull();
     expect(sidecar.addCalls).toHaveLength(0);
   });
@@ -623,12 +623,12 @@ describe("IdentitiesScreen", () => {
 
 describe("IdentitiesScreen — agent backend auth", () => {
   it("does not render the section (and does not crash) when the sidecar lacks checkAgentAuth", async () => {
-    // makeSidecar omits checkAgentAuth, mirroring an older/mock sidecar.
+
     const sidecar = makeSidecar([]);
     await render(sidecar);
 
     expect(getTestId(container, "agent-auth-section")).toBeNull();
-    // The rest of the screen still renders fine.
+
     expect(getTestId(container, "identities-screen")).not.toBeNull();
     expect(getTestId(container, "identities-empty")).not.toBeNull();
   });
@@ -647,7 +647,7 @@ describe("IdentitiesScreen — agent backend auth", () => {
 
     await render(sidecar);
 
-    // The probe runs on mount.
+
     expect(checkAgentAuth).toHaveBeenCalledTimes(1);
 
     const section = requireTestId(container, "agent-auth-section");

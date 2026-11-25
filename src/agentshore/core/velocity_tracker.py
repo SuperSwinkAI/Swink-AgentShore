@@ -27,30 +27,15 @@ class VelocityTracker:
     """Owns the rolling-velocity, agent-type, and confirm-repick windows."""
 
     def __init__(self, *, velocity_window_size: int) -> None:
-        # (play_id, kind) for each velocity-positive completion (pr_merged /
-        # issue_closed). Bounded to the configured velocity window.
         self._velocity_events: collections.deque[tuple[int, str]] = collections.deque(
             maxlen=velocity_window_size
         )
-        # Window-start watermark. Never reassigned (always None ⇒ watermark 1);
-        # retained so velocity math stays byte-for-byte the prior behaviour.
         self._velocity_window_start_play_id: int | None = None
         self._recent_agent_types: collections.deque[str] = collections.deque(
             maxlen=velocity_window_size
         )
-        # Rolling 50-cycle window: each entry True iff that selection cycle hit a
-        # confirm-repick (live ``confirm`` rejected a snapshot-eligible play →
-        # clean re-pick). Fed by ``record_selection_repicks``; exposed via
-        # ``MetricsEngine.executor_skip_rate_provider`` as observation slot 177.
         self._executor_skip_window: collections.deque[bool] = collections.deque(maxlen=50)
-        # True when the most recent play returned ``skipped_outcome("masked")``
-        # from the executor's preconditions safety net. Surfaced via
-        # ``state.recent_executor_skip``; cleared by the next non-skipped play.
         self._recent_executor_skip = False
-
-    # ------------------------------------------------------------------
-    # Completion-path writes
-    # ------------------------------------------------------------------
 
     def record_velocity_event(self, play_id: int, kind: str) -> None:
         """Record a velocity-positive completion (``pr_merged`` / ``issue_closed``)."""
@@ -78,10 +63,6 @@ class VelocityTracker:
             return
         repicks = consume()
         self._executor_skip_window.append(repicks > 0)
-
-    # ------------------------------------------------------------------
-    # Observation / state-path reads
-    # ------------------------------------------------------------------
 
     @property
     def recent_executor_skip(self) -> bool:

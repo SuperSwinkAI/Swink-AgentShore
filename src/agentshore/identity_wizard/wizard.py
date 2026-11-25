@@ -94,11 +94,8 @@ def _canonicalize_bindings(bindings: dict[str, IdentityBinding]) -> dict[str, Id
     }
 
 
-# Sentinel prefix for an extra-key choice from _prompt_choice; the trailing
-# key (e.g. "n" for new account) identifies which extra option was picked.
 _EXTRA_PREFIX = "__extra__:"
 
-# POSIX shell variable name shape — what `gh_token_env:` MUST hold.
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
@@ -149,8 +146,6 @@ class IdentityWizard:
         self._logins: list[str] = [acc.login for acc in self._accounts] + self._configured_only
         self._new_logins: set[str] = set()
         self._active_idx = next((i for i, a in enumerate(self._accounts) if a.active), 0)
-
-    # Two-pass orchestration.
 
     def _pass1_bind_agents(self) -> dict[str, str]:
         """Map each agent to a login via interactive prompts."""
@@ -276,9 +271,6 @@ class IdentityWizard:
         )
 
 
-# Prompt helpers — module-level so tests can monkeypatch them.
-
-
 def _prompt_env_var_name(login: str, *, max_attempts: int = 5) -> str:
     default_name = login.upper().replace("-", "_") + "_GH_TOKEN"
     for _ in range(max_attempts):
@@ -341,8 +333,6 @@ def _prompt_token_strategy(
     ):
         from beaupy import prompt as beaupy_prompt
 
-        # Masked echo confirms the paste landed (click's hide_input shows
-        # nothing). beaupy returns "" on empty Enter / None on ESC — both back out.
         token = beaupy_prompt(
             "    Paste PAT (masked; press Enter to back out): ",
             secure=True,
@@ -611,7 +601,7 @@ def run_wizard(
     prompter: object | None = None,
 ) -> WizardResult:
     """Drive the interactive prompts and return the chosen bindings."""
-    del prompter  # reserved
+    del prompter
     return IdentityWizard(
         agent_keys,
         accounts=accounts,

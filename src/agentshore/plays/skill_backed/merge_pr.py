@@ -26,7 +26,6 @@ if TYPE_CHECKING:
 
 _logger = structlog.get_logger(__name__)
 
-# Bare "#N" reference, for the second pass over keyword lines.
 _BARE_ISSUE_RE = re.compile(r"#(\d+)")
 
 
@@ -139,8 +138,6 @@ def _validated_issue_set(
     if pr_body is None:
         return list(skill_issues)
 
-    # Two-pass extraction captures comma-separated lists ("Closes #1, #2, #3"):
-    # pass 1 finds lines with a closing keyword, pass 2 pulls all #N from them.
     body_issues: set[int] = set()
     for line in pr_body.splitlines():
         if _PR_BODY_ISSUE_RE.search(line):
@@ -166,7 +163,6 @@ def _validated_issue_set(
             reason="issue in PR body but missing from skill result — adding",
         )
 
-    # body_issues is ground truth; hallucinated entries are dropped.
     return sorted(body_issues)
 
 
@@ -182,7 +178,6 @@ class MergePRPlay(SkillBackedPlay):
 
     gates = (CapabilityGate("can_merge"),)
 
-    # PR-scoped: self-heal the PR base before merging so it lands on the target.
     retarget_pr_base = True
 
     @property
@@ -217,10 +212,6 @@ class MergePRPlay(SkillBackedPlay):
         """
         outcome = await super().execute(state, params, ctx=ctx)
         if outcome.success and params.pr_number is not None:
-            # Shared reconciler propagates the merge (also used by unblock_pr for
-            # stacked siblings). Pass this module's own helpers so tests patching
-            # ``merge_pr.*`` by module path still reach the call sites. Imported
-            # lazily to avoid an import cycle (``_merge_reconcile`` imports them).
             from agentshore.plays.skill_backed._merge_reconcile import reconcile_merged_pr
 
             raw_issues_closed = (
@@ -237,10 +228,6 @@ class MergePRPlay(SkillBackedPlay):
                 fast_forward=fast_forward_local_branch,
             )
 
-            # Artifact lets MetricsEngine distinguish linked merges from
-            # doc-only/hotfix ones (see _play_closed_issue in rl/metrics.py). Empty
-            # list is meaningful: "closed no issues", not "no data". The
-            # ``issues_closed`` key feeds run_qa, groom_backlog, dashboard DONE.
             outcome = dataclasses.replace(
                 outcome,
                 artifacts=[

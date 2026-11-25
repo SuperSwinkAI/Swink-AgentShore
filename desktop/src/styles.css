@@ -248,10 +248,6 @@ select:focus-visible {
 }
 
 .setup-quick-start-banner {
-  /* Quick Start failure surface (issue #565). Lives at the top of the
-     setup-content column above whatever step the helper steered us to,
-     so the user can see why Quick Start fell through without losing
-     the rail context. */
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -400,9 +396,6 @@ select:focus-visible {
   text-transform: uppercase;
 }
 
-/* Model + reasoning effort sit side-by-side, with Max agents pinned to a
-   narrow trailing column. Effort is absent for runners without an effort
-   flag, so flex lets Model reclaim the freed width. */
 .tier-plan-row__fields {
   display: flex;
   flex-wrap: wrap;
@@ -496,7 +489,6 @@ select:focus-visible {
   font-size: 22px;
 }
 
-/* Trusted sources — a distinct sub-section under the agent identities list. */
 .id-trusted-screen {
   margin-top: 18px;
   padding-top: 16px;
@@ -597,9 +589,6 @@ select:focus-visible {
   color: var(--warning);
 }
 
-/* Neutral/informational badge — e.g. an agent whose backend auth can't be
-   probed ("unprobeable"): neither success nor failure, so styled muted rather
-   than colored. */
 .badge-info {
   border-color: var(--fm-border);
   background: transparent;
@@ -667,8 +656,6 @@ select:focus-visible {
 }
 
 .fm-starting__error span {
-  /* Preserve newlines in multi-line session.start failure messages so
-     multi-line preflight guards stay readable in the hard-error banner. */
   white-space: pre-line;
 }
 
@@ -776,9 +763,6 @@ select:focus-visible {
 
 .fm-step__error {
   color: var(--error);
-  /* Preserve newlines in multi-line preflight messages (e.g. the per-identity
-     model-tier coverage guard lists each identity's missing tiers on its own
-     line). Without this the browser collapses them into one run-on line. */
   white-space: pre-line;
 }
 
@@ -882,7 +866,6 @@ select:focus-visible {
     grid-template-columns: 1fr;
   }
 
-  /* Narrow viewport: stack the tier fields so Max agents isn't squeezed. */
   .tier-plan-field--max {
     flex-basis: 100%;
   }

@@ -53,7 +53,7 @@ describe("TargetBranchScreen", () => {
 
     await waitFor(() => expect(adapter.list).toHaveBeenCalledWith(false));
 
-    // Default branch ("main") should be checked.
+
     const mainRow = await screen.findByTestId("branch-row-main");
     const radio = within(mainRow).getByRole("radio");
     expect(radio).toBeChecked();
@@ -65,9 +65,9 @@ describe("TargetBranchScreen", () => {
 
     await waitFor(() => expect(adapter.list).toHaveBeenCalled());
 
-    // First row should be `main` (the default), not `feature/x`.
+
     const rows = await screen.findAllByRole("row");
-    // rows[0] is the header; rows[1] is the first data row.
+
     expect(within(rows[1]).getByText("main")).toBeInTheDocument();
   });
 
@@ -101,7 +101,7 @@ describe("TargetBranchScreen", () => {
     const user = userEvent.setup();
 
     await waitFor(() => expect(adapter.list).toHaveBeenCalled());
-    // Pick a non-default branch, then leave via the rail (unmount) — no Save.
+
     const featureRow = await screen.findByTestId("branch-row-feature/x");
     await user.click(within(featureRow).getByRole("radio"));
     unmount();
@@ -114,8 +114,8 @@ describe("TargetBranchScreen", () => {
     const { unmount } = renderScreen(adapter);
 
     await waitFor(() => expect(adapter.list).toHaveBeenCalled());
-    // Passive visit: the default was auto-seeded, not user-picked. Leaving must
-    // not overwrite the configured target with the default.
+
+
     unmount();
 
     expect(adapter.setTarget).not.toHaveBeenCalled();

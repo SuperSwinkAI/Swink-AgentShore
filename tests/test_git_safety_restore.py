@@ -36,7 +36,6 @@ def conflicted_repo(tmp_path: Path) -> Path:
     _git(["add", "agent.py"], repo)
     _git(["commit", "-m", "base"], repo)
 
-    # Divergent branch edits the same line.
     _git(["checkout", "-b", "feature"], repo)
     f.write_text("feature change\n")
     _git(["commit", "-am", "feature"], repo)
@@ -44,7 +43,6 @@ def conflicted_repo(tmp_path: Path) -> Path:
     f.write_text("main change\n")
     _git(["commit", "-am", "main"], repo)
 
-    # Merge feature -> conflict, left in progress on main.
     res = subprocess.run(["git", "merge", "feature"], cwd=str(repo), capture_output=True, text=True)
     assert res.returncode != 0, "expected a merge conflict"
     assert (repo / ".git" / "MERGE_HEAD").exists()
@@ -57,7 +55,6 @@ def conflicted_repo(tmp_path: Path) -> Path:
 
 def test_restore_default_branch_aborts_conflicted_merge(conflicted_repo: Path) -> None:
     assert restore_default_branch(conflicted_repo, "main").ok is True
-    # MERGE_HEAD gone and the worktree is clean again.
     assert not (conflicted_repo / ".git" / "MERGE_HEAD").exists()
     status = subprocess.run(
         ["git", "status", "--porcelain"],
@@ -99,19 +96,15 @@ def untracked_blocked_repo(tmp_path: Path) -> Path:
     _git(["config", "user.email", "t@e.com"], repo)
     _git(["config", "user.name", "T"], repo)
     _git(["config", "commit.gpgsign", "false"], repo)
-    # AgentShore repos always gitignore .agentshore/ — so the quarantine dir the
-    # restore creates does not itself re-dirty the tree.
     (repo / ".gitignore").write_text(".agentshore/\n")
     (repo / "data.txt").write_text("main data\n")
     (repo / "sub").mkdir()
     (repo / "sub" / "nested.txt").write_text("main nested\n")
     _git(["add", "."], repo)
     _git(["commit", "-m", "base"], repo)
-    # A feature branch that does not carry those tracked files.
     _git(["checkout", "-b", "feature"], repo)
     _git(["rm", "data.txt", "sub/nested.txt"], repo)
     _git(["commit", "-m", "drop tracked files"], repo)
-    # The agent left HEAD on feature with *untracked* copies main would overwrite.
     (repo / "data.txt").write_text("contaminating untracked\n")
     (repo / "sub").mkdir(exist_ok=True)
     (repo / "sub" / "nested.txt").write_text("contaminating nested\n")
@@ -128,7 +121,6 @@ def test_restore_quarantines_untracked_blockers_and_lands_on_default(
 ) -> None:
     repo = untracked_blocked_repo
     assert restore_default_branch(repo, "main").ok is True
-    # Back on the default branch with a clean tree.
     head = subprocess.run(
         ["git", "symbolic-ref", "HEAD"], cwd=str(repo), capture_output=True, text=True
     ).stdout.strip()
@@ -137,11 +129,9 @@ def test_restore_quarantines_untracked_blockers_and_lands_on_default(
         ["git", "status", "--porcelain"], cwd=str(repo), capture_output=True, text=True
     ).stdout
     assert status.strip() == ""
-    # The contaminating content was preserved (moved, not deleted), nested paths intact.
     reclaimed = repo / ".agentshore" / "reclaimed" / "restore"
     assert (reclaimed / "data.txt").read_text() == "contaminating untracked\n"
     assert (reclaimed / "sub" / "nested.txt").read_text() == "contaminating nested\n"
-    # The tracked default-branch versions are restored in the working tree.
     assert (repo / "data.txt").read_text() == "main data\n"
     assert (repo / "sub" / "nested.txt").read_text() == "main nested\n"
 
@@ -169,12 +159,9 @@ def tracked_dirt_blocked_repo(tmp_path: Path) -> Path:
     (repo / "conflict.txt").write_text("main version\n")
     _git(["add", "."], repo)
     _git(["commit", "-m", "base"], repo)
-    # Feature branch carries a *different* committed version of the same file.
     _git(["checkout", "-b", "feature"], repo)
     (repo / "conflict.txt").write_text("feature committed version\n")
     _git(["commit", "-am", "feature edit"], repo)
-    # The agent left HEAD on feature with an uncommitted tracked modification
-    # that ``main`` would overwrite.
     (repo / "conflict.txt").write_text("un-attributable local change\n")
     refused = subprocess.run(
         ["git", "checkout", "main"], cwd=str(repo), capture_output=True, text=True
@@ -204,7 +191,6 @@ def test_restore_resets_tracked_dirt_and_lands_on_default(
         ["git", "status", "--porcelain"], cwd=str(repo), capture_output=True, text=True
     ).stdout
     assert status.strip() == ""
-    # The default-branch committed content is back; the local change was discarded.
     assert (repo / "conflict.txt").read_text() == "main version\n"
 
 
@@ -229,7 +215,7 @@ def test_restore_surfaces_stderr_on_genuine_failure(tmp_path: Path) -> None:
     result = restore_default_branch(repo, "does-not-exist")
     assert result.ok is False
     assert result.stderr is not None
-    assert result.stderr  # non-empty git error text
+    assert result.stderr
     assert len(result.stderr) <= 500
 
 
@@ -255,7 +241,6 @@ def test_restore_treats_nonzero_checkout_already_on_default_as_success(
     (repo / "x").write_text("x\n")
     _git(["add", "x"], repo)
     _git(["commit", "-m", "x"], repo)
-    # The repo is genuinely on main; only the checkout *command* is made to fail.
 
     real_run_git = git_safety._run_git
 
@@ -275,7 +260,6 @@ def test_restore_treats_nonzero_checkout_already_on_default_as_success(
     result = restore_default_branch(repo, "main")
     assert result.ok is True
     assert result.stderr is None
-    # HEAD is still on the default branch — the recovery ladder never had to run.
     head = subprocess.run(
         ["git", "symbolic-ref", "HEAD"], cwd=str(repo), capture_output=True, text=True
     ).stdout.strip()

@@ -89,8 +89,6 @@ class ReconcileStatePlay(SkillBackedPlay):
 
     @property
     def capability(self) -> str | None:
-        # Needs issue-creation: the skill can ``gh issue create`` a follow-up
-        # for genuinely-new bugs it can't classify.
         return "can_run_skill"
 
     async def _extra_context(

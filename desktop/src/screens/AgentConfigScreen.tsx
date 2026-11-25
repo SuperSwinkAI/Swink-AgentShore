@@ -10,8 +10,8 @@ import {
 
 type Tier = "small" | "medium" | "large";
 
-// AgentType is imported via AGENT_REGISTRY so the desktop stays in sync with
-// the canonical registry in the dashboard package without a second definition.
+
+
 type AgentType = keyof typeof AGENT_REGISTRY;
 
 interface TierEntry {
@@ -22,10 +22,10 @@ interface TierEntry {
 }
 type TierPlan = Record<Tier, TierEntry>;
 
-// Recommended defaults and per-agent model lists now come from the sidecar
-// (agents.catalog), sourced from agentshore.agents.model_catalog.KNOWN_MODELS and
-// agentshore.agents.model_tiers.DEFAULT_MODEL_TIERS — the same canonical data the
-// CLI wizard reads. Labels are derived from the registry.
+
+
+
+
 const AGENT_TYPE_SET = new Set<string>(AGENT_TYPES);
 const TIERS: Tier[] = ["small", "medium", "large"];
 
@@ -70,15 +70,15 @@ function tierPlanFromCatalog(
 }
 
 export function AgentConfigScreen() {
-  // When reached via /setup/agent-config/:type (the Configure button on
-  // AgentsScreen), seed the selected agent from the URL param so the user
-  // lands on the row they clicked. When reached via the older standalone
-  // /onboarding/agent-config route there is no param; default to codex.
+
+
+
+
   const { type: typeParam } = useParams<{ type?: string }>();
   const navigate = useNavigate();
-  // Back/Save both return to /setup/agents if we got here from the setup
-  // flow; otherwise (standalone /onboarding entry) return to the home
-  // route. Detect by the presence of the :type param.
+
+
+
   const returnTo = typeParam !== undefined ? "/setup/agents" : "/";
   const initialAgentType: AgentType =
     typeParam !== undefined && isAgentType(typeParam) ? typeParam : "codex";
@@ -89,10 +89,10 @@ export function AgentConfigScreen() {
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
 
-  // Load catalog + persisted config once on mount, then again whenever the
-  // selected runner changes. Persisted tier_models wins over the catalog
-  // defaults so a user who has already configured the agent in CLI sees
-  // their values reflected here.
+
+
+
+
   useEffect(() => {
     let cancelled = false;
     setLoadError(null);
@@ -183,15 +183,9 @@ export function AgentConfigScreen() {
         string,
         { enabled: boolean; model: string; max: number; reasoning_effort?: string }
       > = {};
-      // Only agents whose CLI exposes an effort flag may persist one — otherwise
-      // the backend config validator rejects the whole config.
       const supportsEffort = effortOptions.length > 0;
       for (const tier of TIERS) {
         const { model, enabled, max, reasoning_effort } = tierPlan[tier];
-        // Persist the entry whenever the model is set, even when disabled —
-        // that way a tier toggled off keeps its model selection for next
-        // time the user re-enables it (matches the CLI wizard's behavior
-        // where unticked tiers persist as `enabled: false`).
         if (model.length > 0) {
           tier_models[tier] = {
             enabled,
@@ -259,9 +253,9 @@ export function AgentConfigScreen() {
             const recommendedEntry = recommended[tier];
             const isRecommended =
               entry.model === recommendedEntry.model && entry.enabled === recommendedEntry.enabled;
-            // If the saved model isn't in the catalog (e.g. user typed a
-            // custom ID via the CLI), still include it as an option so we
-            // don't silently drop their selection.
+
+
+
             const options =
               entry.model.length > 0 && !modelOptions.includes(entry.model)
                 ? [entry.model, ...modelOptions]

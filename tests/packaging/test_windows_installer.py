@@ -6,8 +6,6 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 PROVISIONER = REPO_ROOT / "desktop/src-tauri/provisioner/src/main.rs"
 PROVISIONER_SUPPORT = REPO_ROOT / "desktop/src-tauri/provisioner/src/agentshore_provisioner.rs"
 
-# The Windows build is the Python spine (`python -m scripts.buildkit windows`);
-# the only PowerShell left is the native signing carve-out it shells out to.
 WINDOWS_PY = REPO_ROOT / "scripts/buildkit/windows.py"
 WIN_SIGN_HELPER = REPO_ROOT / "scripts/buildkit/_win_signing.ps1"
 
@@ -46,14 +44,9 @@ def test_windows_inno_template_calls_compiled_provisioner() -> None:
 
 
 def test_windows_inno_template_updates_existing_timelapse_on_every_install() -> None:
-    # Timelapse is opt-in, so a previously-installed CLI would otherwise never be
-    # upgraded by a later install. The else-branch must always run the
-    # update-if-installed step (a no-op when the CLI is absent).
     template = (REPO_ROOT / "packaging/desktop/windows/AgentShore.iss.in").read_text()
 
     assert "RunProvisionerStep('Updating Timelapse Capture', 'timelapse-update'" in template
-    # The fresh-install (opt-in) path and the always-run update path are mutually
-    # exclusive branches of the same component check.
     assert "if WizardIsComponentSelected('timelapse') then" in template
 
 
@@ -182,11 +175,10 @@ def test_windows_sidecar_runtime_uses_programdata_venv() -> None:
     runtime_rs = (REPO_ROOT / "desktop/src-tauri/src/sidecar_runtime.rs").read_text()
     layout_rs = (REPO_ROOT / "desktop/src-tauri/src/install_layout.rs").read_text()
 
-    # PROGRAMDATA access and path helpers moved to install_layout (single source of truth).
     assert 'std::env::var_os("PROGRAMDATA")' in layout_rs
     assert "managed_venv_python_path" in layout_rs
     assert "managed_bin_path" not in layout_rs
-    assert "AGENTSHORE_BD_BIN_ENV" not in sidecar_rs  # the sidecar never pins bd
+    assert "AGENTSHORE_BD_BIN_ENV" not in sidecar_rs
     assert "AGENTSHORE_GITHUB_HELPER" not in sidecar_rs
     assert r"AgentShore\venv\Scripts\python.exe" in runtime_rs
 
@@ -225,7 +217,6 @@ def test_windows_sidecar_records_pid_for_installer_cleanup() -> None:
     layout_rs = (REPO_ROOT / "desktop/src-tauri/src/install_layout.rs").read_text()
 
     assert "write_sidecar_pid_file(child.id())" in sidecar_rs
-    # sidecar.pid path definition moved to install_layout (single source of truth).
     assert "sidecar.pid" in layout_rs
     assert "remove_sidecar_pid_file()" in sidecar_rs
 
@@ -234,11 +225,9 @@ def test_windows_sidecar_launch_suppresses_console_window() -> None:
     env_rs = (REPO_ROOT / "desktop/src-tauri/src/sidecar_env.rs").read_text()
     layout_rs = (REPO_ROOT / "desktop/src-tauri/src/install_layout.rs").read_text()
 
-    # CommandExt and CREATE_NO_WINDOW moved to install_layout (shared with provisioner).
     assert "std::os::windows::process::CommandExt" in layout_rs
     assert "CREATE_NO_WINDOW" in layout_rs
     assert "creation_flags(CREATE_NO_WINDOW)" in layout_rs
-    # sidecar_env delegates to install_layout.
     assert "install_layout::apply_no_window_creation_flags" in env_rs
 
 
@@ -266,8 +255,6 @@ def test_windows_provisioner_uses_programdata_layout_and_icacls() -> None:
     source = _provisioner_source()
     layout_rs = (REPO_ROOT / "desktop/src-tauri/src/install_layout.rs").read_text()
 
-    # ProgramData fallback constant and path helpers moved to install_layout (single source of
-    # truth). The provisioner includes install_layout.rs via #[path] and delegates to it.
     assert r'OsString::from(r"C:\ProgramData")' in layout_rs
     assert 'join("install-logs")' in source
     assert 'join("venv")' in layout_rs
@@ -282,7 +269,6 @@ def test_windows_provisioner_installs_wheel_but_not_bd() -> None:
     assert 'os("venv")' in source
     assert 'os("pip")' in source
     assert "import agentshore.sidecar" in source
-    # bd is the system's; the installer never downloads or stages one.
     assert "provision_bd" not in source
     assert "bd.exe" not in source
 

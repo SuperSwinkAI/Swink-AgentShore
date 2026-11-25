@@ -90,11 +90,6 @@ def _pressure_state(
     )
 
 
-# ---------------------------------------------------------------------------
-# Eligibility-mask invariants (the linchpin of the orchestrator change)
-# ---------------------------------------------------------------------------
-
-
 def test_eligibility_mask_keeps_instantiate_open_when_all_agents_busy() -> None:
     """INSTANTIATE_AGENT has capability=None → bypasses the eligibility mask.
 
@@ -121,7 +116,6 @@ def test_eligibility_mask_masks_worker_plays_when_all_agents_busy() -> None:
 
     mask = compute_agent_eligibility_mask(state, build_default_registry(), cfg=cfg)
 
-    # Sample of worker plays — none should be eligible while every agent is BUSY.
     for pt in (
         PlayType.ISSUE_PICKUP,
         PlayType.RUN_QA,
@@ -129,11 +123,6 @@ def test_eligibility_mask_masks_worker_plays_when_all_agents_busy() -> None:
         PlayType.GROOM_BACKLOG,
     ):
         assert not mask[PLAY_TO_INDEX[pt]], f"{pt.value} should be masked when no IDLE agent"
-
-
-# ---------------------------------------------------------------------------
-# Config-mask still bounds spawn rate
-# ---------------------------------------------------------------------------
 
 
 def test_config_mask_blocks_instantiate_when_every_cell_saturated() -> None:
@@ -185,14 +174,8 @@ def test_config_mask_blocks_instantiate_at_max_per_config() -> None:
 
     config_mask = compute_config_mask(state, cfg, config_index)
 
-    # claude_code/medium is at the cap; codex/medium still has room.
     assert not config_mask[0]
     assert config_mask[1]
-
-
-# ---------------------------------------------------------------------------
-# End-to-end: action mask under pressure
-# ---------------------------------------------------------------------------
 
 
 def test_action_mask_under_pressure_keeps_instantiate_pickable() -> None:
