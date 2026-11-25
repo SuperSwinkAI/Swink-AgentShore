@@ -183,22 +183,19 @@ export function AgentConfigScreen() {
         string,
         { enabled: boolean; model: string; max: number; reasoning_effort?: string }
       > = {};
-      // Grok is hard-pinned to grok-4.5; never round-trip a stale model id.
-      const isGrok = agentType === "grok";
       // Only agents whose CLI exposes an effort flag may persist one — otherwise
       // the backend config validator rejects the whole config.
       const supportsEffort = effortOptions.length > 0;
       for (const tier of TIERS) {
         const { model, enabled, max, reasoning_effort } = tierPlan[tier];
-        const persistedModel = isGrok ? "grok-4.5" : model;
         // Persist the entry whenever the model is set, even when disabled —
         // that way a tier toggled off keeps its model selection for next
         // time the user re-enables it (matches the CLI wizard's behavior
         // where unticked tiers persist as `enabled: false`).
-        if (persistedModel.length > 0) {
+        if (model.length > 0) {
           tier_models[tier] = {
             enabled,
-            model: persistedModel,
+            model,
             max: max ?? 1,
             ...(supportsEffort && reasoning_effort !== null && reasoning_effort.length > 0
               ? { reasoning_effort }
@@ -297,29 +294,19 @@ export function AgentConfigScreen() {
                     <label className="desktop-label" htmlFor={`${tier}-model-select`}>
                       Model
                     </label>
-                    {agentType === "grok" ? (
-                      <span
-                        id={`${tier}-model-select`}
-                        className="desktop-select desktop-select--readonly"
-                        aria-label={`Model for ${tier} tier`}
-                      >
-                        grok-4.5
-                      </span>
-                    ) : (
-                      <select
-                        id={`${tier}-model-select`}
-                        className="desktop-select"
-                        value={entry.model}
-                        onChange={(event) => updateTierModel(tier, event.target.value)}
-                        disabled={catalog === null || !entry.enabled}
-                      >
-                        {options.map((model) => (
-                          <option key={model} value={model}>
-                            {model}
-                          </option>
-                        ))}
-                      </select>
-                    )}
+                    <select
+                      id={`${tier}-model-select`}
+                      className="desktop-select"
+                      value={entry.model}
+                      onChange={(event) => updateTierModel(tier, event.target.value)}
+                      disabled={catalog === null || !entry.enabled}
+                    >
+                      {options.map((model) => (
+                        <option key={model} value={model}>
+                          {model}
+                        </option>
+                      ))}
+                    </select>
                   </div>
                   {effortOptions.length > 0 && (
                     <div className="tier-plan-field tier-plan-field--effort">

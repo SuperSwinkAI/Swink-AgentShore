@@ -48,15 +48,18 @@ models:
     - claude-fable-5
 
   codex:
-    # ChatGPT-account-compatible line (also works with API-key auth).
-    # gpt-5.6-sol/terra/luna (released 2026-07-09) map directly onto
-    # AgentShore's large/medium/small tiers - OpenAI's own
-    # flagship/balanced/fast-affordable segmentation. Verified live via
-    # codex-cli 0.144.1 `debug models`.
+    # ChatGPT-account-compatible line (also works with API-key auth). Mirrors
+    # the listed models of codex-cli 0.171.0 `debug models`.
+    - gpt-6.2-sol
+    - gpt-6.2-astra
+    - gpt-6.1-terra
+    - gpt-6.1-sol
+    - gpt-6-astra
+    - gpt-6-sol
+    - gpt-6-luna
     - gpt-5.6-sol
     - gpt-5.6-terra
     - gpt-5.6-luna
-    - gpt-5.5
     # gpt-5.4 / gpt-5.4-mini are deliberately absent: codex-cli 0.144.1 rejects
     # them under ChatGPT-account auth ("not supported when using Codex with a
     # ChatGPT account"), the same permanent-INVALID_MODEL risk as below.
@@ -81,12 +84,16 @@ models:
   antigravity:
     # agy exposes models by display name with reasoning effort baked in (no
     # separate effort flag). Offline fallback only — the live list comes from
-    # `agy models` (mirrors agy 1.3.2).
+    # `agy models` (mirrors agy 1.5.16).
+    - Gemini 4 Argon (High)
+    - Gemini 4 Argon (Medium)
+    - Gemini 4 Argon (Low)
+    - Gemini 4 Hydrogen (High)
+    - Gemini 4 Hydrogen (Medium)
+    - Gemini 4 Hydrogen (Low)
     - Gemini 3.8 Flash (High)
     - Gemini 3.8 Flash (Medium)
     - Gemini 3.8 Flash (Low)
-    - Gemini 3.1 Pro (High)
-    - Gemini 3.1 Pro (Low)
     - Claude Opus 5.5 (High)
     - Claude Sonnet 5.5 (High)
     - GPT-OSS 120B (Medium)

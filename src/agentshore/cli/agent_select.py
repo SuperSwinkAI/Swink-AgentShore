@@ -387,7 +387,6 @@ def _interactive_agent_select(
         click.echo(f"\n  Edit {label} · {tier}")
 
         efforts = reasoning_efforts_for(agent_type)
-        is_grok = agent_type == AgentType.GROK
         # swink-coding's `--model` flag accepts the small/medium/large tier
         # aliases directly, or a `provider:model[@endpoint]` value dispatched
         # via `--tier-map` (both surface through the model catalog below), so
@@ -395,8 +394,7 @@ def _interactive_agent_select(
         # a hand-typed value skips `classify_swink_model` validation and could
         # be an invalid CLI value.
         is_swink_coding = agent_type == AgentType.SWINK_CODING
-        # total prompt count: enable + model (skipped for grok) + effort (if any) + max.
-        total = 2 + (0 if is_grok else 1) + (1 if efforts else 0)
+        total = 3 + (1 if efforts else 0)
         n = 0
 
         # tier enabled?
@@ -420,31 +418,26 @@ def _interactive_agent_select(
             )
             return
 
-        # model — grok is hard-pinned to grok-4.5, so skip the picker entirely.
-        if is_grok:
-            chosen = "grok-4.5"
-            click.echo("  model · grok-4.5 (fixed)")
+        n += 1
+        catalog_models = model_catalogs.get(agent_key, [])
+        available_models = (
+            catalog_models if is_swink_coding else catalog_models + [_CUSTOM_MODEL_SENTINEL]
+        )
+        default_model = cur.model if cur and cur.model else dtcfg.model or ""
+        cursor_idx = (
+            available_models.index(default_model) if default_model in available_models else 0
+        )
+        click.echo(f"  [{n}/{total}] model")
+        chosen_sel: str | None = beaupy_select(
+            options=available_models, cursor_index=cursor_idx, cursor_style="cyan"
+        )
+        if not chosen_sel:
+            chosen = default_model
+        elif chosen_sel == _CUSTOM_MODEL_SENTINEL:
+            typed = beaupy_prompt(f"  Model for {label}/{tier}: ", initial_value=default_model)
+            chosen = (typed or default_model).strip()
         else:
-            n += 1
-            catalog_models = model_catalogs.get(agent_key, [])
-            available_models = (
-                catalog_models if is_swink_coding else catalog_models + [_CUSTOM_MODEL_SENTINEL]
-            )
-            default_model = cur.model if cur and cur.model else dtcfg.model or ""
-            cursor_idx = (
-                available_models.index(default_model) if default_model in available_models else 0
-            )
-            click.echo(f"  [{n}/{total}] model")
-            chosen_sel: str | None = beaupy_select(
-                options=available_models, cursor_index=cursor_idx, cursor_style="cyan"
-            )
-            if not chosen_sel:
-                chosen = default_model
-            elif chosen_sel == _CUSTOM_MODEL_SENTINEL:
-                typed = beaupy_prompt(f"  Model for {label}/{tier}: ", initial_value=default_model)
-                chosen = (typed or default_model).strip()
-            else:
-                chosen = chosen_sel
+            chosen = chosen_sel
 
         # reasoning effort — only agents whose CLI exposes one.
         if efforts:

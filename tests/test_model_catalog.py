@@ -123,10 +123,10 @@ def test_codex_known_models_exclude_legacy_and_deprecated_models() -> None:
 def test_codex_catalog_includes_current_lineup() -> None:
     codex_models = KNOWN_MODELS["codex"]
 
-    assert "gpt-5.6-sol" in codex_models
-    assert "gpt-5.6-terra" in codex_models
-    assert "gpt-5.6-luna" in codex_models
-    assert "gpt-5.5" in codex_models
+    assert "gpt-6.2-astra" in codex_models
+    assert "gpt-6.2-sol" in codex_models
+    assert "gpt-6-luna" in codex_models
+    assert "gpt-5.5" not in codex_models
 
 
 def test_grok_known_models_include_default_tier_model() -> None:
@@ -149,13 +149,11 @@ def test_live_probe_result_replaces_catalog(monkeypatch: pytest.MonkeyPatch) -> 
 
 
 def test_antigravity_known_models_include_non_google_backends() -> None:
-    # agy (mirrors `agy models`, agy 1.3.2) exposes non-Google backends
-    # alongside Gemini; they must be selectable.
     antigravity = KNOWN_MODELS["antigravity"]
     assert "Claude Sonnet 5.5 (High)" in antigravity
     assert "Claude Opus 5.5 (High)" in antigravity
     assert "GPT-OSS 120B (Medium)" in antigravity
-    assert "Gemini 3.1 Pro (High)" in antigravity
+    assert "Gemini 4 Argon (High)" in antigravity
 
 
 def test_swink_coding_known_models_are_tier_aliases() -> None:
