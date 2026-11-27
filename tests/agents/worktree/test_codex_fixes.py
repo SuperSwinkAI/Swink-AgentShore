@@ -44,9 +44,6 @@ def _make_manager(store: DataStore, main_repo: Path, worktree_root: Path) -> Wor
     )
 
 
-# --- Q1: lifecycle integrity ------------------------------------------------
-
-
 async def test_pr_reuse_with_dirty_target_recovers_via_quarantine(
     store: DataStore, main_repo: Path, worktree_root: Path, remote_branch: str
 ) -> None:
@@ -78,7 +75,6 @@ async def test_pr_reuse_with_dirty_target_recovers_via_quarantine(
 
     allocation = await wm.allocate_for_dispatch(play_type=PlayType.CODE_REVIEW, params=params)
 
-    # Allocation succeeded; the path is now a real worktree.
     assert (Path(str(allocation.path)) / ".git").exists()  # type: ignore[attr-defined]
     refreshed = await lookup_by_id(store, worktree_id=row.worktree_id)
     assert refreshed is not None
@@ -118,9 +114,6 @@ async def test_branch_creating_reuse_with_dirty_target_recovers(
     assert refreshed.status == "active"
 
 
-# --- Q2 / Q5: concurrency lock ---------------------------------------------
-
-
 async def test_concurrent_pr_allocations_share_a_single_worktree(
     store: DataStore, main_repo: Path, worktree_root: Path, remote_branch: str
 ) -> None:
@@ -139,7 +132,6 @@ async def test_concurrent_pr_allocations_share_a_single_worktree(
         wm.allocate_for_dispatch(play_type=PlayType.UNBLOCK_PR, params=params),
     )
     a, b = results
-    # Both allocations resolve to the same worktree row + path.
     assert a.worktree_id == b.worktree_id  # type: ignore[union-attr]
     assert a.path == b.path  # type: ignore[union-attr]
 
@@ -160,9 +152,6 @@ async def test_concurrent_branch_creating_share_prebranch_row(
     assert a.pre_branch_key == "pickup-123"  # type: ignore[union-attr]
 
 
-# --- Q3: rekey atomicity ----------------------------------------------------
-
-
 async def test_rekey_db_failure_updates_worktree_path_for_reap(
     store: DataStore, main_repo: Path, worktree_root: Path
 ) -> None:
@@ -175,7 +164,6 @@ async def test_rekey_db_failure_updates_worktree_path_for_reap(
     """
     from agentshore.agents.worktree import rekey as rekey_mod
 
-    # Seed: branch-creating row whose dir exists on disk.
     src_dir = worktree_root / "pickup-tmp"
     src_dir.mkdir()
     (src_dir / "marker.txt").write_text("rekey source\n")
@@ -210,14 +198,9 @@ async def test_rekey_db_failure_updates_worktree_path_for_reap(
     refreshed = await lookup_by_id(store, worktree_id=row.worktree_id)
     assert refreshed is not None
     assert refreshed.status == "stale"
-    # The on-disk location moved; the row must reflect the new path so
-    # the next reap can drop the actual worktree, not chase the gone src.
     assert refreshed.worktree_path == str(target)
     assert target.exists()
     assert not src_dir.exists()
-
-
-# --- Adjacent #1: orphan disk on insert failure -----------------------------
 
 
 async def test_insert_failure_cleans_up_orphan_worktree_directory(
@@ -245,12 +228,8 @@ async def test_insert_failure_cleans_up_orphan_worktree_directory(
     finally:
         manager_mod.insert_worktree = real_insert  # type: ignore[assignment]
 
-    # No orphan dir on disk.
     expected = worktree_root / "feature-x"
     assert not expected.exists()
-
-
-# --- Adjacent #2: TTL reaper retries 'reaping' rows -------------------------
 
 
 async def test_closed_pr_reaper_retries_rows_stuck_in_reaping(
@@ -259,7 +238,6 @@ async def test_closed_pr_reaper_retries_rows_stuck_in_reaping(
     """A row stuck in 'reaping' (prior reap crashed) is retried by the TTL pass."""
     from agentshore.agents.worktree.reaper import reap_for_closed_prs
 
-    # Materialise a worktree on disk via git so the reaper's remove succeeds.
     target = worktree_root / "stuck-reaping"
     subprocess.check_call(
         ["git", "worktree", "add", "-b", "stuck-branch", str(target), "HEAD"],
@@ -276,8 +254,6 @@ async def test_closed_pr_reaper_retries_rows_stuck_in_reaping(
         base_ref="origin/stuck-branch",
         head_sha=None,
     )
-    # Force into 'reaping' as if a prior attempt crashed mid-flight, and
-    # back-date last_used_at so it's past the TTL cutoff.
     await mark_status(store, worktree_id=row.worktree_id, status="reaping")
     await store._conn.execute(
         "UPDATE worktrees SET last_used_at = ? WHERE worktree_id = ?",
@@ -298,9 +274,6 @@ async def test_closed_pr_reaper_retries_rows_stuck_in_reaping(
     assert not target.exists()
 
 
-# --- desktop-kdl5: _alloc_locks eviction -----------------------------------
-
-
 async def test_prune_locks_drops_entries_with_no_live_row(
     store: DataStore, main_repo: Path, worktree_root: Path
 ) -> None:
@@ -309,15 +282,12 @@ async def test_prune_locks_drops_entries_with_no_live_row(
     Without eviction the dict grows unbounded over a long-lived session.
     """
     wm = _make_manager(store, main_repo, worktree_root)
-    # Seed two locks by calling _get_alloc_lock directly — neither has a
-    # corresponding row in the worktrees table.
     await wm._get_alloc_lock("branch", "main")
     await wm._get_alloc_lock("prebranch", "pickup-9999")
     assert len(wm._alloc_locks) == 2
 
     await wm._prune_locks()
 
-    # No matching active rows → both pruned.
     assert wm._alloc_locks == {}
 
 
@@ -337,7 +307,7 @@ async def test_prune_locks_preserves_locks_for_active_rows(
     )
     wm = _make_manager(store, main_repo, worktree_root)
     await wm._get_alloc_lock("branch", "kept")
-    await wm._get_alloc_lock("branch", "dropped")  # no matching row
+    await wm._get_alloc_lock("branch", "dropped")
 
     await wm._prune_locks()
 
@@ -358,9 +328,6 @@ async def test_finalize_after_rekey_evicts_prebranch_lock(
     from agentshore.agents.worktree import WorktreeAllocation
     from agentshore.state import PlayOutcome, SkillResult
 
-    # Seed: pickup row with on-disk worktree on a real branch (so the
-    # rekey path can detect_branch_in_worktree → real branch name and
-    # the directory move into worktree_root/<slug> succeeds).
     src = worktree_root / "pickup-tmp"
     subprocess.check_call(
         ["git", "worktree", "add", "-b", "feature/from-pickup", str(src), "HEAD"],
@@ -378,7 +345,6 @@ async def test_finalize_after_rekey_evicts_prebranch_lock(
     )
 
     wm = _make_manager(store, main_repo, worktree_root)
-    # Pre-seed the prebranch lock so we can assert it's evicted later.
     await wm._get_alloc_lock("prebranch", "pickup-42")
     assert "prebranch:pickup-42" in wm._alloc_locks
 
@@ -413,16 +379,12 @@ async def test_reap_session_start_prunes_locks(
 ) -> None:
     """reap_session_start triggers _prune_locks after the sweep."""
     wm = _make_manager(store, main_repo, worktree_root)
-    # Seed an orphan lock with no corresponding row.
     await wm._get_alloc_lock("branch", "orphan")
     assert "branch:orphan" in wm._alloc_locks
 
     await wm.reap_session_start()
 
     assert "branch:orphan" not in wm._alloc_locks
-
-
-# --- desktop-hqht: lock-instrumented concurrency tests ----------------------
 
 
 class _InstrumentedLock:
@@ -484,7 +446,6 @@ async def test_pr_alloc_lock_is_actually_held_across_lookup_insert(
     instrumented = _InstrumentedLock()
 
     async def fake_get_lock(scope: str, key: str) -> _InstrumentedLock:
-        # Identity: same instrumented lock for both calls (same branch).
         return instrumented
 
     wm._get_alloc_lock = fake_get_lock  # type: ignore[assignment]
@@ -494,10 +455,8 @@ async def test_pr_alloc_lock_is_actually_held_across_lookup_insert(
         wm.allocate_for_dispatch(play_type=PlayType.UNBLOCK_PR, params=params),
     )
 
-    # Each coroutine entered the critical section exactly once and exited it.
     assert instrumented.acquire_count == 2
     assert instrumented.release_count == 2
-    # The whole point of the lock: never more than one holder at a time.
     assert instrumented.max_concurrent_holders == 1
 
 
@@ -535,11 +494,9 @@ async def test_different_branches_use_independent_locks(
     """
     wm = _make_manager(store, main_repo, worktree_root)
 
-    # Touch the lock for one branch to verify _get_alloc_lock keys it properly.
     lock_a = await wm._get_alloc_lock("branch", "feature/a")
     lock_b = await wm._get_alloc_lock("branch", "feature/b")
     assert lock_a is not lock_b
 
-    # And the prebranch namespace is disjoint from the branch namespace.
     lock_p = await wm._get_alloc_lock("prebranch", "feature/a")
     assert lock_p is not lock_a

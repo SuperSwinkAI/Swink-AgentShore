@@ -1,4 +1,3 @@
-/* ── Kanban board (HTML layout) ─────────────────────────────── */
 .km-card:focus-visible {
   outline: 2px solid var(--color-fm-idle);
   outline-offset: 2px;
@@ -29,9 +28,6 @@
   color: var(--fm-text-muted);
   flex-shrink: 0;
 }
-/* Piece C: "(N hidden)" PR badge — open PRs filtered out because their
-         base branch differs from the session target branch. Muted so it reads
-         as accounting metadata, not active work. */
 .km-hdr-hidden {
   font-family: var(--font-mono);
   font-size: 10px;
@@ -130,7 +126,6 @@
   background: transparent;
 }
 
-/* Two-line card */
 .km-card {
   display: grid;
   grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
@@ -213,7 +208,6 @@
   pointer-events: none;
 }
 
-/* In-progress: stronger border + amber underline */
 .km-col[data-phase="in_progress"] .km-card {
   border-color: oklch(var(--c-mark-l) var(--c-mark-c) var(--c-hue, 210) / 0.38);
 }
@@ -221,7 +215,6 @@
   border-color: oklch(var(--c-mark-l) var(--c-mark-c) var(--c-hue, 210) / 0.62);
 }
 
-/* Done: no tint, muted strikethrough */
 .km-col[data-phase="done"] .km-card {
   background: transparent;
   border-color: var(--fm-border-subtle);
@@ -238,7 +231,6 @@
   opacity: 0.45;
 }
 
-/* Agent focus */
 .km-board[data-focused-agent] .km-card {
   opacity: 0.3;
 }
@@ -247,7 +239,6 @@
   box-shadow: inset 0 0 0 1.5px var(--color-fm-idle);
 }
 
-/* Empty state */
 .km-empty {
   padding: 24px 10px;
   font-family: var(--font-mono);

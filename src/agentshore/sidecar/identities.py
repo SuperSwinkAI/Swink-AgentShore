@@ -52,7 +52,6 @@ from agentshore.sidecar.identity_config import (
 if TYPE_CHECKING:
     from pathlib import Path
 
-# Re-export for callers that import directly from this module.
 __all__ = [
     "IdentityRow",
     "TokenSource",
@@ -91,11 +90,6 @@ def _clean_token(token: str | None) -> str | None:
     return cleaned or None
 
 
-# ---------------------------------------------------------------------------
-# Keyring helpers — thin wrappers over the single killable child in keyring_child
-# ---------------------------------------------------------------------------
-
-
 def _run_keyring_child(request: dict[str, object]) -> dict[str, object]:
     """Delegate to the canonical killable keyring child in ``agentshore.keyring_child``.
 
@@ -130,11 +124,6 @@ def _keyring_set_password(service: str, pat: str) -> None:
 
 def _keyring_backend_name() -> str:
     return _kc.keyring_backend_name()
-
-
-# ---------------------------------------------------------------------------
-# Token resolution
-# ---------------------------------------------------------------------------
 
 
 def _validate_token_matches_login(entry: dict[str, object], expected_login: str) -> None:
@@ -269,7 +258,6 @@ def _resolve_login_auth(raw: dict[str, object]) -> _CredentialResolution:
     )
 
 
-# Per-source token resolver: callable receives the raw identity dict, returns token or None.
 _TOKEN_RESOLVERS: dict[TokenSource, object] = {
     TokenSource.LOGIN: _resolve_login_token,
     TokenSource.ENV: lambda raw: os.environ.get(str(raw["gh_token_env"])),
@@ -284,11 +272,6 @@ def _token_for_identity(raw: dict[str, object]) -> tuple[str | None, str]:
             token = _clean_token(resolver(raw))  # type: ignore[operator]
             return token, source.value
     return None, TokenSource.AMBIENT.value
-
-
-# ---------------------------------------------------------------------------
-# Public identity CRUD (add_identity with token validation)
-# ---------------------------------------------------------------------------
 
 
 def add_identity(
@@ -328,11 +311,6 @@ def add_identity(
     _write_yaml_atomic(cfg_path, data)
 
 
-# ---------------------------------------------------------------------------
-# Keychain status (sidecar RPC: identities.check_keychain)
-# ---------------------------------------------------------------------------
-
-
 def keychain_status(login: str) -> dict[str, object]:
     """Report whether an AgentShore-managed Keychain PAT already exists for *login*.
 
@@ -350,11 +328,6 @@ def keychain_status(login: str) -> dict[str, object]:
         "service": service,
         "has_token": _keychain_has_token(service),
     }
-
-
-# ---------------------------------------------------------------------------
-# Async identity access check (sidecar RPC: identities.check_access)
-# ---------------------------------------------------------------------------
 
 
 async def check_identity_access(project_path: Path, login: str) -> IdentityRow:
@@ -486,11 +459,6 @@ def _check_token_identity_access(
         checked["repo_access"] = "ok"
         checked["repo_access_detail"] = "GitHub token and repository access verified."
     return checked
-
-
-# ---------------------------------------------------------------------------
-# Diagnostic helpers
-# ---------------------------------------------------------------------------
 
 
 def _unconfigured_source_message(source: str) -> str:

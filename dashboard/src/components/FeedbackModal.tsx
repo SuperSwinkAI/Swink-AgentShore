@@ -4,10 +4,10 @@ import "./Modal.css";
 
 import { createNotifyStore } from "../notifyStore";
 
-// React port of `dashboard/src/hud/feedbackModal.ts`: visibility/reason via
-// module-level notify*() (TopBarHud's pattern), the budget-vs-buttons sub-mode
-// as local state, and button side-effects surfaced as props for the host
-// (bootstrapDashboard or desktop shell) to wire to its transport + state.
+
+
+
+
 
 const REASON_MESSAGES: Record<string, string> = {
   budget_exhausted: "Budget exhausted. No remaining funds.",
@@ -17,10 +17,10 @@ const REASON_MESSAGES: Record<string, string> = {
   stagnation: "Stagnation detected. No alignment progress recently.",
 };
 
-// Reasons whose unanswered modal auto-stops the session (#9). Mirrors engine
-// backstop (lifecycle._AUTO_STOP_PAUSE_REASONS): an unanswered prompt would
-// wedge the loop (observed ~8h AFK). Explicit user/ipc pauses are excluded, so
-// a deliberate operator pause is never auto-stopped.
+
+
+
+
 export const AUTO_STOP_REASONS: ReadonlySet<string> = new Set([
   "loop_detected",
   "stagnation",
@@ -84,14 +84,14 @@ export function FeedbackModal({
   const [stopSending, setStopSending] = useState(false);
   const [secondsLeft, setSecondsLeft] = useState<number | null>(null);
   const budgetInputRef = useRef<HTMLInputElement | null>(null);
-  // Keep the latest onStop without resetting the countdown when the host passes
-  // a new callback identity each render.
+
+
   const onStopRef = useRef(onStop);
   useEffect(() => {
     onStopRef.current = onStop;
   }, [onStop]);
 
-  // Reset inner sub-modes when the modal is dismissed or a new reason shown.
+
   useEffect(() => {
     setBudgetMode(false);
     setBudgetValue("");
@@ -102,10 +102,10 @@ export function FeedbackModal({
     if (budgetMode) budgetInputRef.current?.focus();
   }, [budgetMode]);
 
-  // Unanswered-prompt auto-stop countdown (#9). Runs only for automated
-  // escalations and only while the main buttons show — the budget sub-flow
-  // counts as a response and suspends it. On expiry it drains like Stop,
-  // mirroring the engine backstop; whichever fires first drains cleanly.
+
+
+
+
   useEffect(() => {
     if (!visible || budgetMode || !shouldAutoStop(reason) || autoStopSeconds <= 0) {
       setSecondsLeft(null);

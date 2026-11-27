@@ -1,10 +1,4 @@
-"""Tests for the identity wizard's `defaults` prefill path.
-
-Regression for the 2026-05-07 init-wizard bug: re-running the identity
-wizard ignored existing `identities:` bindings, forcing the user to re-pick
-their account every time. The `defaults` kwarg now drives default_idx +
-adds a `(current)` annotation, with `(was X — re-pick)` for stale logins.
-"""
+"""Tests for the identity wizard's `defaults` prefill path."""
 
 from __future__ import annotations
 
@@ -63,7 +57,6 @@ def test_picker_shows_was_marker_when_default_login_no_longer_authenticated() ->
 
     label, logins, default_idx, *_ = mock_prompt.call_args.args
     assert "was stale_login" in label
-    # Falls back to active account
     assert logins[default_idx] == "alice"
 
 
@@ -97,9 +90,7 @@ def test_picker_surfaces_keychain_only_login_from_existing_identities() -> None:
         )
 
     label, logins, default_idx, *_ = mock_prompt.call_args.args
-    # The keychain-only login appears under AgentShore's canonical machine key.
     assert "bot-user" in logins
-    # And it must be the pre-selected default (not "stale").
     assert logins[default_idx] == "bot-user"
     assert "current: bot-user" in label
     assert "was " not in label
@@ -121,8 +112,6 @@ def test_keep_existing_skips_step2_prompts_for_keychain_identity(tmp_path) -> No
         )
     }
 
-    # Step 1 picker → choose bot-user (the second-and-only configured-only entry).
-    # Step 2 → confirm the "keep existing" prompt (default True).
     with (
         patch("agentshore.identity_wizard.wizard._prompt_choice", return_value="bot-user"),
         patch("agentshore.identity_wizard.wizard.click.confirm", return_value=True) as mock_confirm,
@@ -134,9 +123,7 @@ def test_keep_existing_skips_step2_prompts_for_keychain_identity(tmp_path) -> No
             existing_identities=existing,
         )
 
-    # The "Keep existing settings?" prompt fired.
     assert mock_confirm.called
-    # Result preserved the existing keychain binding verbatim.
     assert result.agent_to_identity == {"claude_code": "bot-user"}
     binding = result.identities["bot-user"]
     assert binding.gh_token_keychain == "agentshore/bot-user"

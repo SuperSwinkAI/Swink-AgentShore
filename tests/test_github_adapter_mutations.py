@@ -15,8 +15,6 @@ from agentshore.config import RuntimeConfig
 from agentshore.data.store import ExternalMutationRecord
 from agentshore.github import GitHubAdapter
 
-# Fixture helpers duplicated (not shared via conftest) to avoid import-time coupling.
-
 
 def _make_adapter(
     tmp_path: Path, cfg: RuntimeConfig | None = None
@@ -81,12 +79,10 @@ async def test_create_issue_runs_gh_with_title_body_labels(tmp_path: Path) -> No
         )
 
     assert result == {"number": 7}
-    # gh argv is the first positional arg (a list, no leading "gh").
     rest = list(run_gh.call_args.args[0])
     assert rest[0:2] == ["issue", "create"]
     assert "--title" in rest and "My new issue" in rest
     assert "--body" in rest and "Body text" in rest
-    # Each label must appear after its own --label flag.
     label_indices = [i for i, a in enumerate(rest) if a == "--label"]
     label_values = [rest[i + 1] for i in label_indices]
     assert sorted(label_values) == ["bug", "p1"]
@@ -136,7 +132,6 @@ async def test_label_issue_runs_issue_edit_with_add_label(tmp_path: Path) -> Non
     rest = list(run_gh.call_args.args[0])
     assert rest[0:3] == ["issue", "edit", "42"]
     add_label_idx = rest.index("--add-label")
-    # gh accepts a comma-joined label list for --add-label.
     assert rest[add_label_idx + 1] == "agentshore/active,bug"
 
 
@@ -357,9 +352,6 @@ async def test_create_pr_dedups_when_already_recorded(tmp_path: Path) -> None:
 
     assert result is None
     run_gh.assert_not_called()
-
-
-# retarget_pr_base — #8: self-heal wrong-base PRs
 
 
 @pytest.mark.asyncio

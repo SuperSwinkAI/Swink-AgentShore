@@ -33,10 +33,6 @@ from agentshore.state import (
     SessionState,
 )
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 
 def _make_issue(num: int) -> IssueSnapshot:
     return IssueSnapshot(
@@ -55,7 +51,6 @@ def _make_state(
     issues: list | None = None,
     plays_since_last_play_type: dict[PlayType, int] | None = None,
 ) -> OrchestratorState:
-    # Default to post-seed so tests indifferent to the seed gate skip the setup.
     if plays_since_last_play_type is None:
         plays_since_last_play_type = {PlayType.SEED_PROJECT: 5}
     return OrchestratorState(
@@ -75,18 +70,10 @@ def _make_state(
     )
 
 
-# ---------------------------------------------------------------------------
-# InstantiateAgentPlay unit tests
-# ---------------------------------------------------------------------------
-
-
 def test_instantiate_blocked_until_intake_completes() -> None:
     from agentshore.state import AgentSnapshot
 
     play = InstantiateAgentPlay()
-    # An agent already exists but no first-play has completed → fleet *expansion*
-    # is deferred. (With an empty fleet the first spawn is allowed — that is the
-    # open-start cold-boot path, so the gate only applies once agents exist.)
     agent = AgentSnapshot(
         agent_id="a1",
         agent_type=AgentType.CLAUDE_CODE,
@@ -409,6 +396,27 @@ async def test_instantiate_play_returns_agent_artifact() -> None:
 
 
 @pytest.mark.asyncio
+async def test_instantiate_play_fails_when_identity_preflight_errors() -> None:
+    """gh-476: an agent whose identity preflight failed is not a successful spawn."""
+    play = InstantiateAgentPlay()
+    state = _make_state()
+
+    ctx = MagicMock()
+    ctx.cfg = RuntimeConfig()
+    handle = MagicMock()
+    handle.status = AgentStatus.ERROR
+    handle.last_error_class = "auth"
+    ctx.manager.instantiate = AsyncMock(return_value=handle)
+
+    from agentshore.plays.base import PlayParams
+
+    outcome = await play.execute(state, PlayParams(target_agent_type="claude_code"), ctx=ctx)
+
+    assert outcome.success is False
+    assert "identity preflight failed" in (outcome.error or "")
+
+
+@pytest.mark.asyncio
 async def test_instantiate_play_without_target_uses_first_enabled_config() -> None:
     play = InstantiateAgentPlay()
     state = _make_state()
@@ -450,11 +458,6 @@ async def test_instantiate_play_returns_failure_on_exception() -> None:
 
     assert outcome.success is False
     assert "instantiation failed" in (outcome.error or "")
-
-
-# ---------------------------------------------------------------------------
-# IssuePickupPlay unit tests
-# ---------------------------------------------------------------------------
 
 
 def test_issue_pickup_precondition_no_issues() -> None:
@@ -506,11 +509,6 @@ def test_issue_pickup_precondition_met() -> None:
     assert errors == []
 
 
-# ---------------------------------------------------------------------------
-# Vertical slice: executor → mock subprocess → DB rows
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_issue_pickup_via_executor_writes_pr_and_branch_rows(
     mock_agent_path: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -523,7 +521,6 @@ async def test_issue_pickup_via_executor_writes_pr_and_branch_rows(
     - PR branch exposure cache is written (manager.branch_exposure)
     - PR record is persisted to DB (store.record_pull_request)
     """
-    # Use stream_json format so CLAUDE_CODE agent type parses output correctly
     monkeypatch.setenv("MOCK_AGENT_FORMAT", "stream_json")
 
     store = DataStore(tmp_path / "agentshore.db")
@@ -564,8 +561,6 @@ async def test_issue_pickup_via_executor_writes_pr_and_branch_rows(
 
         resolver.resolve = AsyncMock(return_value=PlayParams(issue_number=7))
 
-        # Confirm-then-write (#279): the executor records a PR only when GitHub
-        # returns a real object for it, so the slice must wire that confirmation.
         github = AsyncMock()
         github.label_issue = AsyncMock(return_value=True)
         github.retarget_pr_base = AsyncMock(return_value=False)
@@ -614,13 +609,10 @@ async def test_issue_pickup_via_executor_writes_pr_and_branch_rows(
 
         assert outcome.success is True, f"Expected success, got error: {outcome.error}"
 
-        # Mock agent emits pr_number=42.
         pr_rows = await store.list_open_pull_requests("sess-slice")
         assert any(pr.pr_number == 42 for pr in pr_rows)
 
         plays = await store.get_play_history("sess-slice")
-        # plays[0] is the instantiate_agent from manager.instantiate; keep only the
-        # ISSUE_PICKUP play that executor.execute ran.
         issue_pickup_plays = [p for p in plays if p.play_type == PlayType.ISSUE_PICKUP.value]
         assert len(issue_pickup_plays) >= 1
         assert issue_pickup_plays[0].success is True

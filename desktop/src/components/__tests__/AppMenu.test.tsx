@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { act, render, screen, waitFor } from "@testing-library/react";
 
-// Capture the event handlers AppMenu registers so tests can fire menu events.
+
 const listeners = new Map<string, (event: { payload: unknown }) => void>();
 vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn((name: string, handler: (event: { payload: unknown }) => void) => {
@@ -51,7 +51,7 @@ describe("AppMenu", () => {
     await fire("menu:preferences");
     expect(screen.getByTestId("preferences-dialog")).toBeInTheDocument();
     expect(adapter.getPreferences).toHaveBeenCalledTimes(1);
-    // Polarity: a play not in disabled_plays renders checked (enabled).
+
     const runQa = await screen.findByTestId("preferences-play-run_qa");
     expect(runQa).toBeChecked();
     expect(screen.getByTestId("preferences-play-run_qa-state")).toHaveTextContent("Enabled");
@@ -64,7 +64,7 @@ describe("AppMenu", () => {
     await fire("menu:preferences");
     const info = await screen.findByTestId("preferences-play-run_qa-info");
     expect(info).toHaveAttribute("aria-expanded", "false");
-    // Description is hidden until the info button is pressed.
+
     expect(
       screen.queryByTestId("preferences-play-run_qa-description"),
     ).not.toBeInTheDocument();
@@ -75,9 +75,9 @@ describe("AppMenu", () => {
     expect(
       screen.getByTestId("preferences-play-run_qa-description"),
     ).toHaveTextContent("Runs the project's test/QA suite");
-    // Clicking info does not flip the play's enabled state.
+
     expect(screen.getByTestId("preferences-play-run_qa")).toBeChecked();
-    // Toggling again collapses it.
+
     await act(async () => {
       info.click();
     });
@@ -105,16 +105,16 @@ describe("AppMenu", () => {
     render(<AppMenu adapter={adapter} />);
     await fire("menu:preferences");
     const checkbox = await screen.findByTestId("preferences-play-cleanup");
-    expect(checkbox).toBeChecked(); // starts enabled
+    expect(checkbox).toBeChecked();
     await act(async () => {
-      checkbox.click(); // toggle off → disable
+      checkbox.click();
     });
     expect(checkbox).not.toBeChecked();
     await act(async () => {
       screen.getByTestId("preferences-dialog-primary").click();
     });
     expect(adapter.setPreferences).toHaveBeenCalledWith(["cleanup"]);
-    // Dialog closes on a successful save.
+
     await waitFor(() =>
       expect(screen.queryByTestId("preferences-dialog")).not.toBeInTheDocument(),
     );
@@ -218,8 +218,8 @@ describe("AppMenu", () => {
     const adapter = makeAdapter({
       checkForUpdate: vi
         .fn()
-        .mockResolvedValueOnce(null) // silent mount check
-        .mockRejectedValueOnce(new Error("offline")), // manual check
+        .mockResolvedValueOnce(null)
+        .mockRejectedValueOnce(new Error("offline")),
     });
     render(<AppMenu adapter={adapter} />);
     await fire("menu:check_updates");

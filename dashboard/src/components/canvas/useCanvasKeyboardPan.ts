@@ -61,8 +61,8 @@ export function useCanvasKeyboardPan(
     return () => {
       window.removeEventListener("keydown", onKey);
     };
-    // canvasRef/cameraRef/focusAgentRef are stable ref objects populated
-    // before this effect runs; intentionally runs once at mount.
+
+
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 }

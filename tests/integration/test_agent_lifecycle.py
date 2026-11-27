@@ -62,7 +62,6 @@ async def test_agent_lifecycle(tmp_path: Path) -> None:
 
         handle.context_size = 100_000
 
-        # clear() terminates and removes the agent.
         await manager.clear(agent_id)
         assert agent_id not in manager.handles
 

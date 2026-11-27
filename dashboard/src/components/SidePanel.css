@@ -85,9 +85,6 @@
   padding: 8px 7px 10px;
 }
 .agent-heading {
-  /* desktop-31h2: 4 columns — status dot, name (flex), agent type,
-           dispatch_share badge. The badge is tabular-numeric so per-row
-           widths stay aligned across the agent list. */
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto auto;
   align-items: center;
@@ -125,9 +122,6 @@
   min-width: max-content;
   white-space: nowrap;
 }
-/* desktop-31h2: per-agent dispatch_share badge. Renders to the right
-         of the agent type in the agent list — small, dim, monospace digits
-         so the percentage doesn't visually compete with the agent name. */
 .agent-dispatch-share {
   color: var(--color-fm-text-dim);
   font-size: 10px;

@@ -76,9 +76,9 @@ const defaultAdapter: AgentsAdapter = {
   refreshModels,
 };
 
-// Measured during development against real Claude Code dispatches — see
-// docs/design/agents/DESIGN.md "Model Discovery". A successful run costs
-// roughly this much; the dispatch itself hard-caps well above it.
+
+
+
 const CLAUDE_CODE_REFRESH_COST_ESTIMATE = "roughly $0.30-0.50";
 
 function harnessSummaryLine(agentType: string, result: {

@@ -27,7 +27,6 @@ VALID_COMMANDS: frozenset[str] = frozenset(
     }
 )
 
-# Required params per command (empty = no required params beyond "command")
 _REQUIRED_PARAMS: dict[str, frozenset[str]] = {
     "feedback_response": frozenset({"action"}),
     "verification_response": frozenset({"checkpoint_id", "passed"}),
@@ -37,8 +36,6 @@ _BOOL_PARAMS: dict[str, frozenset[str]] = {
     "drain": frozenset({"end_session_report", "open_report"}),
 }
 
-# At least one named field must be present; each, if present, must be a finite
-# positive number. ``delta_minutes`` must additionally be a whole number.
 _AT_LEAST_ONE_POSITIVE_PARAMS: dict[str, frozenset[str]] = {
     "add_budget": frozenset({"delta_usd", "delta_minutes"}),
 }

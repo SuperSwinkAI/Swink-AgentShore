@@ -70,13 +70,8 @@ _logger = structlog.get_logger(__name__)
 
 LlmDiscoveryStatus = Literal["ok", "unavailable", "timeout", "budget_exceeded", "error"]
 
-# A successful run has taken up to ~125s across ~13 turns of search in
-# practice; give real headroom above that before treating it as hung.
 DEFAULT_DISCOVERY_TIMEOUT_S = 240.0
 
-# Comfortably above the observed successful-run cost (~$0.30-0.50) so a
-# legitimate run isn't truncated into a wasted partial spend, while still
-# bounding worst-case runaway cost well under $1.
 DEFAULT_MAX_BUDGET_USD = 0.75
 
 DEFAULT_MODEL_TIER = "haiku"

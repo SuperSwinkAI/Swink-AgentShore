@@ -471,7 +471,6 @@ def test_serialize_state_disabled_budget_is_browser_json_safe() -> None:
     assert result["budget"]["enabled"] is False  # type: ignore[index]
     assert result["budget"]["total_budget"] is None  # type: ignore[index]
     assert result["budget"]["remaining"] is None  # type: ignore[index]
-    # Time fields default to disabled/None and stay JSON-safe.
     assert result["budget"]["time_enabled"] is False  # type: ignore[index]
     assert result["budget"]["time_remaining_minutes"] is None  # type: ignore[index]
 
@@ -501,7 +500,6 @@ def test_serialize_state_time_budget_fields() -> None:
 
 
 def test_serialize_state_time_disabled_nulls_time_fields() -> None:
-    # Disabled time dimension nulls all time fields, even an inf that leaks in.
     state = _minimal_state(
         budget=BudgetSnapshot(
             total_budget=200.0,
@@ -582,7 +580,6 @@ def test_make_message_has_timestamp_field() -> None:
     assert "timestamp" in parsed
     from datetime import datetime
 
-    # Must be parseable as ISO-8601
     dt = datetime.fromisoformat(parsed["timestamp"])
     assert dt.tzinfo is not None
 
@@ -592,7 +589,6 @@ def test_make_message_has_payload_wrapper() -> None:
     parsed = json.loads(msg)
     assert "payload" in parsed
     assert parsed["payload"] == {"foo": 1, "bar": "baz"}
-    # Payload data must NOT be flattened into the top-level envelope
     assert "foo" not in parsed
     assert "bar" not in parsed
 
@@ -604,7 +600,6 @@ def test_make_message_ends_with_newline() -> None:
 
 def test_make_message_is_single_line() -> None:
     msg = make_message("state_update", {"foo": 1, "bar": "baz"})
-    # Strip the trailing newline; there must be no other newlines
     content = msg.rstrip("\n")
     assert "\n" not in content
 
@@ -657,10 +652,6 @@ def test_make_message_seq_not_in_payload() -> None:
     msg = json.loads(make_message("state_update", {"foo": 1}))
     assert "seq" in msg
     assert "seq" not in msg["payload"]
-
-
-# Regression coverage for the TNQA critical serializer-drift fix: fields
-# present on the source dataclass but previously missing from the wire dict.
 
 
 def test_serialize_agent_includes_timeout_and_identity_fields() -> None:
@@ -757,10 +748,6 @@ def test_serialize_graph_includes_tasks_blocked() -> None:
     graph_payload = result["graph"]
     assert isinstance(graph_payload, dict)
     assert graph_payload["tasks_blocked"] == 3
-
-
-# Wire-field parity guard: exercise `_assert_field_parity` directly so its
-# failure mode is covered, not just its import-time invocations.
 
 
 def test_assert_field_parity_passes_when_keys_match() -> None:

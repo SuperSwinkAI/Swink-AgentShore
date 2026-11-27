@@ -56,10 +56,10 @@ interface StartingLocationState {
 }
 
 function dashboardUrlFromEndpoint(endpoint: unknown): string | null {
-  // session.start returns ipc_endpoint = {kind, host, port, [url]}. The
-  // embedded bridge serves both the dashboard SPA (HTTP) and the state
-  // stream (WS) on the same loopback port; the iframe wants the HTTP
-  // form.
+
+
+
+
   if (typeof endpoint !== "object" || endpoint === null) return null;
   const raw = endpoint as Record<string, unknown>;
   const host = typeof raw.host === "string" ? raw.host : null;
@@ -77,9 +77,9 @@ export function StartingProgressRoute(): JSX.Element {
   const [startResult, setStartResult] = useState<StartSessionResult | null>(null);
   const expectedProgressTokenRef = useRef<string | number | null>(null);
 
-  // Floor: dismiss the overlay after SESSION_STARTING_TIMEOUT_MS even
-  // if nothing fires, so a silent orchestrator hang doesn't lock the UI
-  // behind the modal indefinitely.
+
+
+
   useEffect(() => {
     const handle = setTimeout(
       () => setSessionStarting(false),
@@ -88,19 +88,19 @@ export function StartingProgressRoute(): JSX.Element {
     return () => clearTimeout(handle);
   }, [setSessionStarting]);
 
-  // Hard errors from session.start RPC: clear the overlay so the user
-  // can see the inline error and the Retry / Cancel buttons rather
-  // than staring at a spinner.
+
+
+
   useEffect(() => {
     if (startError !== null) {
       setSessionStarting(false);
     }
   }, [startError, setSessionStarting]);
 
-  // Subscribe to $/progress, then fire session.start. The earlier
-  // implementation only subscribed and waited for events — but nothing
-  // was actually starting the session, so the checklist sat at 0/6
-  // forever (desktop-krdi).
+
+
+
+
   useEffect(() => {
     let cancelled = false;
     let unlisten: (() => void) | null = null;
@@ -131,26 +131,26 @@ export function StartingProgressRoute(): JSX.Element {
           return;
         }
         unlisten = fn;
-        // Issue #582: ``startSessionFromPersistedSetup`` (Repeat / Quick
-        // Start) fires session.start before navigating and hands us the
-        // resolved result via location state. We must NOT re-fire the
-        // RPC in that case — that's the double-start regression.
+
+
+
+
         if (handoffResult !== null) {
-          // The helper already finished session.start before this
-          // route mounted, so the $/progress stream is already
-          // drained. Latch the final step ok ourselves so the
-          // gate effect can transition straight to the dashboard.
+
+
+
+
           setStartResult(handoffResult);
           setSteps((current) =>
             applyProgressEvent(current, FINAL_STEP_ID, "ok", null),
           );
           return;
         }
-        // Reconcile the trusted-issue-author gate into agentshore.yaml
-        // before session.start reads it. The setup-rail toggle's live RPC
-        // is best-effort and the checkbox can show "on" from localStorage
-        // while the file has no trusted_ids block, so push the user's
-        // choice through here where the project is guaranteed active.
+
+
+
+
+
         const wantGate = state?.trustedIssueEnforcement;
         if (wantGate !== undefined) {
           try {
@@ -158,10 +158,10 @@ export function StartingProgressRoute(): JSX.Element {
           } catch (err) {
             if (cancelled) return;
             if (wantGate) {
-              // Refuse to start with a security gate the user enabled
-              // silently dropped. (A failed write of `false` is a no-op:
-              // an absent key already means the gate is off, so we fall
-              // through and start normally in that case.)
+
+
+
+
               setStartError(
                 `Couldn't enable "only work issues from trusted identities": ${
                   err instanceof Error ? err.message : String(err)
@@ -172,9 +172,9 @@ export function StartingProgressRoute(): JSX.Element {
           }
         }
         if (cancelled) return;
-        // Listener is registered — now fire session.start. The
-        // progress_token correlates the $/progress notifications back
-        // to this specific call (DESIGN §2.4).
+
+
+
         const seedInputPath = state?.seedInputPath ?? null;
         void startSession({
           progressToken: progressToken ?? undefined,
@@ -206,10 +206,10 @@ export function StartingProgressRoute(): JSX.Element {
   useEffect(() => {
     const finalStep = steps.find((s) => s.id === FINAL_STEP_ID);
     if (finalStep?.status !== "ok" || startResult === null) {
-      // Wait for BOTH the final progress event AND the session.start
-      // RPC's response. Without the response we don't have the
-      // ipc_endpoint, so navigating now lands on a blank
-      // "Dashboard not available" screen.
+
+
+
+
       return;
     }
     const url = dashboardUrlFromEndpoint(startResult.ipc_endpoint);

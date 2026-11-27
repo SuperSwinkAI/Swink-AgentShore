@@ -83,12 +83,6 @@ def test_natural_exit_reason_skipped_for_explicit_stop(tmp_path: Path) -> None:
     reason, so a user-driven stop never triggers the session.completed
     emit path.
     """
-    # The contract is exercised structurally: _should_terminate returns
-    # ("stop_requested",) when _stop_requested is True, and the gate in
-    # run_until_idle skips setting _natural_exit_reason for that reason.
-    # See src/agentshore/core.py:run_until_idle exit branch.
     orch = _make_orch(tmp_path)
     orch._runtime.stop_requested = True
-    # We can't run the loop here without full bootstrap; the inline gate
-    # in core.py is the contract under test.
     assert orch._runtime.natural_exit_reason is None

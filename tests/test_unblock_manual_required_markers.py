@@ -56,12 +56,6 @@ def test_transient_failures_do_not_match(error: str) -> None:
     assert not _is_terminal(error), error
 
 
-# ---------------------------------------------------------------------------
-# blocked_by_pr: a target gated on an unmerged sibling PR must NOT be counted
-# toward exhaustion or parked as manual-required (the stacked-PR trap fix).
-# ---------------------------------------------------------------------------
-
-
 def _outcome(
     artifacts: list[object], error: str | None = None, *, success: bool = False
 ) -> SimpleNamespace:
@@ -79,7 +73,6 @@ def test_blocked_by_pr_absent_for_other_artifacts() -> None:
         _outcome_blocked_by_sibling_pr(_outcome([{"type": "pr_unblock_attempt", "number": 40}]))
         is False
     )
-    # Non-dict artifacts (e.g. plain strings) must not crash the scan.
     assert _outcome_blocked_by_sibling_pr(_outcome(["done"])) is False
 
 
@@ -94,7 +87,6 @@ def _processor(*, record_returns: bool = False) -> tuple[CompletionProcessor, Ma
     proc._executor._resolver = resolver
     proc._host = MagicMock()  # type: ignore[attr-defined]
     proc._host._safe_call = AsyncMock()
-    # Shadow the coroutine method so mocked _safe_call gets a plain value, not a coroutine.
     proc.mark_pr_manual_required = MagicMock()  # type: ignore[attr-defined]
     return proc, resolver
 
@@ -156,14 +148,6 @@ async def test_exhaustion_still_parks() -> None:
     proc.mark_pr_manual_required.assert_called_once_with(40)
 
 
-# ---------------------------------------------------------------------------
-# resolved-target: a successful unblock that merged the target or cleared its
-# sole stale CHANGES_REQUESTED review is a win — never counted or parked
-# (blocky PR #517: three successful stale-review short-circuits parked a
-# merge-ready PR because every completion ticked the failure counter).
-# ---------------------------------------------------------------------------
-
-
 def test_resolved_target_detects_merged_and_stale_review() -> None:
     assert (
         _outcome_resolved_target_pr(_outcome([{"type": "pr_merged", "pr": 40}], success=True), 40)
@@ -175,22 +159,18 @@ def test_resolved_target_detects_merged_and_stale_review() -> None:
         )
         is True
     )
-    # An artifact carrying no pr/number is treated as the dispatch target.
     assert _outcome_resolved_target_pr(_outcome([{"type": "pr_merged"}], success=True), 40) is True
 
 
 def test_resolved_target_negatives() -> None:
-    # success=False is never a resolution, even with a pr_merged artifact.
     assert (
         _outcome_resolved_target_pr(_outcome([{"type": "pr_merged", "pr": 40}], success=False), 40)
         is False
     )
-    # A merged *sibling* (different pr number) does not resolve the target.
     assert (
         _outcome_resolved_target_pr(_outcome([{"type": "pr_merged", "pr": 99}], success=True), 40)
         is False
     )
-    # Unrelated artifact types do not count; non-dict artifacts don't crash.
     assert (
         _outcome_resolved_target_pr(
             _outcome([{"type": "pr_unblock_attempt", "number": 40}, "noise"], success=True),

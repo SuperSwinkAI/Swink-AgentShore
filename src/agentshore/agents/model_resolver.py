@@ -33,7 +33,6 @@ if TYPE_CHECKING:
 
 _logger = structlog.get_logger(__name__)
 
-# Canonical effort ladder used to pick the nearest supported effort.
 _EFFORT_LADDER: tuple[str, ...] = (
     "none",
     "minimal",
@@ -55,13 +54,10 @@ class _Live:
     efforts: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
 
-# ponytail: process-global cache, refreshed only on INVALID_MODEL; add a TTL if
-# a long-lived sidecar needs to notice newly *added* models without a restart.
 _live: dict[AgentType, _Live] = {}
 _invalid: dict[AgentType, set[str]] = {}
 _stale: set[AgentType] = set()
 _locks: dict[AgentType, asyncio.Lock] = {}
-# Resolution runs every tick (eligibility mask); log each substitution once.
 _announced: set[tuple[str, str, str | None, str | None]] = set()
 
 
@@ -102,7 +98,7 @@ async def ensure_discovered(agent_type: AgentType) -> None:
             return
         try:
             result = await asyncio.to_thread(func)
-        except Exception as exc:  # discovery is best-effort
+        except Exception as exc:
             _logger.warning("model_discovery_failed", agent_type=agent_type.value, error=str(exc))
             _stale.discard(agent_type)
             return
@@ -113,7 +109,6 @@ async def ensure_discovered(agent_type: AgentType) -> None:
                 status=result.status,
                 detail=result.detail,
             )
-            # Keep any previous list; stop re-probing until the next invalidation.
             _stale.discard(agent_type)
             return
         record_discovery(agent_type, result)
@@ -126,7 +121,7 @@ def _write_through(agent_type: AgentType, models: tuple[str, ...]) -> None:
 
     try:
         write_model_catalog_override({agent_type.value: list(models)})
-    except Exception as exc:  # a read-only home dir must not break dispatch
+    except Exception as exc:
         _logger.debug("model_catalog_write_through_failed", error=str(exc))
 
 
@@ -170,7 +165,6 @@ def resolve_model(
     live = _live.get(agent_type)
     prefs = [p for p in (model, fallback) if p]
     if live is None:
-        # Nothing discovered: trust the preference unless a dispatch rejected it.
         chosen = next((p for p in prefs if p not in bad), model)
     else:
         usable = tuple(m for m in live.models if m not in bad)

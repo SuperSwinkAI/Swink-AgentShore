@@ -18,10 +18,6 @@ from agentshore.agents.cli_swink_coding import (
     parse_swink_coding_jsonl,
 )
 
-# ---------------------------------------------------------------------------
-# build_argv — prompt delivery modes
-# ---------------------------------------------------------------------------
-
 
 def test_build_argv_default_prompt_argv_shape() -> None:
     argv = build_argv(
@@ -194,11 +190,6 @@ def test_build_argv_context_path_rides_append_system_prompt() -> None:
     assert "--append-system-prompt" not in build_resume_argv(resume_session_id="sc_1", **kwargs)
 
 
-# ---------------------------------------------------------------------------
-# build_resume_argv
-# ---------------------------------------------------------------------------
-
-
 def test_build_resume_argv_injects_resume_flag_after_binary() -> None:
     argv = build_resume_argv(
         resume_session_id="sc_abc123",
@@ -230,11 +221,6 @@ def test_build_resume_argv_uses_explicit_id_not_latest_sentinel() -> None:
     assert "sc_specific" in argv
 
 
-# ---------------------------------------------------------------------------
-# classify_swink_model — tier alias vs. provider:model[@endpoint] tier_map
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.parametrize("alias", sorted(TIER_ALIASES))
 def test_classify_swink_model_accepts_tier_aliases(alias: str) -> None:
     assert classify_swink_model(alias) == "alias"
@@ -250,14 +236,10 @@ def test_classify_swink_model_accepts_endpoint_form() -> None:
 
 
 def test_classify_swink_model_accepts_bare_provider_model_pair() -> None:
-    # Grammatically valid provider:model — acceptance at this layer is fine;
-    # whether "qwen3.5" is a real provider is a config/catalog-layer concern.
     assert classify_swink_model("qwen3.5:4b") == "tier_map"
 
 
 def test_classify_swink_model_at_without_url_scheme_folds_into_model() -> None:
-    # No "://" after '@' — not treated as an endpoint, so it's still a valid
-    # (if unusual) model id and classifies as tier_map.
     assert classify_swink_model("ollama:q@ver") == "tier_map"
 
 
@@ -276,11 +258,6 @@ def test_classify_swink_model_rejects_empty_model() -> None:
         classify_swink_model("ollama:")
 
 
-# ---------------------------------------------------------------------------
-# build_argv / build_resume_argv — tier_map dispatch shape
-# ---------------------------------------------------------------------------
-
-
 def test_build_argv_alias_model_unaffected_by_model_tier_kwarg() -> None:
     argv = build_argv(
         prompt="hi",
@@ -290,7 +267,7 @@ def test_build_argv_alias_model_unaffected_by_model_tier_kwarg() -> None:
         extra_flags=(),
         project_dir=None,
         prompt_on_stdin=False,
-        model_tier="medium",  # irrelevant for a plain alias; ignored
+        model_tier="medium",
     )
     assert argv[1:3] == ["--model", "small"]
     assert "--tier-map" not in argv
@@ -368,11 +345,6 @@ def test_build_resume_argv_tier_map_model_emits_model_and_tier_map_flags() -> No
     assert argv[argv.index("--tier-map") + 1] == "small=ollama:qwen2.5-coder:7b"
 
 
-# ---------------------------------------------------------------------------
-# --session-id pinning (SuperSwink-Coding#300)
-# ---------------------------------------------------------------------------
-
-
 def test_new_pinned_session_id_matches_cli_id_grammar() -> None:
     """The CLI validates ids against [A-Za-z0-9._-]+ and reserves ``latest``."""
     ident = new_pinned_session_id()
@@ -431,11 +403,6 @@ def test_build_resume_argv_never_forwards_session_id() -> None:
     )
     assert "--session-id" not in argv
     assert argv[:3] == ["swink-coding", "--resume", "sc_abc123"]
-
-
-# ---------------------------------------------------------------------------
-# --disallowed-tools (per-play tool denial)
-# ---------------------------------------------------------------------------
 
 
 def test_build_argv_emits_one_disallowed_tools_flag_per_spec() -> None:
@@ -512,11 +479,6 @@ def test_build_resume_argv_forwards_disallowed_tools() -> None:
     assert "edit_file" in argv
 
 
-# ---------------------------------------------------------------------------
-# parse_swink_coding_jsonl — result event (primary path)
-# ---------------------------------------------------------------------------
-
-
 def test_parse_result_event_is_authoritative_over_text_deltas() -> None:
     raw = "\n".join(
         [
@@ -539,8 +501,6 @@ def test_parse_result_event_is_authoritative_over_text_deltas() -> None:
 
     assert text == "FULL final text"
     assert session_id == "sc_1"
-    # tokens_in follows the same input_includes_cache=False convention as the
-    # Claude parser: input_tokens + cache_read + cache_write (100 + 10 + 5).
     assert usage.tokens_in == 115
     assert usage.tokens_out == 40
     assert usage.cached_tokens_in == 10
@@ -629,11 +589,6 @@ def test_parse_result_event_reasoning_tokens_used_when_no_output_tokens() -> Non
     assert usage.tokens_out == 3
 
 
-# ---------------------------------------------------------------------------
-# parse_swink_coding_jsonl — error event (failure fallback)
-# ---------------------------------------------------------------------------
-
-
 def test_parse_error_event_surfaces_message_when_no_result_arrived() -> None:
     raw = "\n".join(
         [
@@ -662,11 +617,6 @@ def test_parse_result_event_wins_over_a_preceding_error_event() -> None:
     assert text == "recovered and finished"
 
 
-# ---------------------------------------------------------------------------
-# parse_swink_coding_jsonl — text-delta fallback (neither result nor error)
-# ---------------------------------------------------------------------------
-
-
 def test_parse_falls_back_to_concatenated_text_deltas_when_no_terminal_event() -> None:
     raw = "\n".join(
         [
@@ -688,11 +638,6 @@ def test_parse_falls_back_to_raw_when_nothing_recognisable() -> None:
     assert session_id is None
 
 
-# ---------------------------------------------------------------------------
-# Registration: _PARSERS / _TERMINAL_EVENT_TYPES / _FIRST_BYTE_DEADLINE_BY_TYPE
-# ---------------------------------------------------------------------------
-
-
 def test_swink_coding_registered_in_parsers_and_terminal_events_and_watchdog() -> None:
     from agentshore.agents.cli.parsing import _PARSERS, _TERMINAL_EVENT_TYPES, _is_terminal_event
     from agentshore.agents.cli.watchdogs import _FIRST_BYTE_DEADLINE_BY_TYPE
@@ -700,8 +645,6 @@ def test_swink_coding_registered_in_parsers_and_terminal_events_and_watchdog() -
 
     assert AgentType.SWINK_CODING in _PARSERS
     assert _TERMINAL_EVENT_TYPES[AgentType.SWINK_CODING] == frozenset({"result"})
-    # 60s spawn headroom only: swink-coding >= 0.2.0 contractually flushes
-    # session.started before the first backend request (SuperSwink-Coding#278).
     assert _FIRST_BYTE_DEADLINE_BY_TYPE[AgentType.SWINK_CODING] == 60.0
 
     terminal_line = b'{"type":"result","text":"done"}'
@@ -718,11 +661,6 @@ def test_swink_coding_registered_as_resumable_and_yolo_default() -> None:
     assert _DEFAULT_YOLO_FLAGS[AgentType.SWINK_CODING] == ("--yolo",)
 
 
-# ---------------------------------------------------------------------------
-# Top-level dispatch (agentshore.agents.cli.argv.build_argv/build_resume_argv)
-# ---------------------------------------------------------------------------
-
-
 def test_top_level_build_argv_dispatches_to_swink_coding_adapter() -> None:
     from agentshore.agents.cli.argv import build_argv as dispatch_build_argv
     from agentshore.state import AgentType
@@ -735,7 +673,7 @@ def test_top_level_build_argv_dispatches_to_swink_coding_adapter() -> None:
         project_dir="/wt",
     )
     assert argv[0] == "swink-coding"
-    assert "--yolo" in argv  # applied YOLO default since no extra_flags given
+    assert "--yolo" in argv
     assert "--model" in argv and argv[argv.index("--model") + 1] == "large"
     assert "--cwd" in argv and argv[argv.index("--cwd") + 1] == "/wt"
     assert argv[-2:] == ["-p", "do the thing"]

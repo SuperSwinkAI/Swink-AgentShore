@@ -12,14 +12,10 @@ import pytest
 from agentshore.plays.registry import build_default_registry
 from agentshore.state import PlayType
 
-# The swink-coding CLI's full native tool surface, as reported by its own
-# startup validator (``--disallowed-tools <unknown>`` prints the valid set).
-# Denying a name outside this set exits the dispatch non-zero at startup, so a
-# typo is a wedged play, not a silently-ignored policy.
 _KNOWN_CLI_TOOLS = frozenset(
     {
         "bash",
-        "shell",  # alias of bash
+        "shell",
         "edit_file",
         "gh",
         "git",
@@ -81,6 +77,19 @@ def test_every_declared_denial_reaches_copilot() -> None:
         for tool in registry.get(play_type).disallowed_tools:
             assert tool in _COPILOT_TOOL_NAMES, (
                 f"{play_type.value} denial {tool!r} unmapped for copilot"
+            )
+
+
+def test_every_declared_denial_reaches_claude() -> None:
+    """Claude denies by its own tool names (``--disallowedTools=Write``); a
+    denial with no claude mapping would be silently dropped for claude dispatches."""
+    from agentshore.agents.cli.argv import _CLAUDE_TOOL_NAMES
+
+    registry = build_default_registry()
+    for play_type in registry.covered():
+        for tool in registry.get(play_type).disallowed_tools:
+            assert tool in _CLAUDE_TOOL_NAMES, (
+                f"{play_type.value} denial {tool!r} unmapped for claude"
             )
 
 

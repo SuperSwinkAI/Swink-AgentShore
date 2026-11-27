@@ -48,14 +48,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-# Terminal shutdown events, in the order we prefer to report them.
 _END_EVENTS = ("session_ended", "shutdown_complete", "drain_complete", "session_shutdown")
 
-# Error signals. Substring matches on bare "Error:"/"Exception:" over-match
-# agent output_tail JSON, so we key off the structured ``level`` field of each
-# parsed event instead (same rationale as run_rl_loop, but parsed rather than
-# grepped — the NDJSON renders ``"level": "info"`` *with* a space, so a raw
-# ``"level":"error"`` substring scan silently never matches).
 _ERROR_LEVELS = frozenset({"error", "critical"})
 
 
@@ -118,9 +112,6 @@ def main(log_path: Path) -> int:
             ended = True
             end_event = ev
 
-    # Traceback / asyncio signals: scan raw lines as a backstop. The formatter
-    # folds exceptions into a structured ``exception`` field, but a hard crash
-    # printed by Python's default handler still lands here line-anchored.
     traceback_lines = sum(1 for ln in lines if ln.lstrip().startswith("Traceback"))
     asyncio_unretrieved = sum(1 for ln in lines if "task exception was never retrieved" in ln)
 

@@ -153,52 +153,52 @@ agents:
   codex:
     enabled: true
     binary: codex
-    model: gpt-5.6-terra
+    model: gpt-6.1-terra
     reasoning_effort: medium
     model_tiers:
       small:
         enabled: true
-        model: gpt-5.6-luna
+        model: gpt-6-luna
         reasoning_effort: low
       medium:
         enabled: true
-        model: gpt-5.6-terra
+        model: gpt-6.1-terra
         reasoning_effort: medium
       large:
         enabled: true
-        model: gpt-5.6-sol
+        model: gpt-6.2-sol
         reasoning_effort: high
   antigravity:
     enabled: true
     binary: agy
-    model: "Gemini 3.8 Flash (High)"
+    model: "Gemini 4 Hydrogen (Medium)"
     model_tiers:
       small:
         enabled: true
         model: "GPT-OSS 120B (Medium)"
       medium:
         enabled: true
-        model: "Gemini 3.8 Flash (High)"
+        model: "Gemini 4 Hydrogen (Medium)"
       large:
         enabled: true
-        model: "Gemini 3.1 Pro (High)"
+        model: "Gemini 4 Argon (High)"
   grok:
     enabled: true
     binary: grok
-    model: grok-4.5
+    model: grok-4.7
     reasoning_effort: medium
     model_tiers:
       small:
         enabled: true
-        model: grok-4.5
+        model: grok-4.7-build-fast
         reasoning_effort: low
       medium:
         enabled: true
-        model: grok-4.5
+        model: grok-4.7
         reasoning_effort: medium
       large:
         enabled: true
-        model: grok-4.5
+        model: grok-4.7
         reasoning_effort: high
   fresh_start:
     max_plays_before_reset: 20
@@ -310,6 +310,7 @@ skills:
   install_on_start: true
   path: .agents/skills/
   context_file: .agentshore/context.json
+  enforce_result_schema: true
 
 mode: solo
 socket: null
@@ -345,11 +346,6 @@ def render_config_yaml() -> str:
 def _build_default_yaml() -> str:
     """Backward-compatible alias for :func:`render_config_yaml`."""
     return render_config_yaml()
-
-
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
 
 
 def _apply_global_preferences(cfg: RuntimeConfig) -> RuntimeConfig:

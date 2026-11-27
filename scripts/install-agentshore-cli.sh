@@ -1,31 +1,4 @@
 #!/usr/bin/env bash
-# install-agentshore-cli.sh — Install the `agentshore` shell command from the
-# bundled wheel via `uv tool install`. Runs as the user-context step of
-# the AgentShore .pkg's CLI component (Distribution.xml `ai.agentshore.cli`
-# choice); can also be run manually during development.
-#
-# Why this exists as a separate script:
-#   .pkg postinstall scripts run with a sparse PATH (typically
-#   /usr/bin:/bin:/usr/sbin:/sbin) so per-user uv installs at
-#   ~/.local/bin/uv or ~/.cargo/bin/uv aren't found by a bare
-#   `command -v uv`. The old single-script install-agentshore-venv.sh did a
-#   "best-effort" PATH lookup and silently skipped — leaving the user's
-#   CLI weeks-stale despite the desktop sidecar being current. The wizard's
-#   CLI choice now drives this script which:
-#     1. Searches well-known per-user + system locations for uv.
-#     2. Bootstraps uv via the official installer if absent (user-context;
-#        no sudo). User opted in by checking the wizard box.
-#     3. Runs `uv tool install --force --reinstall` from the bundled wheel.
-#     4. Smoke-tests the resulting `agentshore` binary.
-#
-# Usage:
-#   install-agentshore-cli.sh --wheel <path-to-wheel>
-#
-# Exit codes:
-#   0 — CLI installed and verified
-#   1 — fatal: wheel missing, uv unavailable + bootstrap failed, or
-#       `uv tool install` failed. The wizard's CLI choice's postinstall
-#       surfaces non-zero exits to the user via an osascript alert.
 
 set -uo pipefail
 
@@ -55,7 +28,6 @@ die()  { printf 'error: %s\n' "$1" >&2; exit 1; }
 [[ -n "$WHEEL_PATH" && -f "$WHEEL_PATH" ]] \
   || die "Missing or invalid --wheel path: ${WHEEL_PATH:-<empty>}"
 
-# ── 1. Locate uv (per-user paths the postinstall PATH misses) ────────────────
 
 log "Locating uv"
 UV_BIN=""
@@ -75,7 +47,6 @@ if [[ -z "$UV_BIN" ]] && command -v uv >/dev/null 2>&1; then
   UV_BIN="$(command -v uv)"
 fi
 
-# ── 2. Bootstrap uv if missing (official installer, user-context) ────────────
 
 if [[ -z "$UV_BIN" ]]; then
   log "uv not found in standard locations — bootstrapping via official installer"
@@ -95,21 +66,14 @@ fi
 
 info "Using uv: $UV_BIN"
 
-# ── 3. Install / refresh the agentshore CLI ─────────────────────────────────────
 
 log "Installing agentshore CLI from wheel"
 info "Wheel: $WHEEL_PATH"
 
-# The wheel exposes the complete CLI dependency set directly; there are no
-# package extras to attach here. Keep this aligned with the Windows helper and
-# provisioner binary so all three paths use the same flag set.
-# Use plain path (not file:// URI) — uv resolves local paths directly and
-# handles spaces/# /% correctly without percent-encoding.
 "$UV_BIN" tool install --native-tls --force --reinstall --python 3.12 \
     "$WHEEL_PATH" \
   || die "uv tool install failed"
 
-# ── 4. Smoke test ────────────────────────────────────────────────────────────
 
 log "Verifying agentshore command"
 AGENTSHORE_BIN=""

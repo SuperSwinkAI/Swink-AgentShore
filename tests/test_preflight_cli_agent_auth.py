@@ -6,9 +6,6 @@ from unittest.mock import patch
 
 import pytest
 
-# Import the CLI package first so the start <-> bootstrap module pair initializes
-# in dependency order; importing bootstrap in isolation as the first agentshore
-# submodule trips a pre-existing circular-import ordering sensitivity.
 import agentshore.cli.commands.start  # noqa: F401
 from agentshore.agents.auth_probe import (
     AUTH_EXPIRED,
@@ -52,7 +49,7 @@ def test_ok_backend_auth_does_not_exit() -> None:
         "agentshore.agents.auth_probe.probe_configured_cli_auth",
         return_value=[_ok()],
     ):
-        preflight_cli_agent_auth(cfg)  # must not raise
+        preflight_cli_agent_auth(cfg)
 
 
 def test_non_blocking_status_warns_but_does_not_exit() -> None:
@@ -61,7 +58,7 @@ def test_non_blocking_status_warns_but_does_not_exit() -> None:
         "agentshore.agents.auth_probe.probe_configured_cli_auth",
         return_value=[_timeout()],
     ):
-        preflight_cli_agent_auth(cfg)  # timeout is non-blocking — must not raise
+        preflight_cli_agent_auth(cfg)
 
 
 def test_empty_config_is_noop() -> None:
@@ -70,7 +67,7 @@ def test_empty_config_is_noop() -> None:
         "agentshore.agents.auth_probe.probe_configured_cli_auth",
         return_value=[],
     ):
-        preflight_cli_agent_auth(cfg)  # no CLI agents → return cleanly
+        preflight_cli_agent_auth(cfg)
 
 
 def _invoke_start(args: list[str]):
@@ -90,11 +87,6 @@ def _invoke_start(args: list[str]):
         patch.object(start_mod, "preflight_identities"),
         patch.object(start_mod, "preflight_cli_agent_auth") as mock_auth,
     ):
-        # The dispatch block right after the preflight calls dereferences
-        # `resolved.cfg_path` (and friends). Make THAT attribute raise so we stop
-        # immediately after the preflight block — but `resolved.cfg` (consumed by
-        # both preflight calls) must still read cleanly, so leave it as a plain
-        # MagicMock attribute.
         type(mock_bootstrap.return_value).cfg_path = property(
             lambda self: (_ for _ in ()).throw(RuntimeError("stop-after-preflight"))
         )

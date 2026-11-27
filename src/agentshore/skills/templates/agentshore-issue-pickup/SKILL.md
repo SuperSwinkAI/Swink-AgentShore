@@ -37,7 +37,7 @@ All branching, rebase, and PR-base operations MUST use `$TARGET_BRANCH`. `$DEFAU
 
 **Create the work branch:** `git switch -c "$BRANCH"`. All subsequent commands run from cwd.
 
-**Implement.** Identify files referenced or related to the component; search the codebase for symbols, imports, patterns; read relevant files, specs, design docs, and the associated tests. Write a short task checklist before editing. If an `AGENTSHORE_IMPLEMENTATION_PLAN` exists, follow it (note in PR body why and use the smallest corrected plan if stale/unsafe); else build a mini-plan covering exact files to modify, tests to add/update, and validation commands. If the work becomes too large for one pass, stop with status `BLOCKED` or `DONE_WITH_CONCERNS` — do not silently broaden scope.
+**Implement.** Identify files referenced or related to the component; search the codebase for symbols, imports, patterns; read relevant files, specs, design docs, and the associated tests. Write a short task checklist before editing. If an `AGENTSHORE_IMPLEMENTATION_PLAN` exists, follow it (note in PR body why and use the smallest corrected plan if stale/unsafe); else build a mini-plan covering exact files to modify, tests to add/update, and validation commands. If the work becomes too large for one pass, stop with status `BLOCKED` (shape below) — do not silently broaden scope. Keep the PR reviewable: `agentshore-code-review` blocks any diff over 2500 changed lines, and a later play cannot shrink a blocked oversized PR. When the issue cannot be delivered completely inside that limit, do not open a partial PR (review checks the diff against the whole issue and would block it for missing requirements): stop with `success: false`, status `BLOCKED`, `error: "issue too large for one reviewable PR; needs refinement"`, and the needs-refinement mutation below so `refine_tasks` splits it into slices.
 
 TDD discipline: for behavior changes, write/update the failing test first, run the narrowest test command, confirm it fails for the expected reason. Implement the smallest complete change advancing the issue; follow existing style; keep edits focused, no unrelated changes. Re-run the narrowest test, confirm pass. Cover one positive case + one edge case when the behavior warrants it.
 
@@ -52,7 +52,7 @@ BASE=$(jq -r '.target_branch // empty' "${AGENTSHORE_PROJECT_PATH:-$(pwd)}/.agen
 gh pr create --base "$BASE" --title "<type>: <summary>" --body "Closes #$ISSUE_NUMBER\n\n## Changes\n- <bullets>\n\n## Test plan\n- <how to verify>"
 ```
 
-Record the URL. **Verify the base:** `gh pr view --json baseRefName,url,state`; if `baseRefName` is not `$BASE`, fix it immediately with `gh pr edit <N> --base "$BASE"`. Confirm the issue is referenced in the body.
+Record the URL. **Verify the base:** `gh pr view --json baseRefName,url,state`; if `baseRefName` is not `$BASE`, fix it immediately with `gh pr edit <N> --base "$BASE"`. Confirm the issue is referenced in the body. If the PR does not fully resolve the issue, use `Refs #$ISSUE_NUMBER` instead of `Closes #$ISSUE_NUMBER`, because `Closes` closes the issue on merge with work still outstanding.
 
 **Forbidden mutations:**
 - Never touch `.github/workflows/**`, `.github/actions/**`, `.gitlab-ci.yml`, `.circleci/**`, `azure-pipelines.yml`, `Jenkinsfile`, `bitbucket-pipelines.yml`, or tests asserting their existence. If CI changes are required, post a comment stating CI config is owned by the human maintainer, request `agentshore/disallowed`, then exit with `success: false`, `error: "ci-change requested but forbidden by skill policy"` and the policy-disallowed mutation shape below.
@@ -78,7 +78,7 @@ Record the URL. **Verify the base:** `gh pr view --json baseRefName,url,state`; 
 }
 ```
 
-`status`: `DONE` | `DONE_WITH_CONCERNS` | `NEEDS_CONTEXT` | `BLOCKED`. `DONE_WITH_CONCERNS` when the change partially advances the issue. Irrecoverable failure → `success: false`.
+`status`: `DONE` (with `success: true`) | `BLOCKED` (with `success: false` and a specific `error`, including when the issue lacks context you need to proceed). Put any concerns about a delivered change in the PR body. Irrecoverable failure → `success: false`.
 
 Optionally include 0–3 `learnings` entries capturing ONLY durable, repo-specific patterns worth reusing in future plays (build/test quirks, conventions, gotchas) — grounded in what actually happened this run, not generic advice. Each entry: `pattern` (the insight), `confidence` 0.0–1.0 (default 0.5), `category` short tag (default `"general"`). Omit the field entirely if nothing reusable was learned. NEVER record secrets, tokens, or one-off details. NEVER record workarounds that violate the Forbidden-mutations rules (e.g. forking).
 
@@ -90,10 +90,16 @@ For BLOCKED or policy-disallowed cases, populate `requested_mutations` so AgentS
 {"requested_mutations": [{"type": "block_issue_on", "issue": 17, "blocker": 12}]}
 ```
 
+- **Too large for one reviewable PR** — request refinement. The label takes the issue out of the `issue_pickup` pool and makes it a `refine_tasks` candidate, so it comes back as right-sized child issues instead of being re-dispatched whole. If the issue already carries `agentshore/refined`, also run `gh issue edit <N> --remove-label "agentshore/refined"` — refinement skips issues still marked refined, and the issue would otherwise sit in neither pool:
+
+```json
+{"requested_mutations": [{"type": "label_issue", "issue": 17, "labels": ["agentshore/needs-refinement"]}]}
+```
+
 - **Policy-disallowed** (work is out of autonomous scope, terminal) — label it:
 
 ```json
 {"requested_mutations": [{"type": "label_issue", "issue": 17, "labels": ["agentshore/disallowed"]}]}
 ```
 
-Always emit the result block — skipping causes `no valid result block` and the work is recorded as failed. Do not end your turn to wait for a build, test run, package-manager lock, CI, or any "notification"/"wake-up": run commands to completion in this turn (kill anything too slow and report what you have), then emit the block. There is no callback — waiting silently gets you killed mid-wait with no credit, even if you opened a PR. **Do not use `manage_task`, do not background or defer any command, and do not pause your turn to "wait for a background/async task to finish" — run every Bash command synchronously and wait for it to finish in this same turn before proceeding.**
+Always emit the result block — without it the play is recorded as failed (`no valid result block`) and the PR you opened earns no credit. Run every command in the foreground to completion in this turn; nothing re-invokes you after a background job, CI run, or notification, so a turn that ends waiting on one is lost.

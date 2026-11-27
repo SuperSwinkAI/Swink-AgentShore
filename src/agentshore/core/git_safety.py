@@ -29,8 +29,6 @@ if TYPE_CHECKING:
 
 _logger = get_logger(__name__)
 
-#: Max length of failing-git stderr surfaced on a restore failure — keeps the
-#: ``main_repo_auto_restore_failed`` event bounded while preserving the tail.
 _RESTORE_STDERR_MAX = 500
 
 
@@ -52,14 +50,8 @@ class RestoreResult:
         return self.ok
 
 
-# Substring flagging a path that leaked through bash quoting as a literal
-# backslash-space (e.g. ``~/Dev/Some Project`` mangled to ``Some\ Project`` when
-# a skill template dropped a quoting level). No legitimate POSIX path contains
-# ``\ ``, so a substring scan (not regex) suffices.
 PATH_ESCAPE_MARKER = "\\ "
 
-# Fallback default branch when ``origin/HEAD`` can't be resolved at session
-# start; ``main`` is GitHub's new-repo default and the fleet's common case.
 DEFAULT_BRANCH_FALLBACK = "main"
 
 
@@ -117,9 +109,6 @@ def current_head_ref(repo_root: Path) -> str | None:
     return ref or None
 
 
-#: Subdir under ``.agentshore/`` where :func:`restore_default_branch` quarantines
-#: untracked files blocking the default-branch checkout. Mirrors
-#: ``trunk_artifacts.QUARANTINE_DIRNAME``; ``.agentshore/`` never re-flags dirty.
 _RESTORE_RECLAIM_DIRNAME = "reclaimed"
 
 
@@ -241,8 +230,6 @@ def restore_default_branch(repo_root: Path, default_branch: str) -> RestoreResul
     if _checkout():
         return RestoreResult(ok=True)
 
-    # Checkout refused: ``merge --abort`` unwinds an in-progress merge, then
-    # ``reset --hard`` drops conflicted/dirty *tracked* state so checkout lands.
     merge_in_progress = (repo_root / ".git" / "MERGE_HEAD").exists()
     for recovery in (["merge", "--abort"], ["reset", "--hard"]):
         if recovery == ["merge", "--abort"] and not merge_in_progress:
@@ -251,9 +238,6 @@ def restore_default_branch(repo_root: Path, default_branch: str) -> RestoreResul
         if _checkout():
             return RestoreResult(ok=True)
 
-    # Still refused: blocker is untracked files the default branch would
-    # overwrite (#175). Quarantine (recoverable) and retry so untracked work on a
-    # branch-switched HEAD no longer wedges dispatch.
     quarantined = _quarantine_untracked_blockers(repo_root)
     if quarantined:
         _logger.warning(
@@ -279,10 +263,6 @@ def path_contains_backslash_space(path: str | Path) -> bool:
     return PATH_ESCAPE_MARKER in str(path)
 
 
-# Repo-root paths AgentShore owns. Single source for both consumers so they
-# can't drift (#594): the gitignore writer below ignores them, and
-# ``wedge_signals._AGENTSHORE_OWNED_UNTRACKED_PREFIXES`` derives from this to
-# filter them out of the dirty-trunk signal (the two had previously drifted).
 AGENTSHORE_OWNED_ROOT_PATHS: tuple[str, ...] = (
     ".agentshore/",
     ".agents/",
@@ -291,9 +271,6 @@ AGENTSHORE_OWNED_ROOT_PATHS: tuple[str, ...] = (
     "timelapse-runs/",
     "closed_issue_refs.txt",
     "open_bead_refs.txt",
-    # Agent scratch/temp-file convention (#330): skills are instructed to
-    # write throwaway files here instead of loose at the repo root, so they
-    # never surface as an untracked dirty_trunk blocker in the first place.
     "tmp/",
 )
 
@@ -334,7 +311,7 @@ def untrack_ignored_entries(repo_root: Path) -> list[str]:
     for entry in _REQUIRED_GITIGNORE_ENTRIES:
         ls = _run_git(["ls-files", "--", entry], repo_root)
         if ls.returncode != 0 or not ls.stdout.strip():
-            continue  # entry is not tracked — nothing to untrack
+            continue
         rm = _run_git(
             ["rm", "-r", "--cached", "--ignore-unmatch", "--", entry],
             repo_root,
@@ -361,7 +338,6 @@ def commit_gitignore_if_dirty(repo_root: Path) -> bool:
     add = _run_git(["add", "--", ".gitignore"], repo_root)
     if add.returncode != 0:
         return False
-    # returncode 0 == no staged changes; 1 == staged changes present.
     staged = _run_git(["diff", "--cached", "--quiet"], repo_root)
     if staged.returncode == 0:
         return False
@@ -425,9 +401,6 @@ def _resolve_signing_key() -> str:
     """
     import pathlib
 
-    # Hardened git_sync (stdin=DEVNULL, CREATE_NO_WINDOW), not raw subprocess.run:
-    # in the sidecar stdin is the live Tauri JSON-RPC pipe, and git's MSYS2
-    # runtime wedges at 0 CPU forever if it inherits and probes that pipe.
     result = command.git_sync(
         "config", "--global", "--get", "gpg.ssh.signingKey", timeout_seconds=5
     )
@@ -508,8 +481,6 @@ def ensure_ssh_signing_key_loaded() -> tuple[bool, str]:
                 capture_output=True,
                 text=True,
                 timeout=5,
-                # Never inherit the sidecar's stdin (the live Tauri JSON-RPC
-                # pipe); a subprocess probing it can wedge the session (#155).
                 stdin=subprocess.DEVNULL,
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
@@ -523,7 +494,6 @@ def ensure_ssh_signing_key_loaded() -> tuple[bool, str]:
     if loaded:
         return True, detail
 
-    # Attempt non-interactive load from the platform keychain / default key.
     import pathlib
 
     key_str = _resolve_signing_key()
@@ -546,8 +516,6 @@ def ensure_ssh_signing_key_loaded() -> tuple[bool, str]:
             capture_output=True,
             text=True,
             timeout=10,
-            # A passphrase-protected key would prompt on the inherited stdin (the
-            # live Tauri JSON-RPC pipe); DEVNULL fails fast instead (#155).
             stdin=subprocess.DEVNULL,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:

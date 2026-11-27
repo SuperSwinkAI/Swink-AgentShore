@@ -47,7 +47,7 @@ async def test_circuit_breaker_trips_and_drains_at_threshold(tmp_path, monkeypat
     for _ in range(_MAX_CONSECUTIVE_TICK_FAILURES):
         result = await orch._loop.handle_tick_failure(ValueError("boom"))
 
-    assert result is True  # last call trips the breaker
+    assert result is True
     assert orch._loop._tick_failure_streak == _MAX_CONSECUTIVE_TICK_FAILURES
     orch._drain.begin_drain.assert_awaited_once_with("tick_failure_circuit_breaker")
     assert orch._runtime.drain_reason == "tick_failure_circuit_breaker"

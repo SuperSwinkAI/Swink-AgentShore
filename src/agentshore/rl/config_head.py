@@ -25,12 +25,8 @@ class ConfigKey(NamedTuple):
     model_tier: str
 
 
-# Sanity cap on the config head's output dimension. Real deployments use 4–6
-# configs (claude_code/codex × small/medium/large) so 32 is plenty of headroom.
 MAX_CONFIG_INDEX_SIZE: Final[int] = 32
 
-# Bumped independently of ACTION_SPACE_VERSION when the config head's shape or
-# semantics change. Old checkpoints with mismatched policy_version are rejected.
 POLICY_VERSION: Final[int] = 5
 
 
@@ -50,8 +46,6 @@ def build_config_index(cfg: RuntimeConfig) -> tuple[ConfigKey, ...]:
         if not agent_cfg.enabled:
             continue
         tiers = enabled_model_tiers(agent_type, agent_cfg)
-        # Iterate in priority order rather than tier-config order to match the
-        # resolver's existing behaviour.
         for tier in MODEL_TIER_PRIORITY:
             if tier in tiers:
                 pairs.append(ConfigKey(agent_type.value, tier))

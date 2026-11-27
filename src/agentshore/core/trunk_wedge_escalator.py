@@ -73,10 +73,10 @@ class TrunkWedgeEscalator:
         if "dirty_trunk" not in error_text:
             return
         entries = await asyncio.to_thread(collect_dirty_trunk_paths, self._repo_root)
-        root_untracked = sorted(e.path for e in entries if e.status == "??" and "/" not in e.path)
+        root_untracked = sorted(
+            e.path for e in entries if e.status == "??" and "/" not in e.path.rstrip("/")
+        )
         if not root_untracked:
-            # Not this pathology (tracked collision or subdirectory debris) —
-            # leave to other handling.
             return
         self._main_repo.record_dirty_trunk_failure("|".join(root_untracked))
         if self._main_repo.is_trunk_wedged():

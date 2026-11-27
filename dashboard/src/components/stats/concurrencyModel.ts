@@ -1,8 +1,8 @@
 import type { AgentSnapshot } from "../../types";
 import { AGENT_REGISTRY, AGENT_TYPES, agentLabel } from "../../agentRegistry";
 
-// Pure math/formatting for the Fleet Concurrency chart in StatsStage.tsx.
-// Kept free of React/store concerns so it can be unit tested in isolation.
+
+
 
 export const CONCURRENCY_MAX_WINDOW_MS = 3 * 60 * 60 * 1000;
 const CONCURRENCY_SAMPLE_BUCKET_MS = 1000;

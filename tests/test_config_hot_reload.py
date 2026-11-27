@@ -76,7 +76,6 @@ async def test_reload_config_no_changes(tmp_path: Path) -> None:
     orch = await Orchestrator.bootstrap(cfg=cfg, repo_root=tmp_path, config_path=config_path)
     async with orch:
         original_cfg = orch._runtime.cfg
-        # Reload an unchanged file — content still matches, no swap.
         await orch._lifecycle.reload_config()
         assert orch._runtime.cfg is original_cfg
 
@@ -135,7 +134,6 @@ async def test_reload_picks_up_global_pricing_edit(
         cfg=RuntimeConfig(), repo_root=tmp_path, config_path=config_path
     )
     async with orch:
-        # Edit the single global touchpoint and reload — no restart.
         global_pricing.write_text(yaml.dump(_sonnet_pricing(0.9)), encoding="utf-8")
         await orch._lifecycle.reload_config()
 
@@ -166,7 +164,6 @@ async def test_reload_rejects_malformed_global_pricing(
             orch._runtime.cfg.pricebook.resolve("claude_code", "sonnet").cost_per_1k_output == 0.9
         )
 
-        # Negative rate → ConfigError → reload aborts, prior pricing stands.
         global_pricing.write_text(yaml.dump(_sonnet_pricing(0.2, input_rate=-5)), encoding="utf-8")
         await orch._lifecycle.reload_config()
 
@@ -213,7 +210,6 @@ async def test_reload_refreshes_live_ppo_selector_cfg(tmp_path: Path) -> None:
         cfg=RuntimeConfig(), repo_root=tmp_path, config_path=config_path
     )
     async with orch:
-        # spec=PPOSelector so isinstance(selector, _ppo_selector_cls()) holds.
         selector = MagicMock(spec=PPOSelector)
         orch._runtime.selector = selector
 
@@ -223,5 +219,4 @@ async def test_reload_refreshes_live_ppo_selector_cfg(tmp_path: Path) -> None:
         selector.update_orchestrator_cfg.assert_called_once_with(orch._runtime.cfg)
         assert orch._runtime.cfg.budget.total == 25.0
 
-        # Restore so the mock is not exercised during orchestrator shutdown.
         orch._runtime.selector = None

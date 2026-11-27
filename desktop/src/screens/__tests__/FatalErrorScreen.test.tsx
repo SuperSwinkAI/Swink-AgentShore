@@ -37,7 +37,7 @@ describe("FatalErrorScreen — build_id mismatch", () => {
     render(<FatalErrorScreen info={MISMATCH} adapter={makeAdapter()} />);
     expect(screen.getByTestId("quit-app")).toBeInTheDocument();
     expect(screen.getByTestId("open-log")).toBeInTheDocument();
-    // No "Restart sidecar", "Home", or any other nav target.
+
     expect(screen.queryByText(/Restart sidecar/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/Home/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/Setup/i)).not.toBeInTheDocument();

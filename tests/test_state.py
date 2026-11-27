@@ -22,10 +22,6 @@ from agentshore.state import (
     StateProvider,
 )
 
-# ---------------------------------------------------------------------------
-# Enum round-trips
-# ---------------------------------------------------------------------------
-
 
 def test_play_type_round_trip() -> None:
     for pt in PlayType:
@@ -50,11 +46,6 @@ def test_session_state_round_trip() -> None:
 def test_play_type_invalid_raises() -> None:
     with pytest.raises(ValueError):
         PlayType("not_a_play")
-
-
-# ---------------------------------------------------------------------------
-# Frozen dataclass invariants
-# ---------------------------------------------------------------------------
 
 
 def test_play_outcome_is_frozen() -> None:
@@ -138,11 +129,6 @@ def test_skill_result_is_frozen() -> None:
     sr = SkillResult(success=True)
     with pytest.raises((dataclasses.FrozenInstanceError, AttributeError)):
         sr.success = False  # type: ignore[misc]
-
-
-# ---------------------------------------------------------------------------
-# OrchestratorState — mutable with default factories that don't share aliases
-# ---------------------------------------------------------------------------
 
 
 def _running_state(session_id: str) -> OrchestratorState:
@@ -270,8 +256,6 @@ def test_session_stats_aggregate_play_history() -> None:
             dollar_cost=0.50,
             agent_id="agent-a",
         ),
-        # In-flight placeholder (ended_at/agent_id/duration_ms unset): success=False
-        # default must NOT count as a failure — work is still running.
         PlayRecord(
             session_id="s",
             play_type=PlayType.ISSUE_PICKUP.value,
@@ -282,8 +266,6 @@ def test_session_stats_aggregate_play_history() -> None:
 
     stats = SnapshotProjector.compute_session_stats(history)
 
-    # In-flight placeholder (ended_at unset) excluded from all counters; if it
-    # leaked in, total_plays would be 4 and failed_plays 2.
     assert stats.total_plays == 3
     assert stats.successful_plays == 2
     assert stats.failed_plays == 1
@@ -295,8 +277,6 @@ def test_session_stats_aggregate_play_history() -> None:
 
     by_type = {row.play_type: row for row in stats.by_play_type}
     issue_pickup = by_type[PlayType.ISSUE_PICKUP]
-    # 3 issue_pickup rows exist but one is in-flight, so the per-type table
-    # counts only the 2 finalized ones (not 3 total / 2 failed).
     assert issue_pickup.total == 2
     assert issue_pickup.successful == 1
     assert issue_pickup.failed == 1
@@ -309,7 +289,6 @@ def test_session_stats_aggregate_play_history() -> None:
     assert run_qa.successful == 1
     assert run_qa.failed == 0
 
-    # Agent specialization derived from the same history (Issue #333).
     cells = {(c.agent_id, c.play_type): c for c in stats.agent_specialization}
     pickup_cell = cells[("agent-a", PlayType.ISSUE_PICKUP)]
     assert pickup_cell.total == 2
@@ -422,11 +401,6 @@ def test_project_open_issues_mirrors_closed_graph_tasks() -> None:
     assert snapshot.bead_status == "closed"
     assert snapshot.bead_ready is False
     assert snapshot.bead_mirror_status == "mirrored"
-
-
-# ---------------------------------------------------------------------------
-# StateProvider protocol
-# ---------------------------------------------------------------------------
 
 
 def test_null_state_provider_is_state_provider() -> None:

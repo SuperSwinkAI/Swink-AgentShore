@@ -53,11 +53,7 @@ async def test_dispatch_list_archives() -> None:
 async def test_dispatch_unknown_command_ignored() -> None:
     """Unknown commands don't crash."""
     orch = MagicMock()
-    # Should not raise
     await _dispatch_command({"command": "unknown_future_command"}, orch)
-
-
-# Tests for previously-silent commands (issue #6)
 
 
 @pytest.mark.asyncio()
@@ -133,7 +129,6 @@ async def test_dispatch_verification_response_failed_stays_paused() -> None:
 async def test_dispatch_start_is_noop() -> None:
     """start command is a no-op at dispatch time (orchestrator already running)."""
     orch = MagicMock()
-    # Should not raise or call any orchestrator method
     await _dispatch_command({"command": "start"}, orch)
 
 

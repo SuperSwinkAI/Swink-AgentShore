@@ -90,8 +90,6 @@ async def test_non_embedded_mode_opens_browser(tmp_path: Path) -> None:
         await orch._drain.stop_inner(0.0)
 
     mock_open.assert_called_once_with(report_path.resolve().as_uri())
-    # The callback is only fired in embedded mode — keeps the CLI path
-    # free of unexpected side-channels.
     assert callback_calls == []
 
 

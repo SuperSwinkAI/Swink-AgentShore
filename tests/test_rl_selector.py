@@ -28,10 +28,6 @@ from agentshore.rl.selector import (
 from agentshore.rl.training import PPOUpdater
 from agentshore.state import OrchestratorState, PlayType, SessionState
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 
 def _state(**kwargs: object) -> OrchestratorState:
     plays_since = kwargs.pop("plays_since_last_play_type", None)
@@ -184,21 +180,14 @@ def _build_selector(
     )
 
 
-# ---------------------------------------------------------------------------
-# select()
-# ---------------------------------------------------------------------------
-
-
 def test_select_returns_play_type_and_params():
     sel = _build_selector()
     result = asyncio.run(sel.select(_state()))
-    assert result is not None  # type-checker guard
+    assert result is not None
     play_type, params = result
     assert isinstance(play_type, PlayType)
     assert isinstance(params, PlayParams)
-    # Selecting must mark the selector with pending experience awaiting completion.
     assert sel._pending is not None
-    # Action index round-trips: stored pending action maps back to a valid PlayType.
     assert 0 <= sel._pending.action < NUM_ACTIONS
 
 
@@ -209,8 +198,6 @@ def test_select_all_masked_returns_none():
 
 
 def test_select_all_masked_logs_structured_diagnostics():
-    # _log_all_masked delegates to selector_diagnostics.log_all_masked, which
-    # owns the module-level logger those calls go through (rl/selector split).
     sel = _build_selector(all_preconds=False)
     with patch("agentshore.rl.selector_diagnostics._logger") as logger:
         result = asyncio.run(sel.select(_state()))
@@ -228,9 +215,6 @@ def _mask_reason(text: str, source: MaskSource) -> MaskReason:
 
 
 def test_mask_reasons_by_play_is_complete_and_sorted():
-    # The full per-play map keeps EVERY masked play (no most_common(5) truncation)
-    # and preserves the play->reason mapping the Counter(values) collapse discards,
-    # so a wedge's actual blockers (issue_pickup/code_review/merge_pr) stay visible.
     reasons = {
         PlayType.MERGE_PR: MaskReason(
             text="dirty trunk", classification=MaskClassification.HARD, source=MaskSource.CANDIDATE
@@ -250,14 +234,10 @@ def test_mask_reasons_by_play_is_complete_and_sorted():
     assert set(mapping) == {"merge_pr", "code_review", "issue_pickup"}
     assert mapping["code_review"] == "no reviewable PR candidate [hard/candidate]"
     assert mapping["issue_pickup"] == "too many open PRs [transient/candidate]"
-    # Deterministic, greppable ordering (sorted by play value).
     assert list(mapping) == sorted(mapping)
 
 
 def test_masked_plays_log_field_dedups_identical_maps():
-    # A frozen all-masked wedge re-logs its diagnostic every selector tick; the
-    # verbose map must appear once, then collapse to an "unchanged" sentinel so
-    # the log isn't flooded with identical ~20-entry dumps.
     sel = _build_selector()
     reasons = {
         PlayType.CODE_REVIEW: MaskReason(
@@ -268,25 +248,21 @@ def test_masked_plays_log_field_dedups_identical_maps():
     assert "masked_plays" in first
     assert "masked_plays_unchanged" not in first
 
-    # Identical map on the next tick → compact sentinel, no re-dump.
     second = sel._masked_plays_log_field(dict(reasons))
     assert second == {"masked_plays_unchanged": True}
 
-    # A changed map re-emits the full field.
     reasons[PlayType.MERGE_PR] = MaskReason(
         text="y", classification=MaskClassification.HARD, source=MaskSource.CANDIDATE
     )
     third = sel._masked_plays_log_field(reasons)
     assert "masked_plays" in third
 
-    # A dispatched play clears the digest so the next wedge re-emits fresh.
     sel._last_masked_plays_digest = None
     fourth = sel._masked_plays_log_field(reasons)
     assert "masked_plays" in fourth
 
 
 def test_capacity_only_reasons_include_allowed_tier_waits():
-    # Eligibility reasons count as capacity waits; RESERVED is an actionable ignore.
     assert _only_capacity_waiting(
         [
             {
@@ -310,7 +286,6 @@ def test_capacity_only_reasons_include_allowed_tier_waits():
 
 
 def test_capacity_only_reasons_spawn_cooldown():
-    # Instantiate-cooldown reasons (SPAWN source) count as capacity waits.
     assert _only_capacity_waiting(
         [
             {
@@ -326,8 +301,6 @@ def test_capacity_only_reasons_spawn_cooldown():
 
 
 def test_capacity_only_reasons_non_capacity_returns_false():
-    # A reason from a non-capacity source (e.g. CONTROL) causes the predicate to
-    # return False even if other capacity-wait reasons are present.
     assert not _only_capacity_waiting(
         [
             {
@@ -375,7 +348,6 @@ def test_is_capacity_wait_eligibility_and_spawn():
 
 
 def test_select_logs_resolver_exhaustion_when_masked_actions_cannot_resolve():
-    # _log_resolver_exhausted delegates to selector_diagnostics (rl/selector split).
     sel = _build_selector()
     sel._resolver.resolve = AsyncMock(return_value=None)
 
@@ -412,7 +384,6 @@ def test_select_logs_terminal_no_work_diagnostic():
     graph.tasks_blocked = 0
     sel = _build_selector(all_preconds=False)
 
-    # _log_terminal_no_work delegates to selector_diagnostics (rl/selector split).
     with patch("agentshore.rl.selector_diagnostics._logger") as logger:
         asyncio.run(
             sel.select(_state(graph=graph, plays_since_last_play_type={PlayType.RUN_QA: 0}))
@@ -485,10 +456,10 @@ def test_select_auto_reverse_failsafe_disabled_by_default():
     state = _state(open_issues=[_issue()], agents=[_agent()])
 
     with patch("agentshore.rl.selector._logger"):
-        assert asyncio.run(sel.select(state)) is None  # tick 1
-        assert asyncio.run(sel.select(state)) is None  # tick 2
-        assert asyncio.run(sel.select(state)) is None  # tick 3 — no fire when disabled
-        assert asyncio.run(sel.select(state)) is None  # tick 4 — still no fire
+        assert asyncio.run(sel.select(state)) is None
+        assert asyncio.run(sel.select(state)) is None
+        assert asyncio.run(sel.select(state)) is None
+        assert asyncio.run(sel.select(state)) is None
 
 
 def test_auto_reverse_failsafe_counts_lifecycle_only_mask_as_no_work():
@@ -497,13 +468,13 @@ def test_auto_reverse_failsafe_counts_lifecycle_only_mask_as_no_work():
     arm and lift END_SESSION, instead of resetting every time a reap slips
     through."""
     sel = _build_selector(all_preconds=False, resolver_params=PlayParams(issue_number=234))
-    state = _state(open_issues=[_issue()], agents=[_agent()])  # all agents idle
+    state = _state(open_issues=[_issue()], agents=[_agent()])
     mask = np.zeros(NUM_ACTIONS, dtype=bool)
-    mask[PLAY_TO_INDEX[PlayType.END_AGENT]] = True  # only a lifecycle play selectable
+    mask[PLAY_TO_INDEX[PlayType.END_AGENT]] = True
 
-    assert sel._auto_reverse_failsafe_should_unmask(state, mask) is False  # tick 1
-    assert sel._auto_reverse_failsafe_should_unmask(state, mask) is False  # tick 2
-    assert sel._auto_reverse_failsafe_should_unmask(state, mask) is True  # tick 3 → arms
+    assert sel._auto_reverse_failsafe_should_unmask(state, mask) is False
+    assert sel._auto_reverse_failsafe_should_unmask(state, mask) is False
+    assert sel._auto_reverse_failsafe_should_unmask(state, mask) is True
 
 
 def test_auto_reverse_failsafe_resets_on_real_selectable_play():
@@ -517,8 +488,7 @@ def test_auto_reverse_failsafe_resets_on_real_selectable_play():
     work_mask[PLAY_TO_INDEX[PlayType.ISSUE_PICKUP]] = True
 
     assert sel._auto_reverse_failsafe_should_unmask(state, lifecycle_mask) is False
-    assert sel._auto_reverse_failsafe_should_unmask(state, work_mask) is False  # resets to 0
-    # Counter restarted: a single lifecycle tick is well below threshold.
+    assert sel._auto_reverse_failsafe_should_unmask(state, work_mask) is False
     assert sel._auto_reverse_failsafe_should_unmask(state, lifecycle_mask) is False
 
 
@@ -566,15 +536,12 @@ def test_auto_failsafe_counter_advances_through_in_flight_plays():
     )
     fully_masked = np.zeros(22, dtype=bool)
 
-    # First tick: counter goes from 0 to 1; threshold (3) not yet hit.
     assert sel._auto_reverse_failsafe_should_unmask(state, fully_masked) is False
     assert sel._no_available_play_ticks == 1
 
-    # Second tick: still in flight, still all-masked, still idle — keep counting.
     assert sel._auto_reverse_failsafe_should_unmask(state, fully_masked) is False
     assert sel._no_available_play_ticks == 2
 
-    # Third tick: threshold met, failsafe opens.
     assert sel._auto_reverse_failsafe_should_unmask(state, fully_masked) is True
     assert sel._no_available_play_ticks == 3
 
@@ -596,7 +563,7 @@ def test_auto_failsafe_counter_resets_when_an_agent_is_busy():
         tasks_failed=0,
     )
     sel = _build_selector(all_preconds=False)
-    sel._no_available_play_ticks = 2  # primed
+    sel._no_available_play_ticks = 2
     state = _state(open_issues=[_issue()], agents=[busy_agent])
     fully_masked = np.zeros(22, dtype=bool)
 
@@ -639,9 +606,9 @@ def test_auto_failsafe_counter_advances_when_only_agent_is_error():
     )
     fully_masked = np.zeros(22, dtype=bool)
 
-    assert sel._auto_reverse_failsafe_should_unmask(state, fully_masked) is False  # tick 1
-    assert sel._auto_reverse_failsafe_should_unmask(state, fully_masked) is False  # tick 2
-    assert sel._auto_reverse_failsafe_should_unmask(state, fully_masked) is True  # tick 3 → arms
+    assert sel._auto_reverse_failsafe_should_unmask(state, fully_masked) is False
+    assert sel._auto_reverse_failsafe_should_unmask(state, fully_masked) is False
+    assert sel._auto_reverse_failsafe_should_unmask(state, fully_masked) is True
 
 
 def test_auto_failsafe_counter_advances_when_agents_idle_and_error_mixed():
@@ -660,9 +627,9 @@ def test_auto_failsafe_counter_advances_when_agents_idle_and_error_mixed():
     )
     fully_masked = np.zeros(22, dtype=bool)
 
-    assert sel._auto_reverse_failsafe_should_unmask(state, fully_masked) is False  # tick 1
-    assert sel._auto_reverse_failsafe_should_unmask(state, fully_masked) is False  # tick 2
-    assert sel._auto_reverse_failsafe_should_unmask(state, fully_masked) is True  # tick 3 → arms
+    assert sel._auto_reverse_failsafe_should_unmask(state, fully_masked) is False
+    assert sel._auto_reverse_failsafe_should_unmask(state, fully_masked) is False
+    assert sel._auto_reverse_failsafe_should_unmask(state, fully_masked) is True
 
 
 def test_auto_failsafe_counter_advances_when_busy_agent_is_on_a_break():
@@ -680,9 +647,9 @@ def test_auto_failsafe_counter_advances_when_busy_agent_is_on_a_break():
     )
     fully_masked = np.zeros(22, dtype=bool)
 
-    assert sel._auto_reverse_failsafe_should_unmask(state, fully_masked) is False  # tick 1
-    assert sel._auto_reverse_failsafe_should_unmask(state, fully_masked) is False  # tick 2
-    assert sel._auto_reverse_failsafe_should_unmask(state, fully_masked) is True  # tick 3 → arms
+    assert sel._auto_reverse_failsafe_should_unmask(state, fully_masked) is False
+    assert sel._auto_reverse_failsafe_should_unmask(state, fully_masked) is False
+    assert sel._auto_reverse_failsafe_should_unmask(state, fully_masked) is True
 
 
 def test_auto_failsafe_counter_resets_when_busy_agent_does_real_work():
@@ -696,7 +663,7 @@ def test_auto_failsafe_counter_resets_when_busy_agent_does_real_work():
     from agentshore.state import AgentStatus, PlayType
 
     sel = _build_selector(all_preconds=False)
-    sel._no_available_play_ticks = 2  # primed
+    sel._no_available_play_ticks = 2
     state = _state(
         open_issues=[_issue()],
         agents=[
@@ -735,14 +702,11 @@ def test_select_reverse_failsafe_bypasses_policy_backpressure_when_enabled():
 def test_select_sets_pending():
     sel = _build_selector()
     asyncio.run(sel.select(_state()))
-    assert sel._pending is not None  # type-checker guard
+    assert sel._pending is not None
     assert isinstance(sel._pending, _PendingStep)
-    # The pending step must capture a valid action and matching observation/mask shapes.
     assert 0 <= sel._pending.action < NUM_ACTIONS
     assert sel._pending.obs.shape == (OBSERVATION_DIM,)
     assert sel._pending.mask.shape == (NUM_ACTIONS,)
-    # log_prob comes from a categorical sample of a normalised distribution;
-    # it must be finite and non-positive.
     assert np.isfinite(sel._pending.log_prob)
     assert sel._pending.log_prob <= 0.0
 
@@ -752,7 +716,6 @@ def test_audit_replay_mode_reproducible():
     sel = _build_selector(policy_mode=PolicyMode.AUDIT_REPLAY)
     state = _state()
     result1 = asyncio.run(sel.select(state))
-    # Reset pending between calls
     sel._pending = None
     result2 = asyncio.run(sel.select(state))
     assert result1 is not None and result2 is not None
@@ -793,7 +756,7 @@ def test_resolver_none_on_first_retry_succeeds():
         nonlocal call_count
         call_count += 1
         if call_count == 1:
-            return None  # First action fails
+            return None
         return PlayParams()
 
     resolver = MagicMock()
@@ -809,18 +772,12 @@ def test_resolver_none_on_first_retry_succeeds():
         cfg=_make_cfg(),
     )
     result = asyncio.run(sel.select(_state()))
-    assert result is not None  # type-checker guard
+    assert result is not None
     assert call_count == 2
     play_type, params = result
     assert isinstance(play_type, PlayType)
     assert isinstance(params, PlayParams)
-    # A successful retry must leave the selector with a pending experience step.
     assert sel._pending is not None
-
-
-# ---------------------------------------------------------------------------
-# on_play_completed / experience accumulation
-# ---------------------------------------------------------------------------
 
 
 def test_on_play_completed_adds_step_to_buffer():
@@ -869,11 +826,6 @@ def test_experience_round_trip_buffer_grows():
     assert len(sel.buffer) == 3
 
 
-# ---------------------------------------------------------------------------
-# should_update / should_checkpoint
-# ---------------------------------------------------------------------------
-
-
 def test_should_update_false_when_buffer_small():
     sel = _build_selector()
     assert not sel.should_update()
@@ -881,7 +833,7 @@ def test_should_update_false_when_buffer_small():
 
 def test_should_update_true_when_buffer_full():
     sel = _build_selector()
-    for _ in range(8):  # update_every = 8
+    for _ in range(8):
         sel._buffer.add(
             __import__("agentshore.rl.experience", fromlist=["Step"]).Step(
                 state=np.zeros(OBSERVATION_DIM, dtype=np.float32),
@@ -927,11 +879,6 @@ def test_should_checkpoint_false_in_audit_replay_mode():
     assert not sel.should_checkpoint(10)
 
 
-# ---------------------------------------------------------------------------
-# update_policy
-# ---------------------------------------------------------------------------
-
-
 def test_update_policy_clears_buffer():
     sel = _build_selector()
     from agentshore.rl.experience import Step
@@ -957,11 +904,6 @@ def test_update_policy_audit_replay_is_noop():
     sel = _build_selector(policy_mode=PolicyMode.AUDIT_REPLAY)
     stats = asyncio.run(sel.update_policy(next_state_value=0.0))
     assert stats.n_epochs == 0
-
-
-# ---------------------------------------------------------------------------
-# from_cold_start / load factory
-# ---------------------------------------------------------------------------
 
 
 def test_from_cold_start_builds_selector():
@@ -1022,13 +964,7 @@ def test_load_runs_torch_load_off_the_event_loop(
         )
     )
     assert isinstance(sel, PPOSelector)
-    # ActorCritic.load was scheduled on a worker thread, not run on the loop.
     assert "load" in threaded
-
-
-# ---------------------------------------------------------------------------
-# consume_pending
-# ---------------------------------------------------------------------------
 
 
 def test_consume_pending_returns_and_clears():
@@ -1045,11 +981,6 @@ def test_consume_pending_without_select_returns_none():
     assert sel.consume_pending() is None
 
 
-# ---------------------------------------------------------------------------
-# C2 — _reload_shared_weights safe reload (versioned path)
-# ---------------------------------------------------------------------------
-
-
 def test_reload_shared_weights_picks_versioned_path(tmp_path: Path) -> None:
     """_reload_shared_weights loads the version-tagged canonical, ignores policy.pt."""
     import unittest.mock as mock
@@ -1061,16 +992,14 @@ def test_reload_shared_weights_picks_versioned_path(tmp_path: Path) -> None:
     weights_dir = tmp_path / "weights"
     weights_dir.mkdir(parents=True, exist_ok=True)
 
-    # Save a real compatible checkpoint at the versioned canonical path.
     versioned_path = weights_dir / canonical_weights_filename()
     sel._policy.save(versioned_path)
 
-    # Ensure the legacy policy.pt does NOT exist (we want to confirm it is ignored).
     legacy_path = weights_dir / "policy.pt"
     assert not legacy_path.exists()
 
     with mock.patch("agentshore.rl.selector._GLOBAL_WEIGHTS_DIR", weights_dir):
-        sel._reload_shared_weights()  # should succeed silently, no exception
+        sel._reload_shared_weights()
 
 
 def test_reload_shared_weights_skips_incompatible(tmp_path: Path) -> None:
@@ -1090,9 +1019,6 @@ def test_reload_shared_weights_skips_incompatible(tmp_path: Path) -> None:
     weights_dir.mkdir(parents=True, exist_ok=True)
 
     stale_path = weights_dir / canonical_weights_filename()
-    # Write a payload with a wrong policy_version — ActorCritic.load raises
-    # IncompatibleCheckpointError on action_space_version mismatch first, so
-    # use a wrong action_space_version to guarantee the error path.
     torch.save(
         {
             "state_dict": sel._policy.state_dict(),
@@ -1107,18 +1033,12 @@ def test_reload_shared_weights_skips_incompatible(tmp_path: Path) -> None:
     )
 
     with mock.patch("agentshore.rl.selector._GLOBAL_WEIGHTS_DIR", weights_dir):
-        sel._reload_shared_weights()  # should log warning, not raise, not load weights
+        sel._reload_shared_weights()
 
-    # Policy weights unchanged — reload was skipped.
     for key, original_tensor in original_state.items():
         assert torch.equal(sel._policy.state_dict()[key], original_tensor), (
             f"Weight {key} changed after incompatible reload"
         )
-
-
-# ---------------------------------------------------------------------------
-# C3 — cleanup_stale_canonical_weights
-# ---------------------------------------------------------------------------
 
 
 def test_cleanup_stale_canonical_renames(tmp_path: Path) -> None:
@@ -1132,7 +1052,6 @@ def test_cleanup_stale_canonical_renames(tmp_path: Path) -> None:
     weights_dir.mkdir()
 
     legacy_path = weights_dir / "policy.pt"
-    # Write a payload that will fail ActorCritic.load (wrong action_space_version).
     torch.save(
         {
             "state_dict": {},
@@ -1148,9 +1067,7 @@ def test_cleanup_stale_canonical_renames(tmp_path: Path) -> None:
 
     cleanup_stale_canonical_weights(weights_dir)
 
-    # Original policy.pt is gone (renamed).
     assert not legacy_path.exists()
-    # A legacy-named file now exists.
     legacy_files = list(weights_dir.glob("policy_legacy_*.pt"))
     assert len(legacy_files) == 1
 
@@ -1162,14 +1079,12 @@ def test_cleanup_stale_canonical_noop_if_compatible(tmp_path: Path) -> None:
     weights_dir = tmp_path / "weights"
     weights_dir.mkdir()
 
-    # Save a real, compatible checkpoint as policy.pt.
     sel = _build_selector()
     compatible_path = weights_dir / "policy.pt"
     sel._policy.save(compatible_path)
 
     cleanup_stale_canonical_weights(weights_dir)
 
-    # Compatible file must remain; no legacy rename should occur.
     assert compatible_path.exists()
     assert not list(weights_dir.glob("policy_legacy_*.pt"))
 
@@ -1181,7 +1096,6 @@ def test_cleanup_stale_canonical_noop_if_no_file(tmp_path: Path) -> None:
     weights_dir = tmp_path / "weights"
     weights_dir.mkdir()
 
-    # Should not raise and should not create any files.
     cleanup_stale_canonical_weights(weights_dir)
 
     assert not list(weights_dir.glob("*.pt"))
@@ -1213,8 +1127,6 @@ def test_cleanup_stale_canonical_uses_module_logger_for_rename(tmp_path: Path) -
         legacy_path,
     )
 
-    # The checkpoint lifecycle now lives in checkpoint_store; it logs via that
-    # module's logger (selector re-exports the function unchanged).
     logger = mock.Mock()
     with mock.patch("agentshore.rl.checkpoint_store._logger", logger):
         cleanup_stale_canonical_weights(weights_dir)
@@ -1224,11 +1136,6 @@ def test_cleanup_stale_canonical_uses_module_logger_for_rename(tmp_path: Path) -
         from_path=str(legacy_path),
         to_path=mock.ANY,
     )
-
-
-# ---------------------------------------------------------------------------
-# Parallel-dispatch drained-pool clean re-pick
-# ---------------------------------------------------------------------------
 
 
 def _parallel_state():
@@ -1302,27 +1209,24 @@ def test_parallel_dispatch_drained_pool_clean_repick():
     wip_idx = PLAY_TO_INDEX[PlayType.WRITE_IMPLEMENTATION_PLAN]
     merge_idx = PLAY_TO_INDEX[PlayType.MERGE_PR]
 
-    # Force the play head: write_impl first, then merge_pr. (action, log_prob, value)
     act_calls = {"n": 0}
 
     def _act(obs, mask, *, greedy):  # noqa: ANN001
         act_calls["n"] += 1
         idx = wip_idx if act_calls["n"] == 1 else merge_idx
-        # Respect the running mask: once write_impl is re-masked it must be off.
         assert bool(mask[idx]), f"forced action {idx} must be unmasked on call {act_calls['n']}"
         return idx, -0.5, 0.0
 
     policy.act = _act  # type: ignore[method-assign]
 
-    # Resolver: lose the CAS for write_impl (None), succeed for merge_pr.
     async def _resolve(pt, state, **kw):  # noqa: ANN001
         if pt == PlayType.WRITE_IMPLEMENTATION_PLAN:
-            return None  # work-claim CAS lost to a sibling
+            return None
         return PlayParams(pr_number=50)
 
     resolver = MagicMock()
     resolver.resolve = _resolve
-    resolver.project_path = None  # no live-graph loader; confirm uses the snapshot
+    resolver.project_path = None
     resolver.release_claim = AsyncMock()
 
     sel = PPOSelector(
@@ -1335,9 +1239,6 @@ def test_parallel_dispatch_drained_pool_clean_repick():
         cfg=_make_cfg(),
     )
 
-    # confirm() runs AFTER resolve+claim on the resolved target; isolate the
-    # claim-lost path (write_impl resolve→None) by accepting any confirmed target
-    # so the re-picked merge_pr dispatches deterministically.
     async def _confirm_ok(self, play_type, params, state):  # noqa: ANN001
         from agentshore.rl.eligibility import PlayVerdict
 
@@ -1346,9 +1247,6 @@ def test_parallel_dispatch_drained_pool_clean_repick():
     with (
         patch("agentshore.rl.eligibility.EligibilityAuthority.confirm", new=_confirm_ok),
         patch("agentshore.rl.selector._logger") as logger,
-        # resolver_exhausted/all_masked now log via selector_diagnostics
-        # (rl/selector split); patch it too so the negative assertion below
-        # still covers both.
         patch("agentshore.rl.selector_diagnostics._logger") as diag_logger,
     ):
         result = asyncio.run(sel.select(_parallel_state()))
@@ -1358,16 +1256,9 @@ def test_parallel_dispatch_drained_pool_clean_repick():
     assert play_type == PlayType.MERGE_PR
     assert play_type != PlayType.WRITE_IMPLEMENTATION_PLAN
 
-    # Exactly one PPO step pending — the dispatched merge_pr. The lost write_impl
-    # CAS produced NO _pending (no RL experience sample for the re-pick).
     assert sel._pending is not None
     assert sel._pending.action == merge_idx
 
-    # The clean re-pick is logged. Losing the work-claim CAS after a passing
-    # confirm() is the claim_lost_repick clean re-pick (the confirm-rejection
-    # variant is confirm_repick; both re-mask the action and resample). The
-    # selector's confirm-repick telemetry counter specifically tracks live-drift
-    # confirm rejections, so a lost CAS leaves it at 0 — assert that contract too.
     repick_events = [
         call.args[0]
         for call in logger.info.call_args_list
@@ -1378,9 +1269,6 @@ def test_parallel_dispatch_drained_pool_clean_repick():
     )
     assert sel.consume_repick_count() == 0
 
-    # The selector never emits a skip:* play outcome — a clean re-pick is a pure
-    # resample, not a skip row. (Selector returns a play; no resolver_exhausted /
-    # all_masked warning fired.)
     skip_warnings = [
         call.args[0]
         for call in [*logger.warning.call_args_list, *diag_logger.warning.call_args_list]
@@ -1420,8 +1308,7 @@ def test_confirm_drift_repick_increments_telemetry_and_logs_confirm_repick():
 
     resolver = MagicMock()
     resolver.resolve = AsyncMock(return_value=PlayParams(pr_number=50))
-    resolver.project_path = None  # confirm is patched below; no real live read
-    # confirm() now runs after resolve+claim, so a rejection releases the claim.
+    resolver.project_path = None
     resolver.release_claim = AsyncMock()
 
     sel = PPOSelector(
@@ -1434,7 +1321,6 @@ def test_confirm_drift_repick_increments_telemetry_and_logs_confirm_repick():
         cfg=_make_cfg(),
     )
 
-    # Reject the first confirm (write_impl drifted), accept the merge_pr re-pick.
     async def _confirm(self, play_type, params, state):  # noqa: ANN001
         if play_type == PlayType.WRITE_IMPLEMENTATION_PLAN:
             return PlayVerdict(
@@ -1453,7 +1339,6 @@ def test_confirm_drift_repick_increments_telemetry_and_logs_confirm_repick():
 
     assert result is not None
     assert result[0] == PlayType.MERGE_PR
-    # The live-drift confirm rejection is counted as a confirm-repick.
     assert sel.consume_repick_count() == 1
     confirm_repicks = [
         call.args[0]
@@ -1462,10 +1347,11 @@ def test_confirm_drift_repick_increments_telemetry_and_logs_confirm_repick():
     ]
     assert confirm_repicks, "confirm_repick must be logged for a live-drift re-pick"
 
-
-# ---------------------------------------------------------------------------
-# update_orchestrator_cfg — mid-session preference reload
-# ---------------------------------------------------------------------------
+    pending = sel.consume_pending()
+    assert pending is not None
+    assert pending.action == merge_idx
+    assert not pending.mask[wip_idx]
+    assert pending.mask[merge_idx]
 
 
 def test_update_orchestrator_cfg_applies_disabled_play_to_mask() -> None:

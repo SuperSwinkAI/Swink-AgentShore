@@ -29,7 +29,6 @@ def _make_orch(tmp_path: Path, cfg: RuntimeConfig | None = None) -> Any:
     mock_selector.should_update = MagicMock(return_value=False)
     mock_selector.should_checkpoint = MagicMock(return_value=False)
     mock_selector.on_play_completed = AsyncMock()
-    # Real int (not MagicMock) so _record_selection_repicks survives the repicks > 0 check.
     mock_selector.consume_repick_count = MagicMock(return_value=0)
 
     orch = make_test_orchestrator(
@@ -57,19 +56,9 @@ def _make_outcome(play_type: PlayType = PlayType.TAKE_BREAK) -> PlayOutcome:
     )
 
 
-# ---------------------------------------------------------------------------
-# _pause_event initial state
-# ---------------------------------------------------------------------------
-
-
 def test_pause_event_initially_set(tmp_path: Path) -> None:
     orch = _make_orch(tmp_path)
     assert orch._runtime.pause_event.is_set(), "_pause_event must start set (running)"
-
-
-# ---------------------------------------------------------------------------
-# pause() / resume()
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -196,11 +185,6 @@ async def test_resume_updates_session_state(tmp_path: Path) -> None:
     orch._store.update_session_state.assert_called_with("test-session", "running")
 
 
-# ---------------------------------------------------------------------------
-# Loop awaits pause_event
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_loop_awaits_pause_event(tmp_path: Path) -> None:
     """Pause during execution; loop blocks until resumed."""
@@ -319,7 +303,6 @@ async def test_pause_with_reason_does_not_exit_loop(tmp_path: Path) -> None:
     orch._executor.execute = mock_execute
 
     task = asyncio.create_task(orch.run_until_idle())
-    # Poll until paused (don't resume yet); _pause_with_reason blocks.
     for _ in range(20):
         await asyncio.sleep(0.01)
         if not orch._runtime.pause_event.is_set():
@@ -328,11 +311,6 @@ async def test_pause_with_reason_does_not_exit_loop(tmp_path: Path) -> None:
 
     await orch.resume()
     await asyncio.wait_for(task, timeout=2.0)
-
-
-# ---------------------------------------------------------------------------
-# _dispatch_ctx tracking (replaces _play_started_at)
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -363,11 +341,6 @@ async def test_dispatch_ctx_set_during_execute(tmp_path: Path) -> None:
     assert captured_in_flight[0] >= 1, "_in_flight must have entries while executing"
     await asyncio.wait_for(task, timeout=2.0)
     assert len(orch._runtime.in_flight) == 0, "_in_flight must be empty after loop exits"
-
-
-# ---------------------------------------------------------------------------
-# on_agent_changed wiring
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -401,11 +374,6 @@ async def test_on_agent_changed_called_on_context_pressure(tmp_path: Path) -> No
     assert len(changed_events) == 1
     assert changed_events[0][0] == "agent-42"
     assert orch._runtime.context_pressure_hints["agent-42"] == pytest.approx(0.95)
-
-
-# ---------------------------------------------------------------------------
-# Feedback cadence checkpoints
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -442,8 +410,6 @@ async def test_feedback_cadence_minutes_pauses_after_configured_elapsed_time(
 
     cfg = RuntimeConfig(feedback=FeedbackConfig(cadence_minutes=5))
     orch = _make_orch(tmp_path, cfg=cfg)
-    # Anchor the ack far in the past: CLOCK_MONOTONIC can read < 300 on a freshly
-    # booted CI runner, so an absolute 0.0 baseline wouldn't make the cadence due.
     orch._runtime.feedback_cadence_last_ack_monotonic = time.monotonic() - 10_000.0
 
     paused_reasons: list[str] = []
@@ -466,7 +432,7 @@ async def test_feedback_cadence_minutes_pauses_after_configured_elapsed_time(
 
 @pytest.mark.asyncio
 async def test_feedback_cadence_disabled_does_not_pause(tmp_path: Path) -> None:
-    orch = _make_orch(tmp_path)  # default config: cadence_plays=None, cadence_minutes=None
+    orch = _make_orch(tmp_path)
     orch._runtime.feedback_cadence_plays_since_ack = 100
 
     paused_reasons: list[str] = []
@@ -504,11 +470,9 @@ async def test_feedback_cadence_resets_after_resume(tmp_path: Path) -> None:
     assert paused_reasons == ["feedback_cadence_plays"]
     assert not orch._runtime.pause_event.is_set()
 
-    # resume() resets the play-count baseline
     await orch.resume()
     assert orch._runtime.feedback_cadence_plays_since_ack == 0
 
-    # Same play count (0 < 2) must not immediately re-trigger
     paused_reasons.clear()
     paused = await orch._lifecycle.pause_for_feedback_cadence_if_due()
     assert not paused

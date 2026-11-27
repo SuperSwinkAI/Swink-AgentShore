@@ -56,6 +56,8 @@ AGENTSHORE_IMPLEMENTATION_PLAN
 - <risk and how to check it>
 ```
 
+**Match plan depth to the issue.** The full structure above is for work whose shape is not already obvious from the issue: several files or components, an unclear seam, ordering that matters, or real risk. When the issue already names the behaviour, the place to change, and how to verify it, and it fits one issue-pickup pass, post a short plan instead — the header, `## Goal`, `## Acceptance Criteria`, `## Likely Files`, and `## Validation`, with no `## Tasks` checklist. `agentshore-issue-pickup` writes its own task list from those sections, so a step-by-step checklist for simple work costs a long planning turn and adds nothing the implementer needs.
+
 Rules: no placeholders (TBD/TODO/"add tests"/"handle edge cases"); exact file paths and exact commands; each task small enough for one issue-pickup pass; each `### Task N` describes an **end-to-end vertical slice** (schema→API→UI→tests), not a horizontal layer — horizontal layering forces `refine_tasks` to re-derive slicing. Do not edit code in this play.
 
 **Publish and route.** Add the plan comment. Apply labels:
@@ -66,7 +68,7 @@ gh issue edit $ISSUE_NUMBER --add-label "agentshore/planned"
 
 Judge plan cohesion: if it covers multiple distinct deliverables that should be sliced into separate issues before pickup, also apply `agentshore/needs-refinement` so `refine_tasks` clones the plan into one child issue per slice before any agent picks it up. A plan that is one cohesive deliverable ships as a single issue. Do **not** open a branch or PR.
 
-**Validate.** Re-read the posted comment and confirm it contains `AGENTSHORE_IMPLEMENTATION_PLAN`, acceptance criteria, likely files, the task checklist, and validation commands. Confirm `agentshore/planned` (plus `agentshore/needs-refinement` when the plan spans multiple distinct deliverables) is on the issue.
+**Validate.** Re-read the posted comment and confirm it contains `AGENTSHORE_IMPLEMENTATION_PLAN`, acceptance criteria, likely files, validation commands, and (for a full plan) the task checklist. Confirm `agentshore/planned` (plus `agentshore/needs-refinement` when the plan spans multiple distinct deliverables) is on the issue.
 
 **Forbidden — this play runs in the main checkout:**
 

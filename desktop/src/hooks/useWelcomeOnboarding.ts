@@ -23,8 +23,8 @@ export function useWelcomeOnboarding(): {
   const [welcomeOpen, setWelcomeOpen] = useState(false);
   const [onboardingSeen, setOnboardingSeen] = useState(true);
 
-  // Replay: Help ▸ Welcome Tour re-opens the carousel without mutating the
-  // persisted flag (only the carousel's own checkbox / reaching-the-end does).
+
+
   useEffect(() => {
     let cancelled = false;
     let unlisten: (() => void) | null = null;
@@ -44,10 +44,10 @@ export function useWelcomeOnboarding(): {
     };
   }, []);
 
-  // Persist the welcome flag. `markWelcomeSeen` is fired when the user reaches
-  // the last slide; it only writes on the false→true transition so reaching the
-  // end repeatedly doesn't spam IPC. `setWelcomeSeen` backs the checkbox, which
-  // can flip the flag either way (unchecking on replay resumes auto-show).
+
+
+
+
   const markWelcomeSeen = useCallback(() => {
     setOnboardingSeen((prev) => {
       if (!prev) {

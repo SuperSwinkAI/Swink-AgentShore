@@ -22,9 +22,6 @@ from agentshore.pr_state import blocked_reasons
 if TYPE_CHECKING:
     from agentshore.state import IssueSnapshot, OrchestratorState
 
-# Synthetic resource key for trunk-scoped plays. Must match the constant
-# in ``agentshore.plays.resolver`` — kept duplicated to avoid a circular
-# import (resolver imports candidates already).
 _TRUNK_RESOURCE_KEY = "trunk:main_repo"
 
 _SIZE_RANK: dict[str, int] = {
@@ -34,11 +31,6 @@ _SIZE_RANK: dict[str, int] = {
     "size/XL": 3,
 }
 _NO_PRIORITY_SORT_KEY = 999
-
-
-# ---------------------------------------------------------------------------
-# Shared field-extraction helpers
-# ---------------------------------------------------------------------------
 
 
 def _labels(pr: object) -> list[str]:
@@ -52,11 +44,6 @@ def _string_or_none(value: object) -> str | None:
 
 def _bool_or_none(value: object) -> bool | None:
     return value if isinstance(value, bool) else None
-
-
-# ---------------------------------------------------------------------------
-# Resource-key helpers
-# ---------------------------------------------------------------------------
 
 
 def pr_resource_keys(
@@ -135,14 +122,9 @@ def active_resource_keys(state: OrchestratorState) -> frozenset[str]:
             continue
         add_issue(agent.current_play_issue_number)
         add_pr(agent.current_play_pr_number)
-        # Only trunk-*mutating* plays mark trunk busy. A running read-only
-        # trunk play (run_qa, design_audit, …) must not mask merge_pr (#17).
         if agent.current_play_type in TRUNK_MUTATING_PLAYS:
             keys.add(_TRUNK_RESOURCE_KEY)
 
-    # in_flight_plays carries play types that lack agent context (e.g. a
-    # play dispatched before the agent snapshot updates). Still need to
-    # honor their trunk lock — but again only for trunk-mutating plays.
     for play_type in state.in_flight_plays:
         if play_type in TRUNK_MUTATING_PLAYS:
             keys.add(_TRUNK_RESOURCE_KEY)
@@ -244,7 +226,7 @@ def pr_merge_ready(pr: object, *, target_branch: str | None = None) -> bool:
 
     A PR is merge-ready only when GitHub reports it mergeable, an approval
     signal is present (GitHub APPROVED or an AgentShore code-review PASS at the
-    current head_sha), and no blocking reason (changes_requested, blocked
+    current head_sha), and no blocking reason (draft, changes_requested, blocked
     label, ci_failed, manual_required, merge_conflicts) is in effect. The
     blocking check shares :func:`_pr_blocked_reasons` with
     :func:`pr_unblockable` so the two predicates can never simultaneously be
@@ -261,15 +243,12 @@ def pr_merge_ready(pr: object, *, target_branch: str | None = None) -> bool:
     they re-qualify here.
     """
 
-    reasons = _pr_blocked_reasons(pr)
-    if reasons and reasons != ["draft"]:
+    if _pr_blocked_reasons(pr):
         return False
 
     base_ref = getattr(pr, "base_ref", None)
     if isinstance(base_ref, str) and base_ref.startswith("agentshore/"):
         return False
-    # Deterministic base gate: refuse to merge a PR whose known base is not the
-    # configured target branch. Pairs with the create-side auto-correction.
     if target_branch and isinstance(base_ref, str) and base_ref and base_ref != target_branch:
         return False
 
@@ -277,10 +256,6 @@ def pr_merge_ready(pr: object, *, target_branch: str | None = None) -> bool:
     last_review_status = getattr(pr, "last_review_status", None)
     last_reviewed_sha = getattr(pr, "last_reviewed_sha", None)
     head_sha = getattr(pr, "head_sha", None)
-    # The AgentShore PASS-at-head branch is the autonomous approval path (no
-    # human reviewer). It must never override a live human CHANGES_REQUESTED —
-    # _pr_blocked_reasons already returns early on that, but guard explicitly so
-    # the invariant is local and can't regress if the gate above changes (#344).
     return bool(
         getattr(pr, "mergeable", None) == "MERGEABLE"
         and review_decision != "CHANGES_REQUESTED"
@@ -325,15 +300,8 @@ def pr_unblockable(pr: object) -> bool:
         return True
     if getattr(pr, "mergeable", None) == "CONFLICTING":
         return True
-    reasons = _pr_blocked_reasons(pr, labels=labels)
-    return bool(reasons and reasons != ["draft"])
+    return bool(_pr_blocked_reasons(pr, labels=labels))
 
-
-# ---------------------------------------------------------------------------
-# Forward reference for type annotations — PlayCandidate is defined in __init__
-# but _candidate_*_type functions reference it. We use TYPE_CHECKING import
-# to avoid the circular dependency at runtime.
-# ---------------------------------------------------------------------------
 
 if TYPE_CHECKING:
     from agentshore.plays.candidates import PlayCandidate

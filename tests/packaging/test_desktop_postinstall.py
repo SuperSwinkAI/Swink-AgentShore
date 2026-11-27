@@ -37,6 +37,5 @@ def test_macos_cli_helper_installs_same_bare_wheel_requirement_as_windows() -> N
     script = _CLI_INSTALL.read_text(encoding="utf-8")
 
     assert '"$UV_BIN" tool install --native-tls --force --reinstall --python 3.12' in script
-    # wheel path is passed as a plain path (not file:// URI) — uv resolves local paths directly.
     assert "$WHEEL_PATH" in script
     assert "agentshore[all]" not in script

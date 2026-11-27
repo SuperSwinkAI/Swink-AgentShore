@@ -33,11 +33,9 @@ from agentshore.state import (
 
 
 def test_requires_isolated_worktree_covers_pr_and_branch_creating_plays() -> None:
-    # PR-scoped + branch-creating plays MUST be isolated.
     assert requires_isolated_worktree(PlayType.CODE_REVIEW) is True
     assert requires_isolated_worktree(PlayType.UNBLOCK_PR) is True
     assert requires_isolated_worktree(PlayType.ISSUE_PICKUP) is True
-    # Trunk-scoped plays run in the main checkout by design — not isolated.
     assert requires_isolated_worktree(PlayType.WRITE_IMPLEMENTATION_PLAN) is False
     assert requires_isolated_worktree(PlayType.REFINE_TASK_BREAKDOWN) is False
     assert requires_isolated_worktree(PlayType.RUN_QA) is False
@@ -97,7 +95,6 @@ async def test_isolation_play_misrouted_to_main_checkout_is_refused(tmp_path: Pa
     """A TrunkAllocation handed to issue_pickup must be refused before dispatch."""
     play = IssuePickupPlay()
     ctx = _ctx(tmp_path)
-    # Misroute: an isolation-requiring play resolves to the main checkout.
     params = dataclasses.replace(
         PlayParams(issue_number=42, agent_id="a1"),
         _runtime_allocation=TrunkAllocation(path=tmp_path),
@@ -111,7 +108,6 @@ async def test_isolation_play_misrouted_to_main_checkout_is_refused(tmp_path: Pa
 
     assert outcome.success is False
     assert "main checkout" in (outcome.error or "")
-    # The agent was never dispatched — no contamination of the main HEAD.
     ctx.manager.dispatch.assert_not_awaited()
 
 
@@ -120,7 +116,7 @@ async def test_isolation_play_without_allocation_warns_but_proceeds(tmp_path: Pa
     """A None allocation (legacy fallback) is surfaced but not hard-failed."""
     play = IssuePickupPlay()
     ctx = _ctx(tmp_path)
-    params = PlayParams(issue_number=42, agent_id="a1")  # no _runtime_allocation
+    params = PlayParams(issue_number=42, agent_id="a1")
 
     with (
         patch("agentshore.plays.skill_backed.base.render_skill_prompt", return_value="prompt"),
@@ -128,6 +124,5 @@ async def test_isolation_play_without_allocation_warns_but_proceeds(tmp_path: Pa
     ):
         outcome = await play.execute(_state(), params, ctx=ctx)
 
-    # Proceeds to dispatch (the documented None=legacy fallback), does not refuse.
     assert outcome.success is True
     ctx.manager.dispatch.assert_awaited()

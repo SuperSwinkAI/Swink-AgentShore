@@ -13,8 +13,6 @@ from agentshore.rl.action_space import PLAY_TO_INDEX
 from agentshore.rl.mask import compute_action_mask, compute_mask_reasons
 from agentshore.rl.mask_reason import USER_DISABLED, MaskSource
 from agentshore.state import AgentType, PlayType
-
-# Reuse the well-exercised state builders from the mask test module.
 from tests.test_rl_mask import (  # noqa: E402
     _agent_snapshot,
     _issue_snapshot,
@@ -35,8 +33,6 @@ def global_prefs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 def test_allowlist_excludes_delivery_and_selfheal_plays() -> None:
     allowed = set(gp.disableable_play_values())
     assert allowed == {"cleanup", "groom_backlog", "prune", "run_qa"}
-    # design_audit is excluded too: the PPO's end-of-session path gates on a
-    # fresh terminal audit, so it must always be available.
     for critical in (
         "issue_pickup",
         "code_review",
@@ -59,7 +55,6 @@ def test_validate_disabled_plays_rejects_non_allowlisted() -> None:
 
 
 def test_coerce_drops_unknown_and_critical_entries() -> None:
-    # Lenient on-disk coercion silently drops anything not allowlisted.
     assert gp._coerce_disabled_plays(["cleanup", "issue_pickup", "bogus", 7]) == ("cleanup",)
     assert gp._coerce_disabled_plays("not-a-list") == ()
 
@@ -97,11 +92,10 @@ def _cfg(disabled: tuple[str, ...]) -> RuntimeConfig:
 
 def test_disabled_play_is_masked_and_others_unaffected() -> None:
     base = compute_action_mask(_state(), _registry_all_true())
-    assert base[PLAY_TO_INDEX[PlayType.CLEANUP]]  # enabled in the control
+    assert base[PLAY_TO_INDEX[PlayType.CLEANUP]]
 
     mask = compute_action_mask(_state(), _registry_all_true(), cfg=_cfg(("cleanup",)))
     assert not mask[PLAY_TO_INDEX[PlayType.CLEANUP]]
-    # A different allowlisted play stays available.
     assert mask[PLAY_TO_INDEX[PlayType.PRUNE]]
 
 
@@ -112,9 +106,6 @@ def test_disabled_play_reason_is_user_disabled() -> None:
 
 
 def test_hand_edited_critical_play_is_not_masked_by_overlay() -> None:
-    # Defense-in-depth: even if a critical play leaks into the config (e.g. a
-    # hand-edited file bypassing the write-boundary validator), the mask overlay
-    # re-checks the allowlist and refuses to disable it.
     cfg = _cfg(("issue_pickup",))
     reasons = compute_mask_reasons(_state(), _registry_all_true(), cfg=cfg)
     assert reasons.get(PlayType.ISSUE_PICKUP) is not USER_DISABLED
@@ -131,6 +122,6 @@ def test_reverse_failsafe_does_not_resurrect_a_disabled_play() -> None:
         cfg=_cfg(("run_qa",)),
         apply_reverse_failsafe=True,
     )
-    assert mask.any()  # the failsafe still opened a fallback menu
-    assert mask[PLAY_TO_INDEX[PlayType.ISSUE_PICKUP]]  # other work was lifted
-    assert not mask[PLAY_TO_INDEX[PlayType.RUN_QA]]  # user choice honored over failsafe
+    assert mask.any()
+    assert mask[PLAY_TO_INDEX[PlayType.ISSUE_PICKUP]]
+    assert not mask[PLAY_TO_INDEX[PlayType.RUN_QA]]

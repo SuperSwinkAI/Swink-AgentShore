@@ -34,7 +34,6 @@ def store(tmp_path: Path) -> Path:
 
 def test_recents_path_lives_under_user_data_dir() -> None:
     path = recents_path()
-    # DESIGN §4.2 names the agentshore app explicitly.
     assert "agentshore" in path.parts
     assert path.name == "recents.json"
 
@@ -54,7 +53,6 @@ def test_touch_recent_creates_entry(store: Path, tmp_path: Path) -> None:
     assert entry["label"] == "demo-project"
     assert entry["last_exit_reason"] is None
     assert isinstance(entry["last_started"], str)
-    # Loose ISO-8601 sanity check.
     assert "T" in entry["last_started"]
 
 
@@ -65,7 +63,6 @@ def test_touch_recent_updates_existing_entry_and_does_not_duplicate(
     project.mkdir()
     touch_recent(str(project), store)
     first = list_recents(store)[0]["last_started"]
-    # Touch again — timestamp moves forward, label stays, only one entry.
     touch_recent(str(project), store)
     entries = list_recents(store)
     assert len(entries) == 1
@@ -75,7 +72,6 @@ def test_touch_recent_updates_existing_entry_and_does_not_duplicate(
 def test_touch_recent_preserves_existing_last_exit_reason(store: Path, tmp_path: Path) -> None:
     project = tmp_path / "demo"
     project.mkdir()
-    # Hand-author a store with an existing exit reason; touch must not erase it.
     store.parent.mkdir(parents=True, exist_ok=True)
     store.write_text(
         json.dumps(
@@ -105,7 +101,6 @@ def test_list_recents_orders_by_last_started_desc(store: Path, tmp_path: Path) -
     b.mkdir()
     touch_recent(str(a), store)
     touch_recent(str(b), store)
-    # Force a as older by rewriting its timestamp.
     raw = json.loads(store.read_text(encoding="utf-8"))
     for entry in raw["entries"]:
         if entry["path"] == str(a):
@@ -129,7 +124,6 @@ def test_remove_recent_is_idempotent_for_unknown_path(store: Path, tmp_path: Pat
     project.mkdir()
     touch_recent(str(project), store)
     remove_recent(str(tmp_path / "ghost"), store)
-    # The known entry is untouched.
     entries = list_recents(store)
     assert len(entries) == 1
     assert entries[0]["path"] == str(project)
@@ -196,14 +190,12 @@ def test_touch_recent_sets_has_valid_config(store: Path, tmp_path: Path) -> None
     touch_recent(str(project), store)
     assert list_recents(store)[0]["has_valid_config"] is False
     (project / "agentshore.yaml").write_text("project:\n  name: demo\n", encoding="utf-8")
-    # Recomputed on every read, no second touch needed.
     assert list_recents(store)[0]["has_valid_config"] is True
 
 
 def test_list_recents_tolerates_corrupt_store(store: Path) -> None:
     store.parent.mkdir(parents=True, exist_ok=True)
     store.write_text("not json", encoding="utf-8")
-    # A corrupt file must not crash the sidecar — treat as empty.
     assert list_recents(store) == []
 
 

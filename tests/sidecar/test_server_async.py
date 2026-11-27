@@ -80,9 +80,6 @@ async def test_serve_async_handles_multiple_requests() -> None:
 async def test_serve_async_returns_on_eof() -> None:
     stdin = io.StringIO("")
     stdout = io.StringIO()
-    # ``health_interval_seconds=0`` disables the heartbeat so EOF on empty
-    # stdin yields a clean empty stdout (regression for any future heartbeat
-    # default-firing surprise on synchronous one-shot tests).
     await asyncio.wait_for(
         _serve_async(stdin, stdout, health_interval_seconds=0),
         timeout=1.0,
@@ -133,7 +130,6 @@ async def test_serve_async_emits_periodic_sidecar_health_notifications() -> None
     params = health[0]["params"]
     assert params["status"] == "ok"
     assert isinstance(params["timestamp"], str)
-    # All emitted notifications should carry the documented JSON-RPC 2.0 envelope.
     for note in health:
         assert note["jsonrpc"] == "2.0"
         assert note["method"] == "sidecar.health"
@@ -144,9 +140,6 @@ async def test_serve_async_cancels_health_emitter_on_shutdown() -> None:
     """Heartbeat task must be cancelled and awaited when stdin closes."""
     stdin = io.StringIO("")
     stdout = io.StringIO()
-    # Real (positive) interval so the heartbeat task is created; EOF then
-    # forces the shutdown path to cancel it. ``_serve_async`` must return
-    # promptly without leaking the task.
     await asyncio.wait_for(
         _serve_async(stdin, stdout, health_interval_seconds=10.0),
         timeout=1.0,
@@ -175,8 +168,6 @@ async def test_serve_async_cancel_responds_before_handler_cleanup_completes() ->
         try:
             await asyncio.sleep(5)
         finally:
-            # Hold the event loop briefly inside `finally` to prove the cancel
-            # reply lands before this cleanup completes.
             await asyncio.sleep(0.05)
             cleanup_done.set()
 
@@ -206,11 +197,7 @@ async def test_serve_async_cancel_responds_before_handler_cleanup_completes() ->
             "error": {"code": REQUEST_CANCELLED, "message": "request cancelled"},
         }
     ]
-    # Cancel reply must be observed *before* cleanup completes — i.e. the
-    # cleanup_done flag is still clear at the moment we wrote "request cancelled".
     assert cancel_observed_after_cleanup is False
-    # And cleanup must still run to completion — _serve_async drains pending
-    # tasks before returning, so the event is set by the time we get here.
     assert cleanup_done.is_set()
 
 
@@ -242,8 +229,6 @@ async def test_serve_async_cancel_swallows_non_cancelled_error_from_handler_clea
 
         stdin = _ControlledStdin()
         stdout = io.StringIO()
-        # The loop must complete cleanly — if the RuntimeError escapes,
-        # `_serve_async` would propagate it and this `wait_for` would raise.
         await asyncio.wait_for(_serve_async(stdin, stdout), timeout=3.0)
     finally:
         METHOD_HANDLERS.pop("test.bad_cleanup", None)
@@ -314,7 +299,6 @@ async def test_serve_async_emits_valid_json_for_non_finite_floats() -> None:
 
     [line] = [text for text in stdout.getvalue().splitlines() if text.strip()]
     assert "Infinity" not in line and "NaN" not in line
-    # Strict parse — would raise on bare Infinity/NaN tokens.
     reply = json.loads(line)
     assert reply["result"] == {"value": None, "ratio": None, "ok": 1.5}
 
@@ -397,7 +381,6 @@ async def test_session_stop_returns_full_esr_payload(tmp_path: Path) -> None:
     assert result["archive_path"] == "/tmp/archive"
     assert result["report_path"] == "/tmp/archive/report.html"
     assert result["log_path"] == "/tmp/archive/session.log"
-    # exit_reason defaults to a stable value when params omit it.
     assert isinstance(result["exit_reason"], str)
     assert isinstance(result["exit_code"], int)
 
@@ -479,7 +462,6 @@ async def test_archive_fetch_report_returns_html_path_and_sections(tmp_path: Pat
         '<html><body><section id="x"><h2>X</h2></section></body></html>',
         encoding="utf-8",
     )
-    # write report path into the archive_path-relative location
     archive_dir = tmp_path / "archive"
     archive_dir.mkdir()
     (archive_dir / "report.html").write_text(
@@ -641,11 +623,6 @@ async def _drive(payload: dict[str, object], *, state: ServerState) -> dict[str,
     return response
 
 
-# ---------------------------------------------------------------------------
-# Regression tests for _reader_loop sentinel-on-error guarantee (issue #235)
-# ---------------------------------------------------------------------------
-
-
 class _RaisingImmediateStdin:
     """Raises OSError on the very first __next__ call (e.g. closed pipe at open)."""
 
@@ -689,8 +666,6 @@ def test_reader_loop_enqueues_sentinel_on_immediate_stdin_error() -> None:
         thread.start()
         thread.join(timeout=2.0)
         assert not thread.is_alive(), "reader thread did not exit within timeout"
-        # The sentinel is scheduled via call_soon_threadsafe; run one iteration
-        # so the pending callback fires before we check the queue.
         loop.run_until_complete(asyncio.sleep(0))
         sentinel = queue.get_nowait()
         assert sentinel is None
@@ -736,11 +711,6 @@ async def test_serve_async_terminates_when_stdin_raises_mid_stream() -> None:
     await asyncio.wait_for(_serve_async(_RaisingAfterLinesStdin(), stdout), timeout=2.0)
 
 
-# ---------------------------------------------------------------------------
-# Post-EOF teardown is bounded and hard (#155)
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_serve_async_eof_cancels_wedged_inflight_and_orchestrator(
     monkeypatch: pytest.MonkeyPatch,
@@ -759,7 +729,6 @@ async def test_serve_async_eof_cancels_wedged_inflight_and_orchestrator(
     monkeypatch.setattr(server_module, "EOF_IN_FLIGHT_GRACE_SECONDS", 0.05)
     monkeypatch.setattr(server_module, "EOF_TEARDOWN_DEADLINE_SECONDS", 0.5)
 
-    # Own the ServerState so the test can plant a running orchestrator task.
     state = ServerState()
     orch_task: asyncio.Task[None] = asyncio.create_task(asyncio.sleep(3600))
     state.orchestrator_task = orch_task
@@ -777,7 +746,6 @@ async def test_serve_async_eof_cancels_wedged_inflight_and_orchestrator(
     stdin = io.StringIO(json.dumps({"jsonrpc": "2.0", "id": "w", "method": "test.wedge"}) + "\n")
     stdout = io.StringIO()
 
-    # Regression mode: the unbounded gather never returns and wait_for fires.
     await asyncio.wait_for(
         _serve_async(stdin, stdout, health_interval_seconds=0),
         timeout=5.0,

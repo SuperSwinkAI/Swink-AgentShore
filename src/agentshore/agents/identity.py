@@ -37,7 +37,7 @@ from agentshore.identity_names import (
     login_from_agentshore_keychain_service,
     same_identity,
 )
-from agentshore.logging import get_logger
+from agentshore.logging import first_time, get_logger
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
@@ -50,8 +50,6 @@ _SOURCE_NONE = "none"
 _SOURCE_ENV = "env"
 _SOURCE_AMBIENT = "ambient"
 _SOURCE_GH_LOGIN = "gh_login"
-# Token sources that carry no per-identity secret and therefore can never be
-# "configured but failed validation" — they inherit ambient gh auth instead.
 _NEUTRAL_TOKEN_SOURCES = frozenset({_SOURCE_AMBIENT, _SOURCE_NONE})
 _REPO_ACCESS_TIMEOUT_SECONDS = 10
 
@@ -65,9 +63,6 @@ class _TokenResolution:
     source: str
     token: str | None
     detail: str
-    # True only when GitHub actually accepted this token (strict resolution).
-    # A non-strict resolution skips the live check, so it stays False rather
-    # than asserting an invariant the code never verified.
     token_validated: bool = False
     resolved_login: str | None = None
     validation_error: str | None = None
@@ -296,11 +291,6 @@ def _github_http_error_detail(exc: urllib.error.HTTPError) -> str:
     return (exc.reason or exc.msg or "GitHub API request failed")[:500]
 
 
-# ---------------------------------------------------------------------------
-# IdentityResolver — owns token caches and the resolution pipeline
-# ---------------------------------------------------------------------------
-
-
 class IdentityResolver:
     """Resolves GitHub identity tokens from configured sources (env, gh CLI,
     keychain) with per-instance caching. Owns the four token caches that were
@@ -340,11 +330,9 @@ class IdentityResolver:
             _logger.warning("identity_gh_cli_missing", login=login)
             return None
         if result.returncode != 0:
-            _logger.warning(
-                "identity_gh_token_lookup_failed",
-                login=login,
-                error=result.stderr.strip()[:200],
-            )
+            error = result.stderr.strip()[:200]
+            if first_time("identity_gh_token_lookup_failed", cache_key, error):
+                _logger.warning("identity_gh_token_lookup_failed", login=login, error=error)
             return None
 
         token = result.stdout.strip()
@@ -423,9 +411,6 @@ class IdentityResolver:
                 canonical_service=canonical_service,
             )
         if not validate:
-            # Not validated against GitHub: carry the token through but do not
-            # claim it is valid. ``resolved_login`` keeps the *configured*
-            # expectation so non-strict callers still get a usable overlay.
             return _TokenResolution(
                 source=source,
                 token=token,
@@ -608,9 +593,6 @@ class IdentityResolver:
         if resolution.token is not None:
             overlay["GH_TOKEN"] = resolution.token
             overlay["GITHUB_TOKEN"] = resolution.token
-            # Copilot CLI reads COPILOT_GITHUB_TOKEN before GH_TOKEN, so an
-            # ambient one would otherwise override the per-agent identity.
-            # Only copilot reads it; harmless for every other agent.
             overlay["COPILOT_GITHUB_TOKEN"] = resolution.token
 
         expanded_config_dir = _expanded_gh_config_dir(ident.gh_config_dir)
@@ -640,13 +622,7 @@ class IdentityResolver:
         self._repo_access_cache.add(cache_key)
 
 
-# Module-level default instance — the public free functions below delegate here.
 _default_resolver = IdentityResolver()
-
-
-# ---------------------------------------------------------------------------
-# Public free-function API — delegate to the module-level default resolver
-# ---------------------------------------------------------------------------
 
 
 def resolve_identity_env(
@@ -730,13 +706,13 @@ def resolved_github_login_for_agent(cfg: RuntimeConfig, agent_cfg: AgentConfig) 
 
 
 def reset_token_cache() -> None:
-    """Clear the per-process token caches. Intended for tests."""
+    """Clear the per-process token, keychain, validation and repo-access caches.
+
+    Called at every desktop ``session.start`` (gh-516): the sidecar process
+    outlives sessions, so without this a PAT rotated after app launch, and
+    any cached 401 verdict, would stick until the app was quit.
+    """
     _default_resolver.reset_caches()
-
-
-# ---------------------------------------------------------------------------
-# Diagnostic / startup report
-# ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
@@ -745,9 +721,9 @@ class IdentityStatus:
 
     agent_key: str
     identity_name: str | None
-    token_source: str  # one of: "env", "gh_login", "ambient", "none"
+    token_source: str
     token_resolved: bool
-    detail: str  # human-readable explanation, e.g. env var name or login
+    detail: str
     token_valid: bool = False
     resolved_login: str | None = None
     validation_error: str | None = None
@@ -803,9 +779,6 @@ def report_identities(cfg: RuntimeConfig) -> list[IdentityStatus]:
             continue
 
         if ident.gh_token_env:
-            # Defensive redaction: a previous wizard bug let a literal PAT
-            # land in `gh_token_env`. Detect and redact rather than echo it
-            # to terminals (and from there into shell scrollback).
             from agentshore.identity_wizard import looks_like_pat
 
             if looks_like_pat(ident.gh_token_env):
@@ -836,8 +809,6 @@ def report_identities(cfg: RuntimeConfig) -> list[IdentityStatus]:
             else (resolution.validation_error or resolution.detail)
         )
         if (resolution.token or "").startswith("ghp_") and _is_copilot_agent(agent_key, agent_cfg):
-            # Warn, don't block: the token is a valid GitHub identity for gh/git,
-            # but Copilot CLI rejects classic PATs for its own model access.
             _logger.warning("copilot_identity_classic_pat", agent=agent_key, identity=identity_name)
             detail += f"; WARNING: {_COPILOT_CLASSIC_PAT_WARNING}"
         rows.append(
@@ -1036,7 +1007,7 @@ def require_two_distinct_gh_identities(cfg: RuntimeConfig) -> None:
 
     enabled_cli_agents = [key for key, agent_cfg in cfg.agents.items() if agent_cfg.enabled]
     if not enabled_cli_agents:
-        return  # No CLI agents → no code_review → no diversity requirement.
+        return
 
     missing = _agents_missing_explicit_login(cfg)
     if missing:

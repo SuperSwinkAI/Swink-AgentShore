@@ -111,24 +111,24 @@ export function WelcomeCarousel({
 }): JSX.Element | null {
   const [slide, setSlide] = useState(0);
 
-  // Restart at slide 0 each time the carousel is (re)opened, including replay
-  // from the Help menu.
+
+
   useEffect(() => {
     if (open) {
       setSlide(0);
     }
   }, [open]);
 
-  // Reaching the final slide marks the flow seen (covers Next, dots, and arrow
-  // navigation, since they all funnel through `slide`). Idempotent on the parent.
+
+
   useEffect(() => {
     if (open && slide === LAST) {
       onSeen();
     }
   }, [open, slide, onSeen]);
 
-  // Keyboard nav while open: Esc hides, arrows page. Registered on window so it
-  // works regardless of focus; torn down when closed/unmounted.
+
+
   useEffect(() => {
     if (!open) {
       return undefined;
@@ -159,8 +159,8 @@ export function WelcomeCarousel({
   const onLast = slide >= LAST;
 
   return (
-    // Backdrop intentionally has no onClick — a stray click must not dismiss
-    // the first-run flow (mirrors the shared Modal's default).
+
+
     <div
       className={styles.overlay}
       role="dialog"

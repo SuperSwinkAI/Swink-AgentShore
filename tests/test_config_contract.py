@@ -45,20 +45,19 @@ def test_generated_cli_config_round_trips(tmp_path: Path) -> None:
     assert config.agents["claude_code"].model_tiers["small"].reasoning_effort == "low"
     assert config.agents["claude_code"].model_tiers["medium"].reasoning_effort == "medium"
     assert config.agents["claude_code"].model_tiers["large"].reasoning_effort == "high"
-    assert config.agents["codex"].model_tiers["small"].model == "gpt-5.6-luna"
-    assert config.agents["codex"].model_tiers["medium"].model == "gpt-5.6-terra"
+    assert config.agents["codex"].model_tiers["small"].model == "gpt-6-luna"
+    assert config.agents["codex"].model_tiers["medium"].model == "gpt-6.1-terra"
     assert config.agents["codex"].model_tiers["medium"].reasoning_effort == "medium"
     assert config.agents["codex"].max_context == 272_000
-    # Token rates now live in the pricebook (pricing.yaml), not on AgentConfig.
     codex_price = config.pricebook.resolve("codex", None)
     assert codex_price.cost_per_1k_input == 0.00175
     assert codex_price.cost_per_1k_output == 0.014
     assert codex_price.cost_per_1k_cached_input == 0.000175
-    assert config.agents["grok"].model_tiers["small"].model == "grok-4.5"
+    assert config.agents["grok"].model_tiers["small"].model == "grok-4.7-build-fast"
     assert config.agents["grok"].model_tiers["small"].reasoning_effort == "low"
-    assert config.agents["grok"].model_tiers["medium"].model == "grok-4.5"
+    assert config.agents["grok"].model_tiers["medium"].model == "grok-4.7"
     assert config.agents["grok"].model_tiers["medium"].reasoning_effort == "medium"
-    assert config.agents["grok"].model_tiers["large"].model == "grok-4.5"
+    assert config.agents["grok"].model_tiers["large"].model == "grok-4.7"
     assert config.agents["grok"].model_tiers["large"].reasoning_effort == "high"
     assert config.agents["grok"].max_context == 256_000
     grok_price = config.pricebook.resolve("grok", None)
@@ -217,13 +216,11 @@ def test_agent_config_has_timeout_and_output_size() -> None:
 
     for agent_cfg in config.agents.values():
         assert agent_cfg.timeout is None
-        assert agent_cfg.stream_idle_timeout == 1800  # bumped from 600s for desktop-awc
+        assert agent_cfg.stream_idle_timeout == 1800
         assert agent_cfg.max_output_size == 10_000_000
         assert agent_cfg.line_limit_bytes == 4_194_304
-    assert (
-        config.agent_timeout == 10800
-    )  # 3h max-runtime backstop; silence (stream_idle) is primary
-    assert config.pricebook.resolve("claude_code", None).cost_per_1k_cached_input == 0.0002
+    assert config.agent_timeout == 10800
+    assert config.pricebook.resolve("claude_code", None).cost_per_1k_cached_input == 0.0001
     assert config.pricebook.resolve("codex", None).cost_per_1k_cached_input == 0.000175
     assert config.pricebook.resolve("grok", None).cost_per_1k_cached_input == 0.0002
     assert config.skills.path == ".agents/skills/"
@@ -253,9 +250,7 @@ agents:
     (tmp_path / "agentshore.yaml").write_text(yaml_text, encoding="utf-8")
     config = load_config(tmp_path / "agentshore.yaml")
 
-    # max_context default is sourced from the pricebook's agent_defaults.
     assert config.agents["codex"].max_context == 272_000
-    # Token rates resolve through the pricebook, not the AgentConfig.
     codex_price = config.pricebook.resolve("codex", None)
     assert codex_price.cost_per_1k_input == 0.00175
     assert codex_price.cost_per_1k_cached_input == 0.000175
@@ -351,15 +346,15 @@ def test_default_config_has_agent_model_tiers() -> None:
     assert set(config.agents["claude_code"].model_tiers) == {"small", "medium", "large"}
     assert set(config.agents["codex"].model_tiers) == {"small", "medium", "large"}
     assert set(config.agents["grok"].model_tiers) == {"small", "medium", "large"}
-    assert config.agents["codex"].model_tiers["small"].model == "gpt-5.6-luna"
+    assert config.agents["codex"].model_tiers["small"].model == "gpt-6-luna"
     assert config.agents["codex"].model_tiers["small"].reasoning_effort == "low"
-    assert config.agents["codex"].model_tiers["medium"].model == "gpt-5.6-terra"
+    assert config.agents["codex"].model_tiers["medium"].model == "gpt-6.1-terra"
     assert config.agents["codex"].model_tiers["medium"].reasoning_effort == "medium"
-    assert config.agents["grok"].model_tiers["small"].model == "grok-4.5"
+    assert config.agents["grok"].model_tiers["small"].model == "grok-4.7-build-fast"
     assert config.agents["grok"].model_tiers["small"].reasoning_effort == "low"
-    assert config.agents["grok"].model_tiers["medium"].model == "grok-4.5"
+    assert config.agents["grok"].model_tiers["medium"].model == "grok-4.7"
     assert config.agents["grok"].model_tiers["medium"].reasoning_effort == "medium"
-    assert config.agents["grok"].model_tiers["large"].model == "grok-4.5"
+    assert config.agents["grok"].model_tiers["large"].model == "grok-4.7"
     assert config.agents["grok"].model_tiers["large"].reasoning_effort == "high"
 
 
@@ -396,7 +391,6 @@ health:
 def test_default_config_mode_is_solo_runmode() -> None:
     config = load_config(None)
     assert config.mode is RunMode.SOLO
-    # StrEnum compares equal to its string value, so ``cfg.mode == "solo"`` holds.
     assert config.mode == "solo"
 
 

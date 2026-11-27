@@ -122,7 +122,7 @@ def test_play_outcome_alignment_delta_can_be_float() -> None:
 def test_play_outcome_alignment_delta_can_be_zero() -> None:
     outcome = _make_outcome(alignment_delta=0.0)
     assert outcome.alignment_delta == 0.0
-    assert outcome.alignment_delta is not None  # 0.0 is distinct from None
+    assert outcome.alignment_delta is not None
 
 
 def test_play_outcome_failed_has_zero_alignment_delta() -> None:
@@ -152,7 +152,6 @@ def test_reward_signals_alignment_delta_can_be_set() -> None:
 def test_reward_none_alignment_seed_project_gets_bonus() -> None:
     sig = _signals(play_type=PlayType.SEED_PROJECT, alignment_delta=None)
     _, bd = compute_reward(sig, _default_cfg())
-    # SEED_PROJECT with no beads graph earns the small 0.05 seeding bonus.
     assert bd.alignment_delta == pytest.approx(0.05, abs=1e-5)
 
 
@@ -171,7 +170,6 @@ def test_reward_none_alignment_non_seed_returns_zero() -> None:
 
 
 def test_reward_none_alignment_default_signals_returns_zero() -> None:
-    # Defaults: alignment_delta=None, play_type=None.
     sig = RewardSignals(success=True, avg_dollar_cost=0.1, avg_duration_seconds=60.0)
     _, bd = compute_reward(sig, _default_cfg())
     assert bd.alignment_delta == pytest.approx(0.0, abs=1e-5)
@@ -193,15 +191,11 @@ def test_observation_vector_size_unchanged() -> None:
     state = _make_state()
     obs = encode_observation(state, _null_ctx())
     assert obs.shape == (OBSERVATION_DIM,)
-    # OBSERVATION_DIM provenance: v0.15 Phase 5 238→245 (action space 20→22 + skip-rate);
-    # desktop-8zzy 245→246 (pr_pressure_ratio slot 178); #91 246→250 (PR-author 4→8 slots);
-    # #325 250→252 (swink_coding appended to PR-author block, 8→10 slots);
-    # v16 252→254 (copilot appended to PR-author block, 10→12 slots).
     assert OBSERVATION_DIM == 254
 
 
-def test_observation_version_bumped_to_16() -> None:
-    assert OBSERVATION_VERSION == 16
+def test_observation_version_bumped_to_17() -> None:
+    assert OBSERVATION_VERSION == 17
 
 
 def test_observation_vector_size_with_graph() -> None:
@@ -248,7 +242,6 @@ def test_epic_global_ratio_slot_populated() -> None:
 
 
 def test_epic_top3_closure_ratios_sorted_by_total_tasks_desc() -> None:
-    # Largest epic first: total_tasks desc
     epics = [
         EpicStatus(bead_id="small", title="S", total_tasks=2, closed_tasks=1, closure_ratio=0.5),
         EpicStatus(bead_id="large", title="L", total_tasks=20, closed_tasks=18, closure_ratio=0.9),
@@ -262,7 +255,6 @@ def test_epic_top3_closure_ratios_sorted_by_total_tasks_desc() -> None:
     )
     state = _make_state(graph=graph)
     obs = encode_observation(state, _null_ctx())
-    # Sort maps total_tasks desc → TOP0/1/2: largest 20→0.9, med 10→0.3, small 2→0.5.
     assert obs[_S_EPIC_TOP0] == pytest.approx(0.9, abs=1e-5)
     assert obs[_S_EPIC_TOP1] == pytest.approx(0.3, abs=1e-5)
     assert obs[_S_EPIC_TOP2] == pytest.approx(0.5, abs=1e-5)
@@ -276,13 +268,11 @@ def test_epic_top3_padded_when_fewer_than_3_epics() -> None:
     state = _make_state(graph=graph)
     obs = encode_observation(state, _null_ctx())
     assert obs[_S_EPIC_TOP0] == pytest.approx(0.6, abs=1e-5)
-    # Unfilled epic slots stay 0.0.
     assert obs[_S_EPIC_TOP1] == pytest.approx(0.0, abs=1e-5)
     assert obs[_S_EPIC_TOP2] == pytest.approx(0.0, abs=1e-5)
 
 
 def test_epic_closure_ratio_clamped_to_0_1() -> None:
-    # closure_ratio > 1.0 is a data error but must clamp.
     epics = [
         EpicStatus(bead_id="e1", title="E1", total_tasks=5, closed_tasks=5, closure_ratio=1.0),
     ]
@@ -301,7 +291,6 @@ def test_epic_features_are_float32() -> None:
 
 
 def test_cluster_slots_0_to_7_are_zero_in_v0_10() -> None:
-    # goal_clusters removed (v0.10.0); legacy cluster slots 0-7 must be 0.0.
     state = _make_state()
     obs = encode_observation(state, _null_ctx())
     assert obs[0:8].sum() == pytest.approx(0.0, abs=1e-5)
@@ -316,5 +305,5 @@ def test_dependency_slots_and_retired_cluster_slots() -> None:
     obs = encode_observation(state, _null_ctx())
     assert obs[0] == pytest.approx(0.5, abs=1e-5)
     assert obs[1] == pytest.approx(0.5, abs=1e-5)
-    assert obs[2:8].sum() == pytest.approx(0.0, abs=1e-5)  # retired slots
+    assert obs[2:8].sum() == pytest.approx(0.0, abs=1e-5)
     assert obs[_S_EPIC_GLOBAL_RATIO] == pytest.approx(0.5, abs=1e-5)

@@ -49,10 +49,8 @@ def test_resolve_prefers_per_model_entry() -> None:
 def test_resolve_prefers_per_model_entry_for_opus() -> None:
     pb = load_pricebook()
     opus = pb.resolve("claude_code", "opus")
-    # Per-model entry, not the claude_code agent-default fallback.
     assert opus is pb.models["opus"]
     assert opus is not pb.agent_defaults["claude_code"]
-    # The `opus` alias resolves to claude-opus-5-5, so it carries those rates.
     assert opus == pb.models["claude-opus-5-5"]
     assert opus.cost_per_1k_input == 0.004
     assert opus.cost_per_1k_output == 0.02
@@ -65,14 +63,12 @@ def test_claude_pinned_ids_carry_generation_specific_rates() -> None:
     assert pb.models["claude-opus-4-8"].cost_per_1k_input == 0.005
     assert pb.models["claude-haiku-5-5"].cost_per_1k_input == 0.0001
     assert pb.models["claude-fable-5-1"].cost_per_1k_cached_input == 0.00025
-    # No explicit cache rate → the global multipliers apply.
     assert pb.models["claude-sonnet-4-6"].cost_per_1k_cached_input is None
 
 
 def test_resolve_prefers_per_model_entry_for_gpt_5_5() -> None:
     pb = load_pricebook()
     gpt = pb.resolve("codex", "gpt-5.5")
-    # Per-model entry, not the codex agent-default fallback.
     assert gpt is pb.models["gpt-5.5"]
     assert gpt is not pb.agent_defaults["codex"]
     assert gpt.cost_per_1k_input == 0.0035
@@ -81,9 +77,6 @@ def test_resolve_prefers_per_model_entry_for_gpt_5_5() -> None:
 
 def test_resolve_falls_back_to_agent_default_for_unlisted_model() -> None:
     pb = load_pricebook()
-    # An Anthropic-shaped model id not enumerated in `models:` → agent default.
-    # (Synthetic id: every real catalog entry is priced, per the invariant test
-    # in test_model_catalog.py.)
     resolved = pb.resolve("claude_code", "claude-unpriced-model-x")
     assert resolved == pb.agent_defaults["claude_code"]
 
@@ -99,7 +92,6 @@ def test_resolve_with_no_model_uses_agent_default_without_warning() -> None:
     pricing_mod._WARNED_FALLBACKS.clear()
     resolved = pb.resolve("codex", None)
     assert resolved == pb.agent_defaults["codex"]
-    # model=None is the expected pre-dispatch path, not a gap → no warning.
     assert not pricing_mod._WARNED_FALLBACKS
 
 
@@ -138,7 +130,6 @@ def test_global_override_deep_merges_over_bundled(
         tmp_path / "pricing.yaml",
         {
             "models": {
-                # Override one existing model and add a brand new one.
                 "sonnet": {
                     "max_context": 200000,
                     "cost_per_1k_input": 0.999,
@@ -155,7 +146,6 @@ def test_global_override_deep_merges_over_bundled(
     pb = load_pricebook()
     assert pb.models["sonnet"].cost_per_1k_input == 0.999
     assert pb.resolve("claude_code", "claude-opus-4-8").cost_per_1k_output == 0.025
-    # Untouched bundled entries survive the merge.
     assert "haiku" in pb.models
     assert pb.agent_defaults["codex"].cost_per_1k_input == 0.00175
 
@@ -168,7 +158,6 @@ def test_global_override_can_change_cache_multipliers(
     )
     pb = load_pricebook()
     assert pb.cache_read_multiplier == 0.25
-    # Unspecified multiplier keeps the bundled default.
     assert pb.cache_write_multiplier == 1.25
 
 

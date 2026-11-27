@@ -55,22 +55,16 @@ def make_test_orchestrator(
     if selector is None:
         selector = MagicMock()
         selector.__class__.__name__ = "MockSelector"
-        # consume_repick_count must return a real int; a bare MagicMock explodes
-        # on ``repicks > 0`` in _record_selection_repicks.
         selector.consume_repick_count = MagicMock(return_value=0)
 
     orch = Orchestrator.__new__(Orchestrator)
 
-    # Single owner of all shared mutable session state; constructed first so the
-    # ``orch._<latch>`` compat properties (which delegate here) resolve below.
     runtime = SessionRuntime(cfg=cfg, selector=selector, state_provider=NullStateProvider())
     orch._runtime = runtime
     runtime.policy_version = "test"
-    # __new__-bypass parity with bootstrap: never auto-refresh on the first tick.
     runtime.last_refresh_time = float("inf")
     runtime.feedback_cadence_last_ack_monotonic = 0.0
 
-    # Stable identity / collaborators owned directly by the orchestrator.
     orch._repo_root = tmp_path
     orch._session_id = "test-session"
     orch._store = store
@@ -152,9 +146,6 @@ def make_test_orchestrator(
         state_builder=orch._state_builder,
         completion=orch._completion,
     )
-    # The conductor — constructed last; references every sibling component. On
-    # this __new__-bypass stub the heartbeat keeps its float('inf') default so
-    # the loop (never started) isn't stale to the watchdog.
     orch._loop = LoopRunner(
         host=orch,
         runtime=runtime,

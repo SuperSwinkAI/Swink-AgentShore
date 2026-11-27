@@ -93,8 +93,6 @@ class IpcStateProvider:
             payload = {**payload, "session_id": self._session_id}
         return make_message(msg_type, payload)
 
-    # -- StateProvider hooks --------------------------------------------------
-
     async def on_state_update(self, state: OrchestratorState) -> None:
         """Persist the latest full state snapshot."""
         msg = self._emit("state_update", serialize_state(state))

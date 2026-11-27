@@ -7,7 +7,7 @@
 {% block content %}
 <h1>Archive Comparison</h1>
 
-{# ── Side-by-side overview ───────────────────────────────────────────────── #}
+
 <div class="grid-2">
   <div class="section">
     <h2>Session A — <code>{{ data.session_a.session_id[:8] }}</code></h2>
@@ -19,7 +19,7 @@
   </div>
 </div>
 
-{# ── Scalar diffs ────────────────────────────────────────────────────────── #}
+
 <div class="section">
   <h2>Differences</h2>
   <table>
@@ -87,7 +87,7 @@
   </table>
 </div>
 
-{# ── Cost breakdown by play type ─────────────────────────────────────────── #}
+
 <div class="section">
   <h2>Cost — By Play Type</h2>
   <div class="grid-2">
@@ -120,7 +120,7 @@
   </div>
 </div>
 
-{# ── Cost breakdown by agent ─────────────────────────────────────────────── #}
+
 <div class="section">
   <h2>Cost — By Agent</h2>
   <div class="grid-2">
@@ -153,7 +153,7 @@
   </div>
 </div>
 
-{# ── Play distribution donuts ────────────────────────────────────────────── #}
+
 {% if data.play_distribution_a or data.play_distribution_b %}
 <div class="section">
   <h2>Play Distribution</h2>
@@ -182,7 +182,7 @@
 </div>
 {% endif %}
 
-{# ── Alignment trajectory (closure-ratio proxy over plays) ───────────────── #}
+
 {% if data.alignment_trajectory_a or data.alignment_trajectory_b %}
 <div class="section">
   <h2>Alignment Trajectory</h2>
@@ -211,7 +211,7 @@
 </div>
 {% endif %}
 
-{# ── Learnings diff ──────────────────────────────────────────────────────── #}
+
 <div class="section">
   <h2>Learnings Diff</h2>
   {% set diff = data.learnings_diff %}

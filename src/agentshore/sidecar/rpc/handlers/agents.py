@@ -48,8 +48,6 @@ def _dispatch_agents_rpc(
         return _result(req_id, agents_catalog())
 
     if method == "agents.check_auth":
-        # Run off the serve loop so concurrent setup-screen RPCs don't serialize
-        # behind the per-agent auth shell-out; probe failures return error rows, never raise.
         obj_params = raw_params if isinstance(raw_params, dict) else {}
         _project_path = active_project_path
 
@@ -61,9 +59,6 @@ def _dispatch_agents_rpc(
         return _run_check_auth()
 
     if method == "agents.refresh_models":
-        # Run off the serve loop: the free-harness probes alone take up to a
-        # few seconds each, and the opt-in Claude Code path can take minutes
-        # (see model_discovery_llm.py) — must never block other RPCs.
         obj_params = raw_params if isinstance(raw_params, dict) else {}
         include_claude_code = bool(obj_params.get("include_claude_code", False))
         tier = obj_params.get("tier")

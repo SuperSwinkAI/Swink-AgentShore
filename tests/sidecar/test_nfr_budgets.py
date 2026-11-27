@@ -71,14 +71,10 @@ agents:
         enabled: true
 """
 
-# Target band from DESIGN §8.
 HANDSHAKE_TARGET_MS = 1000.0
 IDLE_RSS_TARGET_MB = 250.0
 ACTIVE_RSS_TARGET_MB = 1500.0
 
-# Warning band (3× target) — what we hard-assert to keep CI green while
-# real-world noise is being characterised. Bump down once we have a
-# baseline.
 HANDSHAKE_WARN_MS = 3000.0
 IDLE_RSS_WARN_MB = 750.0
 ACTIVE_RSS_WARN_MB = 4500.0
@@ -94,6 +90,11 @@ pytestmark = pytest.mark.skipif(
 def _sidecar_command() -> list[str]:
     """Launch the sidecar the same way the Rust supervisor does in dev mode."""
     return [sys.executable, "-m", "agentshore.sidecar"]
+
+
+def _offline_identity_sidecar_command() -> list[str]:
+    """Sidecar with session.start's identity token gates offline (fixture logins are fake)."""
+    return [sys.executable, str(Path(__file__).with_name("_offline_identity_sidecar.py"))]
 
 
 def _read_rss_kb(pid: int) -> int:
@@ -118,9 +119,9 @@ def _read_rss_kb(pid: int) -> int:
     return int(cleaned.split()[0])
 
 
-def _spawn_sidecar() -> subprocess.Popen[str]:
+def _spawn_sidecar(command: list[str] | None = None) -> subprocess.Popen[str]:
     return subprocess.Popen(
-        _sidecar_command(),
+        command or _sidecar_command(),
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -185,8 +186,6 @@ def test_idle_sidecar_rss_under_warning_band(capsys: pytest.CaptureFixture[str])
     child = _spawn_sidecar()
     try:
         _send_handshake(child)
-        # Let allocation reach steady-state; RSS undercounts while imports
-        # are still resolving.
         time.sleep(0.5)
         rss_kb = _read_rss_kb(child.pid)
     finally:
@@ -224,8 +223,6 @@ def _send_rpc(
         request["params"] = params
     child.stdin.write(json.dumps(request) + "\n")
     child.stdin.flush()
-    # ``session.start`` emits 12 ``$/progress`` notifications before the
-    # final result; skip them so callers see the response envelope.
     while True:
         line = child.stdout.readline()
         if not line:
@@ -247,20 +244,18 @@ def test_active_sidecar_rss_under_warning_band(
     orchestrator integration lands and agents are spawned, this test
     will widen to include their RSS.
     """
-    # session.start accepts a skeleton with agentshore.yaml + .beads/ present.
     project_path = tmp_path / "nfr-project"
     project_path.mkdir()
     (project_path / "agentshore.yaml").write_text(VALID_TIERED_CONFIG, encoding="utf-8")
     (project_path / ".beads").mkdir()
 
-    child = _spawn_sidecar()
+    child = _spawn_sidecar(_offline_identity_sidecar_command())
     try:
         _send_handshake(child)
         select_response = _send_rpc(child, 2, "project.select", {"path": str(project_path)})
         assert "result" in select_response, select_response
         start_response = _send_rpc(child, 3, "session.start")
         assert "result" in start_response, start_response
-        # Allow uvicorn worker threads to reach steady-state.
         time.sleep(0.5)
         rss_kb = _read_rss_kb(child.pid)
     finally:

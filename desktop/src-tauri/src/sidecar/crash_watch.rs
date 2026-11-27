@@ -48,12 +48,6 @@ impl SidecarSupervisor {
                     last_stderr_lines: snapshot_stderr(&stderr_lines),
                     log_file_path: log_file_path.clone(),
                 };
-                // Attempt the emit BEFORE marking emitted, so a failed
-                // emit (Tauri shutting down, no listeners attached yet)
-                // doesn't poison the flag and leave React permanently
-                // uninformed. On success, set the flag and exit; on
-                // failure, log and loop — the watcher will retry on the
-                // next 250ms tick.
                 match app.emit("sidecar:crashed", payload) {
                     Ok(()) => {
                         emitted.store(true, Ordering::SeqCst);

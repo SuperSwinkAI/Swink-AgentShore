@@ -15,10 +15,6 @@ from agentshore.rl.constants import STAGNATION_ENTROPY_MULTIPLIER
 from agentshore.rl.metrics import MetricsEngine, _build_context, compute_agent_specialization
 from agentshore.state import OrchestratorState, PlayType, SessionState
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 
 def _ts(offset_seconds: float = 0.0) -> str:
     """Return an ISO-8601 timestamp `offset_seconds` from now (UTC).
@@ -33,10 +29,6 @@ def _ts(offset_seconds: float = 0.0) -> str:
 class _FakePlay:
     play_type: str
     success: bool
-    # NOTE: started_at gets a freshly-evaluated default *per instance* via
-    # __post_init__ below — using a literal here would freeze a single
-    # timestamp at module import time and re-introduce the staleness problem
-    # this refactor was meant to fix.
     started_at: str = ""
     ended_at: str | None = None
     duration_ms: int | None = None
@@ -76,11 +68,6 @@ def _ctx(history: list[_FakePlay], *, stagnation_warn_after: int = 5, **state_kw
     )
 
 
-# ---------------------------------------------------------------------------
-# Rolling success rate
-# ---------------------------------------------------------------------------
-
-
 def test_rolling_success_rate_all_pass():
     history = [_FakePlay("issue_pickup", success=True) for _ in range(5)]
     ctx = _ctx(history)
@@ -109,22 +96,11 @@ def test_rolling_success_empty_history():
     assert ctx.rolling_success_rate == pytest.approx(0.0, abs=1e-5)
 
 
-# ---------------------------------------------------------------------------
-# Rolling window (last 10 plays)
-# ---------------------------------------------------------------------------
-
-
 def test_rolling_window_uses_last_10():
-    # 5 fails then 10 passes — rolling window uses only last 10
     fails = [_FakePlay("code_review", success=False) for _ in range(5)]
     passes = [_FakePlay("issue_pickup", success=True) for _ in range(10)]
     ctx = _ctx(fails + passes)
     assert ctx.rolling_success_rate == pytest.approx(1.0, abs=1e-5)
-
-
-# ---------------------------------------------------------------------------
-# Last play types and success flags
-# ---------------------------------------------------------------------------
 
 
 def test_last_play_types_ordering():
@@ -133,10 +109,8 @@ def test_last_play_types_ordering():
         _FakePlay("code_review", success=False),
     ]
     ctx = _ctx(history)
-    # last_play_types length 5, oldest→newest, None-padded left
     types = ctx.last_play_types
     assert len(types) == 5
-    # First 3 should be None (only 2 plays)
     assert types[0] is None
     assert types[1] is None
     assert types[2] is None
@@ -159,11 +133,6 @@ def test_no_history_all_none():
     ctx = _ctx([])
     assert all(t is None for t in ctx.last_play_types)
     assert all(f is None for f in ctx.last_play_success)
-
-
-# ---------------------------------------------------------------------------
-# Stagnation counter — whole minutes that all agents have been idle.
-# ---------------------------------------------------------------------------
 
 
 def _busy_agent(agent_id: str = "a-busy") -> Any:
@@ -208,7 +177,6 @@ def test_stagnation_zero_when_no_history():
 
 
 def test_stagnation_counts_minutes_since_last_play_ended_when_all_idle():
-    # Most recent play ended ~3 minutes ago.
     history = [
         _FakePlay("issue_pickup", success=True, ended_at=_ts(-600)),
         _FakePlay("issue_pickup", success=True, ended_at=_ts(-185)),
@@ -224,8 +192,6 @@ def test_stagnation_floors_under_one_minute_to_zero():
 
 
 def test_merge_pr_empty_pr_merged_issue_numbers_artifact_does_not_count_throughput():
-    # A merge_pr that explicitly closed zero issues (e.g. doc-only PR) must
-    # not inflate issues_closed_this_session or issue_churn_rate.
     history = [
         _FakePlay(
             "merge_pr",
@@ -243,8 +209,6 @@ def test_merge_pr_empty_pr_merged_issue_numbers_artifact_does_not_count_throughp
 
 
 def test_merge_pr_non_empty_pr_merged_issue_numbers_artifact_counts_throughput():
-    # A merge_pr with a non-empty validated issue list still counts as
-    # issue-throughput.
     history = [
         _FakePlay(
             "merge_pr",
@@ -261,8 +225,6 @@ def test_merge_pr_non_empty_pr_merged_issue_numbers_artifact_counts_throughput()
 
 
 def test_merge_pr_without_closure_artifact_keeps_legacy_throughput():
-    # Historical merge_pr rows persisted before the artifact existed must
-    # continue to count, so older sessions retain their metrics.
     history = [
         _FakePlay("merge_pr", success=True, alignment_delta=0.25),
     ]
@@ -271,7 +233,6 @@ def test_merge_pr_without_closure_artifact_keeps_legacy_throughput():
 
 
 def test_stagnation_entropy_multiplier_activates_at_warn_threshold():
-    # Default warn_after = 1 minute; one idle agent + last play ended >60s ago.
     history = [_FakePlay("code_review", success=True, ended_at=_ts(-90))]
     ctx = _ctx(history, agents=[_idle_agent()], stagnation_warn_after=1)
     assert ctx.stagnation_entropy_multiplier == pytest.approx(
@@ -280,20 +241,13 @@ def test_stagnation_entropy_multiplier_activates_at_warn_threshold():
 
 
 def test_stagnation_entropy_multiplier_uses_configured_warn_after():
-    # warn_after=3 minutes → only fires once ≥3 minutes of all-idle.
     history = [_FakePlay("code_review", success=True, ended_at=_ts(-185))]
     ctx = _ctx(history, agents=[_idle_agent()], stagnation_warn_after=3)
     assert ctx.stagnation_entropy_multiplier == pytest.approx(1.5, abs=1e-5)
 
-    # Same warn_after, but only ~30s of idle → below threshold.
     shorter = [_FakePlay("code_review", success=True, ended_at=_ts(-30))]
     shorter_ctx = _ctx(shorter, agents=[_idle_agent()], stagnation_warn_after=3)
     assert shorter_ctx.stagnation_entropy_multiplier == pytest.approx(1.0, abs=1e-5)
-
-
-# ---------------------------------------------------------------------------
-# Issue closure/churn metrics
-# ---------------------------------------------------------------------------
 
 
 def test_issues_closed_this_session_counts_successful_merge_pr():
@@ -314,11 +268,6 @@ def test_issue_churn_rate_counts_merge_pr_in_recent_window():
     ]
     ctx = _ctx(history, open_issues=[object(), object(), object(), object()])
     assert ctx.issue_churn_rate == pytest.approx(0.25, abs=1e-5)
-
-
-# ---------------------------------------------------------------------------
-# PR counts
-# ---------------------------------------------------------------------------
 
 
 def test_pr_counts_populated():
@@ -342,11 +291,6 @@ def test_pr_counts_empty():
     assert ctx.open_pr_count == 0
     assert ctx.prs_awaiting_review == 0
     assert ctx.prs_approved_unmerged == 0
-
-
-# ---------------------------------------------------------------------------
-# Handoff rolling stats
-# ---------------------------------------------------------------------------
 
 
 def test_handoff_rolling_stats_from_recent_handoffs():
@@ -389,11 +333,6 @@ def test_handoff_rolling_stats_ignore_null_values():
     )
     assert ctx.rolling_avg_context_loss == pytest.approx(0.4, abs=1e-5)
     assert ctx.rolling_avg_rampup_ms == pytest.approx(1200.0, abs=1e-5)
-
-
-# ---------------------------------------------------------------------------
-# Learnings
-# ---------------------------------------------------------------------------
 
 
 def test_learning_count():
@@ -475,19 +414,9 @@ async def test_snapshot_uses_agentshore_created_issue_count_for_created_metric()
     assert ctx.issues_created_this_session == 2
 
 
-# ---------------------------------------------------------------------------
-# same_type_failure_streak passes through from state
-# ---------------------------------------------------------------------------
-
-
 def test_streak_from_state():
     ctx = _ctx([], same_type_failure_streak=4)
     assert ctx.same_type_failure_streak == 4
-
-
-# ---------------------------------------------------------------------------
-# Time-since metrics
-# ---------------------------------------------------------------------------
 
 
 def test_minutes_since_alignment_never_ran():
@@ -516,15 +445,7 @@ def test_minutes_since_alignment_just_ran():
         ),
     ]
     ctx = _ctx(history)
-    # last play ended_at is 30 seconds after calibration ended -> ~0.5 min
     assert ctx.minutes_since_last_alignment_check == pytest.approx(0.5, abs=0.1)
-
-
-# ---------------------------------------------------------------------------
-# MetricsEngine.snapshot — graceful degradation when DataStore queries raise.
-# Each except branch in snapshot() must log a warning and produce a valid
-# ObservationContext using empty results for the failed query.
-# ---------------------------------------------------------------------------
 
 
 def _store_with_one_failure(failing_method: str, exc: Exception) -> AsyncMock:
@@ -571,37 +492,21 @@ async def test_snapshot_degrades_gracefully_when_store_query_raises(
     with caplog.at_level(logging.WARNING):
         ctx = await engine.snapshot(_state())
 
-    # Snapshot returned successfully — the except branch was taken.
     assert ctx is not None
 
-    # Empty-result substitution for the failed query: when the PR queries raise
-    # we see open_pr_count==0 / prs_approved_unmerged==0. The history failure
-    # path produces an empty `last_play_types` tuple.
     if failing_method == "list_open_pull_requests":
         assert ctx.open_pr_count == 0
     elif failing_method == "list_approved_pull_requests":
         assert ctx.prs_approved_unmerged == 0
     elif failing_method == "list_all_issues":
-        # When list_all_issues raises, issues=[] is substituted, so
-        # _count_session_created_issues([])=0 → ctx.issues_created_this_session=0.
-        # GH #495 follow-up.
         assert ctx.issues_created_this_session == 0
     elif failing_method == "get_play_history":
         assert all(t is None for t in ctx.last_play_types)
 
-    # The structured warning event was emitted. structlog routing varies by
-    # test ordering — accept either capsys (PrintLogger) or caplog (stdlib).
     captured = capsys.readouterr()
     haystack = captured.out + captured.err + " ".join(rec.getMessage() for rec in caplog.records)
     assert "metrics_query_failed" in haystack
-    # The specific query that failed must be tagged in the event so operators
-    # can identify which DB call broke.
     assert query_label in haystack
-
-
-# ---------------------------------------------------------------------------
-# Learnings from JSON store
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -610,7 +515,6 @@ async def test_snapshot_learning_count_comes_from_json_store(tmp_path: Any) -> N
     import json
     from pathlib import Path
 
-    # Seed a learnings.json with 3 entries.
     learnings_dir = tmp_path / ".agentshore"
     learnings_dir.mkdir()
     learnings_file = learnings_dir / "learnings.json"
@@ -688,11 +592,6 @@ async def test_snapshot_learning_count_zero_when_file_absent(tmp_path: Any) -> N
     assert ctx.learning_count == 0
 
 
-# ---------------------------------------------------------------------------
-# Per-agent / per-play specialization matrix
-# ---------------------------------------------------------------------------
-
-
 def test_specialization_matrix_groups_success_by_agent_and_play():
     """One agent, three play types, mixed outcomes → exact per-cell stats."""
     history = [
@@ -748,9 +647,7 @@ def test_specialization_rolling_window_caps_at_recent_plays():
     cells = compute_agent_specialization(history)  # type: ignore[arg-type]
     assert len(cells) == 1
     cell = cells[0]
-    # All-session: 10 of 15 succeeded.
     assert cell.success_rate == pytest.approx(10 / 15)
-    # Rolling (last 10): all 10 succeeded.
     assert cell.rolling_success_rate == pytest.approx(1.0)
 
 
@@ -780,3 +677,63 @@ def test_specialization_sort_is_deterministic():
         ("agent-a", "issue_pickup"),
         ("agent-b", "run_qa"),
     ]
+
+
+def test_minutes_since_last_merge_never_merged():
+    ctx = _ctx([_FakePlay("issue_pickup", success=True, started_at=_ts(-60), ended_at=_ts(0))])
+    assert ctx.minutes_since_last_merge == pytest.approx(480.0, abs=1e-1)
+
+
+def test_minutes_since_last_merge_counts_merge_pr_and_unblock_merges():
+    history = [
+        _FakePlay("merge_pr", success=True, started_at=_ts(-3700), ended_at=_ts(-3600)),
+        _FakePlay("merge_pr", success=False, started_at=_ts(-2000), ended_at=_ts(-1900)),
+        _FakePlay(
+            "unblock_pr",
+            success=True,
+            started_at=_ts(-700),
+            ended_at=_ts(-600),
+            artifacts=[{"type": "pr_merged", "pr": 7}],
+        ),
+        _FakePlay(
+            "unblock_pr",
+            success=True,
+            started_at=_ts(-300),
+            ended_at=_ts(-200),
+            artifacts=[{"type": "pr_unblock_attempt", "number": 8}],
+        ),
+        _FakePlay("issue_pickup", success=True, started_at=_ts(-100), ended_at=_ts(0)),
+    ]
+    assert _ctx(history).minutes_since_last_merge == pytest.approx(10.0, abs=0.2)
+
+
+def test_oldest_review_wait_uses_only_prs_still_awaiting_review():
+    from types import SimpleNamespace
+
+    def _pr(created_offset_s: float, *, approved: bool) -> SimpleNamespace:
+        return SimpleNamespace(
+            state="open",
+            created_at=_ts(created_offset_s),
+            review_decision="APPROVED" if approved else None,
+            last_review_status=None,
+            last_reviewed_sha=None,
+            head_sha="abc",
+        )
+
+    history = [_FakePlay("issue_pickup", success=True, started_at=_ts(-60), ended_at=_ts(0))]
+    ctx = _build_context(
+        _state(),
+        history,  # type: ignore[arg-type]
+        prs_open=[
+            _pr(-7200, approved=True),
+            _pr(-3600, approved=False),
+            _pr(-600, approved=False),
+        ],  # type: ignore[list-item]
+        prs_approved=[],
+        learnings=[],
+    )
+    assert ctx.oldest_review_wait_minutes == pytest.approx(60.0, abs=0.2)
+
+
+def test_oldest_review_wait_zero_without_waiting_prs():
+    assert _ctx([]).oldest_review_wait_minutes == 0.0

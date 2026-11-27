@@ -1,20 +1,9 @@
-"""Structured diagnostics for ``PPOSelector.select()`` — all-masked, resolver-
-exhausted, terminal no-work, and reverse-failsafe logs.
+"""Structured PPOSelector diagnostics for all-masked, resolver-exhausted,
+terminal no-work and reverse-failsafe events.
 
-Split out of ``rl/selector.py`` (TNQA wave-2 line-count reduction) so the
-selector module stays focused on the select/confirm/repick loop. These are
-pure functions parameterized on whatever ``PPOSelector`` already holds
-(registry, orchestrator cfg, config index) rather than instance methods —
-the one piece of real instance state they touch (the masked-plays-map dedup
-digest) is threaded through as the ``masked_plays_log_field`` callback so
-``PPOSelector`` keeps owning that cache.
-
-``_diagnostic_snapshot`` dedupes the candidate-plan/mask-reasons/Counter
-field building that ``log_all_masked``, ``log_resolver_exhausted``, and
-``log_reverse_failsafe`` each used to repeat independently; every caller adds
-only its own extra fields on top. Emitted log-event names and field sets are
-unchanged from the pre-split versions.
-"""
+Helpers receive the registry, orchestrator config and config index. The
+selector owns its masked-plays deduplication cache and passes it through
+the masked_plays_log_field callback."""
 
 from __future__ import annotations
 
@@ -51,10 +40,6 @@ _logger = structlog.get_logger(__name__)
 _CAPACITY_WAIT_SOURCES = frozenset({MaskSource.ELIGIBILITY, MaskSource.CONFIG, MaskSource.SPAWN})
 
 if TYPE_CHECKING:
-    # Callback signature for the selector's stateful masked-plays-map dedup
-    # cache (``PPOSelector._masked_plays_log_field``); kept on the selector
-    # since the dedup digest is per-instance state, not a pure function of
-    # its arguments.
     MaskedPlaysLogField = Callable[[dict[PlayType, MaskReason]], dict[str, object]]
 
 
@@ -106,8 +91,6 @@ def _mask_reasons_by_play(reasons: dict[PlayType, MaskReason]) -> dict[str, str]
         pt.value: (
             f"{r.text} [{r.classification.value}/{r.source.value}]"
             if isinstance(r, MaskReason)
-            # Defensive: this diagnostic runs in the select() hot path and must
-            # never raise on a malformed reason (e.g. a non-typed precondition).
             else str(r)
         )
         for pt, r in sorted(reasons.items(), key=lambda kv: kv[0].value)
@@ -268,10 +251,6 @@ def log_resolver_exhausted(
     reasons = snapshot.reasons
     reason_counts = snapshot.reason_counts
     allowed_plays = [pt.value for i, pt in enumerate(V1_ACTION_ORDER) if bool(mask[i])]
-    # During drain the only legal action is end_agent; if no agent qualifies
-    # (e.g. one is still finishing its last play) the resolver harmlessly
-    # cycles every selector tick. Emit at info-level so the drain doesn't
-    # produce a warning storm.
     is_draining = state.session_state in (
         SessionState.DRAINING,
         SessionState.SHUTTING_DOWN,

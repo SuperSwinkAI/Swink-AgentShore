@@ -63,8 +63,6 @@ pub fn prompt_quit_confirmation<F: FnOnce(bool) + Send + 'static>(app: &AppHandl
 #[cfg_attr(test, allow(dead_code))]
 #[tauri::command]
 pub fn quit_app(app: AppHandle) -> Result<(), String> {
-    // Explicit in-app Quit (recovery / fatal-error screens): the user already
-    // chose to quit, so latch confirmation to skip the native prompt.
     app.state::<QuitConfirmed>().set();
     app.exit(0);
     Ok(())
@@ -73,8 +71,6 @@ pub fn quit_app(app: AppHandle) -> Result<(), String> {
 #[cfg_attr(test, allow(dead_code))]
 #[tauri::command]
 pub fn restart_sidecar(app: AppHandle) -> Result<(), String> {
-    // Full app restart — the simplest way to reliably re-spawn the sidecar and
-    // re-run the handshake (in-place child respawn is out of scope).
     app.restart()
 }
 
@@ -110,11 +106,6 @@ pub fn arm_teardown_watchdog() {
 
 #[cfg_attr(test, allow(dead_code))]
 pub fn shutdown_sidecar_and_agents(app_handle: &AppHandle) {
-    // Take the supervisor OUT of the holder under a short-lived lock, then do
-    // all the killing outside it. In-flight RPC threads may still hold Arc
-    // clones of the supervisor, so its Drop impl is NOT guaranteed to run
-    // here — kill_sidecar() is the explicit teardown and Drop is only the
-    // backstop (#155).
     let supervisor: Option<Arc<crate::sidecar::SidecarSupervisor>> = {
         let sidecar_state: tauri::State<'_, SidecarHolderState> = app_handle.state();
         let taken = match sidecar_state.lock() {
@@ -124,13 +115,9 @@ pub fn shutdown_sidecar_and_agents(app_handle: &AppHandle) {
         taken
     };
     if let Some(sup) = supervisor {
-        // Kill the AGENT subprocesses first (see doc comment above), then
-        // the Python sidecar tree.
         let _ = sup.kill_all_agents();
         sup.kill_sidecar();
     }
-    // desktop-bzr2: release the App Nap assertion if a session was still running
-    // at quit time, so it can't linger in pmset past app exit.
     let activity_state: tauri::State<'_, crate::activity::ActivityHolder> = app_handle.state();
     activity_state.release();
 }
@@ -141,11 +128,8 @@ mod tests {
 
     #[test]
     fn quit_requires_confirmation_only_when_session_active_and_unconfirmed() {
-        // Live session, not yet approved → prompt.
         assert!(quit_requires_confirmation(true, false));
-        // Live session but already approved (re-entrant close / explicit Quit).
         assert!(!quit_requires_confirmation(true, true));
-        // No session → never prompt, regardless of the latch.
         assert!(!quit_requires_confirmation(false, false));
         assert!(!quit_requires_confirmation(false, true));
     }
@@ -156,7 +140,6 @@ mod tests {
         assert!(!guard.get());
         guard.set();
         assert!(guard.get());
-        // Idempotent.
         guard.set();
         assert!(guard.get());
     }

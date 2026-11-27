@@ -77,17 +77,14 @@ agents:
         path,
         name_with_owner="owner/repo",
         agents=["claude"],
-        budget=50.0,  # different from the user's 999
+        budget=50.0,
         strict=True,
     )
 
     merged = yaml.safe_load(path.read_text())
-    # User keys preserved verbatim
     assert merged["budget"]["total"] == 999.0
     assert merged["intake"]["seed_paths"] == ["my_custom_seed.md"]
     assert merged["identities"]["jane"]["git_user_email"] == "jane@example.com"
-    # Agents skeleton was re-rendered (still has claude_code, identity binding lost
-    # because we replace the whole `agents:` block — that's expected)
     assert "claude_code" in merged["agents"]
 
 

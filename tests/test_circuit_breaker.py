@@ -47,7 +47,6 @@ def test_success_clears_failure_count() -> None:
     cb.record_success()
     cb.record_failure()
     cb.record_failure()
-    # Only 2 failures since last success — still closed
     assert cb.state == CircuitState.CLOSED
 
 
@@ -97,8 +96,8 @@ def test_old_failures_fall_outside_window() -> None:
     cb, clock = _cb(failures=3, window_seconds=100)
     cb.record_failure()
     cb.record_failure()
-    _advance(clock, 101)  # slide past the window
-    cb.record_failure()  # now only 1 failure in window
+    _advance(clock, 101)
+    cb.record_failure()
     assert cb.state == CircuitState.CLOSED
 
 
@@ -122,7 +121,7 @@ def test_recovery_blocked_when_open() -> None:
     """While the breaker is OPEN (cooldown hasn't elapsed), no recovery."""
     cb, clock = _cb(failures=1, cooldown_seconds=60)
     cb.record_failure()
-    _advance(clock, 30)  # still within cooldown
+    _advance(clock, 30)
     assert cb.state == CircuitState.OPEN
     assert cb.should_attempt_recovery() is False
 
@@ -135,12 +134,10 @@ def test_recovery_exponential_backoff() -> None:
     assert cb.should_attempt_recovery() is True
 
     cb.record_recovery_attempt()
-    # Now need 60 * 2^1 = 120s since last recovery attempt
-    _advance(clock, 60)  # only 60s since recovery attempt
-    # Stay HALF_OPEN (no failure) and check the backoff guard alone.
+    _advance(clock, 60)
     assert cb.should_attempt_recovery() is False
 
-    _advance(clock, 61)  # total 121s since recovery attempt
+    _advance(clock, 61)
     assert cb.should_attempt_recovery() is True
 
 

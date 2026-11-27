@@ -22,12 +22,14 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from agentshore.agents import identity as identity_mod
 from agentshore.agents.auth_probe import (
     AUTH_EXPIRED,
     AUTH_OK,
@@ -35,6 +37,7 @@ from agentshore.agents.auth_probe import (
     AuthProbeResult,
 )
 from agentshore.agents.git_auth_probe import GIT_AUTH_FAILED, GitAuthProbeResult
+from agentshore.command import CommandResult, CommandStatus
 from agentshore.sidecar.server import ServerState, SessionContext, handle_request
 from agentshore.sidecar.session_lifecycle import (
     STEP_CHECK_AGENT_AUTH,
@@ -83,17 +86,15 @@ agents:
 """
 
 
+_REAL_REPORT_IDENTITIES = identity_mod.report_identities
+
+
 def _write_valid_project(root: Path, *, agentshore_yaml: str | None = None) -> Path:
     root.mkdir(parents=True, exist_ok=True)
     yaml_body = agentshore_yaml if agentshore_yaml is not None else "project: {}\n"
     (root / "agentshore.yaml").write_text(yaml_body, encoding="utf-8")
     (root / ".beads").mkdir(exist_ok=True)
     return root
-
-
-# ---------------------------------------------------------------------------
-# Phase: config_merge
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -158,8 +159,6 @@ async def test_install_skills_drops_templates_into_project(tmp_path: Path) -> No
 
     skills_dir = project / ".agents" / "skills"
     assert skills_dir.is_dir(), "install_skills did not create .agents/skills/"
-    # Bundled templates include at least one skill (the issue_pickup play
-    # uses ``agentshore-issue-pickup``); presence checks the install ran.
     installed = sorted(d.name for d in skills_dir.iterdir() if d.is_dir())
     assert installed, f"no skill templates installed under {skills_dir}"
 
@@ -186,11 +185,6 @@ async def test_config_merge_attaches_session_log_file_handler(tmp_path: Path) ->
         root.handlers = original_handlers
 
 
-# ---------------------------------------------------------------------------
-# Phase: init_beads (unresolved schema drift surfaces via notify, gh-356)
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_init_beads_notifies_on_unresolved_schema_drift(tmp_path: Path) -> None:
     """An unresolved BeadsSchemaDriftError from reconcile_beads_schema fires a
@@ -215,7 +209,7 @@ async def test_init_beads_notifies_on_unresolved_schema_drift(tmp_path: Path) ->
             state, notify=_notify, start_bridge=False, start_orchestrator=False
         )
 
-    assert outcome.session_id is not None  # never blocked session start
+    assert outcome.session_id is not None
 
     drift_notifs = [n for n in notifications if n.get("method") == "$/beads_schema_drift"]
     assert len(drift_notifs) == 1
@@ -248,11 +242,6 @@ async def test_init_beads_no_notify_on_healthy_reconcile(tmp_path: Path) -> None
     assert not any(n.get("method") == "$/beads_schema_drift" for n in notifications)
 
 
-# ---------------------------------------------------------------------------
-# Phase: check_agent_auth (backend CLI-agent auth gate)
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_check_agent_auth_blocks_on_expired_backend(tmp_path: Path) -> None:
     """An expired CLI-agent backend session short-circuits session.start at the
@@ -272,7 +261,6 @@ async def test_check_agent_auth_blocks_on_expired_backend(tmp_path: Path) -> Non
 
     assert excinfo.value.step == STEP_CHECK_AGENT_AUTH
     assert excinfo.value.code == -32603
-    # The message names the failing agent type + remediation.
     assert "codex" in str(excinfo.value)
 
 
@@ -302,7 +290,6 @@ async def test_check_agent_auth_emits_failed_progress_for_expired(tmp_path: Path
 
     steps = [n["params"]["step"] for n in notifications]  # type: ignore[index]
     statuses = [n["params"].get("message") for n in notifications]  # type: ignore[union-attr]
-    # config_merge ok, then check_agent_auth running + failed; nothing after.
     assert steps == [
         STEP_CONFIG_MERGE,
         STEP_CONFIG_MERGE,
@@ -312,7 +299,7 @@ async def test_check_agent_auth_emits_failed_progress_for_expired(tmp_path: Path
     assert "install_skills" not in steps
     last = notifications[-1]["params"]  # type: ignore[index]
     assert "error" in last  # type: ignore[operator]
-    assert statuses  # silence unused
+    assert statuses
 
 
 @pytest.mark.asyncio
@@ -336,16 +323,11 @@ async def test_check_agent_auth_passes_on_clean_probe(tmp_path: Path) -> None:
         )
 
     assert outcome.session_id == state.session_id
-    # Filter to $/progress notifications: init_beads may also emit an
-    # unrelated $/beads_schema_drift notification (gh-356) if this machine's
-    # bd install can't reconcile the test project's bare .beads/ dir, and
-    # that notification has no "step" param.
     steps = [
         n["params"]["step"]  # type: ignore[index]
         for n in notifications
         if n.get("method") == "$/progress"
     ]
-    # check_agent_auth ran (running+ok) and later phases proceeded.
     assert STEP_CHECK_AGENT_AUTH in steps
     assert "install_skills" in steps
     assert "first_snapshot" in steps
@@ -474,8 +456,6 @@ async def test_check_agent_auth_invokes_git_auth_probe_and_blocks_on_failure(
     assert excinfo.value.code == -32603
     assert "beta" in str(excinfo.value)
     steps = [n["params"]["step"] for n in notifications]  # type: ignore[index]
-    # Same phase-failure shape as the other check_agent_auth sub-gates: running
-    # then failed, nothing after.
     assert steps == [
         STEP_CONFIG_MERGE,
         STEP_CONFIG_MERGE,
@@ -508,9 +488,163 @@ async def test_check_agent_auth_clean_git_auth_probe_proceeds(tmp_path: Path) ->
     assert outcome.session_id == state.session_id
 
 
-# ---------------------------------------------------------------------------
-# session.stop with a registered orchestrator (drain / hard semantics)
-# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_check_agent_auth_blocks_when_identity_token_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gh-476: desktop session.start must validate identity tokens like the CLI.
+
+    The sidecar only ran the config-level identity checks, so an identity whose
+    token doesn't resolve on this machine passed launch and every
+    instantiate_agent for it failed mid-session.
+    """
+    config = VALID_TIERED_CONFIG.replace(
+        "gh_token_login: alpha-agent", "gh_token_env: AGENTSHORE_TEST_ALPHA_TOKEN"
+    ).replace("gh_token_login: beta-agent", "gh_token_env: AGENTSHORE_TEST_BETA_TOKEN")
+    monkeypatch.delenv("AGENTSHORE_TEST_ALPHA_TOKEN", raising=False)
+    monkeypatch.setenv("AGENTSHORE_TEST_BETA_TOKEN", "")
+    project = _write_valid_project(tmp_path / "token-missing", agentshore_yaml=config)
+    state = ServerState(active_project_path=str(project))
+
+    with (
+        patch.object(identity_mod, "report_identities", _REAL_REPORT_IDENTITIES),
+        patch("agentshore.agents.auth_probe.probe_configured_cli_auth") as backend_probe,
+        pytest.raises(SessionStartError) as excinfo,
+    ):
+        await run_session_start(state, start_bridge=False, start_orchestrator=False)
+
+    assert excinfo.value.step == STEP_CHECK_AGENT_AUTH
+    assert "token failed validation" in str(excinfo.value)
+    assert "AGENTSHORE_TEST_ALPHA_TOKEN" in str(excinfo.value)
+    backend_probe.assert_not_called()
+
+
+@pytest.fixture
+def _fresh_identity_caches() -> Iterator[None]:
+    identity_mod.reset_token_cache()
+    yield
+    identity_mod.reset_token_cache()
+
+
+def _fake_gh_api_user(logins_by_token: dict[str, str]) -> Callable[..., CommandResult]:
+    """Stub ``gh api user``: a token in ``logins_by_token`` validates as that
+    login, any other token gets GitHub's 401. Reads the dict at call time so a
+    test can flip a verdict between sessions."""
+
+    def _gh(*args: str, env_overlay: Mapping[str, str] | None = None, **_: object) -> CommandResult:
+        login = logins_by_token.get((env_overlay or {}).get("GH_TOKEN", ""))
+        if login is None:
+            return CommandResult(
+                args=("gh", *args),
+                returncode=1,
+                stdout="",
+                stderr="gh: Bad credentials (HTTP 401)",
+                status=CommandStatus.NONZERO,
+            )
+        return CommandResult(
+            args=("gh", *args),
+            returncode=0,
+            stdout=f"{login}\n",
+            stderr="",
+            status=CommandStatus.OK,
+        )
+
+    return _gh
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("_fresh_identity_caches")
+async def test_session_start_picks_up_keychain_pat_rotated_since_last_session(
+    tmp_path: Path,
+) -> None:
+    """gh-516: the desktop sidecar outlives sessions. A PAT rewritten in the
+    keychain after a failed session must be read by the next session.start
+    instead of the cached stale token and its 401."""
+    config = VALID_TIERED_CONFIG.replace(
+        "gh_token_login: alpha-agent", "gh_token_keychain: agentshore/alpha-agent"
+    ).replace("gh_token_login: beta-agent", "gh_token_keychain: agentshore/beta-agent")
+    project = _write_valid_project(tmp_path / "rotated-pat", agentshore_yaml=config)
+    state = ServerState(active_project_path=str(project))
+    keychain = {"agentshore/alpha-agent": "revoked-alpha", "agentshore/beta-agent": "beta-tok"}
+    logins_by_token = {"beta-tok": "beta-agent"}
+
+    with (
+        patch.object(identity_mod, "report_identities", _REAL_REPORT_IDENTITIES),
+        patch("agentshore.keyring_child.keyring_get", side_effect=keychain.get) as keyring_get,
+        patch.object(identity_mod.command, "gh_sync", _fake_gh_api_user(logins_by_token)),
+        patch("agentshore.agents.auth_probe.probe_configured_cli_auth", return_value=[]),
+        patch("agentshore.agents.git_auth_probe.probe_all_identities", return_value=[]),
+    ):
+        with pytest.raises(SessionStartError) as excinfo:
+            await run_session_start(state, start_bridge=False, start_orchestrator=False)
+        assert excinfo.value.step == STEP_CHECK_AGENT_AUTH
+        assert "Bad credentials" in str(excinfo.value)
+
+        keychain["agentshore/alpha-agent"] = "rotated-alpha"
+        logins_by_token["rotated-alpha"] = "alpha-agent"
+        keyring_get.reset_mock()
+
+        outcome = await run_session_start(state, start_bridge=False, start_orchestrator=False)
+
+    assert outcome.session_id == state.session_id
+    keyring_get.assert_any_call("agentshore/alpha-agent")
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("_fresh_identity_caches")
+async def test_session_start_revalidates_token_whose_401_was_cached_last_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gh-516: a negative (401) validation verdict is cached per token. The
+    same token, accepted by GitHub now, must be re-validated on the next
+    session.start rather than failing the launch gate on the stale verdict."""
+    config = VALID_TIERED_CONFIG.replace(
+        "gh_token_login: alpha-agent", "gh_token_env: AGENTSHORE_TEST_ALPHA_TOKEN"
+    ).replace("gh_token_login: beta-agent", "gh_token_env: AGENTSHORE_TEST_BETA_TOKEN")
+    monkeypatch.setenv("AGENTSHORE_TEST_ALPHA_TOKEN", "alpha-tok")
+    monkeypatch.setenv("AGENTSHORE_TEST_BETA_TOKEN", "beta-tok")
+    project = _write_valid_project(tmp_path / "stale-401", agentshore_yaml=config)
+    state = ServerState(active_project_path=str(project))
+    logins_by_token = {"beta-tok": "beta"}
+
+    with (
+        patch.object(identity_mod, "report_identities", _REAL_REPORT_IDENTITIES),
+        patch.object(identity_mod.command, "gh_sync", _fake_gh_api_user(logins_by_token)),
+        patch("agentshore.agents.auth_probe.probe_configured_cli_auth", return_value=[]),
+        patch("agentshore.agents.git_auth_probe.probe_all_identities", return_value=[]),
+    ):
+        with pytest.raises(SessionStartError) as excinfo:
+            await run_session_start(state, start_bridge=False, start_orchestrator=False)
+        assert "Bad credentials" in str(excinfo.value)
+
+        logins_by_token["alpha-tok"] = "alpha"
+
+        outcome = await run_session_start(state, start_bridge=False, start_orchestrator=False)
+
+    assert outcome.session_id == state.session_id
+
+
+@pytest.mark.asyncio
+async def test_session_start_resets_identity_caches_before_token_gate(tmp_path: Path) -> None:
+    """gh-516: the cache reset must precede check_agent_auth's token gate
+    (``report_identities``), the first reader of the identity caches."""
+    project = _write_valid_project(tmp_path / "reset-order", agentshore_yaml=VALID_TIERED_CONFIG)
+    state = ServerState(active_project_path=str(project))
+    calls: list[str] = []
+
+    def _report(cfg: object) -> list[object]:
+        calls.append("report_identities")
+        return []
+
+    with (
+        patch.object(identity_mod, "reset_token_cache", side_effect=lambda: calls.append("reset")),
+        patch.object(identity_mod, "report_identities", side_effect=_report),
+        patch("agentshore.agents.auth_probe.probe_configured_cli_auth", return_value=[]),
+        patch("agentshore.agents.git_auth_probe.probe_all_identities", return_value=[]),
+    ):
+        await run_session_start(state, start_bridge=False, start_orchestrator=False)
+
+    assert calls == ["reset", "report_identities"]
 
 
 class _FakeOrch:
@@ -524,8 +658,6 @@ class _FakeOrch:
 
     def request_drain(self, reason: str) -> None:
         self.drained.append(reason)
-        # Real orch: request_drain wakes the loop, which exits after drain.
-        # The fake releases the supervised task immediately to mirror that.
         self._loop_event.set()
 
     async def stop(self) -> None:
@@ -571,8 +703,6 @@ async def _populated_state_with_orch(
         orchestrator_task=asyncio.create_task(fake.run_until_completion()),
     )
 
-    # Insert a minimal session row so the ESR collector has something to
-    # summarise. The DataStore initialisation already created the schema.
     from agentshore.data.models import SessionRecord
 
     await store.create_session(
@@ -620,17 +750,10 @@ async def test_session_stop_hard_cancels_task_and_stops_orchestrator(
         await store.close()
 
     assert "result" in resp, resp
-    # Hard mode does NOT call request_drain — it cancels the task and
-    # invokes orchestrator.stop() directly.
     assert fake.drained == []
     assert fake.stopped is True
     assert state.orchestrator is None
     assert state.orchestrator_task is None
-
-
-# ---------------------------------------------------------------------------
-# session.stop drain timeout
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -647,7 +770,6 @@ async def test_session_stop_drain_respects_timeout(tmp_path: Path) -> None:
 
         def request_drain(self, reason: str) -> None:
             self.drained.append(reason)
-            # Intentionally do NOT set self._hang — task hangs until cancelled.
 
         async def stop(self) -> None:
             self.stopped = True
@@ -656,14 +778,12 @@ async def test_session_stop_drain_respects_timeout(tmp_path: Path) -> None:
             await self._hang.wait()
 
     state, _, store = await _populated_state_with_orch(tmp_path)
-    # Replace the real fake orchestrator with the hanging one
     hang = _HangOrch()
     hang_task = asyncio.create_task(hang.run_until_completion())
     state.orchestrator = hang
     state.orchestrator_task = hang_task
 
     try:
-        # Use a very short timeout so the test doesn't actually wait 300s.
         resp = await _drive(
             {
                 "jsonrpc": "2.0",
@@ -681,11 +801,6 @@ async def test_session_stop_drain_respects_timeout(tmp_path: Path) -> None:
     assert hang.stopped is True
     assert state.orchestrator is None
     assert state.orchestrator_task is None
-
-
-# ---------------------------------------------------------------------------
-# End-to-end: natural orchestrator exit emits session.completed
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -714,8 +829,6 @@ async def test_natural_exit_emits_session_completed_notification(tmp_path: Path)
 
     project = _write_valid_project(tmp_path / "project", agentshore_yaml=VALID_TIERED_CONFIG)
 
-    # A valid UUID so we can patch uuid4 to mint exactly this id (start always
-    # mints fresh now, #283), keeping it aligned with the session row below.
     session_id = "11111111-1111-4111-8111-111111111111"
     db_path = tmp_path / "db.sqlite"
     store = DataStore(db_path)
@@ -742,18 +855,12 @@ async def test_natural_exit_emits_session_completed_notification(tmp_path: Path)
         _esr_ready_callback: object = None
         _session_draining_callback: object = None
         _store = store
-        # TNQA wave-2 (Task 1): the real Orchestrator no longer exposes
-        # _natural_exit_reason/_log_path property shims — session_lifecycle.py
-        # reads them off ``orch._runtime`` directly, so this fake mirrors that.
         _runtime = SimpleNamespace(natural_exit_reason=None, log_path=Path(generated_log_path))
 
         def on_natural_exit(self, cb: object) -> None:
             self._natural_exit_callback = cb
 
         def register_esr_ready_callback(self, cb: object) -> None:
-            # #561: lifecycle wires an esr_ready emitter so drain.py notifies the
-            # desktop shell instead of opening webbrowser. Accept-and-store keeps
-            # this fake passive while honoring the contract.
             self._esr_ready_callback = cb
 
         def register_session_draining_callback(self, cb: object) -> None:
@@ -807,7 +914,6 @@ async def test_natural_exit_emits_session_completed_notification(tmp_path: Path)
         assert state.orchestrator_task is not None
         await asyncio.wait_for(state.orchestrator_task, timeout=5.0)
 
-    # Natural exit clears session state so the next start mints fresh (#283).
     assert state.session_id is None
     assert state.session_context is None
     assert state.orchestrator is None
@@ -841,8 +947,6 @@ async def test_natural_exit_emits_session_completed_notification(tmp_path: Path)
     assert isinstance(draining_params, dict)
     assert draining_params == {"session_id": session_id, "reason": "max_plays"}
 
-    # The whole point of the earlier signal: it must reach the shell before
-    # $/esr_ready, which only arrives after the unbounded ESR-generation step.
     assert emitted.index(draining[0]) < emitted.index(ready[0])
 
 
@@ -961,8 +1065,6 @@ async def test_natural_exit_emits_session_completed_when_context_nulled_during_b
     )
     generated_log_path = str(project / ".agentshore" / "logs" / f"agentshore-{session_id}.log")
 
-    # state_ref provides late-binding access so the patched build_esr_payload
-    # can reach the ServerState constructed below.
     state_ref: list[ServerState] = []
 
     class _RacingOrch:
@@ -991,7 +1093,6 @@ async def test_natural_exit_emits_session_completed_when_context_nulled_during_b
             pass
 
         async def run_until_idle(self) -> None:
-            # Natural exit — session_context remains valid when we return.
             self._runtime.natural_exit_reason = "drain_complete"
             if callable(self._natural_exit_callback):
                 await self._natural_exit_callback(self._runtime.natural_exit_reason)  # type: ignore[misc]
@@ -1050,9 +1151,6 @@ async def test_natural_exit_emits_session_completed_when_context_nulled_during_b
 
     await store.close()
 
-    # Despite the build failing and state.session_context being nulled during
-    # the build await, session.completed must still fire via the fallback path
-    # because _supervise snapshotted ctx before the first await.
     completed = [n for n in emitted if n.get("method") == "session.completed"]
     assert len(completed) == 1, (
         f"expected 1 session.completed notification, got {len(completed)}. "
@@ -1064,11 +1162,6 @@ async def test_natural_exit_emits_session_completed_when_context_nulled_during_b
     assert params["exit_reason"] == "drain_complete"
     assert params["exit_code"] == 0
     assert params["archive_path"] == archive_path
-    # report_path and log_path come from ctx (snapshotted before the build),
-    # so they carry the initial empty value (esr_ready hasn't fired in this
-    # fallback scenario) rather than generated_report_path.  The key
-    # invariant is that the notification lands at all, not that the paths
-    # match the final values.
     assert "report_path" in params
     assert "log_path" in params
 
@@ -1091,5 +1184,4 @@ def test_make_bridge_binds_to_advertised_port(tmp_path: Path) -> None:
             "session.start's ipc_endpoint, not re-roll a free port."
         )
     finally:
-        # Bridge isn't started — nothing to clean up; the assertion is enough.
         del bridge

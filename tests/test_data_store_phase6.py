@@ -85,7 +85,6 @@ async def test_list_sessions_ordered(store):
         )
     sessions = await store.list_sessions()
     assert len(sessions) == 2
-    # Most recent first
     assert sessions[0].session_id == "s-new"
     assert sessions[1].session_id == "s-old"
 
@@ -159,7 +158,6 @@ async def test_get_open_issues_tolerates_malformed_labels(store):
             )
         ],
     )
-    # Corrupt the persisted labels column to a non-JSON value.
     await store._conn.execute(
         "UPDATE github_issues SET labels = ? WHERE issue_number = ? AND session_id = ?",
         ("{not json", 7, sid),
@@ -185,7 +183,6 @@ async def test_list_scope_drift(store):
         )
     drifts = await store.list_scope_drift(sid)
     assert len(drifts) == 2
-    # Ordered by logged_at ASC
     assert drifts[0].artifact == "file_0.py"
     assert drifts[1].artifact == "file_1.py"
 
@@ -213,7 +210,6 @@ async def test_list_trajectory_snapshots(store):
         )
     snapshots = await store.list_trajectory_snapshots(sid)
     assert len(snapshots) == 2
-    # Ordered by play_id ASC
     assert snapshots[0].play_id == play_id
     assert snapshots[1].play_id == play_id2
 
@@ -233,7 +229,6 @@ async def test_list_review_patterns(store):
         )
     patterns = await store.list_review_patterns(sid)
     assert len(patterns) == 3
-    # Ordered by frequency DESC
     assert patterns[0].frequency == 7
     assert patterns[1].frequency == 3
     assert patterns[2].frequency == 1
@@ -389,7 +384,6 @@ async def test_list_archives_ordered(store):
         )
     archives = await store.list_archives()
     assert len(archives) == 2
-    # Most recent first
     assert archives[0].archive_id == "arc-new"
     assert archives[1].archive_id == "arc-old"
 

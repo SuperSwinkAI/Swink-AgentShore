@@ -57,11 +57,6 @@ def test_skill_name() -> None:
     assert _play.skill_name == "agentshore-seed-project"
 
 
-# ---------------------------------------------------------------------------
-# desktop-hzgb: unified mid-session gate
-# ---------------------------------------------------------------------------
-
-
 def _seeded_graph() -> ProjectGraph:
     """ProjectGraph with at least one epic — i.e. a project that has already
     been seeded. Under the issue #566 fix the ceiling applies to these."""
@@ -92,7 +87,6 @@ def test_seeded_project_masked_at_high_issue_count() -> None:
     """
     issues = [_make_issue(n) for n in range(198)]
     state = _make_state(open_issues=issues, graph=_seeded_graph())
-    # No prior seed_project in this session — was the old carve-out's trigger.
     assert state.last_play_success_by_type == {}
     reasons = _play.preconditions(state)
     assert len(reasons) == 1
@@ -194,13 +188,7 @@ def test_mask_reason_contains_count_and_ceiling() -> None:
     assert "10-issue ceiling" in reason_text
 
 
-# ---------------------------------------------------------------------------
-# Bootstrap / first-play invariants
-# ---------------------------------------------------------------------------
-
-
 def test_preconditions_passes_when_graph_is_none_no_issues() -> None:
-    # Seed fires even with 0 open issues so it can bootstrap from design docs.
     state = _make_state(open_issues=[], graph=None)
     reasons = _play.preconditions(state)
     assert reasons == []
@@ -221,7 +209,6 @@ def test_preconditions_passes_when_graph_empty_no_epics_and_issues_exist() -> No
 
 
 def test_preconditions_passes_when_empty_graph_no_issues() -> None:
-    # Seed fires on an empty graph even with 0 open issues (design-doc-only bootstrap).
     graph = ProjectGraph()
     state = _make_state(open_issues=[], graph=graph)
     reasons = _play.preconditions(state)

@@ -40,11 +40,6 @@ def _read_bundled_catalog() -> dict[str, list[str]]:
     return {str(key): [str(model) for model in value] for key, value in catalog.items()}
 
 
-# Curated baseline - known models shipped with each release, read once from
-# the bundled YAML. Keys match AgentType values used as agent_key throughout
-# the wizard. Deliberately does NOT reflect a global override (mirrors
-# pricing.bundled_pricebook()) — use load_model_catalog() for override-aware
-# lookups.
 KNOWN_MODELS: dict[str, list[str]] = _read_bundled_catalog()
 
 _ANTHROPIC_PREFIXES = ("claude-",)

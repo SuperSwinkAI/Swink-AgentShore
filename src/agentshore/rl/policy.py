@@ -119,9 +119,6 @@ class ActorCritic(nn.Module):
         )
         self.actor = nn.Linear(hidden, num_actions)
         self.value_head = nn.Linear(hidden, 1)
-        # Always create the config head so the state dict has a stable key set.
-        # When num_configs == 0, the head is a degenerate Linear with output
-        # dim 1 that callers must not invoke (mask would be all-zero anyway).
         self._num_configs = num_configs
         self.config_head = nn.Linear(hidden, max(num_configs, 1))
 
@@ -209,7 +206,6 @@ class ActorCritic(nn.Module):
             raise RuntimeError(msg)
         with torch.no_grad():
             logits = self.forward_config(obs.unsqueeze(0)).squeeze(0)
-            # Trim padding (the head may be wider than num_configs by 1).
             logits = logits[: self._num_configs]
             idx, log_prob = _masked_categorical_act(
                 logits,

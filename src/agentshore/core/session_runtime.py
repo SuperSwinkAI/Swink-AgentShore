@@ -1,33 +1,9 @@
-"""Single owner for the orchestrator's shared mutable session state.
+"""Owner of the orchestrator's shared mutable session state.
 
-Before this module existed, the eight composed orchestrator components
-(:class:`LoopRunner`, :class:`Dispatcher`, :class:`CompletionProcessor`,
-:class:`DrainController`, :class:`LifecycleController`, :class:`StateBuilder`,
-:class:`SnapshotProjector`) each reached ~40 orchestrator latches through
-``self._host.<attr>`` — a typed-but-shared mutable surface indexed by six
-``_*Host`` Protocols, with ``getattr(self._host, "_x", default)`` guards
-sprinkled in because tests built the host via ``__new__`` (skipping
-``__init__``, so the attributes were absent).
-
-:class:`SessionRuntime` collapses that surface into one owned dataclass. Every
-latch now has a single greppable owner; ``Orchestrator`` constructs exactly one
-``SessionRuntime`` and passes it to each component as ``runtime=``. Because every
-field has a default, a fresh ``SessionRuntime()`` is always fully initialised —
-which is what lets the getattr guards and the class-level ``__new__``-bypass
-default wall disappear.
-
-The orchestrator still owns *stable* identity/collaborators (``_store``,
-``_manager``, ``_executor``, ``_session_id``, ``_repo_root``, ``_overrides``,
-``_velocity``, ``_recovery``, ``_main_repo``, the components themselves) and the
-*behaviour* methods (``_safe_call``, ``_initiate_autonomous_stop``,
-``_check_stagnation_escalation``, ``effective_budget_caps``, ``resume``,
-``_selector_config_index``, ``_weights_dir``, ``stop_loop_liveness_watchdog``).
-Components reach behaviour through a narrow ``host`` reference; they reach *state*
-only through ``runtime``.
-
-Defaults mirror the values previously set in ``_OrchestratorBase.__init__`` so
-behaviour is preserved exactly.
-"""
+Orchestrator constructs one SessionRuntime and passes it to each component
+as runtime=. Every field has a default. Components reach state through
+runtime and behavior through their host reference. The orchestrator owns
+stable identity, collaborators and behavior methods."""
 
 from __future__ import annotations
 
@@ -39,6 +15,7 @@ from enum import StrEnum
 from typing import TYPE_CHECKING
 
 from agentshore.config import RuntimeConfig
+from agentshore.plays.attempt_ledger import TargetAttemptLedger
 from agentshore.state import NullStateProvider
 
 if TYPE_CHECKING:
@@ -152,10 +129,8 @@ class SessionRuntime:
     class-level defaults and the ``getattr(self._host, ...)`` guards.
     """
 
-    # --- reload-mutable config (atomically swapped on SIGHUP by lifecycle) ----
     cfg: RuntimeConfig = field(default_factory=RuntimeConfig)
 
-    # --- bootstrap-assigned services (None until phases.py wires them) --------
     selector: PlaySelector | None = None
     state_provider: StateProvider = field(default_factory=NullStateProvider)
     registry: object | None = None
@@ -174,7 +149,6 @@ class SessionRuntime:
     session_draining_callback: Callable[[str, str], None] | None = None
     natural_exit_callback: NaturalExitCallback | None = None
 
-    # --- stop / drain / pause state ------------------------------------------
     lifecycle: SessionLifecycle = field(default_factory=SessionLifecycle)
     stop_done: asyncio.Event = field(default_factory=asyncio.Event)
     pause_event: asyncio.Event = field(default_factory=_new_pause_event)
@@ -182,37 +156,29 @@ class SessionRuntime:
     pause_deadline: float | None = None
     natural_exit_reason: str | None = None
 
-    # --- end-session report flags --------------------------------------------
     end_session_dispatch_started: bool = False
     end_session_report_requested: bool = False
     end_session_report_open_browser: bool = False
 
-    # --- live budget/time cap overrides (None ⇒ fall through to cfg.budget) ---
     budget_override_enabled: bool | None = None
     budget_override_total: float | None = None
     time_override_enabled: bool | None = None
     time_override_minutes: int | None = None
 
-    # --- selection / idle / refresh latches ----------------------------------
     idle_streak: int = 0
     last_selection_digest: bytes | None = None
-    # Monotonic ts of last _refresh_issues; 0.0 = never (first eligible tick
-    # always fires). Bootstrap stamps it after the session-start fetch.
     last_refresh_time: float = 0.0
     last_play_id: int | None = None
     loop_started_at: float = 0.0
 
-    # --- in-flight dispatch bookkeeping (mutated in place) -------------------
     in_flight: dict[str, asyncio.Task[PlayOutcome]] = field(default_factory=dict)
     dispatch_ctx: dict[str, _DispatchContext] = field(default_factory=dict)
     completion_processing_count: int = 0
     completion_processing_idle: asyncio.Event = field(default_factory=_new_completion_idle)
 
-    # --- feedback cadence -----------------------------------------------------
     feedback_cadence_plays_since_ack: int = 0
     feedback_cadence_last_ack_monotonic: float = field(default_factory=time.monotonic)
 
-    # --- per-agent / per-resource shadows & windows --------------------------
     context_pressure_hints: dict[str, float] = field(default_factory=dict)
     recent_play_outcomes: collections.deque[tuple[bool, str]] = field(
         default_factory=lambda: collections.deque(maxlen=50)
@@ -225,15 +191,9 @@ class SessionRuntime:
     )
     resource_failure_counts: dict[str, int] = field(default_factory=dict)
     parked_resource_keys: set[str] = field(default_factory=set)
-    # Agent types that hit a *transient* launch wedge (Grok first-byte timeout).
-    # DECAYING suppression: agent_type -> expiry tick. State-builder seeds
-    # (tick + _GROK_WEDGE_COOLDOWN_TICKS) and
-    # drops expired ones each snapshot, so a wedged type auto-recovers (#202).
-    # last_play_id is the tick reference.
+    target_attempts: TargetAttemptLedger = field(default_factory=TargetAttemptLedger)
     wedge_cooldown_until: dict[str, int] = field(default_factory=dict)
 
-    # Compatibility accessors keep component reads and test fixtures stable
-    # while all production transitions route through ``lifecycle`` methods.
     @property
     def stop_requested(self) -> bool:
         return self.lifecycle.phase in {
@@ -255,7 +215,6 @@ class SessionRuntime:
 
     @property
     def stopped(self) -> bool:
-        # Historical callers use ``stopped`` as the stop-body ownership latch.
         return self.lifecycle.phase in {LifecyclePhase.STOPPING, LifecyclePhase.STOPPED}
 
     @stopped.setter

@@ -39,7 +39,6 @@ def test_designate_migrator_runs_consented_reconcile(tmp_path: Path) -> None:
     assert response is not None
     assert response["result"] == {"designated": True}
     fake.assert_awaited_once()
-    # The consent flag is the whole point — it must be assume_yes=True.
     assert fake.await_args.args == (tmp_path,)
     assert fake.await_args.kwargs == {"assume_yes": True}
 

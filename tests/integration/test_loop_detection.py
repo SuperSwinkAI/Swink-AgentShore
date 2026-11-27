@@ -48,7 +48,6 @@ async def test_loop_detection_escalates_after_threshold(tmp_path: Path) -> None:
         ),
     )
 
-    # Provide plenty of plays so the selector never returns None
     plan = [(PlayType.ISSUE_PICKUP, PlayParams()) for _ in range(30)]
     selector = FixedPlanSelector(plan)
 
@@ -64,7 +63,6 @@ async def test_loop_detection_escalates_after_threshold(tmp_path: Path) -> None:
     ) -> object:
         nonlocal call_count
         call_count += 1
-        # Record a failing play row so _build_state computes the streak
         from agentshore.data.store import PlayRecord
 
         await orch._store.record_play(
@@ -112,8 +110,6 @@ async def test_loop_detection_does_not_trigger_on_mixed_types(tmp_path: Path) ->
         ),
     )
 
-    # Alternate between two play types — failures but of different types,
-    # so no same-type streak builds.  End with END_SESSION.
     plan = [
         (PlayType.ISSUE_PICKUP, PlayParams()),
         (PlayType.CODE_REVIEW, PlayParams()),
@@ -157,5 +153,4 @@ async def test_loop_detection_does_not_trigger_on_mixed_types(tmp_path: Path) ->
             await asyncio.wait_for(orch.run_until_idle(), timeout=5.0)
 
     assert call_count == 5
-    # pause_event still set (from resume) means the loop detector never fired.
     assert orch._runtime.pause_event.is_set()

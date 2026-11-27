@@ -25,7 +25,7 @@ class _PullRequestsMixin(_DataStoreBase):
     """Methods that operate on the ``pull_requests`` and ``branch_activity`` tables."""
 
     if TYPE_CHECKING:
-        # Sibling-mixin call (impl in _WorkClaimsMixin); resolved via DataStore MRO.
+
         async def supersede_work_claims(
             self,
             session_id: str,
@@ -50,10 +50,6 @@ class _PullRequestsMixin(_DataStoreBase):
         for pr in pull_requests:
             if pr.session_id != session_id:
                 pr.session_id = session_id
-        # Pre-existing PRs already APPROVED on GitHub seed last_reviewed_sha=head_sha
-        # so the policy routes them to merge_pr instead of re-reviewing. ON CONFLICT
-        # COALESCE preserves existing DB values, so this fires only on first insert;
-        # AgentShore-authored PRs set last_reviewed_sha explicitly post-code_review.
         rows = [_pull_request_upsert_row(pr) for pr in pull_requests]
         await self._conn.executemany(_PULL_REQUEST_UPSERT_SQL, rows)
         await self._conn.commit()
@@ -136,14 +132,10 @@ class _PullRequestsMixin(_DataStoreBase):
         Existing non-null ``merged_at`` is preserved (a refresh from GitHub
         may have already populated the precise timestamp).
         """
-        # Resolve linked-issue keys before opening the write transaction
-        # (issue_numbers_for_pr reads PR body/links, not the state column we flip).
         keys = [f"pr:{pr_number}"]
         pr = await self.get_pull_request(session_id, pr_number)
         if pr is not None:
             keys.extend(f"issue:{issue_number}" for issue_number in issue_numbers_for_pr(pr))
-        # State UPDATE + work-claim supersession in one BEGIN IMMEDIATE: a crash
-        # can't leave a merged PR with a live work-claim — both flip or neither.
         try:
             await self._conn.execute("BEGIN IMMEDIATE")
             await self._conn.execute(

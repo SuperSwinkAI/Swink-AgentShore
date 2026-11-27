@@ -15,10 +15,6 @@ from agentshore.state import AgentType
 if TYPE_CHECKING:
     from pathlib import Path
 
-# ---------------------------------------------------------------------------
-# Platform helpers
-# ---------------------------------------------------------------------------
-
 
 def _prompt_on_stdin(python_executable: str | None) -> bool:
     """Return True when Windows npm shims should receive the prompt over stdin."""
@@ -47,13 +43,9 @@ def _resolve_executable(argv: list[str]) -> list[str]:
 
 
 def _write_grok_prompt_file(prompt: str) -> Path:
-    """Write *prompt* to a temp file for Grok's ``--prompt-file`` (issue #160).
+    """Write the Grok prompt to a temporary --prompt-file.
 
-    Grok has no stdin prompt mode and rejects an empty ``-p`` value, so on
-    Windows — where we can't pass a large prompt as an argv element — the
-    prompt is delivered through a file instead. The caller owns cleanup
-    (``unlink`` in its ``finally``).
-    """
+    The caller must unlink the file in its finally block."""
     import os
     import tempfile
     from pathlib import Path
@@ -69,10 +61,6 @@ def _write_grok_prompt_file(prompt: str) -> Path:
     return Path(path)
 
 
-# ---------------------------------------------------------------------------
-# YOLO defaults
-# ---------------------------------------------------------------------------
-
 _DEFAULT_YOLO_FLAGS: dict[AgentType, tuple[str, ...]] = {
     AgentType.CLAUDE_CODE: ("--dangerously-skip-permissions",),
     AgentType.CODEX: (
@@ -83,15 +71,9 @@ _DEFAULT_YOLO_FLAGS: dict[AgentType, tuple[str, ...]] = {
     AgentType.GROK: ("--permission-mode", "bypassPermissions"),
     AgentType.ANTIGRAVITY: ("--dangerously-skip-permissions",),
     AgentType.SWINK_CODING: ("--yolo",),
-    # = --allow-all-tools --allow-all-paths --allow-all-urls (copilot 1.0.94).
     AgentType.COPILOT: ("--yolo",),
 }
 
-# Agent types whose CLI exposes a resume-by-id flag AND for which AgentShore
-# holds a stable session id (claude/codex/grok/swink-coding/copilot parse it
-# from stdout; agy resolves it from its on-disk conversation cache). The narrow
-# JSON-retry path (desktop-dy2j) re-enters that one session to recover the
-# omitted result block.
 _RESUMABLE_AGENT_TYPES: frozenset[AgentType] = frozenset(
     {
         AgentType.CLAUDE_CODE,
@@ -104,32 +86,66 @@ _RESUMABLE_AGENT_TYPES: frozenset[AgentType] = frozenset(
 )
 
 
-# Agent types whose CLI lets the caller pin a NEW run's durable session id
-# (swink-coding's ``--session-id``, SuperSwink-Coding#300, v0.2.3+; grok's
-# ``-s/--session-id <UUID>``, 1.0.50; copilot's ``--session-id <uuid>``,
-# 1.0.94). Pinning
-# means AgentShore knows the id before spawn instead of having to recover it
-# from the child's output, so the narrow JSON-retry resume stays reachable even
-# when a dispatch produces nothing parseable. This is a capability set, not a
-# policy one: any CLI that grows the same flag belongs here.
 _PINNABLE_SESSION_AGENT_TYPES: frozenset[AgentType] = frozenset(
     {AgentType.SWINK_CODING, AgentType.GROK, AgentType.COPILOT}
 )
 
 
-# Agent types whose CLI accepts an ephemeral per-dispatch tool deny list
-# (swink-coding's ``--disallowed-tools``; grok's ``--disallowed-tools a,b``,
-# which removes the built-in tools outright — names translated in
-# ``cli_grok._GROK_TOOL_NAMES``; copilot's ``--deny-tool=<kind>`` permission
-# rules — kinds translated in ``cli_copilot._COPILOT_TOOL_NAMES``). Deny rules layer on top of the
-# child's own config and win in every mode, including its YOLO mode, so this is
-# the one lever that survives AgentShore's permissive dispatch posture. A play
-# declares WHAT it must not touch (``Play.disallowed_tools``); each adapter
-# decides how — or whether — its CLI can express that. This is a capability
-# set, not a policy one: any CLI that grows the same flag belongs here.
 _TOOL_DENIAL_CAPABLE_AGENT_TYPES: frozenset[AgentType] = frozenset(
-    {AgentType.SWINK_CODING, AgentType.GROK, AgentType.COPILOT}
+    {AgentType.CLAUDE_CODE, AgentType.SWINK_CODING, AgentType.GROK, AgentType.COPILOT}
 )
+
+
+_CLAUDE_TOOL_NAMES: dict[str, tuple[str, ...]] = {
+    "write_file": ("Write",),
+    "edit_file": ("Edit", "MultiEdit", "NotebookEdit"),
+    "bash": ("Bash",),
+    "shell": ("Bash",),
+}
+
+
+def _claude_disallowed_tools(disallowed_tools: tuple[str, ...]) -> list[str]:
+    """Return one ``--disallowedTools=<a,b>`` token for the play's denials, or ``[]``.
+
+    Unmapped names (including ``tool(glob)`` specs) are dropped. The ``=`` form is
+    required: the flag is variadic and, given as a separate argument, would
+    swallow the positional prompt that follows it.
+    """
+    names: list[str] = []
+    for spec in disallowed_tools:
+        for name in _CLAUDE_TOOL_NAMES.get(spec, ()):
+            if name not in names:
+                names.append(name)
+    return [f"--disallowedTools={','.join(names)}"] if names else []
+
+
+_RESULT_SCHEMA_CAPABLE_AGENT_TYPES: frozenset[AgentType] = frozenset({AgentType.CLAUDE_CODE})
+
+
+def with_result_schema(
+    agent_type: AgentType, argv: list[str], schema_json: str | None
+) -> list[str]:
+    """Return *argv* with the final-message schema flag added where supported.
+
+    A no-op for agent types outside :data:`_RESULT_SCHEMA_CAPABLE_AGENT_TYPES`
+    and when no schema is requested — those dispatches rely on the prompt's
+    result contract and the text parser, exactly as before. Also a no-op on
+    Windows: the agent CLIs are npm ``.cmd`` shims there, and an inline JSON
+    argument does not survive cmd.exe quoting.
+    """
+    import sys
+
+    if (
+        not schema_json
+        or agent_type not in _RESULT_SCHEMA_CAPABLE_AGENT_TYPES
+        or sys.platform == "win32"
+    ):
+        return argv
+    try:
+        anchor = argv.index("stream-json") + 1
+    except ValueError:
+        return argv
+    return [*argv[:anchor], "--json-schema", schema_json, *argv[anchor:]]
 
 
 def _apply_yolo_default(agent_type: AgentType, extra_flags: tuple[str, ...]) -> tuple[str, ...]:
@@ -137,19 +153,6 @@ def _apply_yolo_default(agent_type: AgentType, extra_flags: tuple[str, ...]) -> 
     if extra_flags:
         return extra_flags
     return _DEFAULT_YOLO_FLAGS.get(agent_type, ())
-
-
-# ---------------------------------------------------------------------------
-# Builder registry
-#
-# Every per-type builder shares one keyword-only shape (a plain function for
-# claude/codex, module-level ``build_argv``/``build_resume_argv`` for
-# grok/antigravity/swink-coding) so the two dispatchers below are a dict
-# lookup, not an if/elif chain — the same registry treatment
-# ``cli/parsing.py``'s ``_PARSERS`` already uses for output parsing. A builder
-# ignores whichever keywords its CLI doesn't support; that's documented on the
-# builder itself, not here.
-# ---------------------------------------------------------------------------
 
 
 class _ArgvBuilder(Protocol):
@@ -209,11 +212,14 @@ def _build_argv_claude_code(
     session_id: str | None,
     disallowed_tools: tuple[str, ...],
 ) -> list[str]:
-    """Claude Code argv. ``project_dir``, ``prompt_file``, ``model_tier``,
-    ``session_id``, and ``disallowed_tools`` are accepted only for
-    ``_ArgvBuilder`` signature parity and ignored: Claude has no
-    working-directory flag, no prompt-file mode, no tier_map concept, no
-    caller-pinned session id, and no per-dispatch tool deny flag.
+    """Claude Code argv. *disallowed_tools* become ``--disallowedTools`` deny
+    rules (see ``_CLAUDE_TOOL_NAMES``).
+
+    ``project_dir``, ``prompt_file``, ``model_tier``, and ``session_id`` are
+    accepted only for ``_ArgvBuilder`` signature parity and ignored: Claude has
+    no working-directory flag, no prompt-file mode, and no tier_map concept; it
+    does have ``--session-id`` but AgentShore does not pin Claude sessions (see
+    ``_PINNABLE_SESSION_AGENT_TYPES``).
     """
     binary = binary or "claude"
     args = [binary, "-p", "--verbose", "--output-format", "stream-json"]
@@ -222,6 +228,7 @@ def _build_argv_claude_code(
     if reasoning_effort:
         args += ["--effort", reasoning_effort]
     args.extend(extra_flags)
+    args += _claude_disallowed_tools(disallowed_tools)
     if context_path:
         args += ["--append-system-prompt", f"Context file: {context_path}"]
     if not prompt_on_stdin:
@@ -254,22 +261,15 @@ def _build_argv_codex(
     yolo = "--dangerously-bypass-approvals-and-sandbox" in extra_flags
     args = [binary, "exec", "--json"]
     if not yolo:
-        # Replaces the deprecated `--full-auto` (codex-cli 0.144.1). Passed as
-        # the config key, not `--sandbox workspace-write`: `codex exec resume`
-        # reuses this argv and rejects `--sandbox` but accepts `-c`.
         args += ["-c", 'sandbox_mode="workspace-write"']
     if model:
         args += ["-m", model]
     if reasoning_effort:
         args += ["-c", f'model_reasoning_effort="{reasoning_effort}"']
-    # desktop-pxg: codex's shell tool otherwise strips the env, so our
-    # injected GH_TOKEN/GH_CONFIG_DIR never reach `gh api user` (identity
-    # mismatch, refused mutations). inherit=all passes them through.
     args += ["-c", "shell_environment_policy.inherit=all"]
     args.extend(extra_flags)
     if project_dir:
         args += ["-C", project_dir]
-    # "-" tells `codex exec` to read the prompt from stdin.
     args.append("-" if prompt_on_stdin else prompt)
     return args
 
@@ -290,12 +290,13 @@ def _build_resume_argv_claude_code(
     disallowed_tools: tuple[str, ...],
 ) -> list[str]:
     """Claude Code resume argv. ``model``, ``reasoning_effort``, ``project_dir``,
-    ``prompt_file``, ``model_tier``, ``session_id``, and ``disallowed_tools``
-    are accepted only for ``_ResumeArgvBuilder`` signature parity and ignored:
-    ``--resume`` re-enters the prior session verbatim. ``extra_flags`` IS
-    forwarded — permission mode is per-invocation, not restored by
-    ``--resume``, so dropping the YOLO ``--dangerously-skip-permissions``
-    default would run the retry in ``auto`` permission mode.
+    ``prompt_file``, ``model_tier``, and ``session_id`` are accepted only for
+    ``_ResumeArgvBuilder`` signature parity and ignored: ``--resume`` re-enters
+    the prior session verbatim. ``extra_flags`` IS forwarded — permission mode
+    is per-invocation, not restored by ``--resume``, so dropping the YOLO
+    ``--dangerously-skip-permissions`` default would run the retry in ``auto``
+    permission mode. ``disallowed_tools`` is forwarded for the same reason: deny
+    rules are per-invocation too, and the retry finishes the same play.
     """
     binary = binary or "claude"
     argv = [
@@ -307,6 +308,7 @@ def _build_resume_argv_claude_code(
         "--output-format",
         "stream-json",
         *extra_flags,
+        *_claude_disallowed_tools(disallowed_tools),
     ]
     if not prompt_on_stdin:
         argv.append(prompt)
@@ -328,8 +330,7 @@ def _build_resume_argv_codex(
     session_id: str | None,
     disallowed_tools: tuple[str, ...],
 ) -> list[str]:
-    """Codex resume argv — splices ``exec resume <id>`` into the base
-    :func:`_build_argv_codex` argv (issue #329, see the ``-C`` strip below)."""
+    """Build Codex resume argv by inserting exec resume <id> into the base argv."""
     base = _build_argv_codex(
         prompt=prompt,
         binary=binary,
@@ -344,16 +345,6 @@ def _build_resume_argv_codex(
         session_id=None,
         disallowed_tools=disallowed_tools,
     )
-    # Splice "resume <id>" into base [binary, "exec", "--json", ...].
-    # `codex exec resume` (unlike `codex exec`) does not accept the `-C
-    # <dir>` working-directory flag and exits 2 with "unexpected argument
-    # '-C' found" if it's present (issue #329). Strip that flag/value pair
-    # from the tail before splicing — the subprocess is already launched
-    # with cwd=effective_cwd (see cli_agent._build_dispatch_argv callers),
-    # so `-C` is redundant here, not merely unsupported. Only the exact
-    # standalone `-C` token is matched (case-sensitive), so the unrelated
-    # lowercase `-c model_reasoning_effort=...` / `-c
-    # shell_environment_policy...` config flags are left untouched.
     tail = base[2:]
     filtered_tail: list[str] = []
     skip_next = False
@@ -366,11 +357,6 @@ def _build_resume_argv_codex(
             continue
         filtered_tail.append(arg)
     return [base[0], "exec", "resume", resume_session_id, *filtered_tail]
-
-
-# ---------------------------------------------------------------------------
-# Public argv builders
-# ---------------------------------------------------------------------------
 
 
 def build_argv(
@@ -417,7 +403,8 @@ def build_argv(
     *session_id* pins the new run's durable session id so the caller knows it
     before spawn (swink-coding ``--session-id``, SuperSwink-Coding#300; grok
     and copilot ``--session-id <uuid>``). Honoured only by
-    :data:`_PINNABLE_SESSION_AGENT_TYPES`; ignored by every other agent type.
+    :data:`_PINNABLE_SESSION_AGENT_TYPES`; ignored by every other agent type
+    (Claude Code included — it has the flag, but AgentShore does not pin it).
 
     *disallowed_tools* is the executing play's tool-denial policy
     (``Play.disallowed_tools``) — tool names the play must not be able to reach,
@@ -522,8 +509,6 @@ def build_resume_argv(
         prompt_on_stdin=prompt_on_stdin,
         prompt_file=prompt_file,
         model_tier=model_tier,
-        # A resumed run already has an id; pinning is a new-run concern and the
-        # CLIs that support it reject the two flags together.
         session_id=None,
         disallowed_tools=disallowed_tools,
     )

@@ -43,42 +43,21 @@ _logger = structlog.get_logger(__name__)
 
 _REVIEW_PLAYS: frozenset[PlayType] = frozenset({PlayType.CODE_REVIEW})
 
-# Per-play tier eligibility. Plays not listed here accept any tier. Three bands:
-#   - Cheap mechanical (small ∪ medium): browser checks, merging approved PRs,
-#     trunk/branch housekeeping. Large excluded as overkill; cold start spawns
-#     the full fleet so a small/medium agent is available at first-play.
-#   - Coding & strategic (medium ∪ large): code writes, local restructure, test
-#     interpretation. Small too risky for downstream cost.
-#   - Heavyweight strategic/validation (large only): seed/design audits, final QA,
-#     code review, plan authoring, calibration — medium's judgement isn't trusted
-#     to set/certify the trajectory, and the long agentic turn overruns fast/medium
-#     models' reliable turn-completion envelope (#254).
-# Medium is the universal fallback for the first two bands.
 _PLAY_ALLOWED_TIERS: dict[PlayType, frozenset[str]] = {
     PlayType.CLEANUP: frozenset({"small", "medium"}),
     PlayType.PRUNE: frozenset({"small", "medium"}),
     PlayType.MERGE_PR: frozenset({"small", "medium"}),
-    # Medium ∪ large — coding & strategic
     PlayType.ISSUE_PICKUP: frozenset({"medium", "large"}),
     PlayType.UNBLOCK_PR: frozenset({"large", "medium"}),
     PlayType.REFINE_TASK_BREAKDOWN: frozenset({"medium", "large"}),
-    # Large only — code_review is the heaviest analytical play (full-diff intake →
-    # multi-axis correctness/safety/spec/security → GH review → JSON envelope), on
-    # par with the other large-only plays. Fast/medium models overrun the harness's
-    # turn-completion envelope here (#254: medium Gemini-Flash clean-exit empty
-    # no-ops on code_review only, while passing simpler plays). Tier capability
-    # floor, NOT a per-harness rule: every provider's large tier qualifies.
     PlayType.CODE_REVIEW: frozenset({"large"}),
     PlayType.RUN_QA: frozenset({"large"}),
     PlayType.WRITE_IMPLEMENTATION_PLAN: frozenset({"large"}),
     PlayType.SYSTEMATIC_DEBUGGING: frozenset({"medium", "large"}),
-    # Large only — beads/design-doc audits and final validation.
     PlayType.SEED_PROJECT: frozenset({"large"}),
     PlayType.DESIGN_AUDIT: frozenset({"large"}),
     PlayType.GROOM_BACKLOG: frozenset({"medium", "large"}),
     PlayType.CALIBRATE_ALIGNMENT: frozenset({"large"}),
-    # RECONCILE_STATE — log-parse + targeted local remediation. Doesn't need
-    # large-tier reasoning; medium suffices and is cheaper when it fires.
     PlayType.RECONCILE_STATE: frozenset({"medium", "large"}),
 }
 
@@ -109,23 +88,16 @@ def select_agent_for(
     """
     branch_exposure = branch_exposure or {}
 
-    # -- Step 0: pool of IDLE handles ----------------------------------------
     candidates: list[AgentHandle] = [h for h in handles.values() if h.status == AgentStatus.IDLE]
 
     if not candidates:
         raise AntiConfirmationViolation("No IDLE agents available for selection")
 
-    # -- Step 0a: required-id pin (resolver-chosen reviewer) -----------------
-    # The resolver picks a specific agent for code_review based on GH identity.
-    # When that handle is no longer IDLE (raced with another dispatch), the
-    # play is requeued by the executor — we don't silently fall through to a
-    # different agent that might violate the identity invariant.
     if required_agent_id is not None:
         candidates = [h for h in candidates if h.agent_id == required_agent_id]
         if not candidates:
             raise AntiConfirmationViolation(f"Pinned agent {required_agent_id!r} is no longer IDLE")
 
-    # -- Step 0b: required-type constraint (instantiate_agent and similar) ---
     elif required_agent_type is not None:
         candidates = [h for h in candidates if h.agent_type.value == required_agent_type]
         if not candidates:
@@ -135,19 +107,12 @@ def select_agent_for(
 
     initial_count = len(candidates)
 
-    # Track which rule eliminated each candidate. Order of keys reflects
-    # filter precedence so a single log line reveals the dominant blocker.
     eliminated: dict[str, list[str]] = {
         "anti_confirmation": [],
         "exclude": [],
         "tier": [],
     }
 
-    # -- Step 1: anti-confirmation hard filter --------------------------------
-    # CODE_REVIEW only: block any agent whose GH identity matches the PR author.
-    # QA runs against the merged trunk; any can_test agent is eligible.
-    # When pr_github_author is None (unknown — pre-session PR not yet refreshed),
-    # all candidates pass here and the executor's identity check acts as backstop.
     blocked_ids: set[str] = set()
 
     if play_type in _REVIEW_PLAYS and pr_github_author is not None:
@@ -163,7 +128,6 @@ def select_agent_for(
             survivors.append(h)
     candidates = survivors
 
-    # -- Step 2: exclude list hard filter ------------------------------------
     excluded_types: set[str] = set()
     if preferences is not None:
         for exc_type in preferences.exclude.get(play_type.value, []):
@@ -178,7 +142,6 @@ def select_agent_for(
                 survivors.append(h)
         candidates = survivors
 
-    # -- Step 3: tier eligibility hard filter --------------------------------
     allowed_tiers = _PLAY_ALLOWED_TIERS.get(play_type)
     if allowed_tiers is not None:
         survivors = []
@@ -201,7 +164,6 @@ def select_agent_for(
             "anti-confirmation, exclude, or tier-eligibility rules eliminated all candidates"
         )
 
-    # -- Step 3: soft scoring (stable sort; lower score = more preferred) ----
     preferred_type: str | None = None
     if preferences is not None:
         preferred_type = preferences.affinity.get(play_type.value)
@@ -215,11 +177,6 @@ def select_agent_for(
     tier_rank = {"small": 0, "medium": 1, "large": 2}
 
     def _score(h: AgentHandle) -> tuple[int, int, int, int, int]:
-        # Circuit breaker (#22): strongly deprioritize a known-dead agent (0
-        # successes + a timeout or repeated failures) so a healthy peer always
-        # wins. Soft, not a hard filter — if every IDLE candidate is broken we
-        # still pick one rather than wedge (the play-availability gate already
-        # masks the play when no healthy capable agent exists).
         task_history = h.task_history
         successes = sum(1 for t in task_history if t.success)
         failures = len(task_history) - successes
@@ -233,14 +190,9 @@ def select_agent_for(
             )
             else 0
         )
-        # Branch exposure affinity: 0 if exposed to this branch, 1 otherwise
         branch_exposure_score = 0 if h.agent_id in branch_exposed_ids else 1
-        # Type affinity: 0 if preferred type matches, 1 otherwise
         type_score = 0 if (preferred_type and h.agent_type.value == preferred_type) else 1
-        # Tier cost: when a play accepts multiple tiers, preserve larger agents
-        # for plays that truly require them.
         tier_score = tier_rank.get(h.model_tier or DEFAULT_MODEL_TIER, tier_rank["medium"])
-        # Least busy: ascending task count
         busy_score = len(h.task_history)
         return (circuit_broken_score, branch_exposure_score, type_score, tier_score, busy_score)
 

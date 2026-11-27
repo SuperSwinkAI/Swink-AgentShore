@@ -25,10 +25,6 @@ from agentshore.state import (
     SkillResult,
 )
 
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
-
 
 def _make_state(
     agents: list[AgentSnapshot] | None = None,
@@ -92,9 +88,6 @@ def _make_play(
     play.capability = "can_implement"
     play.preconditions = MagicMock(return_value=preconditions_result or [])
     play.estimated_cost = MagicMock(return_value=0.05)
-    # Declarative behavior flags the executor reads off the Play (replacing the
-    # old play-type frozensets). A bare MagicMock returns truthy mocks for these,
-    # so set real bools mirroring the concrete plays' overrides.
     play.authors_prs = play_type == PlayType.ISSUE_PICKUP
     play.retarget_pr_base = play_type in {
         PlayType.MERGE_PR,
@@ -217,8 +210,6 @@ def _make_manager(
     handle.context_size = 50_000
     handle.model_tier = "medium"
     handle.github_identity = github_identity
-    # Circuit-breaker scoring reads these directly off the handle (no longer
-    # getattr-guarded); set real values so the agent sorts as healthy.
     handle.task_history = []
     handle.timeout_count = 0
     handle.consecutive_timeouts = 0
@@ -257,11 +248,6 @@ def _make_executor(
         session_id="sess-test",
         github=github,
     )
-
-
-# ---------------------------------------------------------------------------
-# 1. Placeholder row inserted BEFORE play.execute
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -322,9 +308,6 @@ async def test_issue_pickup_publish_failure_existing_pr_reconciles_to_success() 
         }
     )
     github.label_issue = AsyncMock(return_value=True)
-    # Confirm-then-write (#279): once the reconciler finds PR #77 by branch, the
-    # record/enqueue gate re-confirms it via fetch_pull_request_by_number, which
-    # must agree that #77 exists.
     github.fetch_pull_request_by_number = AsyncMock(
         return_value=_confirmed_pr_view(77, branch="agentshore/225-fix-auth")
     )
@@ -377,7 +360,6 @@ async def test_issue_pickup_publish_reconcile_tolerates_torn_down_agent() -> Non
     store = _make_store()
     github = MagicMock()
     manager = _make_manager()
-    # Agent torn down between dispatch and the post-completion reconcile.
     manager.get_handle = MagicMock(side_effect=PreconditionFailed("Unknown agent_id: 'gone'"))
 
     play = _make_play(
@@ -404,8 +386,6 @@ async def test_issue_pickup_publish_reconcile_tolerates_torn_down_agent() -> Non
             ),
         )
 
-    # No exception propagated; the play resolved to a real (failed) outcome with
-    # branch evidence, and the gone agent was NOT flagged (nothing to flag).
     assert outcome.success is False
     manager.mark_agent_error.assert_not_awaited()
     github.find_open_pr_by_branch.assert_not_called()
@@ -470,7 +450,6 @@ async def test_issue_pickup_reconcile_create_pr_uses_configured_target_branch() 
         )
 
     assert outcome.success is True
-    # The configured target_branch wins; default_branch must not be consulted.
     github.create_pr.assert_awaited_once()
     create_pr_kwargs = github.create_pr.await_args.kwargs
     assert create_pr_kwargs["base"] == "develop"
@@ -546,9 +525,6 @@ async def test_executor_releases_claim_on_unresolved_target() -> None:
     """
     store = _make_store()
     play = _make_play()
-    # Legacy resolve-None path: no override is passed to execute(), so the
-    # executor resolves and gets None back (target lost between mask and
-    # dispatch). Carry a claim_group_id so we can assert it is released.
     resolver = AsyncMock()
     resolver.resolve = AsyncMock(return_value=None)
     executor = PlayExecutor(
@@ -598,7 +574,6 @@ async def test_placeholder_row_inserted_before_execute() -> None:
 
     async def do_execute(state, params, *, ctx):
         call_order.append("execute")
-        # play_id should already exist by the time execute is called
         assert ctx.play_id == 99
         return _make_outcome()
 
@@ -612,28 +587,17 @@ async def test_placeholder_row_inserted_before_execute() -> None:
     assert call_order.index("record_play") < call_order.index("execute")
 
 
-# ---------------------------------------------------------------------------
-# 2. Unregistered play returns failure outcome
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_unregistered_play_returns_failure() -> None:
     store = _make_store()
-    executor = _make_executor(store=store)  # registry raises KeyError
+    executor = _make_executor(store=store)
     outcome = await executor.execute(PlayType.ISSUE_PICKUP, _make_state())
     assert outcome.success is False
     assert "no play registered" in (outcome.error or "")
-    # Issue #565 (Bug B): registry-miss skip now persists a plays-table row.
     store.record_play.assert_awaited_once()
     recorded = store.record_play.await_args.args[0]
     assert recorded.success is False
     assert recorded.failure_category == "skip:code_error"
-
-
-# ---------------------------------------------------------------------------
-# 3. Precondition failure at executor time returns a skipped (masked) outcome
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -671,10 +635,6 @@ async def test_unresolved_target_persists_skip_no_target_row() -> None:
 
 @pytest.mark.asyncio
 async def test_bypass_preconditions_skips_precondition_gate() -> None:
-    # Bootstrap fleet seeding sets bypass_preconditions=True so that the
-    # cooldown gate added in InstantiateAgentPlay doesn't block back-to-back
-    # boot-time instantiates. The executor must honor the same flag the
-    # override-queue mask check honors.
     play = _make_play(preconditions_result=["instantiate cooldown (0/5 plays since last)"])
     executor = _make_executor(
         play=play,
@@ -725,11 +685,6 @@ async def test_successful_write_plan_keeps_session_planned_issue_marker() -> Non
     assert 234 in executor.planned_issues
 
 
-# ---------------------------------------------------------------------------
-# 4. Anti-confirmation rejects same agent (DB check)
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_anti_confirmation_db_check_rejects_same_identity_reviewer() -> None:
     """The candidate's GH identity must differ from the PR author's GH login."""
@@ -739,7 +694,6 @@ async def test_anti_confirmation_db_check_rejects_same_identity_reviewer() -> No
     store = _make_store()
     store.get_pr_github_author = AsyncMock(return_value="user_a")
 
-    # Same identity as the PR author — must be rejected, regardless of agent_id.
     manager = _make_manager(agent_id=agent_id, github_identity="user_a")
     play = _make_play(play_type=PlayType.CODE_REVIEW, skill_name="agentshore-code-review")
     params = PlayParams(pr_number=pr_number)
@@ -753,7 +707,6 @@ async def test_anti_confirmation_db_check_rejects_same_identity_reviewer() -> No
     assert outcome.skipped is True
     assert outcome.skip_category == "staffing"
     assert "anti_confirmation" in (outcome.error or "").lower()
-    # Issue #565 (Bug B): pre-record skips now persist a row tagged skip:staffing.
     store.record_play.assert_awaited_once()
     assert store.record_play.await_args.args[0].failure_category == "skip:staffing"
     play.execute.assert_not_called()
@@ -771,7 +724,6 @@ async def test_anti_confirmation_rejects_same_identity_different_type() -> None:
     store = _make_store()
     store.get_pr_github_author = AsyncMock(return_value="user_a")
 
-    # Different type from the PR author's tracked agent type, but same identity.
     manager = _make_manager(
         agent_id="codex-1",
         agent_type=AgentType.CODEX,
@@ -789,7 +741,6 @@ async def test_anti_confirmation_rejects_same_identity_different_type() -> None:
     assert outcome.skipped is True
     assert outcome.skip_category == "staffing"
     assert "anti_confirmation" in (outcome.error or "").lower()
-    # Issue #565 (Bug B): pre-record skips now persist a row tagged skip:staffing.
     store.record_play.assert_awaited_once()
     assert store.record_play.await_args.args[0].failure_category == "skip:staffing"
     play.execute.assert_not_called()
@@ -819,11 +770,6 @@ async def test_anti_confirmation_allows_cross_identity_reviewer() -> None:
     assert outcome.success is True
 
 
-# ---------------------------------------------------------------------------
-# 5. Circuit breaker OPEN (PreconditionFailed from play.execute) → agent_error
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_circuit_breaker_open_handled() -> None:
     play = _make_play(raise_on_execute=PreconditionFailed("Circuit breaker OPEN"))
@@ -837,11 +783,6 @@ async def test_circuit_breaker_open_handled() -> None:
 
     assert outcome.success is False
     assert "Circuit breaker" in (outcome.error or "")
-
-
-# ---------------------------------------------------------------------------
-# 6. Malformed / failed result propagates correctly
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -858,11 +799,6 @@ async def test_malformed_result_returns_failure_outcome() -> None:
 
     assert outcome.success is False
     assert "no valid result block" in (outcome.error or "")
-
-
-# ---------------------------------------------------------------------------
-# 7. SWITCH play writes handoff with real play_id
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -890,7 +826,7 @@ async def test_end_agent_play_writes_handoff_with_real_play_id() -> None:
     )
     play = _make_play(
         play_type=PlayType.END_AGENT,
-        skill_name=None,  # internal play
+        skill_name=None,
         outcome=end_outcome,
     )
     params = PlayParams(agent_id=agent_id)
@@ -903,11 +839,6 @@ async def test_end_agent_play_writes_handoff_with_real_play_id() -> None:
     call_args = store.record_handoff.call_args[0][0]
     assert call_args.play_id == 77
     assert call_args.source_agent_id == agent_id
-
-
-# ---------------------------------------------------------------------------
-# 8. PR artifact triggers both cache write AND DB write
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -933,18 +864,11 @@ async def test_pr_artifact_double_writes_cache_and_db() -> None:
         executor = _make_executor(play=play, store=store, manager=manager, github=github)
         await executor.execute(PlayType.ISSUE_PICKUP, _make_state())
 
-    # Cache write
     manager.record_branch_exposure.assert_called_once_with("feature/foo", agent_id)
-    # DB write — the confirmed record from GitHub, with local authorship stamped.
     store.record_pull_request.assert_called_once()
     pr_record = store.record_pull_request.call_args[0][0]
     assert pr_record.pr_number == 55
     assert pr_record.author_agent_id == agent_id
-
-
-# ---------------------------------------------------------------------------
-# 8b. Wire-A: non-authoring plays must not stamp PR authorship
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -975,15 +899,8 @@ async def test_pr_artifact_from_non_authoring_play_skips_authorship(
     store.record_pull_request.assert_not_called()
 
 
-# ---------------------------------------------------------------------------
-# 9. Strict-mode scope drift path is intentionally absent without boundaries
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_strict_scope_drift_no_clusters_no_drift() -> None:
-    # The executor calls validate_scope without cluster/path-boundary parameters.
-    # Since artifact drift is not inferred, the play succeeds from scope's perspective.
     drifted_outcome = _make_outcome(
         artifacts=[{"type": "commit", "path": "backend/api.py"}],
     )
@@ -999,14 +916,8 @@ async def test_strict_scope_drift_no_clusters_no_drift() -> None:
         executor = _make_executor(play=play, store=store, manager=manager, cfg=cfg)
         outcome = await executor.execute(PlayType.ISSUE_PICKUP, state)
 
-    # No path boundaries → no drift → success unchanged
     assert outcome.success is True
     store.log_scope_drift.assert_not_called()
-
-
-# ---------------------------------------------------------------------------
-# 10. Unresolved params returns failure without calling play.execute
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -1032,19 +943,12 @@ async def test_unresolved_params_returns_skipped_no_target() -> None:
     assert outcome.skipped is True
     assert outcome.skip_category == "no_target"
     assert "unresolved" in (outcome.error or "")
-    # Issue #565 (Bug B): pre-record skips now persist a plays-table row
-    # so the UI's run history reflects what the active-play panel showed.
     store.record_play.assert_awaited_once()
     recorded = store.record_play.await_args.args[0]
     assert recorded.success is False
     assert recorded.failure_category == "skip:no_target"
     mock_select.assert_not_called()
     play.execute.assert_not_called()
-
-
-# ---------------------------------------------------------------------------
-# 3A. play_id stamped on returned outcome
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -1087,15 +991,8 @@ async def test_agent_current_play_marked_and_cleared() -> None:
     handle.clear_play.assert_called_once_with(77)
 
 
-# ---------------------------------------------------------------------------
-# 3A. alignment_delta is None when state.graph is absent (Track 5: beads-native)
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_alignment_delta_none_when_no_graph() -> None:
-    # With no beads graph (state.graph is None), the live delta is None regardless
-    # of play type. None is distinct from 0.0 — it tells reward.py "no beads yet".
     play = _make_play()
     store = _make_store()
 
@@ -1106,13 +1003,7 @@ async def test_alignment_delta_none_when_no_graph() -> None:
         executor = _make_executor(play=play, store=store)
         outcome = await executor.execute(PlayType.CODE_REVIEW, _make_state())
 
-    # No graph → None (not 0.0)
     assert outcome.alignment_delta is None
-
-
-# ---------------------------------------------------------------------------
-# 3A. alignment_delta is 0.0 when a graph is present but completion is unchanged
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -1131,16 +1022,13 @@ async def test_alignment_delta_zero_first_tick_with_graph() -> None:
         handle.agent_id = "agent-1"
         mock_select.return_value = handle
         executor = _make_executor(play=play, store=store)
-        # No post-play closure movement means delta is 0.0
         state_with_graph = _make_state()
         state_with_graph = dataclasses.replace(state_with_graph, graph=graph)
         outcome = await executor.execute(PlayType.CALIBRATE_ALIGNMENT, state_with_graph)
 
-    # A graph was present, so unchanged completion is 0.0 rather than None.
     assert outcome.alignment_delta == pytest.approx(0.0)
     assert outcome.alignment_delta is not None
-    # play_id also stamped
-    assert outcome.play_id == 42  # _make_store() default
+    assert outcome.play_id == 42
 
 
 @pytest.mark.asyncio
@@ -1177,11 +1065,6 @@ async def test_alignment_delta_persisted_from_post_play_graph() -> None:
     assert completed.alignment_delta == pytest.approx(0.25)
 
 
-# ---------------------------------------------------------------------------
-# 3A. IssueInflationDetected sets inflation_raised on outcome
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_inflation_raised_set_on_outcome() -> None:
     from agentshore.errors import IssueInflationDetected
@@ -1200,12 +1083,7 @@ async def test_inflation_raised_set_on_outcome() -> None:
             outcome = await executor.execute(PlayType.ISSUE_PICKUP, _make_state())
 
     assert outcome.inflation_raised is True
-    assert outcome.success is True  # inflation doesn't flip success
-
-
-# ---------------------------------------------------------------------------
-# 3B. The real SkillResult (with issues_created) reaches scope validation
-# ---------------------------------------------------------------------------
+    assert outcome.success is True
 
 
 async def _run_qa_outcome_with_issues(issue_count: int) -> PlayOutcome:
@@ -1230,20 +1108,15 @@ async def _run_qa_outcome_with_issues(issue_count: int) -> PlayOutcome:
 async def test_issues_created_reaches_scope_check() -> None:
     """Regression (#368): _check_scope used to rebuild a SkillResult without
     issues_created, so the inflation guard could never fire."""
-    outcome = await _run_qa_outcome_with_issues(11)  # RUN_QA allowance 5 × 2.0 = 10
+    outcome = await _run_qa_outcome_with_issues(11)
     assert outcome.inflation_raised is True
-    assert outcome.success is True  # advisory only — never flips success
+    assert outcome.success is True
 
 
 @pytest.mark.asyncio
 async def test_issues_within_allowance_no_inflation() -> None:
     outcome = await _run_qa_outcome_with_issues(10)
     assert outcome.inflation_raised is False
-
-
-# ---------------------------------------------------------------------------
-# Alignment delta uses graph.global_closure_ratio (v0.10.0)
-# ---------------------------------------------------------------------------
 
 
 def test_alignment_delta_uses_graph_not_cluster_list() -> None:
@@ -1253,11 +1126,6 @@ def test_alignment_delta_uses_graph_not_cluster_list() -> None:
     import agentshore.plays.executor as _executor_mod
 
     assert not hasattr(_executor_mod, "_ALIGNMENT_PLAYS")
-
-
-# ---------------------------------------------------------------------------
-# Issue #5 — on_agent_changed fires for normal busy/idle transitions
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -1347,7 +1215,7 @@ async def test_on_agent_changed_not_emitted_for_non_skill_plays() -> None:
     )
     play = _make_play(
         play_type=PlayType.TAKE_BREAK,
-        skill_name=None,  # no skill = no agent selection
+        skill_name=None,
         outcome=non_skill_outcome,
     )
     store = _make_store()
@@ -1365,13 +1233,7 @@ async def test_on_agent_changed_not_emitted_for_non_skill_plays() -> None:
     )
     await executor.execute(PlayType.TAKE_BREAK, _make_state())
 
-    # No BUSY/IDLE events since no agent was selected
     assert events == [], f"Expected no on_agent_changed events for non-skill play, got: {events}"
-
-
-# ---------------------------------------------------------------------------
-# Review queue — PR artifact enqueues review and applies author label
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -1450,20 +1312,12 @@ async def test_pr_artifact_no_label_when_no_author_type() -> None:
     store = _make_store()
     store.enqueue_review = AsyncMock(return_value=1)
     manager = _make_manager(agent_id=agent_id)
-    # get_handle is called by _anti_confirmation_check and _mark_agent_current_play
-    # before it is called inside _wire_deferrals to resolve author_agent_type.
-    # We need the first calls to succeed but the _wire_deferrals call to raise
-    # KeyError so author_agent_type ends up None.
     real_handle = manager.handles[agent_id]
     call_count = 0
 
     def _get_handle_side_effect(aid: str) -> object:
         nonlocal call_count
         call_count += 1
-        # First call: _mark_agent_current_play. Identity-based anti-confirmation
-        # only calls get_handle for CODE_REVIEW; this is ISSUE_PICKUP, so it
-        # short-circuits without a lookup. The _wire_deferrals call (count 2)
-        # must raise so author_agent_type ends up None.
         if call_count <= 1:
             return real_handle
         raise KeyError("terminated")
@@ -1471,8 +1325,6 @@ async def test_pr_artifact_no_label_when_no_author_type() -> None:
     manager.get_handle = MagicMock(side_effect=_get_handle_side_effect)
     github = AsyncMock()
     github.label_issue = AsyncMock(return_value=True)
-    # PR #77 IS confirmed on GitHub — so the no-label decision is driven purely
-    # by author_agent_type being None, not by an unconfirmed-PR short-circuit.
     github.fetch_pull_request_by_number = AsyncMock(
         return_value=_confirmed_pr_view(77, branch="feature/qux")
     )
@@ -1510,11 +1362,9 @@ async def test_pr_artifact_unconfirmed_when_no_github() -> None:
 
     with patch("agentshore.plays.executor.select_agent_for") as mock_select:
         mock_select.return_value = manager.handles[agent_id]
-        # No github= arg → defaults to None → cannot confirm the PR exists.
         executor = _make_executor(play=play, store=store, manager=manager)
         await executor.execute(PlayType.ISSUE_PICKUP, _make_state())
 
-    # Unconfirmed → nothing recorded, nothing enqueued.
     store.record_pull_request.assert_not_called()
     store.enqueue_review.assert_not_called()
 
@@ -1535,7 +1385,7 @@ async def test_pr_artifact_unconfirmed_when_github_404() -> None:
     manager = _make_manager(agent_id=agent_id)
     github = AsyncMock()
     github.label_issue = AsyncMock(return_value=True)
-    github.fetch_pull_request_by_number = AsyncMock(return_value=None)  # 404 — phantom
+    github.fetch_pull_request_by_number = AsyncMock(return_value=None)
 
     with patch("agentshore.plays.executor.select_agent_for") as mock_select:
         mock_select.return_value = manager.handles[agent_id]
@@ -1545,11 +1395,6 @@ async def test_pr_artifact_unconfirmed_when_github_404() -> None:
     store.record_pull_request.assert_not_called()
     store.enqueue_review.assert_not_called()
     github.label_issue.assert_not_called()
-
-
-# ---------------------------------------------------------------------------
-# Requested mutations — issue policy gates
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -1670,11 +1515,6 @@ async def test_request_play_mutation_is_ignored() -> None:
     github.label_issue.assert_not_awaited()
 
 
-# ---------------------------------------------------------------------------
-# Loop B fix — requeue on AntiConfirmationViolation
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_code_review_requeues_on_anti_confirmation_under_cap() -> None:
     """Executor requeues and returns a staffing skip when AntiConfirmationViolation fires."""
@@ -1739,7 +1579,6 @@ async def test_code_review_skips_after_three_requeues() -> None:
     assert outcome.skipped is True
     assert outcome.skip_category == "staffing"
     assert len(requeued) == 0
-    # Issue #565 (Bug B): pre-record skip persists a plays-table row.
     store.record_play.assert_awaited_once()
     assert store.record_play.await_args.args[0].failure_category == "skip:staffing"
     play.execute.assert_not_called()
@@ -1762,14 +1601,8 @@ async def test_code_review_skips_without_requeue_callback() -> None:
     assert outcome.success is True
     assert outcome.skipped is True
     assert outcome.skip_category == "staffing"
-    # Issue #565 (Bug B): pre-record skip persists a plays-table row.
     store.record_play.assert_awaited_once()
     assert store.record_play.await_args.args[0].failure_category == "skip:staffing"
-
-
-# ---------------------------------------------------------------------------
-# play_started structlog event
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -1795,19 +1628,11 @@ async def test_play_started_event_emitted() -> None:
     assert "play_id" in kwargs
 
 
-# ---------------------------------------------------------------------------
-# build_idempotency_key tests
-# ---------------------------------------------------------------------------
-
-
 def test_build_idempotency_key_contains_session_id() -> None:
     """The idempotency key must embed the session_id to prevent cross-session collisions."""
     session_id = "sess-abc123"
     mutation: dict[str, object] = {"type": "label_issue", "target": "42"}
     key = build_idempotency_key(session_id, mutation)
-    # Key is a 16-char hex string derived from a payload that includes the session_id.
-    # We verify the session_id influences the key by checking a different session
-    # produces a different key.
     other_key = build_idempotency_key("sess-xyz999", mutation)
     assert key != other_key, "keys for different session_ids must differ"
 
@@ -1834,11 +1659,6 @@ def test_build_idempotency_key_rejects_empty_session_id() -> None:
 
     with pytest.raises(ValueError, match="session_id"):
         build_idempotency_key("", {"type": "label_issue", "target": "1"})
-
-
-# ---------------------------------------------------------------------------
-# end_agent through the executor (#154 regression)
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -1901,11 +1721,6 @@ async def test_end_agent_play_clears_agent_through_executor(
         assert agent_id not in manager.handles, "agent handle must be removed"
     finally:
         await store.close()
-
-
-# ---------------------------------------------------------------------------
-# block_issue_on — persist a body-declared dependency the agent discovered
-# ---------------------------------------------------------------------------
 
 
 def _dep_graph(blocked_blocked_by: tuple[str, ...] = ()) -> object:
@@ -1978,13 +1793,37 @@ async def test_block_issue_on_adds_beads_edge() -> None:
 
 
 @pytest.mark.asyncio
+async def test_block_issue_on_targets_live_bead_not_closed_duplicate() -> None:
+    """#521: with a closed duplicate mirror of the blocker listed last, the edge
+    must land on the live bead; a last-wins lookup linked the closed one, which
+    never blocks, so the same dep-blocked issue was re-picked indefinitely."""
+    from agentshore.beads import BeadStatus, BlockingDependencyOutcome, GraphTask, ProjectGraph
+
+    graph = _dep_graph()
+    dup = GraphTask(bead_id="bead-12-dup", title="t12", status=BeadStatus.CLOSED, issue_number=12)
+    graph = ProjectGraph(tasks=[*graph.tasks, dup])  # type: ignore[attr-defined]
+    state = dataclasses.replace(_make_state(), graph=graph)
+    github = AsyncMock()
+    github.label_issue = AsyncMock(return_value=True)
+    github.fetch_pull_request_by_number = AsyncMock(return_value=None)
+
+    with patch(
+        "agentshore.plays.executor.add_blocking_dependency",
+        new=AsyncMock(return_value=BlockingDependencyOutcome.LINKED),
+    ) as mock_add:
+        await _run_block_issue_on(state, github)
+
+    mock_add.assert_awaited_once_with(Path("/tmp/project"), "bead-17", "bead-12")
+
+
+@pytest.mark.asyncio
 async def test_block_issue_on_falls_back_to_label_without_bead_mirror() -> None:
     """No beads graph → stamp ``agentshore/blocked`` AND post a blocked-by marker
     comment naming the blocker, so groom_backlog can later evidence-clear the
     otherwise-untraceable label (#241)."""
     from agentshore.beads import BlockingDependencyOutcome
 
-    state = _make_state()  # graph is None
+    state = _make_state()
     github = AsyncMock()
     github.label_issue = AsyncMock(return_value=True)
     github.comment_issue = AsyncMock(return_value=True)
@@ -1999,7 +1838,6 @@ async def test_block_issue_on_falls_back_to_label_without_bead_mirror() -> None:
     mock_add.assert_not_awaited()
     github.label_issue.assert_awaited_once()
     assert github.label_issue.await_args.args[0:2] == (17, ["agentshore/blocked"])
-    # The marker comment must name the blocker (#12) on the blocked issue (17).
     github.comment_issue.assert_awaited_once()
     assert github.comment_issue.await_args.args[0] == 17
     assert github.comment_issue.await_args.args[1] == "<!-- agentshore:blocked-by #12 -->"

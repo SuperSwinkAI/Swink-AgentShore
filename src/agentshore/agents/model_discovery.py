@@ -50,8 +50,6 @@ _logger = structlog.get_logger(__name__)
 
 DiscoveryStatus = Literal["ok", "unavailable", "timeout", "error"]
 
-# A CLI probe is a local, non-mutating metadata read; 15s is ample headroom
-# over any observed response and keeps a desktop "Refresh Models" click responsive.
 DEFAULT_DISCOVERY_TIMEOUT_S = 15.0
 
 
@@ -69,9 +67,7 @@ class DiscoveryResult:
     models: tuple[str, ...]
     status: DiscoveryStatus
     detail: str = ""
-    # The CLI's own default model when it marks one (grok), else None.
     default: str | None = None
-    # Per-model supported reasoning efforts when the CLI reports them (codex).
     efforts: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
 
 
@@ -252,10 +248,6 @@ def discover_antigravity_models(
     return DiscoveryResult("antigravity", models, "ok")
 
 
-# Always-selectable tier aliases: swink-coding's `--model` accepts these
-# regardless of what's reachable, and dispatch can now also target a concrete
-# `provider:model` string directly (SuperSwink-Coding#282/#283) — so they lead
-# the returned list, with reachable concrete models appended after.
 _SWINK_CODING_TIER_ALIASES: tuple[str, ...] = ("small", "medium", "large")
 
 
@@ -336,13 +328,8 @@ def discover_swink_coding_models(
     return DiscoveryResult("swink_coding", models, "ok", detail)
 
 
-# Copilot CLI (1.0.94) has no model-list verb. Its catalog comes from the
-# Copilot API's metadata endpoint — a read-only GET that consumes no premium
-# requests — authenticated with the same token precedence the CLI uses.
 _COPILOT_MODELS_URL = "https://api.githubcopilot.com/models"
 _COPILOT_TOKEN_ENV_VARS: tuple[str, ...] = ("COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN")
-# `--model auto` is always valid (the account picks the model), so it leads the
-# list and is the resolver's fallback when a preferred model is unavailable.
 _COPILOT_AUTO_MODEL = "auto"
 
 
@@ -452,8 +439,6 @@ def discover_copilot_models(
     return DiscoveryResult("copilot", models, "ok", default=_COPILOT_AUTO_MODEL, efforts=efforts)
 
 
-# Ordered so discover_all's dict preserves a stable, deterministic iteration
-# order regardless of dict-construction timing.
 _FREE_DISCOVERY_FUNCS: tuple[tuple[str, Callable[..., DiscoveryResult]], ...] = (
     ("codex", discover_codex_models),
     ("grok", discover_grok_models),

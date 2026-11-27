@@ -12,10 +12,6 @@ from agentshore.github.pr_links import issue_numbers_for_pr
 if TYPE_CHECKING:
     from agentshore.data.models import PullRequestRecord
 
-# Canonical ordered column list for ``pull_requests`` — single source of truth
-# for the upsert, every SELECT (_PR_SELECT), _pull_request_upsert_row, and
-# _row_to_pull_request, so reader/writer can't drift (what left base_ref
-# write-only). Add a column here only.
 _PULL_REQUEST_COLUMNS: tuple[str, ...] = (
     "pr_number",
     "session_id",
@@ -41,11 +37,8 @@ _PULL_REQUEST_COLUMNS: tuple[str, ...] = (
     "last_review_status",
 )
 
-# SELECT prefix shared by every PR read method — appended with WHERE/ORDER BY.
 _PR_SELECT = f"SELECT {', '.join(_PULL_REQUEST_COLUMNS)} FROM pull_requests"
 
-# Canonical ordered column list for ``github_issues`` — the _IssuesMixin upsert
-# and _row_to_github_issue derive from this, so reader/writer can't drift.
 _GITHUB_ISSUE_COLUMNS: tuple[str, ...] = (
     "issue_number",
     "session_id",
@@ -60,12 +53,8 @@ _GITHUB_ISSUE_COLUMNS: tuple[str, ...] = (
     "github_author",
 )
 
-# SELECT prefix shared by every issue read method — appended with WHERE/ORDER BY.
 _GITHUB_ISSUE_SELECT = f"SELECT {', '.join(_GITHUB_ISSUE_COLUMNS)} FROM github_issues"
 
-# Canonical ordered column list for the ``work_claims`` table. Every work-claim
-# read projects this set (via ``_WORK_CLAIM_SELECT``) and ``_row_to_work_claim``
-# maps it, so the SELECTs cannot drift apart.
 _WORK_CLAIM_COLUMNS: tuple[str, ...] = (
     "claim_id",
     "claim_group_id",
@@ -83,11 +72,8 @@ _WORK_CLAIM_COLUMNS: tuple[str, ...] = (
     "finished_at",
 )
 
-# SELECT prefix shared by every work-claim read method — appended with WHERE/…
 _WORK_CLAIM_SELECT = f"SELECT {', '.join(_WORK_CLAIM_COLUMNS)} FROM work_claims"
 
-# Canonical ordered column list for the ``rl_experience`` table. Both replay
-# SELECTs project this set; ``_row_to_experience`` maps it.
 _RL_EXPERIENCE_COLUMNS: tuple[str, ...] = (
     "experience_id",
     "session_id",
@@ -107,7 +93,6 @@ _RL_EXPERIENCE_COLUMNS: tuple[str, ...] = (
     "step_index",
 )
 
-# SELECT prefix shared by the experience replay reads — appended with WHERE/…
 _RL_EXPERIENCE_SELECT = f"SELECT {', '.join(_RL_EXPERIENCE_COLUMNS)} FROM rl_experience"
 
 _PULL_REQUEST_UPSERT_SQL = f"""

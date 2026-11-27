@@ -44,8 +44,6 @@ def _make_ctx(*, project_path: Path | None = None) -> Any:
     ctx.store.complete_reviews_for_pr = AsyncMock()
     ctx.store.update_issue_state = AsyncMock()
     ctx.cfg = MagicMock()
-    # Empty identities so the ff-sync fetch-overlay resolver returns None
-    # instead of choking on a MagicMock's .items() (#178).
     ctx.cfg.identities = {}
     ctx.manager = MagicMock()
     return ctx
@@ -99,8 +97,6 @@ def _make_state(
     state.open_issues = [_make_issue(n) for n in issue_numbers]
     state.agents = [_make_agent()]
     state.pull_requests = []
-    # Trust gating off — a truthy MagicMock default would spuriously exclude
-    # every author-less issue.
     state.restrict_issues_to_trusted_authors = False
     state.trusted_issue_authors = frozenset()
     return state
@@ -118,14 +114,6 @@ def _success_outcome(pr_number: int = 42) -> PlayOutcome:
         artifacts=[{"type": "merge", "pr": pr_number, "merge_method": "squash"}],
         alignment_delta=0.1,
     )
-
-
-# C5 / #5 — _BD_LOCK read/write semantics (_ReadersWriterLock)
-#
-# Reads (``query``/``list``/...) now run concurrently with each other —
-# verified empirically against a live bd 1.1.0 store (see bd110-findings.md
-# and the docstring on ``_ReadersWriterLock``); only a write is exclusive
-# against everything, matching the old single-lock guarantee for mutations.
 
 
 async def _bd_gather_with_slow_subprocess(*calls: object) -> list[str]:
@@ -183,9 +171,6 @@ async def test_bd_lock_serialises_concurrent_writes() -> None:
     )
 
 
-# C2 — merge_pr closes beads tasks
-
-
 @pytest.mark.asyncio
 async def test_merge_pr_closes_beads_tasks() -> None:
     """Successful merge → bd update --status closed called for each linked task."""
@@ -218,9 +203,6 @@ async def test_merge_pr_closes_beads_tasks() -> None:
         outcome = await play.execute(state, PlayParams(agent_id="agent-1", pr_number=42), ctx=ctx)
 
     assert outcome.success
-    # _merge_reconcile.py closes linked beads via ``bd close --reason``, not
-    # ``bd update --status closed`` (already shipped separately from this
-    # change; see reconcile_merged_pr_bead_closed).
     closed_bead_ids = {call[1] for call in bd_calls if call[0] == "close"}
     assert "bd-017" in closed_bead_ids, f"bd-017 not closed; bd_calls={bd_calls}"
     assert "bd-023" in closed_bead_ids, f"bd-023 not closed; bd_calls={bd_calls}"
@@ -291,11 +273,7 @@ async def test_merge_pr_bead_close_failure_does_not_abort() -> None:
     ):
         outcome = await play.execute(state, PlayParams(agent_id="agent-1", pr_number=5), ctx=ctx)
 
-    # The play must still succeed despite the bd error.
     assert outcome.success
-
-
-# C3 — issue_pickup leaves beads status to the dispatched skill
 
 
 @pytest.mark.asyncio
@@ -332,9 +310,6 @@ async def test_issue_pickup_does_not_mark_bead_in_progress_before_dispatch() -> 
         )
 
     assert outcome.success
-
-
-# C3 — duplicate pickup excluded by candidate selection
 
 
 def test_issue_pickup_excludes_duplicate_pickup_candidate() -> None:
@@ -408,12 +383,8 @@ async def test_issue_pickup_execute_no_longer_blocks_on_live_graph() -> None:
             ctx=ctx,
         )
 
-    # Thin wrapper over super().execute — no live-graph check or early-return.
     assert outcome.success, "execute() should not short-circuit on its own"
     assert super_execute_called, "Agent dispatch must proceed; revalidation lives at param-resolve"
-
-
-# H4 — _validated_issue_set rejects hallucinated issues
 
 
 def test_validated_issue_set_rejects_hallucinated() -> None:
@@ -502,9 +473,6 @@ def test_validated_issue_set_comma_separated_missed_in_skill() -> None:
     assert 11 in result, "Missed issue 11 from comma-separated list must be added"
 
 
-# M8 — precondition message clarity
-
-
 def test_issue_pickup_groom_backlog_message_mentions_policy() -> None:
     """The groom_backlog precondition message explicitly mentions policy non-promotion."""
     graph = ProjectGraph(
@@ -528,9 +496,6 @@ def test_issue_pickup_groom_backlog_message_mentions_policy() -> None:
     )
 
 
-# Duplicate-bead routing — pick_bead_for_issue helper
-
-
 def test_pick_bead_for_issue_single_open_bead() -> None:
     """A single OPEN bead is returned as-is."""
     from agentshore.beads import pick_bead_for_issue
@@ -546,10 +511,7 @@ def test_pick_bead_for_issue_prefers_open_over_closed_duplicate() -> None:
     closed = _make_graph_task(bead_id="dup-closed", issue_number=265, status=BeadStatus.CLOSED)
     live = _make_graph_task(bead_id="live-open", issue_number=265, status=BeadStatus.OPEN)
 
-    # CLOSED-first ordering reproduces the gh-265 production bug; the helper
-    # must still pick the OPEN bead.
     assert pick_bead_for_issue([closed, live], 265) is live
-    # Reverse ordering still picks OPEN — order-independent.
     assert pick_bead_for_issue([live, closed], 265) is live
 
 
@@ -570,12 +532,8 @@ def test_pick_bead_for_issue_falls_back_to_least_bad_status() -> None:
     in_progress = _make_graph_task(bead_id="bd-ip", issue_number=7, status=BeadStatus.IN_PROGRESS)
     blocked = _make_graph_task(bead_id="bd-b", issue_number=7, status=BeadStatus.BLOCKED)
 
-    # IN_PROGRESS beats BLOCKED beats CLOSED.
     assert pick_bead_for_issue([closed, blocked, in_progress], 7) is in_progress
     assert pick_bead_for_issue([closed, blocked], 7) is blocked
-
-
-# Duplicate-bead routing — issue_pickup.execute regression
 
 
 @pytest.mark.asyncio
@@ -593,7 +551,6 @@ async def test_issue_pickup_execute_clears_skip_streak_on_dispatch() -> None:
     ctx = _make_ctx()
     state = _make_state(graph=ProjectGraph(), issue_numbers=[265])
 
-    # Simulate two prior dispatch-mixin skips.
     play._record_skip(265, total_plays=10)
     play._record_skip(265, total_plays=10)
     assert play._skip.streak(265) == 2
@@ -619,11 +576,7 @@ async def test_issue_pickup_execute_clears_skip_streak_on_dispatch() -> None:
         )
 
     assert outcome.success
-    # Real dispatch clears the streak so stale skips don't outlive a success.
     assert play._skip.streak(265) == 0
-
-
-# Duplicate-bead routing — _project_open_issues state hydration
 
 
 def test_project_open_issues_prefers_open_bead_for_duplicate() -> None:
@@ -655,12 +608,8 @@ def test_project_open_issues_prefers_open_bead_for_duplicate() -> None:
 
     assert len(snapshots) == 1
     snap = snapshots[0]
-    # Open dup wins regardless of input ordering.
     assert snap.bead_id == "desktop-tfq.1.2"
     assert snap.bead_status == "open"
-
-
-# add_blocking_dependency — mirror a body-declared dep into a blocks edge
 
 
 @pytest.mark.asyncio
@@ -773,17 +722,6 @@ async def test_add_blocking_dependency_detects_cycle_conflict(tmp_path: Path) ->
     assert outcome is BlockingDependencyOutcome.CYCLE_CONFLICT
 
 
-# ---------------------------------------------------------------------------
-# #316 / schema-drift installer upgrade — reconcile_beads_schema
-# ---------------------------------------------------------------------------
-#
-# reconcile_beads_schema generalizes the original #316 stale-remote-clone
-# recovery into a full schema-drift preflight (see beads/setup.py). Every
-# state below except "ambiguous remote-backed drift bootstrap couldn't fix"
-# resolves silently, with no user interaction — that one state is the single
-# action that could unrecoverably fork a shared schema, so it's gated behind
-# explicit consent (env var or interactive prompt) rather than ever auto-run.
-
 _STALE_REMOTE_CLONE_ERROR = (
     "bd list --all --json --limit 0 failed (rc=1): Warning: refusing to auto-apply 21 pending "
     "schema migrations to a remote-backed database (v32 -> v53): migrating clones independently "
@@ -836,7 +774,7 @@ async def test_reconcile_beads_schema_recovers_via_bootstrap(tmp_path: Path) -> 
         return "[]"
 
     with patch("agentshore.beads.setup.bd", side_effect=_fake_bd):
-        await reconcile_beads_schema(tmp_path)  # must not raise, must not prompt
+        await reconcile_beads_schema(tmp_path)
 
     assert calls == [
         ("list", "--all", "--json", "--limit", "0"),
@@ -897,9 +835,6 @@ async def test_reconcile_beads_schema_bootstrap_unresolved_env_consent_migrates(
     from agentshore.beads import BdError
     from agentshore.beads.setup import reconcile_beads_schema
 
-    # In production .beads/ (and its config.yaml) already exist by the time
-    # reconcile_beads_schema runs (bd_init_project creates them first); the
-    # marker write needs a real .beads/ dir to land in, same as production.
     _write_beads_config(tmp_path, remote="git+ssh://git@github.com/example/repo.git")
     calls: list[tuple[str, ...]] = []
 
@@ -913,7 +848,7 @@ async def test_reconcile_beads_schema_bootstrap_unresolved_env_consent_migrates(
         patch("agentshore.beads.setup.bd", side_effect=_fake_bd),
         patch.dict("os.environ", {"AGENTSHORE_ALLOW_REMOTE_MIGRATE": "1"}),
     ):
-        await reconcile_beads_schema(tmp_path)  # must not raise
+        await reconcile_beads_schema(tmp_path)
 
     assert calls == [
         ("list", "--all", "--json", "--limit", "0"),
@@ -987,7 +922,7 @@ async def test_reconcile_beads_schema_designated_migrator_skips_consent_gate_sil
         patch.dict("os.environ", {}, clear=False),
     ):
         os.environ.pop("AGENTSHORE_ALLOW_REMOTE_MIGRATE", None)
-        await reconcile_beads_schema(tmp_path)  # must not raise, must not prompt
+        await reconcile_beads_schema(tmp_path)
 
     assert calls == [
         ("list", "--all", "--json", "--limit", "0"),
@@ -1039,8 +974,6 @@ def test_mark_designated_migrator_unwritable_path_is_best_effort(tmp_path: Path)
     """A marker write to a nonexistent parent dir is logged, not raised."""
     from agentshore.beads.setup import _mark_designated_migrator
 
-    # tmp_path / ".beads" is never created, so the write fails with ENOENT —
-    # this must be swallowed (logged), not propagated.
     _mark_designated_migrator(tmp_path)
 
 
@@ -1060,7 +993,7 @@ async def test_reconcile_beads_schema_local_only_migrates_silently(tmp_path: Pat
         return ""
 
     with patch("agentshore.beads.setup.bd", side_effect=_fake_bd):
-        await reconcile_beads_schema(tmp_path)  # must not raise, must not prompt
+        await reconcile_beads_schema(tmp_path)
 
     assert calls == [("list", "--all", "--json", "--limit", "0"), ("migrate",)]
 
@@ -1102,7 +1035,7 @@ async def test_reconcile_beads_schema_ignores_unrelated_bd_error(tmp_path: Path)
         raise BdError("bd list --all --json --limit 0 failed (rc=1): connection refused")
 
     with patch("agentshore.beads.setup.bd", side_effect=_fake_bd):
-        await reconcile_beads_schema(tmp_path)  # must not raise, must not bootstrap/migrate
+        await reconcile_beads_schema(tmp_path)
 
     assert calls == [("list", "--all", "--json", "--limit", "0")]
 
@@ -1157,3 +1090,49 @@ def test_pin_bd_in_hook_scripts_rewrites_bare_bd_invocations(tmp_path: Path) -> 
     assert 'command -v "/pinned/bin/bd" >/dev/null 2>&1' in patched
     assert '"/pinned/bin/bd" hooks run pre-commit "$@"' in patched
     assert not_a_bd_hook.read_text(encoding="utf-8") == "#!/usr/bin/env sh\necho unrelated\n"
+
+
+def _raw_task(bead_id: str, status: str, ref: str, deps: tuple[str, ...] = ()) -> dict[str, Any]:
+    return {
+        "id": bead_id,
+        "title": bead_id,
+        "status": status,
+        "issue_type": "task",
+        "external_ref": ref,
+        "dependencies": [{"issue_id": bead_id, "depends_on_id": d, "type": "blocks"} for d in deps],
+    }
+
+
+def test_closed_duplicate_dependency_still_blocks_while_mirror_open() -> None:
+    """#521: an edge to a CLOSED duplicate of a still-open issue keeps blocking."""
+    from agentshore.beads.graph import _build_project_graph
+
+    graph = _build_project_graph(
+        [
+            _raw_task("dup-462", "closed", "gh-462"),
+            _raw_task("live-462", "open", "gh-462"),
+            _raw_task("t-543", "open", "gh-543", deps=("dup-462",)),
+        ]
+    )
+    task = next(t for t in graph.tasks if t.bead_id == "t-543")
+    assert task.blocked_by_ids == frozenset({"dup-462"})
+    assert task.ready is False
+
+
+def test_closed_dependency_resolves_once_every_mirror_closed() -> None:
+    """#521: when no bead for the dep's issue is open, the closed dep is resolved,
+    and an edge to the task's own closed duplicate never self-blocks."""
+    from agentshore.beads.graph import _build_project_graph
+
+    graph = _build_project_graph(
+        [
+            _raw_task("dup-462", "closed", "gh-462"),
+            _raw_task("old-462", "closed", "gh-462"),
+            _raw_task("t-543", "open", "gh-543", deps=("dup-462",)),
+            _raw_task("dup-77", "closed", "gh-77"),
+            _raw_task("t-77", "open", "gh-77", deps=("dup-77",)),
+        ]
+    )
+    by_id = {t.bead_id: t for t in graph.tasks}
+    assert by_id["t-543"].ready is True
+    assert by_id["t-77"].ready is True

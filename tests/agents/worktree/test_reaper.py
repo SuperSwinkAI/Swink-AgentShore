@@ -87,9 +87,6 @@ async def _seed_worktree_row(
     return row.worktree_id, target
 
 
-# --- session-start sweep ------------------------------------------------------
-
-
 async def test_sweep_session_start_reaps_other_sessions(
     store: DataStore, main_repo: Path, worktree_root: Path
 ) -> None:
@@ -168,14 +165,11 @@ async def test_reap_exception_marks_row_failed_freeing_unique_index(
     report = ReapReport()
     await _reap_one(store, row=row, main_repo=main_repo, reason="test", report=report)
 
-    # Recorded as failed, and the row is in a terminal status (not 'reaping').
     assert len(report.failed) == 1
     persisted = await lookup_by_id(store, worktree_id=wt_id)
     assert persisted is not None
     assert persisted.status == "failed"
 
-    # Regression: the (session_id, branch_name) partial unique index is free
-    # again — the old stuck 'reaping' row used to make this re-insert collide.
     new_row = await insert_worktree(
         store,
         session_id="sess-other",
@@ -202,7 +196,6 @@ async def test_sweep_session_start_handles_missing_directory(
         pre_branch_key=None,
         dir_name="vanished-wt",
     )
-    # Caller bypassed git → simulate a crashed-mid-flight scenario.
     import shutil
 
     shutil.rmtree(orphan_path)
@@ -217,9 +210,6 @@ async def test_sweep_session_start_handles_missing_directory(
 async def test_sweep_session_start_with_no_orphans(store: DataStore, main_repo: Path) -> None:
     report = await sweep_session_start(store, current_session_id="sess-1", main_repo=main_repo)
     assert report.total == 0
-
-
-# --- closed-PR TTL reaper ---------------------------------------------------
 
 
 async def test_reap_closed_prs_removes_stale_rows_past_ttl(
@@ -306,9 +296,6 @@ async def test_reap_closed_prs_rejects_negative_ttl(store: DataStore, main_repo:
         await reap_for_closed_prs(store, session_id="sess-1", main_repo=main_repo, ttl_seconds=-1)
 
 
-# --- mixed scenarios --------------------------------------------------------
-
-
 async def test_sweep_handles_stale_rows_from_other_sessions(
     store: DataStore, main_repo: Path, worktree_root: Path
 ) -> None:
@@ -331,7 +318,6 @@ async def test_sweep_handles_stale_rows_from_other_sessions(
         dir_name="stale-other",
         status="active",
     )
-    # Move it to stale to simulate the other session having already noticed.
     await mark_status(store, worktree_id=sid, status="stale")
 
     report = await sweep_session_start(store, current_session_id="sess-1", main_repo=main_repo)
@@ -340,9 +326,6 @@ async def test_sweep_handles_stale_rows_from_other_sessions(
     row = await lookup_by_id(store, worktree_id=sid)
     assert row is not None
     assert row.status == "reaped"
-
-
-# --- WorktreeManager-driven reaper hooks (desktop-12g9) ---------------------
 
 
 async def test_manager_reap_session_start_removes_prior_session_orphans(
@@ -513,7 +496,6 @@ async def test_manager_reap_closed_prs_skips_in_flight_protected(
         worktree_root=worktree_root,
         cfg=RuntimeConfig(),
     )
-    # A live dispatch holds the worktree in-flight via the manager registry.
     wm.register_dispatch(
         WorktreeAllocation(
             worktree_id=protected_id,
@@ -526,7 +508,6 @@ async def test_manager_reap_closed_prs_skips_in_flight_protected(
     )
     report = await wm.reap_closed_prs(ttl_seconds=3600)
 
-    # Only the unprotected stale row is reaped.
     assert report.total == 1
     assert report.removed[0].worktree_id == reapable_id
 
@@ -570,16 +551,12 @@ async def test_manager_reap_closed_prs_empty_protected_reaps_all(
         worktree_root=worktree_root,
         cfg=RuntimeConfig(),
     )
-    report = await wm.reap_closed_prs(ttl_seconds=3600)  # nothing registered in-flight
+    report = await wm.reap_closed_prs(ttl_seconds=3600)
     assert report.total == 1
     assert report.removed[0].worktree_id == stale_id
     row = await lookup_by_id(store, worktree_id=stale_id)
     assert row is not None and row.status == "reaped"
     assert not stale_path.exists()
-
-
-# In-flight registry contract — single owner of reap protection
-# (register_dispatch / release_dispatch; #189, #203).
 
 
 def _alloc(worktree_id: int, path: Path) -> WorktreeAllocation:
@@ -630,14 +607,12 @@ async def test_registered_dispatch_survives_reap_until_released(
     wm = _make_manager(store, main_repo, worktree_root)
 
     wm.register_dispatch(_alloc(wt_id, wt_path))
-    # Both reapers (now zero-arg-protection) must hold the live worktree back.
     assert (await wm.reap_closed_prs(ttl_seconds=0)).total == 0
     assert (await wm.reap_for_disk_pressure(target_free_mb=10**9)).total == 0
     held = await lookup_by_id(store, worktree_id=wt_id)
     assert held is not None and held.status == "stale"
     assert wt_path.exists()
 
-    # Released → eligible again.
     wm.release_dispatch(_alloc(wt_id, wt_path))
     report = await wm.reap_closed_prs(ttl_seconds=0)
     assert report.total == 1 and report.removed[0].worktree_id == wt_id
@@ -659,7 +634,6 @@ def test_register_release_protected_set_contract(
     assert wm._protected_paths() == {_canon_path(path)}
     wm.release_dispatch(_alloc(42, path))
     assert wm._protected_ids() == set()
-    # Idempotent: releasing an unknown allocation never raises.
     wm.release_dispatch(_alloc(999, path))
     assert wm._protected_ids() == set()
 
@@ -682,26 +656,18 @@ def test_reclaimable_collision_predicate_refuses_protected_inflight_path(
     wm = _make_manager(store, main_repo, worktree_root)
     pickup = worktree_root / "pickup-238"
 
-    # The predicate is built per allocate from the current registry plus a
-    # DB-truth live-alias snapshot (#250). This test seeds no DB rows, so the
-    # snapshot is empty and protection comes solely from the in-flight registry.
     def _predicate() -> Callable[[Path], bool]:
         return wm._build_reclaimable_collision_predicate(set())
 
-    # Unregistered crashed-session pickup orphan → reclaimable (force-removable).
     assert _predicate()(pickup) is True
 
-    # Registered in-flight → protected; must NOT be force-removed (the #238 guard).
     wm.register_dispatch(_alloc(238, pickup))
     assert _predicate()(pickup) is False
-    # Canonicalisation: a non-normalised spelling of the same path stays protected.
     assert _predicate()(worktree_root / "." / "pickup-238") is False
 
-    # Released → reclaimable again once the dispatch finishes.
     wm.release_dispatch(_alloc(238, pickup))
     assert _predicate()(pickup) is True
 
-    # A non-``pickup-`` path is never reclaimable, registered or not.
     assert _predicate()(worktree_root / "pr-12") is False
 
 
@@ -749,9 +715,6 @@ async def test_finalize_after_dispatch_releases_inflight_mark(
     )
     await wm.finalize_after_dispatch(alloc, result=None, play_outcome=outcome)
     assert wm._protected_ids() == set()
-
-
-# --- reap_git_orphans + sweep two-phase reconciliation ---
 
 
 async def test_reap_git_orphans_is_noop_on_clean_state(store: DataStore, main_repo: Path) -> None:
@@ -832,7 +795,6 @@ async def test_sweep_session_start_returns_both_reap_sources(
     """One DB-tracked orphan + one git-only orphan → both surface in ReapReport."""
     from agentshore.agents.worktree.reaper import sweep_session_start
 
-    # DB-tracked orphan (different session, active).
     db_orphan_id, db_orphan_path = await _seed_worktree_row(
         store,
         main_repo,
@@ -843,7 +805,6 @@ async def test_sweep_session_start_returns_both_reap_sources(
         dir_name="db-tracked",
         status="active",
     )
-    # Git-only orphan (no DB row at all).
     git_orphan_path = worktree_root / "git-only-orphan"
     _git("worktree", "add", "-b", "git-only", str(git_orphan_path), "HEAD", cwd=main_repo)
 
@@ -854,9 +815,6 @@ async def test_sweep_session_start_returns_both_reap_sources(
     assert not db_orphan_path.exists()
     assert not git_orphan_path.exists()
     assert report.total == 2
-
-
-# --- ENOSPC-robust ordering (Fix 3) -------------------------------------------
 
 
 async def test_reap_one_frees_disk_even_when_db_write_fails(
@@ -896,11 +854,7 @@ async def test_reap_one_frees_disk_even_when_db_write_fails(
     report = ReapReport()
     await _reap_one(store, row=row, main_repo=main_repo, reason="disk_pressure", report=report)
 
-    # Bytes freed despite every DB write failing — the whole point of Fix 3.
     assert not path.exists()
-
-
-# --- disk-pressure governor (Fix 2) -------------------------------------------
 
 
 async def _seed_three(
@@ -955,7 +909,6 @@ async def test_reap_for_disk_pressure_reaps_lru_until_target(
     stale_path, old_path, new_path = await _seed_three(store, main_repo, worktree_root)
     seeded = [stale_path, old_path, new_path]
 
-    # Free disk rises by 60 MiB per worktree removed: 100 → 160 → 220.
     def fake_free(_p: Path) -> int:
         gone = sum(1 for p in seeded if not p.exists())
         return 100 + gone * 60
@@ -970,7 +923,6 @@ async def test_reap_for_disk_pressure_reaps_lru_until_target(
         target_free_mb=200,
     )
 
-    # Two reaps cross 200: stale (LRU) then oldest active; newest preserved.
     assert not stale_path.exists()
     assert not old_path.exists()
     assert new_path.exists()
@@ -1006,7 +958,6 @@ async def test_reap_for_disk_pressure_skips_in_flight(
         protected_ids={old_row.worktree_id},
     )
 
-    # Protected 'old' survives; reaper takes stale then 'new' to reach target.
     assert not stale_path.exists()
     assert old_path.exists()
     assert not new_path.exists()
@@ -1035,7 +986,6 @@ async def test_reap_for_disk_pressure_noop_when_above_target(
     assert report.total == 0
     assert all(p.exists() for p in (stale_path, old_path, new_path))
 
-    # target 0 disables the governor entirely even when disk is low.
     monkeypatch.setattr(reaper_mod, "free_disk_mb", lambda _p: 1)
     report2 = await reap_for_disk_pressure(
         store,

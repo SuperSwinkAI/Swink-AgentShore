@@ -49,8 +49,8 @@ export function EndSessionReportScreen({
   const logPath = esr?.log_path ? esr.log_path : null;
   const timelapsePath = esr?.timelapse_output_path ? esr.timelapse_output_path : null;
 
-  // Auto-open the rendered timelapse MP4 once, when the completed session
-  // produced one. Keyed on the path so it fires exactly once per video.
+
+
   useEffect(() => {
     if (timelapsePath === null) return;
     void openPathImpl(timelapsePath).catch(() => undefined);

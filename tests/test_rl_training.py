@@ -33,11 +33,6 @@ def _filled_buffer(n: int = 8, reward: float = 1.0) -> RolloutBuffer:
     return buf
 
 
-# ---------------------------------------------------------------------------
-# Basic update
-# ---------------------------------------------------------------------------
-
-
 def test_update_returns_stats():
     policy = ActorCritic()
     updater = PPOUpdater(policy, ppo_epochs=1, mini_batch_size=4)
@@ -68,11 +63,6 @@ def test_update_empty_buffer_returns_fast():
     assert not stats.rolled_back
 
 
-# ---------------------------------------------------------------------------
-# NaN rollback
-# ---------------------------------------------------------------------------
-
-
 def test_nan_reward_triggers_rollback():
     policy = ActorCritic()
     snapshot = {k: v.clone() for k, v in policy.state_dict().items()}
@@ -84,7 +74,7 @@ def test_nan_reward_triggers_rollback():
             Step(
                 state=np.zeros(OBSERVATION_DIM, dtype=np.float32),
                 action=0,
-                reward=float("nan"),  # NaN reward → NaN returns → NaN loss
+                reward=float("nan"),
                 next_state=np.zeros(OBSERVATION_DIM, dtype=np.float32),
                 done=False,
                 log_prob=-1.0,
@@ -97,14 +87,8 @@ def test_nan_reward_triggers_rollback():
     stats = updater.update(buf)
     assert stats.rolled_back
 
-    # Weights should be restored
     for k in snapshot:
         torch.testing.assert_close(policy.state_dict()[k], snapshot[k])
-
-
-# ---------------------------------------------------------------------------
-# Gradient clipping enforced
-# ---------------------------------------------------------------------------
 
 
 def test_grad_clip_does_not_explode():
@@ -115,11 +99,6 @@ def test_grad_clip_does_not_explode():
     updater.update(buf)
     for p in policy.parameters():
         assert p.data.isfinite().all()
-
-
-# ---------------------------------------------------------------------------
-# Config head loss path
-# ---------------------------------------------------------------------------
 
 
 def _config_step(*, num_configs: int, config_action: int) -> Step:
@@ -144,7 +123,6 @@ def test_update_runs_config_loss_when_steps_have_config_actions():
     policy = ActorCritic(num_configs=4)
     updater = PPOUpdater(policy, ppo_epochs=1, mini_batch_size=4)
     buf = RolloutBuffer()
-    # Mix of config-active and inactive steps
     for i in range(4):
         buf.add(_config_step(num_configs=4, config_action=i % 4))
     for _ in range(4):
@@ -156,7 +134,6 @@ def test_update_runs_config_loss_when_steps_have_config_actions():
     after = policy.config_head.bias.detach().clone()
 
     assert stats.n_config_updates >= 1
-    # The config-head bias should have moved (gradient flowed through it).
     assert not torch.equal(before, after)
 
 

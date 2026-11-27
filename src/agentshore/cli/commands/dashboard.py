@@ -102,9 +102,6 @@ def dashboard(
         )
         raise SystemExit(1)
 
-    # Supersede prior bridges so launches don't accumulate orphaned listeners;
-    # this bridge owns dashboard.pid (supervisor never pre-writes it). Windows
-    # uv-trampoline self-kill guard lives in supersede_prior_bridge.
     if supersede_prior_bridge(project_path):
         click.echo("Superseded a prior dashboard process for this project.")
     claim_bridge_pid(project_path)

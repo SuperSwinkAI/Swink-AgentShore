@@ -17,10 +17,6 @@ from agentshore.state import (
     loop_level_for_streak,
 )
 
-# ---------------------------------------------------------------------------
-# Minimal host apps
-# ---------------------------------------------------------------------------
-
 
 class _AlignmentApp(App[None]):
     def compose(self) -> ComposeResult:
@@ -55,11 +51,6 @@ class _WorkQueueApp(App[None]):
         from agentshore.ui.widgets.work_queue import WorkQueueSummary
 
         yield WorkQueueSummary()
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 
 def _make_graph(closure_ratio: float) -> ProjectGraph:
@@ -99,11 +90,6 @@ def _make_state(
         same_type_failure_streak=streak,
         loop_level=loop_level_for_streak(streak),
     )
-
-
-# ---------------------------------------------------------------------------
-# AlignmentBars tests
-# ---------------------------------------------------------------------------
 
 
 async def test_alignment_bars_no_graph() -> None:
@@ -175,17 +161,12 @@ async def test_alignment_bars_low_class() -> None:
         assert w.has_class("bar--low")
 
 
-# ---------------------------------------------------------------------------
-# BudgetWidget tests
-# ---------------------------------------------------------------------------
-
-
 async def test_budget_healthy_class() -> None:
     async with _BudgetApp().run_test() as pilot:
         from agentshore.ui.widgets.budget import BudgetWidget
 
         w = pilot.app.query_one(BudgetWidget)
-        w.update_budget(_make_budget(total=10.0, spent=2.0))  # 80% remaining
+        w.update_budget(_make_budget(total=10.0, spent=2.0))
         await pilot.pause()
         assert w.has_class("budget--healthy")
 
@@ -195,7 +176,7 @@ async def test_budget_warning_class() -> None:
         from agentshore.ui.widgets.budget import BudgetWidget
 
         w = pilot.app.query_one(BudgetWidget)
-        w.update_budget(_make_budget(total=10.0, spent=7.0))  # 30% remaining → warning
+        w.update_budget(_make_budget(total=10.0, spent=7.0))
         await pilot.pause()
         assert w.has_class("budget--warning")
 
@@ -205,7 +186,7 @@ async def test_budget_exhausted_class() -> None:
         from agentshore.ui.widgets.budget import BudgetWidget
 
         w = pilot.app.query_one(BudgetWidget)
-        w.update_budget(_make_budget(total=10.0, spent=10.0))  # 0% remaining
+        w.update_budget(_make_budget(total=10.0, spent=10.0))
         await pilot.pause()
         assert w.has_class("budget--exhausted")
 
@@ -215,7 +196,6 @@ async def test_budget_none_shows_na() -> None:
         from agentshore.ui.widgets.budget import BudgetWidget
 
         w = pilot.app.query_one(BudgetWidget)
-        # budget starts as None
         assert "N/A" in w.render()
 
 
@@ -236,11 +216,6 @@ async def test_budget_shows_trajectory_projection() -> None:
         rendered = w.render()
         assert "9 plays" in rendered
         assert "projected alignment 72%" in rendered
-
-
-# ---------------------------------------------------------------------------
-# RLStateBar tests
-# ---------------------------------------------------------------------------
 
 
 async def test_rl_state_bar_none_shows_dash() -> None:
@@ -346,11 +321,6 @@ async def test_rl_state_bar_loop_clears_on_reset() -> None:
         assert "Loop: Issue Pickup" not in w.render()
 
 
-# ---------------------------------------------------------------------------
-# AlertBar tests
-# ---------------------------------------------------------------------------
-
-
 async def test_alert_bar_hidden_by_default() -> None:
     async with _AlertApp().run_test() as pilot:
         from agentshore.ui.widgets.alert_bar import AlertBar
@@ -389,11 +359,6 @@ async def test_alert_bar_show_loop_renders_escalation() -> None:
         assert "LOOP DETECTED — Issue Pickup failed 7x — [Q]uit or wait for auto-stop" in w.render()
         assert w.display is True
         assert w.has_class("alert--loop")
-
-
-# ---------------------------------------------------------------------------
-# WorkQueueSummary tests
-# ---------------------------------------------------------------------------
 
 
 async def test_work_queue_summary_waiting_for_state() -> None:

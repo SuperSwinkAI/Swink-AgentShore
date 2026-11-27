@@ -16,8 +16,8 @@ import {
   strokeWorldSegment,
 } from "../primitives";
 
-// Only reused within this file (editor pair pod NE accent + repo cube),
-// so kept local rather than promoted to the shared palettes module.
+
+
 const PURPLE_ACCENT: Record<ResolvedTheme, string> = {
   dark: "#B266FF",
   light: "#7E4EBA",

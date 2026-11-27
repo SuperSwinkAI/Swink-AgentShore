@@ -81,21 +81,13 @@ def _state():
 
 VALID_JSON = '{"success": true, "artifacts": []}'
 NO_JSON = "I did the work but forgot to emit the JSON trailer."
-# A JSON near-miss (#229): balanced object, but no top-level boolean ``success``
-# (mirrors the live agy design_audit failure where prose bucket names displaced it).
 NEAR_MISS = '{"artifacts": [{"type": "design_audit"}], "gap_filled": ["Distribution"]}'
-# A clean-exit empty no-op: agy's empty task envelope already flattened to "".
 NOOP = ""
-# #313, session 16515f9b: the real agy issue_pickup tail after a 19-min (1158s) dispatch
-# that emitted 22KB of prose and no envelope — a textbook async handoff.
 ASYNC_HANDOFF_TAIL = (
     "I will run `cargo test` to execute the full test suite. I will check the status of "
     "the test suite. I will wait for cargo test to finish in the background. The system "
     "will notify me."
 )
-# #313 mode 1b: agy DID the work — committed, pushed the branch and opened real PR #200 —
-# then reported it in a shape of its own invention instead of the required envelope, so
-# the play scored FAILED and a merged-able PR was discarded.
 AD_HOC_ENVELOPE = (
     '{"result": "completed", "pr": "https://github.com/SuperSwinkAI/SuperSwink-Coding/pull/200"}'
 )
@@ -123,15 +115,10 @@ async def test_retry_recovers_on_missing_json() -> None:
     assert ctx.manager.dispatch.await_count == 2
     second_call = ctx.manager.dispatch.call_args_list[1]
     assert second_call.kwargs["resume_session_id"] == "sess-abc123"
-    # The resume retry sends the short finalize nudge, NOT the full original prompt —
-    # the agent already holds its prior context in-session. See #223 / _JSON_RETRY_PROMPT.
     from agentshore.plays.skill_backed.base import _JSON_RETRY_PROMPT
 
     assert second_call.args[1] == _JSON_RETRY_PROMPT
     assert outcome.dollar_cost == pytest.approx(0.02)
-    # #232: the resume retry must NOT inherit a fresh-dispatch first-byte deadline
-    # (1800s for agy) — it carries a short one-off override so a silent resume hang
-    # fast-fails instead of riding 30 min.
     from agentshore.plays.skill_backed.base import _JSON_RETRY_FIRST_BYTE_S
 
     assert second_call.kwargs["first_byte_timeout_override"] == _JSON_RETRY_FIRST_BYTE_S
@@ -210,13 +197,8 @@ async def test_no_retry_when_session_id_unavailable() -> None:
 
     assert outcome.success is False
     assert ctx.manager.dispatch.await_count == 1
-    # #313: the retry cannot run without a resumable session, but the failure must
-    # still say *why* rather than falling through to a bare parse error.
     assert "json retry skipped" in (outcome.error or "")
     assert "no resumable session id" in (outcome.error or "")
-
-
-# --- #313 GAP 2: retry impossible (no session id) must still classify ----------
 
 
 @pytest.mark.asyncio
@@ -242,10 +224,8 @@ async def test_async_handoff_without_session_id_is_still_classified() -> None:
         outcome = await play.execute(state, params, ctx=ctx)
 
     assert outcome.success is False
-    # No resume was fabricated — exactly one dispatch.
     assert ctx.manager.dispatch.await_count == 1
     error = outcome.error or ""
-    # The original parse error is preserved, and the diagnosis names the real defect.
     assert "no valid result block" in error
     assert "async/background task" in error
     assert "#236" in error
@@ -275,7 +255,6 @@ async def test_missing_envelope_without_session_id_is_classified_as_envelope_def
     error = outcome.error or ""
     assert "without the required result envelope" in error
     assert "json retry skipped" in error
-    # It is NOT an async handoff — the classifier must not mislabel it.
     assert "async/background task" not in error
 
 
@@ -300,9 +279,6 @@ async def test_no_classification_when_agent_produced_no_output() -> None:
     assert "json retry skipped" not in (outcome.error or "")
 
 
-# --- #313 GAP 1b: the missing-envelope nudge must restate the FULL envelope -----
-
-
 def test_missing_envelope_prompt_names_the_required_envelope_keys() -> None:
     """The old wording ('re-emit the same JSON, add success, do not invent other keys')
     was calibrated for a one-field near-miss. Against agy's real mode — completed work
@@ -312,17 +288,13 @@ def test_missing_envelope_prompt_names_the_required_envelope_keys() -> None:
 
     prompt = _JSON_RETRY_MISSING_SUCCESS_PROMPT
 
-    # Names the envelope and its required top-level keys.
     assert "success" in prompt
     assert "artifacts" in prompt
     assert "boolean" in prompt
     assert "TOP level" in prompt or "top-level" in prompt
-    # States the consequence, so a bare payload/array is not "close enough".
     assert "REJECTED" in prompt
     assert "bare array" in prompt
-    # Still forbids redoing the work — the whole point is the work is already done.
     assert "Do not redo" in prompt
-    # The counterproductive "do not invent other keys" instruction is gone.
     assert "Do not invent other keys" not in prompt
 
 
@@ -341,7 +313,6 @@ def test_missing_envelope_prompt_names_play_specific_artifact_types() -> None:
     assert '"design_audit"' in prompt
     assert "exactly" in prompt
 
-    # A play with no artifact contract gets the generic envelope nudge unchanged.
     assert _missing_envelope_retry_prompt(()) == _JSON_RETRY_MISSING_SUCCESS_PROMPT
 
 
@@ -367,9 +338,6 @@ async def test_design_audit_retry_nudge_names_its_artifact_type() -> None:
 
     assert ctx.manager.dispatch.await_count == 2
     assert '"design_audit"' in ctx.manager.dispatch.call_args_list[1].args[1]
-
-
-# --- #236 async-handoff retry branch (previously untested at play level) --------
 
 
 @pytest.mark.asyncio
@@ -404,7 +372,6 @@ async def test_async_handoff_retry_uses_sync_prompt_and_full_first_byte_deadline
     second_call = ctx.manager.dispatch.call_args_list[1]
     assert second_call.args[1] == _JSON_RETRY_ASYNC_HANDOFF_PROMPT
     assert second_call.args[1] not in (_JSON_RETRY_PROMPT, _JSON_RETRY_MISSING_SUCCESS_PROMPT)
-    # #236: None == inherit the full deadline; the work still has to be *done*.
     assert second_call.kwargs["first_byte_timeout_override"] is None
 
 
@@ -497,9 +464,6 @@ async def test_retry_recovers_for_non_claude_agents(
     assert ctx.manager.dispatch.call_args_list[1].kwargs["resume_session_id"] == session_id
 
 
-# No-op retry (clean-exit empty output) — desktop no-op resilience
-
-
 @pytest.mark.asyncio
 async def test_noop_retry_recovers_on_second_attempt() -> None:
     """A clean-exit empty no-op re-dispatches FRESH and recovers on output."""
@@ -520,10 +484,7 @@ async def test_noop_retry_recovers_on_second_attempt() -> None:
 
     assert outcome.success is True
     assert ctx.manager.dispatch.await_count == 2
-    # The no-op retry is FRESH — it must NOT pass resume_session_id (an empty agy
-    # session resumes empty; only a fresh turn can recover).
     assert "resume_session_id" not in ctx.manager.dispatch.call_args_list[1].kwargs
-    # Recovered before the streak limit → no take_break trigger.
     ctx.manager.mark_agent_error.assert_not_awaited()
 
 
@@ -550,9 +511,7 @@ async def test_noop_retry_fails_after_three_and_triggers_break() -> None:
     assert outcome.failure_kind == FailureKind.AGENT_ERROR
     assert outcome.retry_requested is True
     assert "no output" in (outcome.error or "")
-    # 1 initial + 2 fresh re-dispatches == the 3-in-a-row streak limit.
     assert ctx.manager.dispatch.await_count == 3
-    # The agent is routed into the standard take_break via a recoverable NO_OP.
     ctx.manager.mark_agent_error.assert_awaited_once()
     assert ctx.manager.mark_agent_error.await_args.args[1] == ErrorClass.NO_OP
 
@@ -585,14 +544,11 @@ async def test_noop_retry_stops_early_when_time_budget_is_spent() -> None:
 
     from agentshore.errors import ErrorClass, FailureKind
 
-    # The single expensive attempt spends the budget: no re-dispatch at all,
-    # versus 3 dispatches (~2h in #386) under the pure count-based bound.
     assert ctx.manager.dispatch.await_count == 1
     assert outcome.success is False
     assert outcome.failure_kind == FailureKind.AGENT_ERROR
     assert outcome.retry_requested is True
     assert "retry time budget" in (outcome.error or "")
-    # Still routed into the standard take_break, same as a count-exhausted streak.
     ctx.manager.mark_agent_error.assert_awaited_once()
     assert ctx.manager.mark_agent_error.await_args.args[1] == ErrorClass.NO_OP
 
@@ -608,7 +564,6 @@ async def test_noop_retry_uses_full_streak_when_attempts_are_cheap() -> None:
     state = _state()
     params = PlayParams(issue_number=42, agent_id="claude-1")
 
-    # Three cheap no-ops together stay well inside the budget.
     cheap = _invocation(
         raw_output=NOOP,
         session_id=None,
@@ -644,6 +599,5 @@ async def test_noop_does_not_resume_even_with_session_id() -> None:
     ):
         await play.execute(state, params, ctx=ctx)
 
-    # Even though a session id is present, the no-op path re-dispatches fresh.
     for call in ctx.manager.dispatch.call_args_list[1:]:
         assert call.kwargs.get("resume_session_id") is None

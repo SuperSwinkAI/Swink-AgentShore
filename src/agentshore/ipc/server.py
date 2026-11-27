@@ -67,9 +67,6 @@ class IpcServer:
         self._command_queue: asyncio.Queue[dict[str, object]] = asyncio.Queue()
         self._client_count = 0
         self._cached_state: str | None = None
-        # Per-command reply futures keyed by ``_reply_id``.  ``add_budget``
-        # embeds a reply-id in the command dict; the dispatcher resolves or
-        # rejects the future so the client connection can write the result.
         self._reply_futures: dict[str, asyncio.Future[dict[str, object]]] = {}
 
     def set_cached_state(self, message: str) -> None:
@@ -98,10 +95,6 @@ class IpcServer:
             fut.set_exception(result)
         else:
             fut.set_result(result)
-
-    # ------------------------------------------------------------------
-    # Lifecycle
-    # ------------------------------------------------------------------
 
     async def start(self) -> None:
         """Start listening on the configured IPC endpoint.
@@ -185,10 +178,6 @@ class IpcServer:
 
         await _logger.ainfo("ipc.server_stopped", endpoint=self._endpoint.label)
 
-    # ------------------------------------------------------------------
-    # Properties
-    # ------------------------------------------------------------------
-
     @property
     def command_queue(self) -> asyncio.Queue[dict[str, object]]:
         """The shared inbound command queue for the orchestrator."""
@@ -203,10 +192,6 @@ class IpcServer:
     def client_count(self) -> int:
         """Number of clients currently connected (for diagnostics/tests)."""
         return self._client_count
-
-    # ------------------------------------------------------------------
-    # Internal handlers
-    # ------------------------------------------------------------------
 
     async def _handle_client(
         self,
@@ -242,8 +227,6 @@ class IpcServer:
                     continue
 
                 if cmd.get("command") == "get_state":
-                    # Capture into a local before any await so a concurrent
-                    # set_cached_state from the provider cannot tear the read.
                     cached = self._cached_state
                     if cached is None:
                         if not await _write_line(
@@ -259,10 +242,6 @@ class IpcServer:
                     continue
 
                 if cmd.get("command") == "add_budget":
-                    # ``add_budget`` is synchronous from the client's perspective:
-                    # the orchestrator processes it, then the reply is written back
-                    # on this connection.  Embed a reply-id so the dispatcher can
-                    # route the result back here via post_reply().
                     reply_id = str(_uuid.uuid4())
                     cmd["_reply_id"] = reply_id
                     loop = asyncio.get_running_loop()

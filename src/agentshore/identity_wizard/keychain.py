@@ -24,7 +24,6 @@ def _keychain_backend_label() -> str | None:
     backend_name = keyring_child.keyring_backend_name()
     if not backend_name or backend_name.startswith("unavailable"):
         return None
-    # "FailKeyring" is the keyring sentinel that means "no working backend".
     if "fail" in backend_name.casefold():
         return None
     if sys.platform == "darwin":

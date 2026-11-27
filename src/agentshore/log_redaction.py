@@ -1,16 +1,5 @@
 """Secret redaction for the structlog -> NDJSON pipeline.
 
-Why this exists
----------------
-``structlog.processors.dict_tracebacks`` (wired in :mod:`agentshore.logging`)
-serialises *frame locals* into the rendered ``exception`` field.  Several hot
-frames in the agent-launch path hold the resolved per-agent identity env dict
-(``GH_TOKEN`` / ``GITHUB_TOKEN``) and the bare ``token`` string, so any
-unhandled exception raised beneath ``AgentManager.spawn`` wrote a live
-``gho_…`` credential into the session NDJSON in cleartext.  That directly
-contradicts the documented invariant (``CLAUDE.md``, ``docs/identity.md``) that
-identity tokens never appear in log events.
-
 The processor here runs immediately before ``JSONRenderer`` and scrubs the
 event dict in place-ish (copy-on-write) using two independent signals:
 
@@ -27,8 +16,7 @@ event dict in place-ish (copy-on-write) using two independent signals:
 Cost control: the walk is depth-capped (:data:`_MAX_DEPTH`) and only descends
 into ``dict`` / ``list`` / ``tuple``.  Non-string scalars are returned
 untouched without any regex work, and strings that contain no ``_``/``-`` fast
-path out before the regex runs.
-"""
+path out before the regex runs."""
 
 from __future__ import annotations
 
@@ -40,14 +28,10 @@ if TYPE_CHECKING:
 
 REDACTED = "***REDACTED***"
 
-#: Maximum nesting depth walked.  ``dict_tracebacks`` output is
-#: event -> exception(list) -> frames(list) -> locals(dict) -> value, i.e. 5.
-#: A little headroom keeps nested user payloads covered without unbounded work.
 _MAX_DEPTH = 8
 
-#: Case-insensitive substrings that mark a *key* as secret-bearing.
 _SECRET_KEY_SUBSTRINGS: tuple[str, ...] = (
-    "token",  # GH_TOKEN, GITHUB_TOKEN, access_token, token_source-adjacent
+    "token",
     "secret",
     "password",
     "passwd",
@@ -63,24 +47,20 @@ _SECRET_KEY_SUBSTRINGS: tuple[str, ...] = (
     "client_secret",
 )
 
-#: Key substrings that look secret-shaped but are metadata, never a value.
-#: Keeping these readable preserves the identity diagnostics in the logs.
 _SECRET_KEY_ALLOWLIST: frozenset[str] = frozenset(
     {
         "token_source",
         "token_resolved",
         "token_valid",
-        "gh_token_env",  # holds an env-var NAME, not a value
-        "gh_token_keychain",  # holds a keychain SERVICE name
-        "gh_token_login",  # holds a GitHub LOGIN, not a value
+        "gh_token_env",
+        "gh_token_keychain",
+        "gh_token_login",
         "has_token",
         "token_present",
         "token_length",
     }
 )
 
-#: Known credential value prefixes.  Ordered longest-first inside the regex so
-#: ``github_pat_`` wins over a hypothetical ``gh`` prefix.
 _CREDENTIAL_VALUE_RE = re.compile(
     r"(?:"
     r"github_pat_[A-Za-z0-9_]{16,}"
@@ -107,9 +87,6 @@ def _is_secret_key(key: str) -> bool:
 
 def _scrub_text(value: str) -> str:
     """Replace any credential-shaped substring inside *value*."""
-    # Fast path: every supported prefix contains ``_``, ``-`` or ``.``; a string
-    # with none of them cannot match, and this skips the regex for the vast
-    # majority of log payloads.
     if "_" not in value and "-" not in value and "." not in value and " " not in value:
         return value
     return _CREDENTIAL_VALUE_RE.sub(REDACTED, value)

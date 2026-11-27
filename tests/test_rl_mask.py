@@ -123,8 +123,6 @@ def test_all_preconditions_met_applies_global_masks():
         PlayType.REFINE_TASK_BREAKDOWN,
         PlayType.TAKE_BREAK,
         PlayType.GROOM_BACKLOG,
-        # Empty fleet + no remaining work + not terminal → don't spawn an agent
-        # with nothing to do (would otherwise spin the loop). See Item 7.
         PlayType.INSTANTIATE_AGENT,
     }
     assert mask.sum() == NUM_ACTIONS - len(expected_masked)
@@ -302,7 +300,7 @@ def test_end_session_no_longer_requires_recent_qa():
     """
     graph = MagicMock()
     graph.has_epics = True
-    graph.global_closure_ratio = 0.5  # below the old 1.0 gate — must not matter now
+    graph.global_closure_ratio = 0.5
     mask = compute_action_mask(_state(graph=graph), _registry_all_true())
 
     assert mask[PLAY_TO_INDEX[PlayType.END_SESSION]]
@@ -601,7 +599,6 @@ def test_real_mask_blocks_seed_project_when_existing_graph_already_audited():
     graph = MagicMock()
     graph.has_epics = True
     graph.global_closure_ratio = 0.0
-    # 10 open issues meets the default ceiling — seed_project must be masked.
     issues = [_issue_snapshot(n) for n in range(10)]
     state = _state(
         graph=graph,
@@ -647,13 +644,7 @@ def test_real_mask_blocks_calibrate_alignment_when_no_graph():
     state = _state()
     mask = compute_action_mask(state, build_default_registry())
 
-    # state.graph is None → precondition fails → masked off
     assert not mask[PLAY_TO_INDEX[PlayType.CALIBRATE_ALIGNMENT]]
-
-
-# ---------------------------------------------------------------------------
-# compute_config_mask
-# ---------------------------------------------------------------------------
 
 
 def _make_cfg(
@@ -801,9 +792,6 @@ def test_reverse_failsafe_unmasks_work_when_enabled_with_open_issue_and_idle_age
     mask = compute_action_mask(state, _registry_all_false(), apply_reverse_failsafe=True)
 
     assert mask.any()
-    # With an idle agent already present the failsafe lifts WORK plays but no
-    # longer grows the fleet — INSTANTIATE_AGENT stays masked (#163); spawning
-    # more idle agents cannot unblock work, the bottleneck is masked dispatch.
     assert not mask[PLAY_TO_INDEX[PlayType.INSTANTIATE_AGENT]]
     assert mask[PLAY_TO_INDEX[PlayType.ISSUE_PICKUP]]
     assert mask[PLAY_TO_INDEX[PlayType.WRITE_IMPLEMENTATION_PLAN]]
@@ -842,14 +830,7 @@ def test_reverse_failsafe_masks_write_plan_when_all_open_issues_are_planned():
     mask = compute_reverse_failsafe_mask(state)
 
     assert not mask[PLAY_TO_INDEX[PlayType.WRITE_IMPLEMENTATION_PLAN]]
-    # INSTANTIATE_AGENT is no longer lifted under the failsafe when an idle agent
-    # already exists — spawning more cannot unblock work (#163).
     assert not mask[PLAY_TO_INDEX[PlayType.INSTANTIATE_AGENT]]
-
-
-# ---------------------------------------------------------------------------
-# #159 config-index fail-closed + #163 lifecycle-churn breaker
-# ---------------------------------------------------------------------------
 
 
 def _churn_state(**kwargs):
@@ -862,8 +843,6 @@ def _churn_state(**kwargs):
             _agent_snapshot("a0", AgentType.CLAUDE_CODE),
             _agent_snapshot("a1", AgentType.CODEX),
         ],
-        # Every work play that has run is now stale (>= 6 plays ago); only the
-        # lifecycle plays are fresh — the churn signature from session 8cbc74cb.
         plays_since_last_play_type={
             PlayType.ISSUE_PICKUP: 7,
             PlayType.SEED_PROJECT: 9,
@@ -917,7 +896,7 @@ def test_lifecycle_churn_inactive_when_work_recent():
         plays_since_last_play_type={
             PlayType.SEED_PROJECT: 0,
             PlayType.DESIGN_AUDIT: 0,
-            PlayType.ISSUE_PICKUP: 2,  # fresh < 6
+            PlayType.ISSUE_PICKUP: 2,
             PlayType.INSTANTIATE_AGENT: 0,
         },
     )
@@ -928,10 +907,8 @@ def test_lifecycle_churn_breaker_masks_instantiate():
     """Under churn, compute_action_mask masks INSTANTIATE_AGENT even with a free cell (#163)."""
     from agentshore.state import AgentType
 
-    cfg = _make_cfg()  # claude_code + codex, medium max=5
+    cfg = _make_cfg()
     config_index = (("claude_code", "medium"), ("codex", "medium"))
-    # One idle codex agent occupies codex/medium (masked as idle); claude_code/medium
-    # is free so instantiate is otherwise base-valid — the churn breaker masks it.
     state = _churn_state(agents=[_agent_snapshot("c0", AgentType.CODEX)])
     mask = compute_action_mask(state, build_default_registry(), cfg=cfg, config_index=config_index)
     assert not mask[PLAY_TO_INDEX[PlayType.INSTANTIATE_AGENT]]
@@ -956,20 +933,10 @@ def test_lifecycle_churn_breaker_masks_both_when_no_reaping_needed():
     quiesces rather than churning lifecycle plays with zero dispatches."""
     cfg = _make_cfg()
     config_index = (("claude_code", "medium"), ("codex", "medium"))
-    # Default _churn_state has two healthy IDLE agents and no exhausted/terminal
-    # agent → _agent_needs_reaping is False.
     state = _churn_state()
     mask = compute_action_mask(state, build_default_registry(), cfg=cfg, config_index=config_index)
     assert not mask[PLAY_TO_INDEX[PlayType.INSTANTIATE_AGENT]]
     assert not mask[PLAY_TO_INDEX[PlayType.END_AGENT]]
-
-
-# ---------------------------------------------------------------------------
-# #166 — break the instantiate<->end limit cycle: keep INSTANTIATE_AGENT masked
-# when spawning is pointless even with NO idle agent (the reap-the-last-idle case
-# that used to switch the breaker off and respawn, pinning both safety-net
-# accumulators at zero).
-# ---------------------------------------------------------------------------
 
 
 def test_growth_pointless_no_work_fires_without_idle_agent():
@@ -1030,9 +997,6 @@ def test_churn_breaker_masks_instantiate_with_no_idle_agent_and_no_work():
 
     cfg = _make_cfg()
     config_index = (("claude_code", "medium"), ("codex", "medium"))
-    # No open issues / PRs → no actionable work; the lone agent is BUSY so there
-    # is no idle capacity. Pre-fix, the breaker switched off here (idle-agent
-    # gate) and re-opened INSTANTIATE_AGENT, restarting the limit cycle.
     state = _state(
         agents=[_agent_snapshot("c0", AgentType.CODEX, status=AgentStatus.BUSY)],
         plays_since_last_play_type={
@@ -1080,7 +1044,7 @@ def test_reverse_failsafe_keeps_write_plan_open_when_unplanned_issue_exists():
     from agentshore.state import AgentType
 
     state = _state(
-        open_issues=[_issue_snapshot(234)],  # no agentshore/planned label
+        open_issues=[_issue_snapshot(234)],
         agents=[_agent_snapshot("codex-1", AgentType.CODEX)],
     )
 
@@ -1101,8 +1065,6 @@ def test_reverse_failsafe_dead_end_controls_can_be_opened():
 
     mask = compute_reverse_failsafe_mask(state, allow_control_plays=True)
 
-    # Both dead-end controls open on the failsafe path: END_SESSION no longer
-    # carries terminal-readiness preconditions there (#240) — the PPO decides.
     assert mask[PLAY_TO_INDEX[PlayType.END_AGENT]]
     assert mask[PLAY_TO_INDEX[PlayType.END_SESSION]]
 
@@ -1219,7 +1181,7 @@ def test_write_plan_not_masked_when_a_plannable_issue_exists():
     state = _state(
         open_issues=[
             _issue_snapshot(620, labels=["agentshore/planned"]),
-            _issue_snapshot(621),  # genuinely plannable
+            _issue_snapshot(621),
         ]
     )
 
@@ -1277,9 +1239,6 @@ def test_terminal_no_work_allows_final_qa_when_qa_stale():
         config_index=(("codex", "large"),),
     )
 
-    # Item 1: terminal no-work no longer one-hot-forces a play. With an idle QA
-    # agent and no actionable work, both RUN_QA and END_SESSION are valid and
-    # the PPO chooses between them — nothing is forced.
     assert mask.sum() >= 2
     assert mask[PLAY_TO_INDEX[PlayType.RUN_QA]]
     assert mask[PLAY_TO_INDEX[PlayType.END_SESSION]]
@@ -1301,9 +1260,6 @@ def test_terminal_no_work_empty_fleet_offers_instantiate_or_end():
         config_index=(("codex", "large"),),
     )
 
-    # Item 7: empty fleet under terminal no-work — INSTANTIATE_AGENT and
-    # END_SESSION are both valid; nothing is forced. RUN_QA stays masked (no
-    # idle agent can run it). The PPO opens an agent or ends the session.
     assert mask[PLAY_TO_INDEX[PlayType.INSTANTIATE_AGENT]]
     assert mask[PLAY_TO_INDEX[PlayType.END_SESSION]]
     assert not mask[PLAY_TO_INDEX[PlayType.RUN_QA]]
@@ -1360,8 +1316,6 @@ def test_terminal_no_work_offers_end_and_qa_regardless_of_recency():
         config_index=(("codex", "large"),),
     )
 
-    # Item 1/3: a recent QA no longer one-hot-forces END_SESSION. END_SESSION
-    # and RUN_QA are both valid; the policy is free to end or re-run QA.
     assert mask.sum() >= 2
     assert mask[PLAY_TO_INDEX[PlayType.END_SESSION]]
     assert mask[PLAY_TO_INDEX[PlayType.RUN_QA]]
@@ -1390,12 +1344,6 @@ def test_terminal_no_work_qa_recency_does_not_change_mask():
 
     recent = _mask_for(49)
     stale = _mask_for(50)
-    # Item 1: the RUN_QA / END_SESSION terminal directional choices are
-    # recency-independent. The idle-audit plays (CALIBRATE_ALIGNMENT,
-    # DESIGN_AUDIT) are deliberately excepted: the eligibility refactor added an
-    # idle-audit freshness gate that masks them in terminal no-work once their
-    # own audit window is fresh — and QA recency feeds terminal-audit freshness,
-    # so those two bits legitimately flip. Compare every other action.
     idle_audit_idx = {
         PLAY_TO_INDEX[PlayType.CALIBRATE_ALIGNMENT],
         PLAY_TO_INDEX[PlayType.DESIGN_AUDIT],
@@ -1459,7 +1407,7 @@ def test_terminal_no_work_blocked_when_beads_ready_tasks_nonzero():
     graph = MagicMock()
     graph.has_epics = True
     graph.has_ready_tasks = True
-    graph.tasks_ready = 25  # beads says: 25 tasks still open
+    graph.tasks_ready = 25
     graph.tasks = []
     graph.global_closure_ratio = 0.0
 
@@ -1467,11 +1415,8 @@ def test_terminal_no_work_blocked_when_beads_ready_tasks_nonzero():
         graph=graph,
         total_plays=30,
         agents=[_agent_snapshot("qa", AgentType.CODEX, "large")],
-        # All GitHub issues blocked/disallowed → workable_issues == 0 from GitHub view
         open_issues=[_issue_snapshot(209, ["agentshore/blocked", "agentshore/disallowed"])],
-        plays_since_last_play_type={
-            PlayType.RUN_QA: 13
-        },  # recent QA → would normally unlock end_session
+        plays_since_last_play_type={PlayType.RUN_QA: 13},
     )
 
     decision = compute_terminal_no_work_decision(state, build_default_registry())
@@ -1518,14 +1463,14 @@ def test_compute_config_mask_empty_index_returns_empty():
 def test_compute_config_mask_disabled_agent_is_masked():
     from agentshore.rl.mask import compute_config_mask
 
-    cfg = _make_cfg(enabled=("claude_code",))  # codex disabled
+    cfg = _make_cfg(enabled=("claude_code",))
     mask = compute_config_mask(
         _state(),
         cfg,
         (("claude_code", "medium"), ("codex", "medium")),
     )
-    assert mask[0]  # claude_code enabled
-    assert not mask[1]  # codex disabled
+    assert mask[0]
+    assert not mask[1]
 
 
 def test_compute_config_mask_max_per_config_blocks():
@@ -1540,8 +1485,8 @@ def test_compute_config_mask_max_per_config_blocks():
         ]
     )
     mask = compute_config_mask(state, cfg, (("claude_code", "medium"), ("codex", "medium")))
-    assert not mask[0]  # at cap
-    assert mask[1]  # codex still has room
+    assert not mask[0]
+    assert mask[1]
 
 
 def test_compute_config_mask_blocks_only_idle_same_config():
@@ -1558,8 +1503,8 @@ def test_compute_config_mask_blocks_only_idle_same_config():
 
     mask = compute_config_mask(state, cfg, (("claude_code", "medium"), ("codex", "medium")))
 
-    assert not mask[0]  # idle same type/tier can take work
-    assert mask[1]  # busy same type/tier is valid expansion pressure
+    assert not mask[0]
+    assert mask[1]
 
 
 def test_compute_config_mask_per_type_cap_blocks_fully_saturated_cells():
@@ -1603,8 +1548,8 @@ def test_compute_config_mask_rate_limit_error_blocks_respawn():
     )
     state = _state(agents=[rate_limited])
     mask = compute_config_mask(state, cfg, (("grok", "medium"), ("claude_code", "medium")))
-    assert not mask[0]  # grok blocked — rate_limit counts toward cap
-    assert mask[1]  # claude_code unaffected
+    assert not mask[0]
+    assert mask[1]
 
 
 def test_compute_config_mask_non_rate_limit_error_counts_toward_cap():
@@ -1699,9 +1644,9 @@ def test_compute_config_mask_invalid_model_blocks_same_config():
         cfg,
         (("grok", "medium"), ("grok", "small"), ("claude_code", "medium")),
     )
-    assert not mask[0]  # bad Grok medium tier should not respawn
-    assert mask[1]  # other Grok tiers remain available
-    assert mask[2]  # other agent types remain available
+    assert not mask[0]
+    assert mask[1]
+    assert mask[2]
 
 
 def test_compute_action_mask_with_no_eligible_config_zeros_instantiate_agent():
@@ -1742,11 +1687,6 @@ def test_compute_action_mask_all_busy_allows_instantiate_agent():
     )
 
     assert mask[PLAY_TO_INDEX[PlayType.INSTANTIATE_AGENT]]
-
-
-# ---------------------------------------------------------------------------
-# compute_agent_eligibility_mask
-# ---------------------------------------------------------------------------
 
 
 def _make_cfg_with_prefs(
@@ -1838,7 +1778,6 @@ def test_mask_allows_code_review_when_other_type_available():
     )
     cfg = _make_cfg_with_prefs()
     state = _state(
-        # code_review is large-only (#254).
         agents=[_agent_snapshot("r", AgentType.CLAUDE_CODE, "large")],
         pending_review_queue=[pending],
     )
@@ -1895,7 +1834,6 @@ def test_code_review_unmasked_for_unreviewed_open_pr():
 
     cfg = _make_cfg_with_prefs()
     state = _state(
-        # code_review is large-only (#254).
         agents=[_agent_snapshot("r", AgentType.CODEX, "large", github_identity="reviewer")],
         pull_requests=[_pr_snapshot(1, github_author="author")],
     )
@@ -1937,7 +1875,6 @@ def test_code_review_unmasked_null_author_label():
     )
     cfg = _make_cfg_with_prefs()
     state = _state(
-        # code_review is large-only (#254).
         agents=[_agent_snapshot("r", AgentType.CODEX, "large")],
         pending_review_queue=[pending],
     )
@@ -1951,11 +1888,6 @@ def test_compute_mask_reasons_emits_tier_eligibility_string():
     from agentshore.state import AgentType
 
     cfg = _make_cfg_with_prefs()
-    # An open issue is required so the ISSUE_PICKUP precondition is satisfied;
-    # then the small-tier-only fleet is the genuine blocker and the
-    # agent-eligibility stage surfaces the tier reason (the authority evaluates
-    # preconditions before agent eligibility, so without work the precondition
-    # reason would win first).
     state = _state(
         agents=[_agent_snapshot("a", AgentType.CLAUDE_CODE, "small")],
         open_issues=[_issue_snapshot(234)],
@@ -2027,9 +1959,6 @@ def test_pr_lifecycle_actions_remain_visible_with_unresolved_pre_session_prs():
     from agentshore.state import AgentType
 
     cfg = _make_cfg_with_prefs()
-    # unblock_pr allows {"large", "medium"}; include a large-tier agent so the
-    # lifecycle-actions-visible assertion still holds even though medium agents
-    # are now eligible too.
     agents = [
         _agent_snapshot("impl", AgentType.CLAUDE_CODE, "medium", github_identity="impl"),
         _agent_snapshot("review", AgentType.CODEX, "medium", github_identity="reviewer"),
@@ -2086,11 +2015,6 @@ def test_systematic_debugging_unmasked_for_independent_debug_issue_during_pr_dra
     mask = compute_action_mask(state, build_default_registry(), cfg=cfg)
 
     assert mask[PLAY_TO_INDEX[PlayType.SYSTEMATIC_DEBUGGING]]
-
-
-# ---------------------------------------------------------------------------
-# TAKE_BREAK trigger conditions
-# ---------------------------------------------------------------------------
 
 
 def test_take_break_enabled_for_rate_limit_error():
@@ -2185,7 +2109,6 @@ def test_take_break_does_not_force_global_session_pause_when_available():
         tasks_completed=0,
         tasks_failed=1,
     )
-    # Include an IDLE Claude so other plays would otherwise be eligible
     idle = AgentSnapshot(
         agent_id="cc-1",
         agent_type=AgentType.CLAUDE_CODE,
@@ -2253,24 +2176,12 @@ def test_rate_limited_type_blocks_idle_same_type_agent():
     cfg = _make_cfg(enabled=("grok",))
     state = _state(agents=[rate_limited, idle_grok])
     elig = compute_agent_eligibility_mask(state, build_default_registry(), cfg=cfg)
-    # Every non-internal play should be blocked since the only IDLE agent type
-    # (grok) is rate-limited.
     from agentshore.rl.action_space import V1_ACTION_ORDER
 
     for i, pt in enumerate(V1_ACTION_ORDER):
         play = build_default_registry().get(pt)
-        if play.capability is not None:  # skip internal plays
+        if play.capability is not None:
             assert not elig[i], f"Expected {pt.value} to be blocked for rate-limited grok"
-
-
-# ===========================================================================
-# v0.15 Phase 7 — eligibility-authority / mask-builder gate tests
-#
-# The legacy ``_stage_*`` free functions were deleted (their logic lives in the
-# single :class:`EligibilityAuthority` + :class:`ActionMaskBuilder` pipeline).
-# These tests pin the same gate behaviour through the live surface so a future
-# refactor that moves a gate can't silently change the overall mask.
-# ===========================================================================
 
 
 def test_eligibility_precondition_seeds_from_registry():
@@ -2282,8 +2193,6 @@ def test_eligibility_precondition_seeds_from_registry():
     mask = EligibilityAuthority(_state(), _registry_all_true()).eligibility().mask()
     assert mask.shape == (NUM_ACTIONS,)
     assert mask.dtype == np.bool_
-    # Plays with no candidate / terminal gate ride straight on the precondition
-    # verdict, so a met precondition leaves them valid.
     assert mask[PLAY_TO_INDEX[PlayType.RECONCILE_STATE]]
     assert mask[PLAY_TO_INDEX[PlayType.CLEANUP]]
 
@@ -2335,13 +2244,9 @@ def test_builder_reserved_slots_zeroed():
     from agentshore.rl.mask import ActionMaskBuilder
 
     mask = ActionMaskBuilder(_state(), _registry_all_true()).build()
-    # FUTURE_5 was filled in place by RECONCILE_STATE (AgentShore #593) and
-    # FUTURE_6 by PRUNE — both are active slots now. FUTURE_4 (slot 14, formerly
-    # browser_verification) plus FUTURE_7/8 remain reserved and stay zeroed.
     assert not mask[PLAY_TO_INDEX[PlayType.FUTURE_4]]
     assert not mask[PLAY_TO_INDEX[PlayType.FUTURE_7]]
     assert not mask[PLAY_TO_INDEX[PlayType.FUTURE_8]]
-    # Active slots untouched — including the newly-active slots 11 and 19.
     assert mask[PLAY_TO_INDEX[PlayType.RECONCILE_STATE]]
     assert mask[PLAY_TO_INDEX[PlayType.PRUNE]]
     assert mask[PLAY_TO_INDEX[PlayType.SEED_PROJECT]]
@@ -2363,7 +2268,6 @@ def test_builder_drain_short_circuits_to_end_agent():
     state = _state(session_state=SessionState.DRAINING)
     mask = ActionMaskBuilder(state, _registry_all_true()).build()
     assert mask[PLAY_TO_INDEX[PlayType.END_AGENT]]
-    # All other slots must be off.
     others = [i for i in range(NUM_ACTIONS) if i != PLAY_TO_INDEX[PlayType.END_AGENT]]
     for i in others:
         assert not mask[i], f"draining mask leaked play index {i}"
@@ -2374,8 +2278,6 @@ def test_builder_no_drain_short_circuit_when_not_draining():
     from agentshore.rl.mask import ActionMaskBuilder
 
     mask = ActionMaskBuilder(_state(), _registry_all_true()).build()
-    # The drain short-circuit did not fire: other plays remain valid alongside
-    # (or instead of) END_AGENT, so the mask is not the END_AGENT-only collapse.
     other_valid = [
         i for i in range(NUM_ACTIONS) if mask[i] and i != PLAY_TO_INDEX[PlayType.END_AGENT]
     ]
@@ -2387,15 +2289,8 @@ def test_pipeline_order_invariant_short_circuit_after_zero_only():
     state = _state(session_state=SessionState.DRAINING)
     mask = compute_action_mask(state, _registry_all_true())
     assert mask[PLAY_TO_INDEX[PlayType.END_AGENT]]
-    # Active plays would be allowed by preconditions=True but drain short-circuit
-    # zeros everything except END_AGENT.
     assert not mask[PLAY_TO_INDEX[PlayType.SEED_PROJECT]]
     assert not mask[PLAY_TO_INDEX[PlayType.ISSUE_PICKUP]]
-
-
-# ===========================================================================
-# v0.15 Phase 3 — reverse-failsafe overlay structural-superset contract
-# ===========================================================================
 
 
 def test_reverse_failsafe_overlay_is_structural_superset_of_base_mask():
@@ -2409,16 +2304,13 @@ def test_reverse_failsafe_overlay_is_structural_superset_of_base_mask():
     from agentshore.rl.mask import compute_reverse_failsafe_mask
 
     state = _state(open_issues=[])
-    # Construct an arbitrary base mask with some bits set, including some that
-    # the reverse-failsafe hard-mask set would normally zero (FUTURE_7).
     base = np.zeros(NUM_ACTIONS, dtype=bool)
     base[PLAY_TO_INDEX[PlayType.SEED_PROJECT]] = True
     base[PLAY_TO_INDEX[PlayType.ISSUE_PICKUP]] = True
-    base[PLAY_TO_INDEX[PlayType.FUTURE_7]] = True  # would be hard-masked by RF alone
+    base[PLAY_TO_INDEX[PlayType.FUTURE_7]] = True
 
     overlay = compute_reverse_failsafe_mask(state, base_mask=base)
 
-    # Structural superset: every True bit in base is True in overlay.
     for i in range(NUM_ACTIONS):
         if base[i]:
             assert overlay[i], f"overlay zeroed base-mask bit {i}"
@@ -2444,7 +2336,6 @@ def test_reverse_failsafe_keeps_user_disabled_play_masked():
         open_issues=[_issue_snapshot(234)],
         agents=[_agent_snapshot("codex-1", AgentType.CODEX)],
     )
-    # Base mask with CLEANUP masked (as the builder's user-disabled stage would).
     base = np.zeros(NUM_ACTIONS, dtype=bool)
 
     overlay = compute_reverse_failsafe_mask(state, cfg=cfg, base_mask=base)
@@ -2452,7 +2343,6 @@ def test_reverse_failsafe_keeps_user_disabled_play_masked():
     assert not overlay[PLAY_TO_INDEX[PlayType.CLEANUP]], (
         "reverse failsafe resurrected a user-disabled play"
     )
-    # Other fallback work plays are still lifted — the disable is surgical.
     assert overlay[PLAY_TO_INDEX[PlayType.PRUNE]]
 
 
@@ -2462,9 +2352,6 @@ def test_reverse_failsafe_overlay_without_base_mask_falls_back_to_v0_14_4():
 
     state = _state()
     no_base = compute_reverse_failsafe_mask(state)
-    # Reserved future slots are always hard-masked by the lift gate. Slot 11
-    # is no longer reserved (RECONCILE_STATE) and slot 19 is no longer reserved
-    # (PRUNE) — FUTURE_4 (slot 14) plus FUTURE_7/8 remain in the reserved set.
     assert not no_base[PLAY_TO_INDEX[PlayType.FUTURE_4]]
     assert not no_base[PLAY_TO_INDEX[PlayType.FUTURE_7]]
     assert not no_base[PLAY_TO_INDEX[PlayType.FUTURE_8]]

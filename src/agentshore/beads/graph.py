@@ -64,11 +64,28 @@ def _resolve_epic_for_task(
     return None, None
 
 
+def _dependency_unresolved(dep: Bead, dependent: Bead, open_external_refs: frozenset[str]) -> bool:
+    """True while *dep* still blocks *dependent*.
+
+    A closed dep still blocks if another, non-closed bead mirrors the same
+    GitHub issue (#521). Concurrent mirror creation leaves duplicate beads per
+    ``external_ref``. Groom closes one as a "duplicate mirror", but edges that
+    pointed at it survive, so a closed duplicate would otherwise read as a
+    finished dependency while the issue is still open. A dependent sharing the
+    dep's own ref (an edge to its own duplicate) is never self-blocked.
+    """
+    if dep.status != BeadStatus.CLOSED:
+        return True
+    ref = dep.external_ref
+    return bool(ref) and ref != dependent.external_ref and ref in open_external_refs
+
+
 def _graph_task_from_bead(
     bead: Bead,
     *,
     epics_by_id: dict[str, Bead],
     beads_by_id: dict[str, Bead],
+    open_external_refs: frozenset[str] = frozenset(),
 ) -> GraphTask:
     epic_id, epic_title = _resolve_epic_for_task(
         bead,
@@ -78,7 +95,8 @@ def _graph_task_from_bead(
     blocked_by = frozenset(
         dep_id
         for dep_id in bead.depends_on_ids
-        if dep_id in beads_by_id and beads_by_id[dep_id].status != BeadStatus.CLOSED
+        if dep_id in beads_by_id
+        and _dependency_unresolved(beads_by_id[dep_id], bead, open_external_refs)
     )
     return GraphTask(
         bead_id=bead.bead_id,
@@ -98,13 +116,8 @@ def _graph_task_from_bead(
 
 
 _GRAPH_READ_RETRIES = 3
-_GRAPH_READ_RETRY_DELAY = 0.5  # seconds between attempts
+_GRAPH_READ_RETRY_DELAY = 0.5
 
-# The full-graph dump (``bd list --all --json --limit 0``) is O(graph size) and
-# legitimately needs more headroom than a point mutation like ``bd close`` on a
-# large beads graph. Keep mutations at bd()'s tight 120s ceiling; give the dump
-# its own larger budget so a big-but-completable graph succeeds instead of
-# timing out (#237).
 _BD_GRAPH_TIMEOUT_SECONDS = 300.0
 
 
@@ -136,8 +149,6 @@ async def _read_graph_raw(project_path: Path) -> list[RawBead]:
             )
             return _as_json_list(raw)
         except BdTimeoutError as exc:
-            # Fail fast — a timeout means "too big to dump in budget", not a
-            # transient blip; retrying only multiplies the wasted wall-clock.
             _logger.warning(
                 "beads_graph_load_timed_out",
                 project_path=str(project_path),
@@ -149,14 +160,6 @@ async def _read_graph_raw(project_path: Path) -> list[RawBead]:
             ) from exc
         except BdError as exc:
             if is_schema_drift_error(str(exc)):
-                # Fail fast — same rationale as the BdTimeoutError branch above:
-                # this is a structural refusal (bd's #4259 remote-migration
-                # gate), not a transient blip, so retrying 3x just re-pays the
-                # same deterministic failure. Raising a distinct exception type
-                # (rather than falling through to the generic GraphReadError
-                # below) lets callers tell "graph unreadable due to schema
-                # drift" apart from "graph load failed" / "graph is empty" —
-                # conflating those previously caused a bogus seed_project.
                 _logger.warning(
                     "beads_graph_load_schema_drift",
                     project_path=str(project_path),
@@ -189,20 +192,6 @@ async def _read_graph_raw(project_path: Path) -> list[RawBead]:
         f"bd list failed after {_GRAPH_READ_RETRIES} attempts for {project_path}"
     ) from last_exc
 
-
-# ---------------------------------------------------------------------------
-# Graph snapshot cache + request coalescing
-# ---------------------------------------------------------------------------
-#
-# ``load_graph`` runs at least once per orchestrator tick (build_state),
-# again after every play completes (post-play alignment reload), again on
-# the selector's live-drift confirm, and again on every issue_syncer full
-# sync — each historically a fresh ``bd list --all --json --limit 0``
-# subprocess behind the bd lock. A short TTL cache plus in-flight
-# coalescing collapses concurrent/back-to-back callers onto one subprocess
-# without hiding a genuinely stale graph for long: the callers that need a
-# guaranteed-live read (selector confirm, post-play alignment — both drift
-# checks right after a mutation) pass ``max_age_seconds=0.0`` to force one.
 
 _GRAPH_CACHE_TTL_SECONDS = 2.0
 
@@ -265,11 +254,17 @@ def _build_project_graph(bead_items: list[RawBead]) -> ProjectGraph:
         )
         for epic in epic_beads
     ]
+    open_external_refs = frozenset(
+        bead.external_ref
+        for bead in beads
+        if bead.external_ref and bead.status != BeadStatus.CLOSED
+    )
     tasks = [
         _graph_task_from_bead(
             task,
             epics_by_id=epics_by_id,
             beads_by_id=beads_by_id,
+            open_external_refs=open_external_refs,
         )
         for task in task_beads
     ]

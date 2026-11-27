@@ -36,9 +36,6 @@ def _no_token_login_probe(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
-# gh auth status parser
-
-
 _GH_STATUS_TEXT = """\
 github.com
   ✓ Logged in to github.com account example-user (active)
@@ -71,9 +68,6 @@ gitlab.com
   ✓ Logged in to gitlab.com account someone (active)
 """
     assert parse_gh_auth_status(text) == []
-
-
-# YAML patcher
 
 
 _BASE_YAML = """\
@@ -126,7 +120,6 @@ def test_patcher_writes_identities_and_links_agents(tmp_path: Path) -> None:
     assert data["agents"]["claude_code"]["identity"] == "example-user"
     assert data["agents"]["codex"]["identity"] == "bot-user"
     assert data["trusted_ids"]["github_logins"] == ["example-user", "bot-user"]
-    # Pre-existing keys preserved.
     assert data["budget"]["enabled"] is False
 
 
@@ -331,9 +324,6 @@ identities:
     assert cfg.agents["codex"].identity == "bot-user"
 
 
-# run_wizard interactive flow
-
-
 def test_run_wizard_no_accounts_returns_empty(monkeypatch: pytest.MonkeyPatch) -> None:
     """With no gh accounts the wizard offers (n)/(s); skipping every agent
     yields an empty result."""
@@ -358,12 +348,8 @@ def test_run_wizard_binds_each_agent(monkeypatch: pytest.MonkeyPatch) -> None:
     """Drive the wizard via stubbed click prompts."""
     from agentshore.identity_wizard import wizard as mod
 
-    # Two-pass flow:
-    #   Pass 1 (mapping):  claude_code → 1 (example-user, default), codex → 2.
-    #   Pass 2 (details):  example-user  email "", name "", strategy "1";
-    #                      bot-user email "", name "", strategy "1".
     inputs = iter(["1", "2", "", "", "1", "", "", "1"])
-    confirms: object = iter([])  # gh_token_login takes no confirms
+    confirms: object = iter([])
 
     def fake_prompt(msg: str, default: str | None = None, **_: object) -> str:
         try:
@@ -401,9 +387,6 @@ def test_run_wizard_binds_each_agent(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_run_wizard_skip_for_one_agent(monkeypatch: pytest.MonkeyPatch) -> None:
     from agentshore.identity_wizard import wizard as mod
 
-    # Two-pass:
-    #   Pass 1: claude_code → 1 (default), codex → 's' (skip)
-    #   Pass 2: example-user email "", name "", strategy "1"
     inputs = iter(["1", "s", "", "", "1"])
     confirms: object = iter([])
 
@@ -429,16 +412,12 @@ def test_run_wizard_skip_for_one_agent(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "codex" not in result.agent_to_identity
 
 
-# init integration — wizard skipped for non-TTY
-
-
 def test_run_wizard_keychain_branch(monkeypatch: pytest.MonkeyPatch) -> None:
     """Selecting the keychain option writes gh_token_keychain to the binding
     and offers to store the token via keyring."""
     from agentshore import keyring_child
     from agentshore.identity_wizard import wizard as mod
 
-    # Force keyring to look available so the wizard offers option 3.
     monkeypatch.setattr(mod, "_keychain_backend_label", lambda: "macOS Keychain (TEST)")
 
     stored: dict[str, str] = {}
@@ -448,10 +427,8 @@ def test_run_wizard_keychain_branch(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(keyring_child, "keyring_set", fake_keyring_set)
 
-    # Pass 1: claude_code → 1. Pass 2: email "", name "", "Have a PAT?" → True
-    # (paste path), then masked PAT "ghp_secret" via beaupy stored at default service.
     inputs = iter(["1", "", ""])
-    confirms = iter([True])  # paste-PAT-now → yes
+    confirms = iter([True])
 
     def fake_prompt(msg: str, default: str | None = None, **_: object) -> str:
         try:
@@ -468,7 +445,6 @@ def test_run_wizard_keychain_branch(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(mod.click, "prompt", fake_prompt)
     monkeypatch.setattr(mod.click, "confirm", fake_confirm)
-    # The PAT paste is a masked beaupy prompt, not click.prompt.
     monkeypatch.setattr("beaupy.prompt", lambda *_a, **_k: "ghp_secret")
 
     accounts = [GhAccount(login="example-user", active=True)]
@@ -485,7 +461,6 @@ def test_keychain_backend_label_when_no_backend(monkeypatch: pytest.MonkeyPatch)
     from agentshore import keyring_child
     from agentshore.identity_wizard import wizard as mod
 
-    # keychain option is hidden when the backend class name contains "fail".
     monkeypatch.setattr(keyring_child, "keyring_backend_name", lambda: "FailKeyring")
     assert mod._keychain_backend_label() is None
 
@@ -495,7 +470,6 @@ def test_run_identity_wizard_skips_when_non_interactive(
 ) -> None:
     from agentshore.identity_wizard import run_identity_wizard
 
-    # AGENTSHORE_NONINTERACTIVE forces the skip path.
     monkeypatch.setenv("AGENTSHORE_NONINTERACTIVE", "1")
 
     config_path = tmp_path / "agentshore.yaml"
@@ -538,9 +512,6 @@ trusted_ids:
     assert data["trusted_ids"]["github_logins"] == ["existinguser", "bot-user"]
 
 
-# `agentshore identity` CLI command
-
-
 def test_agentshore_identity_prints_table_when_resolved(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -567,7 +538,6 @@ identities:
     gh_token_env: BOT_USER_GH_TOKEN
 """
     )
-    # Add the agent->identity link manually.
     yaml_text = yaml_text.replace(
         "  codex:\n    enabled: true\n    binary: codex",
         "  codex:\n    enabled: true\n    binary: codex\n    identity: bot-user",
@@ -706,9 +676,6 @@ identities:
     assert "Could not resolve" in result.output
 
 
-# _prompt_choice — re-prompt on garbage, max-attempts abort, extra keys
-
-
 def test_prompt_choice_reprompts_on_garbage(monkeypatch: pytest.MonkeyPatch) -> None:
     """Non-numeric input that isn't an extra key re-prompts instead of
     silently falling back to the default option."""
@@ -743,7 +710,6 @@ def test_prompt_choice_returns_extra_sentinel(monkeypatch: pytest.MonkeyPatch) -
 def test_prompt_choice_max_attempts_raises_abort(monkeypatch: pytest.MonkeyPatch) -> None:
     from agentshore.identity_wizard import wizard as mod
 
-    # Five garbage inputs exhaust max_attempts=5.
     inputs = iter(["x"] * 6)
 
     def fake_prompt(_msg: str, default: str | None = None, **_kw: object) -> str:
@@ -754,9 +720,6 @@ def test_prompt_choice_max_attempts_raises_abort(monkeypatch: pytest.MonkeyPatch
 
     with _pytest.raises(mod._WizardAbortError):
         mod._prompt_choice("agent", ["example-user"], 0)
-
-
-# _prompt_new_login — validation, duplicates, back-out
 
 
 def test_prompt_new_login_accepts_valid(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -773,7 +736,6 @@ def test_prompt_new_login_rejects_invalid_format(monkeypatch: pytest.MonkeyPatch
     bad_inputs = ["", "_bad", "-leading", "trailing-", "a--b", "a" * 40]
     inputs = iter([*bad_inputs, "valid"])
     monkeypatch.setattr(mod.click, "prompt", lambda *_a, **_k: next(inputs))
-    # max_attempts=20 to absorb every bad input plus the final good one.
     assert mod._prompt_new_login(set(), max_attempts=20) == "valid"
 
 
@@ -797,31 +759,24 @@ def test_prompt_new_login_back_out(monkeypatch: pytest.MonkeyPatch) -> None:
     assert mod._prompt_new_login(set()) is None
 
 
-# run_wizard — new-account path, two-pass detail prompts
-
-
 def test_run_wizard_new_account_path(monkeypatch: pytest.MonkeyPatch) -> None:
     """User picks (n) for codex, types a new login; pass-2 details fire
     for both example-user and the new account, with env-var as the default
     token strategy for the new account."""
     from agentshore.identity_wizard import wizard as mod
 
-    # Pass 1: claude_code → 1 (example-user), codex → n then "newbot".
-    # Pass 2: example-user details (email, name, strategy=1 gh_login),
-    #         newbot details (email, name, strategy default Enter → "2"
-    #                          env var, then env var name "").
     inputs = iter(
         [
             "1",
             "n",
-            "newbot",  # pass 1
+            "newbot",
             "",
             "",
-            "1",  # example-user details
+            "1",
             "",
             "",
             "",
-            "",  # newbot: email, name, strategy=default(2=env), env-var name
+            "",
         ]
     )
 
@@ -844,7 +799,6 @@ def test_run_wizard_new_account_path(monkeypatch: pytest.MonkeyPatch) -> None:
         "codex": "newbot",
     }
     assert result.identities["example-user"].gh_token_login == "example-user"
-    # New account defaults to env strategy (gh_token_env set, gh_token_login None).
     assert result.identities["newbot"].gh_token_env == "NEWBOT_GH_TOKEN"
     assert result.identities["newbot"].gh_token_login is None
 
@@ -857,11 +811,10 @@ def test_prompt_token_strategy_warns_and_reprompts_on_gh_login_for_new_account(
     Final binding is env-strategy."""
     from agentshore.identity_wizard import wizard as mod
 
-    # Force keyring backend visible so the paste-PAT prompt fires.
     monkeypatch.setattr(mod, "_keychain_backend_label", lambda: "Test backend")
     monkeypatch.setattr(mod, "_keychain_has_token", lambda _service: False)
-    inputs = iter(["1", "2", ""])  # strategy pick 1, then pick 2, then env var name default
-    confirms = iter([False, False])  # decline paste-PAT, decline use-gh-login-anyway
+    inputs = iter(["1", "2", ""])
+    confirms = iter([False, False])
 
     def fake_prompt(_msg: str, default: str | None = None, **_kw: object) -> str:
         value = next(inputs)
@@ -885,7 +838,7 @@ def test_prompt_token_strategy_accepts_gh_login_for_new_account_when_confirmed(
     monkeypatch.setattr(mod, "_keychain_backend_label", lambda: "Test backend")
     monkeypatch.setattr(mod, "_keychain_has_token", lambda _service: False)
     inputs = iter(["1"])
-    confirms = iter([False, True])  # decline paste-PAT, accept gh_login risk
+    confirms = iter([False, True])
 
     monkeypatch.setattr(mod.click, "prompt", lambda *_a, **_k: next(inputs))
     monkeypatch.setattr(mod.click, "confirm", lambda *_a, **_k: next(confirms))
@@ -914,7 +867,7 @@ def test_prompt_token_strategy_paste_pat_stores_in_keychain(
     )
 
     inputs = iter(["ghp_realtoken12345"])
-    confirms = iter([True])  # accept paste-PAT
+    confirms = iter([True])
 
     monkeypatch.setattr("beaupy.prompt", lambda *_a, **_k: next(inputs))
     monkeypatch.setattr(mod.click, "confirm", lambda *_a, **_k: next(confirms))
@@ -942,7 +895,7 @@ def test_prompt_token_strategy_paste_pat_stores_repo_specific_keychain(
     )
 
     inputs = iter(["ghp_realtoken12345"])
-    confirms = iter([True])  # accept paste-PAT
+    confirms = iter([True])
 
     monkeypatch.setattr("beaupy.prompt", lambda *_a, **_k: next(inputs))
     monkeypatch.setattr(mod.click, "confirm", lambda *_a, **_k: next(confirms))
@@ -1063,7 +1016,7 @@ def test_prompt_token_strategy_declining_existing_keychain_falls_through(
     allows the normal strategy menu."""
     from agentshore.identity_wizard import wizard as mod
 
-    confirm_values = iter([False, False])  # decline existing token, decline paste-PAT
+    confirm_values = iter([False, False])
     inputs = iter(["2", ""])
 
     monkeypatch.setattr(mod, "_keychain_backend_label", lambda: "Test backend")
@@ -1128,7 +1081,6 @@ def test_looks_like_pat() -> None:
     assert looks_like_pat("ghs_xxxxx")
     assert looks_like_pat("ghr_xxxxx")
     assert looks_like_pat("  ghp_with_whitespace  ")
-    # Negatives
     assert not looks_like_pat("BOT_USER_GH_TOKEN")
     assert not looks_like_pat("MY_VAR")
     assert not looks_like_pat("")
@@ -1165,7 +1117,6 @@ def test_report_identities_redacts_pat_in_env_field(
     assert row.token_resolved is False
     assert "REDACTED" in row.detail
     assert leaked_pat not in row.detail
-    # Identity name and the suggested replacement are mentioned for guidance.
     assert "BOT-USER_GH_TOKEN" in row.detail
 
 
@@ -1212,14 +1163,12 @@ def test_run_identity_wizard_emits_verification_table(
     from agentshore.identity_wizard import run_identity_wizard
     from agentshore.identity_wizard import wizard as mod
 
-    monkeypatch.setattr(mod, "_keychain_backend_label", lambda: None)  # no keychain
+    monkeypatch.setattr(mod, "_keychain_backend_label", lambda: None)
     monkeypatch.setattr("sys.stdin.isatty", lambda: True)
     monkeypatch.delenv("AGENTSHORE_NONINTERACTIVE", raising=False)
 
-    # Pass 1: claude_code → 1 (example-user); Pass 2: email "", name "",
-    # strategy 2 (env), env var name default → EXAMPLE_USER_GH_TOKEN.
     inputs = iter(["1", "", "", "2", ""])
-    confirms = iter([False])  # decline paste-PAT (no keychain anyway)
+    confirms = iter([False])
 
     def fake_prompt(_msg: str, default: str | None = None, **_kw: object) -> str:
         value = next(inputs)
@@ -1234,7 +1183,6 @@ def test_run_identity_wizard_emits_verification_table(
     cfg_path = tmp_path / "agentshore.yaml"
     cfg_path.write_text(_BASE_YAML, encoding="utf-8")
 
-    # Capture echoed output.
     output: list[str] = []
     monkeypatch.setattr(mod.click, "echo", lambda msg="", **_kw: output.append(str(msg)))
 
@@ -1369,7 +1317,7 @@ def test_prompt_token_strategy_no_use_anyway_confirm_for_existing_account(
 
     def fake_confirm(*args: object, **_kw: object) -> bool:
         confirm_calls.append(args)
-        return False  # decline whatever is asked
+        return False
 
     monkeypatch.setattr(mod.click, "prompt", lambda *_a, **_k: next(inputs))
     monkeypatch.setattr(mod.click, "confirm", fake_confirm)
@@ -1377,7 +1325,6 @@ def test_prompt_token_strategy_no_use_anyway_confirm_for_existing_account(
     strategy, fields = mod._prompt_token_strategy("example-user", is_new_account=False)
     assert strategy == "gh_login"
     assert fields == {"gh_token_login": "example-user"}
-    # Exactly one confirm call: the paste-PAT prompt. No use-anyway confirm.
     assert len(confirm_calls) == 1
     assert "Do you have a PAT" in confirm_calls[0][0]
 
@@ -1388,8 +1335,6 @@ def test_run_wizard_shared_identity_prompts_details_once(
     """Two agents binding to the same identity: pass-2 fires once."""
     from agentshore.identity_wizard import wizard as mod
 
-    # Both agents → 1 (example-user). Pass 2: one detail block (email "",
-    # name "", paste-PAT? → False default, strategy "1" → gh_login).
     inputs = iter(["1", "1", "", "", "1"])
 
     def fake_prompt(msg: str, default: str | None = None, **_kw: object) -> str:
@@ -1411,9 +1356,6 @@ def test_run_wizard_shared_identity_prompts_details_once(
     assert list(result.identities.keys()) == ["example-user"]
 
 
-# run_identity_wizard — gating with force_run
-
-
 def test_run_identity_wizard_force_run_non_tty(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1431,9 +1373,6 @@ def test_run_identity_wizard_force_run_non_tty(
     run_identity_wizard(config_path, ["claude_code"], force_run=True)
     assert "identities" not in config_path.read_text(encoding="utf-8")
     assert "not a TTY" in capsys.readouterr().out
-
-
-# _agent_keys_from_yaml — disabled-agent filter
 
 
 def test_agent_keys_from_yaml_filters_disabled_and_unsupported(tmp_path: Path) -> None:
@@ -1457,11 +1396,8 @@ agents:
     cfg_path.write_text(yaml_text, encoding="utf-8")
     keys = _agent_keys_from_yaml(cfg_path)
     assert "claude_code" in keys
-    assert "codex" not in keys  # explicitly disabled
-    assert "aider" not in keys  # unsupported agent type — load_config would reject it
-
-
-# `agentshore identity --reconfigure`
+    assert "codex" not in keys
+    assert "aider" not in keys
 
 
 def test_agentshore_identity_reconfigure_invokes_wizard_without_db_reset(
@@ -1473,7 +1409,6 @@ def test_agentshore_identity_reconfigure_invokes_wizard_without_db_reset(
 
     from agentshore.cli import main
 
-    # Pre-existing agentshore.yaml and DB.
     cfg_path = tmp_path / "agentshore.yaml"
     cfg_path.write_text(_BASE_YAML, encoding="utf-8")
     agentshore_dir = tmp_path / ".agentshore"
@@ -1511,7 +1446,6 @@ def test_agentshore_identity_reconfigure_invokes_wizard_without_db_reset(
     assert captured["config_path"] == cfg_path
     assert captured["agent_keys"] == ["claude_code", "codex"]
     assert captured["force_run"] is True
-    # DB file untouched.
     assert captured["repo_name_with_owner"] == "example-user/example-repo"
     assert db_path.read_bytes() == b"sentinel-do-not-touch"
     assert db_path.stat().st_mtime_ns == db_mtime_before
@@ -1525,7 +1459,6 @@ def test_agentshore_init_passes_force_run(tmp_path: Path, monkeypatch: pytest.Mo
 
     from agentshore.cli import main
 
-    # Stub everything that init does *besides* the wizard.
     monkeypatch.setattr("agentshore.skills.install_skills", lambda *_a, **_k: [])
     captured: dict[str, object] = {}
 
@@ -1543,7 +1476,6 @@ def test_agentshore_init_passes_force_run(tmp_path: Path, monkeypatch: pytest.Mo
     monkeypatch.setattr("agentshore.identity_wizard.run_identity_wizard", fake_run_wizard)
 
     runner = CliRunner()
-    # init wants `--project` to exist.
     result = runner.invoke(main, ["init", "--project", str(tmp_path)])
     assert result.exit_code == 0, result.output
     assert captured.get("force_run") is True

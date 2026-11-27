@@ -1,7 +1,3 @@
-/* Persistent warning banner for $/beads_schema_drift — tracks the shared
-   --warning/--warning-bg/--warning-border theme variables in styles.css
-   (light / dark / system) the same way the setup screens' warning banners
-   do. */
 .banner {
   position: relative;
   z-index: 1050;

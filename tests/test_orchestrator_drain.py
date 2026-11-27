@@ -22,10 +22,6 @@ from agentshore.state import (
     SessionState,
 )
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 
 def _make_orch() -> Orchestrator:
     """Create a minimal Orchestrator via __new__ to avoid full bootstrap."""
@@ -36,11 +32,9 @@ def _make_orch() -> Orchestrator:
     orch._runtime.state_provider = MagicMock()
     orch._runtime.state_provider.on_session_draining = AsyncMock()
     orch._store.update_session_state = AsyncMock()
-    # Drain tests assert on the pause event's .set(); MagicMock records the call.
     orch._runtime.pause_event = MagicMock()
     orch._runtime.pause_event.set = MagicMock()
     orch._runtime.pause_event.is_set = MagicMock(return_value=True)
-    # Rebuild drain/lifecycle to capture "sess-test" (factory baked in "test-session").
     orch._lifecycle = LifecycleController(
         host=orch,
         runtime=orch._runtime,
@@ -88,11 +82,6 @@ def _state(
         total_cost=0.2,
         agents=[_snap()] if agents is None else agents,
     )
-
-
-# ---------------------------------------------------------------------------
-# begin_drain idempotency
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -183,11 +172,6 @@ async def test_begin_drain_session_draining_callback_exception_does_not_fail_dra
     assert orch._runtime.draining is True
 
 
-# ---------------------------------------------------------------------------
-# request_drain (sync)
-# ---------------------------------------------------------------------------
-
-
 def test_request_drain_sets_flag() -> None:
     """request_drain() sets _draining without blocking."""
     orch = _make_orch()
@@ -201,11 +185,6 @@ def test_request_drain_wakes_pause_event() -> None:
     orch = _make_orch()
     orch.request_drain("signal_sigterm")
     orch._runtime.pause_event.set.assert_called()
-
-
-# ---------------------------------------------------------------------------
-# _should_terminate in drain mode
-# ---------------------------------------------------------------------------
 
 
 def test_should_terminate_drain_with_in_flight_returns_false() -> None:
@@ -267,8 +246,6 @@ def test_should_terminate_drain_blocked_by_errored_agent() -> None:
     result, reason = orch._lifecycle.should_terminate(state)
     assert result is False
     assert reason is None
-    # ...and once that agent is retired (cleared -> removed from the live list),
-    # drain completes immediately.
     completed, completed_reason = orch._lifecycle.should_terminate(
         _state(SessionState.DRAINING, agents=[])
     )
@@ -325,7 +302,7 @@ def test_request_drain_twice_keeps_first_reason() -> None:
     """Second request_drain() is a no-op once _drain_initialized is True."""
     orch = _make_orch()
     orch.request_drain("first_reason")
-    orch._runtime.drain_initialized = True  # simulate begin_drain having run
+    orch._runtime.drain_initialized = True
     orch.request_drain("second_reason")
     assert orch._runtime.drain_reason == "first_reason"
 

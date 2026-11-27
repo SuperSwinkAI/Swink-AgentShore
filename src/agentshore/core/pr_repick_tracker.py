@@ -20,15 +20,6 @@ if TYPE_CHECKING:
     from agentshore.state import PlayOutcome
 
 
-# Substring in an unblock_pr failure's ``error`` text meaning the target has
-# irreconcilable merge conflicts (the skill emits
-# ``error: "Merge conflicts require manual resolution"`` alongside
-# ``blocked_by: "merge_conflicts"`` — the latter has no structured home on
-# ``PlayOutcome``, so the error text is the signal, same convention as
-# ``_UNBLOCK_MANUAL_REQUIRED_MARKERS``). Distinct from that list: a merge
-# conflict is often resolvable once the base branch moves (a later rebase
-# succeeds), so it only earns a short, clock-windowed repick cooldown (#312)
-# — never the PERMANENT manual-required park that list triggers.
 _UNBLOCK_PR_REPICK_COOLDOWN_MARKERS: tuple[str, ...] = ("merge conflict",)
 
 
@@ -121,16 +112,7 @@ class PrRepickTracker:
         outcome: PlayOutcome,
         completed_play_type: PlayType,
     ) -> None:
-        # Track per-PR unblock_pr ATTEMPTS so the resolver stops retrying
-        # irresolvable PRs after _UNBLOCK_PR_EXHAUSTION_THRESHOLD. Count every
-        # completion — a "successful" unblock can still leave the PR unblockable
-        # (CI still red, new conflict). Counting only failures let stuck PRs absorb
-        # dispatches forever (desktop-uwg); a real fix drops the PR from the
-        # predicate so the counter never fires again.
         if completed_play_type == PlayType.UNBLOCK_PR and ctx.params.pr_number is not None:
-            # A target blocked only by an unmerged sibling PR is not at fault — do
-            # NOT count toward exhaustion or park it, else a stacked PR is wrongly
-            # stamped manual-required after 3 dispatches that only awaited the sibling.
             if _outcome_blocked_by_sibling_pr(outcome):
                 _logger.info(
                     "unblock_pr_blocked_by_sibling",
@@ -138,13 +120,6 @@ class PrRepickTracker:
                     pr_number=ctx.params.pr_number,
                 )
                 return
-            # A dispatch that merged the target or cleared its sole stale
-            # CHANGES_REQUESTED review is a win — never count or park it. Reset
-            # prior failures so a later genuine block counts fresh (blocky PR #517).
-            # Also clear the #312 repick cooldown: this dispatch just proved the
-            # PR fine again, which the cooldown's own lazy rearm check (a live
-            # ``mergeable`` re-check on the next resolve) would not necessarily
-            # catch — e.g. a stale-review resolution never touched ``mergeable``.
             if _outcome_resolved_target_pr(outcome, ctx.params.pr_number):
                 self._executor._resolver.reset_unblock_pr_failures(ctx.params.pr_number)
                 self._executor._resolver.clear_pr_repick_cooldown(ctx.params.pr_number)
@@ -155,9 +130,6 @@ class PrRepickTracker:
                 )
                 return
             exhausted = self._executor._resolver.record_unblock_pr_failure(ctx.params.pr_number)
-            # Fast-path (#6): a failure naming a human/CI-infra blocker can't be
-            # fixed by re-dispatching, so mark manual-required now instead of
-            # burning the attempt budget. Exhaustion still backstops ambiguous cases.
             error_text = (outcome.error or "").lower()
             terminal = any(m in error_text for m in _UNBLOCK_MANUAL_REQUIRED_MARKERS)
             if exhausted or terminal:
@@ -165,16 +137,6 @@ class PrRepickTracker:
                     self.mark_pr_manual_required(ctx.params.pr_number),
                     "mark_pr_manual_required",
                 )
-            # #312: a merge-conflict failure is not permanently unfixable (the
-            # base branch may move and a later rebase succeed), but it is
-            # provably not worth re-attempting THIS tick — arm a short repick
-            # cooldown so the PPO doesn't immediately re-pick the same PR.
-            # threshold=1 in PR_REPICK_COOLDOWN_SPEC means this fires on the
-            # very first such failure, well before the 3-attempt exhaustion
-            # counter above would exclude it. rearmable=True: the PR's live
-            # ``mergeable`` field is free to re-check every resolve, so the
-            # cooldown clears the instant a rebase lands (see
-            # PlayCandidateService._rearm_pr_repick_cooldown).
             elif any(m in error_text for m in _UNBLOCK_PR_REPICK_COOLDOWN_MARKERS):
                 self._executor._resolver.record_pr_repick_cooldown(
                     ctx.params.pr_number,
@@ -229,10 +191,6 @@ class PrRepickTracker:
         outcome: PlayOutcome,
         completed_play_type: PlayType,
     ) -> None:
-        # #458: a write_implementation_plan that fails because the issue is
-        # un-plannable must not be re-selected — the priority sort re-picks it, the
-        # agent no-ops the same way, and the session spams comments. Park it with
-        # NEEDS_HUMAN_LABEL so _base_issue_available drops it until a human clears it.
         if (
             completed_play_type != PlayType.WRITE_IMPLEMENTATION_PLAN
             or outcome.success
@@ -246,7 +204,4 @@ class PrRepickTracker:
             self.mark_issue_needs_human(ctx.params.issue_number),
             "mark_issue_needs_human",
         )
-        # Shadow the label so the next state build excludes the issue before the
-        # gh CLI write is visible to a fresh get_open_issues read (same WAL/refresh
-        # lag as the ROOT_CAUSE_FOUND_LABEL shadow in CompletionProcessor).
         self._runtime.recent_applied_labels.append((ctx.params.issue_number, NEEDS_HUMAN_LABEL))

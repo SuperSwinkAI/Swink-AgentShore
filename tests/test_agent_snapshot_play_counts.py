@@ -1,9 +1,4 @@
-"""Tests for AgentSnapshot.tasks_completed/tasks_failed wiring.
-
-Repurposed from dead-code (formerly fed by AgentHandle.task_history which was
-never written) to count plays-per-agent in the current session, derived from
-play_history at state-build time.
-"""
+"""Tests for AgentSnapshot.tasks_completed/tasks_failed wiring."""
 
 from __future__ import annotations
 

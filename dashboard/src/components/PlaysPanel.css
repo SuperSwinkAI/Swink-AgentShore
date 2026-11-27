@@ -1,4 +1,3 @@
-/* ── Plays Panel — bottom frame ─────────────────────────────── */
 :root,
 :root[data-theme="light"] {
   --pp-card-bg: #f4f5f8;
@@ -275,7 +274,6 @@
   flex-shrink: 0;
 }
 
-/* state: active */
 .pp-card-active {
   background:
     linear-gradient(
@@ -346,7 +344,6 @@
   }
 }
 
-/* state: masked */
 .pp-card-masked {
   background: #0c0e12;
   border-color: rgba(255, 255, 255, 0.04);
@@ -387,12 +384,10 @@
   display: none;
 }
 
-/* state: default hover accent */
 .pp-card-default:hover {
   border-color: color-mix(in srgb, var(--zone-accent) 35%, var(--pp-line2));
 }
 
-/* reserved slots — italic name */
 .pp-card-reserved .pp-card-name {
   font-style: italic;
   color: rgba(255, 255, 255, 0.22);
@@ -401,7 +396,6 @@
   color: rgba(0, 0, 0, 0.22);
 }
 
-/* collapsed state */
 #plays-panel.pp-collapsed .pp-flat {
   display: none;
 }
@@ -409,7 +403,6 @@
   border-top: 1px solid var(--pp-line2);
 }
 
-/* bottom-bar: stack plays-panel above play-bar */
 #bottom-bar {
   display: flex;
   flex-direction: column;

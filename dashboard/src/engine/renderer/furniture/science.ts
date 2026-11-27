@@ -58,9 +58,9 @@ import {
   strokeWorldSegment,
 } from "../primitives";
 
-// Shared across the three science-lab draw functions below; "orange" here is
-// a muted variant distinct from the ORANGE_ACCENT_WARM used elsewhere, so it
-// stays local rather than joining the shared palette module.
+
+
+
 const SCIENCE_LAB_ACCENT_PALETTES: Record<
   ResolvedTheme,
   { cyan: string; orange: string; green: string }

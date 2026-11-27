@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock
 import pytest
 import pytest_asyncio
 
+from agentshore.agents.auth_probe import AUTH_EXPIRED, AUTH_OK, AuthProbeResult
 from agentshore.agents.handle import AgentInvocationResult
 from agentshore.agents.manager import _PLACEHOLDER_COLD_START_COST, AgentManager
 from agentshore.config import AgentConfig, GitHubIdentity, RuntimeConfig
@@ -100,9 +101,9 @@ async def test_instantiate_records_model_tier_metadata(
     handle = await mgr.instantiate(AgentType.CODEX, model_tier="small")
 
     assert handle.model_tier == "small"
-    assert handle.model == "gpt-5.6-luna"
+    assert handle.model == "gpt-6-luna"
     assert handle.reasoning_effort == "low"
-    assert handle.display_name.startswith("Codex/gpt-5.6-luna:")
+    assert handle.display_name.startswith("Codex/gpt-6-luna:")
 
 
 async def test_instantiate_marks_agent_auth_error_when_repo_preflight_fails(
@@ -142,9 +143,6 @@ async def test_instantiate_marks_agent_auth_error_when_repo_preflight_fails(
     handle = await mgr.instantiate(AgentType.CODEX)
 
     assert handle.status == AgentStatus.ERROR
-    # A preflight AUTH leaves the handle in ERROR with the AUTH class, so the
-    # completion path routes it through the standard take_break recovery (like a
-    # quota hold) rather than permanently benching the agent type.
     assert handle.last_error_class == "auth"
 
 
@@ -172,8 +170,6 @@ async def test_dispatch_success_updates_handle_and_store(
     mgr = _make_manager(store, tmp_path, mock_binary=str(mock_agent_path))
     handle = await mgr.instantiate(AgentType.CLAUDE_CODE)
     agent_id = handle.agent_id
-    # #161: a successful dispatch resets the storm counter so a one-off stall
-    # doesn't accumulate toward the bench limit.
     handle.consecutive_timeouts = 3
 
     result = await mgr.dispatch(agent_id, "do the work")
@@ -210,7 +206,6 @@ async def test_dispatch_failure_increments_failed_tasks(
     agent_id = handle.agent_id
 
     result = await mgr.dispatch(agent_id, "do the work")
-    # failure mode exits 0 — result is returned, not raised
     sr = parse_skill_result(result.raw_output)
     assert sr.success is False
 
@@ -219,7 +214,7 @@ async def test_dispatch_failure_increments_failed_tasks(
         (agent_id,),
     )
     row = await cursor.fetchone()
-    assert row[0] == 1  # dispatch returned normally (exit 0)
+    assert row[0] == 1
     assert row[1] == 0
 
 
@@ -298,9 +293,6 @@ async def test_instantiate_missing_configured_identity_token_marks_auth_error(
     mock_agent_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # The identity overlay is resolved once at instantiate(); a missing token
-    # fails that one-time preflight (no per-dispatch re-resolution) and leaves
-    # the handle ERROR/auth without registering it in the manager.
     monkeypatch.delenv("BOT_TOKEN", raising=False)
     agents = {
         "codex": AgentConfig(
@@ -331,7 +323,6 @@ async def test_instantiate_missing_configured_identity_token_marks_auth_error(
 
     assert handle.status == AgentStatus.ERROR
     assert handle.last_error_class == "auth"
-    # Half-constructed agent must not be registered (H5).
     assert handle.agent_id not in mgr.handles
     assert handle.agent_id not in mgr.circuit_breakers
 
@@ -378,11 +369,11 @@ async def test_instantiate_repo_preflight_failure_does_not_register_agent(
 
     handle = await mgr.instantiate(AgentType.CODEX)
 
-    # Repo access is verified exactly once at instantiate(), not per dispatch (C2).
     assert calls == 1
     assert handle.status == AgentStatus.ERROR
     assert handle.last_error_class == "auth"
-    # H5: preflight failure leaves no live, dispatchable handle behind.
+    assert AgentType.CODEX.value in mgr.wedge_cooldown_types
+    assert mgr.wedge_cooldown_reasons[AgentType.CODEX.value] == "identity_auth"
     assert handle.agent_id not in mgr.handles
     assert handle.agent_id not in mgr.circuit_breakers
     with pytest.raises(PreconditionFailed):
@@ -484,7 +475,7 @@ async def test_dispatch_stamps_busy_watchdog_deadline(
 
     mgr = _make_manager(store, tmp_path, mock_binary=str(mock_agent_path))
     handle = await mgr.instantiate(AgentType.CODEX)
-    assert handle.dispatch_deadline_monotonic is None  # nothing stamped yet
+    assert handle.dispatch_deadline_monotonic is None
 
     captured: dict[str, float | None] = {}
 
@@ -500,7 +491,6 @@ async def test_dispatch_stamps_busy_watchdog_deadline(
 
     assert captured["status_is_busy"] is True
     assert captured["deadline"] is not None
-    # Deadline is the effective timeout + margin into the future, never the past.
     assert captured["deadline"] > before
 
 
@@ -533,8 +523,6 @@ async def test_grok_first_byte_launch_wedge_records_cooldown_not_permanent_suppr
     assert handle.last_error_class == ErrorClass.TIMEOUT_STREAM_IDLE
     assert handle.timeout_count == 1
     assert handle.consecutive_timeouts == 1
-    # #202: a launch wedge records a DECAYING cooldown — the type must
-    # auto-recover after the cooldown.
     assert mgr.wedge_cooldown_types == {"grok"}
 
 
@@ -563,9 +551,7 @@ async def test_grok_stream_idle_timeout_without_launch_wedge_does_not_suppress_t
         await mgr.dispatch(handle.agent_id, "prompt")
 
     assert handle.last_error_class == ErrorClass.TIMEOUT_STREAM_IDLE
-    # A plain stream-idle timeout (no launch-wedge markers) is not a wedge.
     assert mgr.wedge_cooldown_types == set()
-    # #233: but it does start a per-type stream-hang streak (one is not a cluster).
     assert mgr._type_stream_hang_streak["grok"] == 1
 
 
@@ -585,7 +571,6 @@ async def test_antigravity_stream_hang_cluster_trips_decaying_cooldown(
             agents={
                 "antigravity": AgentConfig(enabled=True, binary=str(mock_agent_path), timeout=10)
             },
-            # Decouple from the circuit breaker so consecutive timeouts don't trip it.
             circuit_breaker=CircuitBreakerConfig(failures=_STREAM_HANG_CLUSTER_LIMIT + 5),
         ),
         working_dir=tmp_path,
@@ -601,19 +586,16 @@ async def test_antigravity_stream_hang_cluster_trips_decaying_cooldown(
     )
     monkeypatch.setattr("agentshore.agents.manager.dispatch_cli", dispatch_cli)
 
-    # Below the cluster limit: the streak builds but the type is not yet benched.
     for _ in range(_STREAM_HANG_CLUSTER_LIMIT - 1):
         with pytest.raises(PlayTimeoutError):
             await mgr.dispatch(handle.agent_id, "prompt")
     assert mgr.wedge_cooldown_types == set()
     assert mgr._type_stream_hang_streak[atype] == _STREAM_HANG_CLUSTER_LIMIT - 1
 
-    # The cluster-limit-th hang benches the whole agy type.
     with pytest.raises(PlayTimeoutError):
         await mgr.dispatch(handle.agent_id, "prompt")
     assert mgr.wedge_cooldown_types == {atype}
     assert mgr.wedge_cooldown_reasons[atype] == "stream_hang_cluster"
-    # Streak resets after tripping so the cooldown re-arms cleanly on recurrence.
     assert mgr._type_stream_hang_streak[atype] == 0
 
 
@@ -652,11 +634,10 @@ async def test_dispatch_blocked_when_circuit_breaker_open(
 
     from agentshore.errors import AgentProcessError
 
-    # Three failures open the breaker (default threshold = 3).
     for _ in range(3):
         with pytest.raises(AgentProcessError):
             await mgr.dispatch(agent_id, "prompt")
-        handle.transition_to(AgentStatus.IDLE)  # reset so dispatch doesn't short-circuit
+        handle.transition_to(AgentStatus.IDLE)
 
     with pytest.raises(PreconditionFailed, match="Circuit breaker OPEN"):
         await mgr.dispatch(agent_id, "prompt")
@@ -699,7 +680,6 @@ async def test_clear_refuses_to_kill_agent_with_active_play(
     handle = await mgr.instantiate(AgentType.CODEX)
     agent_id = handle.agent_id
 
-    # Mid-play, as dispatch() would set it.
     handle.start_play(
         play_type=AgentType.CODEX,  # type: ignore[arg-type]  # value only matters for message
         play_id=42,
@@ -738,7 +718,6 @@ async def test_clear_force_bypasses_active_play_guard(
     )
     assert handle.current_play_id == 99
 
-    # Must not raise.
     await mgr.clear(agent_id, force=True)
 
     assert agent_id not in mgr.handles
@@ -758,7 +737,6 @@ async def test_clear_allows_agent_whose_inflight_play_is_end_agent(
     handle = await mgr.instantiate(AgentType.CODEX)
     agent_id = handle.agent_id
 
-    # Simulate the executor's _mark_agent_current_play for an end_agent play.
     handle.start_play(
         play_type=PlayType.END_AGENT,
         play_id=7,
@@ -769,7 +747,6 @@ async def test_clear_allows_agent_whose_inflight_play_is_end_agent(
     )
     assert handle.current_play_id == 7
 
-    # Must not raise despite force defaulting to False.
     await mgr.clear(agent_id)
 
     assert agent_id not in mgr.handles
@@ -829,26 +806,19 @@ async def test_clear_handles_concurrent_process_null(
     mgr = _make_manager(store, tmp_path, mock_binary=str(mock_agent_path))
     handle = await mgr.instantiate(AgentType.CODEX)
 
-    # Simulate a process whose handle.process gets nulled while we're awaiting
-    # its .wait() — i.e. mid-clear, a concurrent dispatch finished and reset
-    # the handle. The local-binding fix in manager.py must ride through
-    # without dereferencing handle.process again.
     fake_proc = MagicMock()
     fake_proc.returncode = None
     fake_proc.terminate = MagicMock()
     fake_proc.kill = MagicMock()
 
     async def _wait_then_null() -> int:
-        # Pretend the racing dispatch finishes and clears the handle.
         handle.process = None
-        # Pretend the process exited cleanly during the wait.
         fake_proc.returncode = 0
         return 0
 
     fake_proc.wait = AsyncMock(side_effect=_wait_then_null)
     handle.process = fake_proc
 
-    # Must not raise.
     await mgr.clear(handle.agent_id)
 
     assert handle.agent_id not in mgr.handles
@@ -890,7 +860,6 @@ async def test_attempt_recovery_transitions_error_to_idle(
 
     handle.transition_to(AgentStatus.ERROR)
 
-    # Trip the breaker, then record success so it returns to CLOSED (dispatchable).
     cb = mgr.circuit_breakers[agent_id]
     cb.record_failure()
     cb.record_success()
@@ -911,7 +880,6 @@ async def test_attempt_recovery_fails_when_breaker_open(
 
     handle.transition_to(AgentStatus.ERROR)
 
-    # Trip the breaker so it's OPEN (default threshold = 3)
     cb = mgr.circuit_breakers[agent_id]
     for _ in range(3):
         cb.record_failure()
@@ -936,13 +904,17 @@ async def test_attempt_recovery_returns_false_for_unknown_agent_id(
     assert result is False
 
 
-async def test_attempt_recovery_does_not_clear_auth_quarantine(
-    store: DataStore, tmp_path: Path, mock_agent_path: Path
+async def test_attempt_recovery_keeps_auth_error_while_auth_still_fails(
+    store: DataStore, tmp_path: Path, mock_agent_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     mgr = _make_manager(store, tmp_path, mock_binary=str(mock_agent_path))
     handle = await mgr.instantiate(AgentType.CODEX)
     handle.transition_to(AgentStatus.ERROR)
     handle.last_error_class = ErrorClass.AUTH
+    monkeypatch.setattr(
+        "agentshore.agents.manager.probe_cli_auth",
+        lambda *_a, **_k: AuthProbeResult(AgentType.CODEX, AUTH_EXPIRED, "run codex login"),
+    )
 
     result = await mgr.attempt_recovery(handle.agent_id)
 
@@ -951,7 +923,26 @@ async def test_attempt_recovery_does_not_clear_auth_quarantine(
     assert handle.last_error_class == "auth"
 
 
-# Placeholder cost for no-usage agents (grok / antigravity).
+async def test_attempt_recovery_returns_auth_errored_agent_to_work_once_auth_ok(
+    store: DataStore, tmp_path: Path, mock_agent_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A take_break after a mid-run auth failure recovers the agent once auth works."""
+    mgr = _make_manager(store, tmp_path, mock_binary=str(mock_agent_path))
+    handle = await mgr.instantiate(AgentType.CODEX)
+    handle.transition_to(AgentStatus.ERROR)
+    handle.last_error_class = ErrorClass.AUTH
+    monkeypatch.setattr(
+        "agentshore.agents.manager.probe_cli_auth",
+        lambda *_a, **_k: AuthProbeResult(AgentType.CODEX, AUTH_OK, "authenticated"),
+    )
+
+    result = await mgr.attempt_recovery(handle.agent_id)
+
+    assert result is True
+    assert handle.status == AgentStatus.IDLE
+    assert handle.last_error_class is None
+
+
 def _invocation(dollar_cost: float) -> AgentInvocationResult:
     return AgentInvocationResult(
         raw_output="ok",
@@ -967,7 +958,6 @@ def test_placeholder_cost_uses_cold_start_before_any_measured_play(
     store: DataStore, tmp_path: Path
 ) -> None:
     mgr = _make_manager(store, tmp_path)
-    # No measured play yet → no-usage dispatch ($0) is re-billed the cold-start cost.
     out = mgr._apply_placeholder_cost(_invocation(0.0), agent_type=AgentType.ANTIGRAVITY)
     assert out.dollar_cost == pytest.approx(_PLACEHOLDER_COLD_START_COST)
 
@@ -976,15 +966,12 @@ def test_placeholder_cost_is_running_mean_of_measured_plays(
     store: DataStore, tmp_path: Path
 ) -> None:
     mgr = _make_manager(store, tmp_path)
-    # Two measured (usage-reporting) dispatches pass through unchanged and seed the mean.
     a = mgr._apply_placeholder_cost(_invocation(1.00), agent_type=AgentType.CLAUDE_CODE)
     b = mgr._apply_placeholder_cost(_invocation(3.00), agent_type=AgentType.CODEX)
     assert a.dollar_cost == pytest.approx(1.00)
     assert b.dollar_cost == pytest.approx(3.00)
-    # A no-usage grok dispatch is billed the mean of the two measured plays (= 2.00).
     grok = mgr._apply_placeholder_cost(_invocation(0.0), agent_type=AgentType.GROK)
     assert grok.dollar_cost == pytest.approx(2.00)
-    # Placeholder plays must NOT pollute the measured mean — another sees 2.00, not drift.
     grok2 = mgr._apply_placeholder_cost(_invocation(0.0), agent_type=AgentType.GROK)
     assert grok2.dollar_cost == pytest.approx(2.00)
 
@@ -1007,7 +994,6 @@ async def test_clear_cancels_pending_break_recovery(
     await mgr.clear(agent_id)
 
     assert event.is_set()
-    # Idempotent: the registration is popped, so a second cancel is a no-op.
     assert mgr.cancel_break_recovery(agent_id, reason="agent_cleared") is False
 
 

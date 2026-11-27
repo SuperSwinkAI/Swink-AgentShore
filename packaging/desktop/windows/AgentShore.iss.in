@@ -1,7 +1,3 @@
-; Inno Setup template for the AgentShore Windows desktop installer.
-;
-; Built by scripts/build-windows.ps1. The wizard mirrors the macOS pkg
-; distribution choices: required Desktop, opt-in Timelapse, opt-out CLI.
 
 #ifndef AppVersion
   #error AppVersion must be supplied by build-windows.ps1
@@ -164,8 +160,6 @@ end;
 
 procedure InitializeWizard();
 begin
-  { Desktop is fixed. CLI mirrors the macOS pkg's opt-out default; Timelapse
-    mirrors its opt-in default. }
   WizardSelectComponents('desktop,cli');
 end;
 
@@ -182,18 +176,12 @@ begin
     begin
       if not RunProvisionerStep('Provisioning Timelapse Capture', 'timelapse', False, False, True, True) then
       begin
-        { Optional step already surfaced a warning. }
       end;
     end
     else
     begin
-      { Timelapse is opt-in, so a previously-installed CLI would otherwise never
-        be upgraded by a later install. Always run the update step: it compares
-        the installed version to the expected pin and upgrades in place when
-        they differ, and is a no-op when timelapse-capture is not installed. }
       if not RunProvisionerStep('Updating Timelapse Capture', 'timelapse-update', False, False, True, True) then
       begin
-        { Optional step already surfaced a warning. }
       end;
     end;
 
@@ -201,7 +189,6 @@ begin
     begin
       if not RunProvisionerStep('Installing AgentShore CLI', 'cli', True, True, True, True) then
       begin
-        { Optional step already surfaced a warning. }
       end;
     end;
 

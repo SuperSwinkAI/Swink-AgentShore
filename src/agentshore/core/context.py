@@ -25,12 +25,8 @@ class _DispatchContext:
     play_type: PlayType
     params: PlayParams
     state_at_dispatch: OrchestratorState
-    pending_step: object | None  # _PendingStep from PPOSelector
+    pending_step: object | None
     dispatched_at: float
-    # OverrideKind for plays dispatched from the override queue (bootstrap
-    # recipe, user-request, retry, etc); None means PPO drove the selection.
-    # Used by _process_completion to register the play_id in
-    # _overrides.dispatched_play_ids so the loop detector can ignore it.
     override_kind: OverrideKind | None = None
 
 
@@ -50,7 +46,6 @@ class _StateData:
     play_history: list[PlayRecord]
     trajectory_record: TrajectorySnapshotRecord | None
     graph: ProjectGraph | None = None
-    # V1 contract fields populated alongside the other DB reads.
     policy_checkpoint_id: str | None = None
     learnings_count: int = 0
     human_feedback_count: int = 0

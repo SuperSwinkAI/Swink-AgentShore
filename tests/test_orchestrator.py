@@ -39,10 +39,6 @@ from agentshore.state import (
     SessionState,
 )
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 
 def _cfg() -> RuntimeConfig:
     return RuntimeConfig()
@@ -281,7 +277,6 @@ def test_compute_play_streaks_real_streak_after_override_burst() -> None:
 
 
 def test_author_labels_cover_all_agent_types_with_dashboard_colors() -> None:
-    # cfg content is irrelevant — all AgentType values are always bootstrapped.
     cfg = RuntimeConfig(agents={})
 
     labels = _author_labels_for_config(cfg, "agentshore/")
@@ -293,16 +288,10 @@ def test_author_labels_cover_all_agent_types_with_dashboard_colors() -> None:
     assert "agentshore/author:custom_agent" not in label_map
 
 
-# ---------------------------------------------------------------------------
-# bootstrap + __aenter__ creates session row
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_aenter_creates_session_row(tmp_path: Path) -> None:
     orch = await Orchestrator.bootstrap(cfg=_cfg(), repo_root=tmp_path)
     async with orch:
-        # Query the DB directly to confirm a session row exists
         import aiosqlite
 
         db_path = tmp_path / ".agentshore" / "agentshore.db"
@@ -337,7 +326,6 @@ async def test_bootstrap_closes_store_on_post_init_failure(
     async def _boom(*_args: object, **_kwargs: object) -> None:
         raise RuntimeError("post-init bootstrap phase failed")
 
-    # Fail the very next phase after datastore-init (keeps the test fast — no PPO).
     monkeypatch.setattr(phases, "_phase_init_datastore", _capture_init)
     monkeypatch.setattr(phases, "_phase_reset_session_scoped_tables", _boom)
 
@@ -346,13 +334,7 @@ async def test_bootstrap_closes_store_on_post_init_failure(
 
     store = captured["store"]
     assert store is not None
-    # close() nulls _db; a leaked connection would leave it set.
     assert store._db is None  # type: ignore[attr-defined]
-
-
-# ---------------------------------------------------------------------------
-# __aexit__ marks session completed
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -418,20 +400,15 @@ async def test_stop_clears_in_progress_beads_during_shutdown(tmp_path: Path) -> 
     assert phases == ["session_shutdown"]
 
 
-# ---------------------------------------------------------------------------
-# run_until_idle terminates when selector returns None
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_run_until_idle_terminates_on_none_selector(tmp_path: Path) -> None:
-    selector = FixedPlanSelector([])  # immediately returns None
+    selector = FixedPlanSelector([])
     orch = await Orchestrator.bootstrap(cfg=_cfg(), repo_root=tmp_path, selector=selector)
     async with orch:
         with patch.object(
             orch._state_builder, "build_state", new=AsyncMock(return_value=_idle_state_no_work())
         ):
-            await orch.run_until_idle()  # should return without hanging
+            await orch.run_until_idle()
 
 
 @pytest.mark.asyncio
@@ -717,14 +694,10 @@ async def test_end_session_force_drain_after_repeated_revalidation_blocks(
     selector.consume_repick_count = MagicMock(return_value=0)
     orch = await Orchestrator.bootstrap(cfg=_cfg(), repo_root=tmp_path, selector=selector)
 
-    # Every selection is a failsafe END_SESSION (stamped by the reverse-failsafe).
     selector.select = AsyncMock(
         return_value=(PlayType.END_SESSION, PlayParams(extras={"reverse_failsafe": True}))
     )
 
-    # The real gate clears the selection digest on a block so the next tick
-    # re-runs the selector; mirror that so the loop keeps re-attempting (the
-    # whole point of the wedge) rather than idling on an unchanged digest.
     async def _block(*, failsafe: bool = False) -> bool:
         orch._runtime.last_selection_digest = None
         return False
@@ -741,8 +714,6 @@ async def test_end_session_force_drain_after_repeated_revalidation_blocks(
             patch.object(
                 orch._state_builder,
                 "build_state",
-                # Work + an idle agent → should_terminate stays False so the loop
-                # keeps ticking, exactly like the live bookkeeping wedge.
                 new=AsyncMock(return_value=_idle_state_with_issue()),
             ),
             patch.object(
@@ -803,7 +774,6 @@ async def test_blocked_failsafe_end_session_preserves_idle_streak(tmp_path: Path
 @pytest.mark.asyncio
 async def test_run_until_idle_does_not_dispatch_stale_end_session(tmp_path: Path) -> None:
     selector = MagicMock()
-    # Real int (not MagicMock) so _record_selection_repicks survives the comparison.
     selector.consume_repick_count = MagicMock(return_value=0)
     orch = await Orchestrator.bootstrap(cfg=_cfg(), repo_root=tmp_path, selector=selector)
     calls = 0
@@ -837,18 +807,6 @@ async def test_run_until_idle_does_not_dispatch_stale_end_session(tmp_path: Path
 
     revalidate.assert_awaited_once()
     dispatch.assert_not_awaited()
-
-
-# Removed: test_dispatch_revalidation_blocks_fresh_cooldown_without_play_row.
-#
-# Eligibility refactor: the dispatch-time revalidation pass (``revalidate=True``
-# → ``_dispatch_revalidation_reason`` → ``dispatch_revalidation_block`` mutation)
-# was deleted. ``_dispatch_play`` is now purely side-effecting; play validity
-# (including cooldown gates) is settled upstream by ``EligibilityAuthority`` —
-# the action mask presents only valid plays and ``confirm()`` rejects live
-# drift with a clean re-pick (no plays-table skip row, no RL sample). The
-# clean-re-pick contract is covered by test_confirm_live_drift_is_clean_repick
-# and the parallel-dispatch drained-pool test in tests/test_rl_selector.py.
 
 
 @pytest.mark.asyncio
@@ -885,11 +843,6 @@ async def test_run_until_idle_dispatches_single_end_session(tmp_path: Path) -> N
     assert execute.await_count == 1
 
 
-# ---------------------------------------------------------------------------
-# run_until_idle terminates on END_SESSION play
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_run_until_idle_terminates_on_end_session(tmp_path: Path) -> None:
     plan = [(PlayType.END_SESSION, PlayParams())]
@@ -911,8 +864,6 @@ async def test_run_until_idle_terminates_on_end_session(tmp_path: Path) -> None:
             patch.object(orch._executor, "execute", new=AsyncMock(return_value=end_outcome)),
         ):
             await orch.run_until_idle()
-
-    # Just verifying it terminates and session is completed
 
 
 @pytest.mark.asyncio
@@ -971,11 +922,6 @@ async def test_closed_graph_does_not_auto_dispatch_end_session(tmp_path: Path) -
         await orch.__aexit__(None, None, None)
 
 
-# ---------------------------------------------------------------------------
-# run_until_idle starts budget reserve drain
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_run_until_idle_begins_drain_on_budget_reserve(tmp_path: Path) -> None:
     selector = MagicMock()
@@ -984,7 +930,6 @@ async def test_run_until_idle_begins_drain_on_budget_reserve(tmp_path: Path) -> 
     cfg = _cfg()
     orch = await Orchestrator.bootstrap(cfg=cfg, repo_root=tmp_path, selector=selector)
 
-    # Override build_state to return a state inside the final $5 budget reserve.
     from agentshore.state import BudgetSnapshot
 
     reserve_budget = BudgetSnapshot(
@@ -1091,7 +1036,6 @@ async def test_instantiate_selector_pick_dispatches_with_in_flight_work(
 ) -> None:
     selector = MagicMock()
     selector.select = AsyncMock(return_value=(PlayType.INSTANTIATE_AGENT, PlayParams()))
-    # Real int (not MagicMock) so _record_selection_repicks survives the comparison.
     selector.consume_repick_count = MagicMock(return_value=0)
     orch = await Orchestrator.bootstrap(cfg=_cfg(), repo_root=tmp_path, selector=selector)
 
@@ -1153,23 +1097,11 @@ async def test_instantiate_selector_pick_dispatches_with_in_flight_work(
     assert first_play_type == PlayType.INSTANTIATE_AGENT
 
 
-# ---------------------------------------------------------------------------
-# _on_crash logs without recovering
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_on_crash_logs_without_recovering(tmp_path: Path) -> None:
     orch = await Orchestrator.bootstrap(cfg=_cfg(), repo_root=tmp_path)
     async with orch:
-        # Should not raise; should just log
         await orch._completion.on_crash("agent-123", 1)
-        # No handles were created so there's nothing to verify beyond no exception
-
-
-# ---------------------------------------------------------------------------
-# _on_context_pressure annotates context_pressure_hints
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -1180,22 +1112,12 @@ async def test_on_context_pressure_annotates_hints(tmp_path: Path) -> None:
         assert orch._runtime.context_pressure_hints.get("agent-42") == pytest.approx(0.87)
 
 
-# ---------------------------------------------------------------------------
-# stop() is idempotent
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_stop_is_idempotent(tmp_path: Path) -> None:
     orch = await Orchestrator.bootstrap(cfg=_cfg(), repo_root=tmp_path)
     async with orch:
         await orch.stop()
-        await orch.stop()  # second call should be a no-op, not raise
-
-
-# ---------------------------------------------------------------------------
-# KeyboardInterrupt during run_until_idle exits cleanly
-# ---------------------------------------------------------------------------
+        await orch.stop()
 
 
 @pytest.mark.asyncio
@@ -1210,11 +1132,6 @@ async def test_keyboard_interrupt_exits_cleanly(tmp_path: Path) -> None:
             await orch.run_until_idle()
 
 
-# ---------------------------------------------------------------------------
-# stop() wakes a paused loop
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_stop_wakes_paused_loop(tmp_path: Path) -> None:
     """stop() should wake a paused orchestrator so it can exit."""
@@ -1225,7 +1142,6 @@ async def test_stop_wakes_paused_loop(tmp_path: Path) -> None:
     )
     orch = await Orchestrator.bootstrap(cfg=_cfg(), repo_root=tmp_path, selector=selector)
 
-    # Mock executor so plays don't actually run
     end_outcome = _idle_outcome(PlayType.ISSUE_PICKUP)
     paused = asyncio.Event()
 
@@ -1234,7 +1150,6 @@ async def test_stop_wakes_paused_loop(tmp_path: Path) -> None:
         state: OrchestratorState,
         override: PlayParams | None = None,
     ) -> PlayOutcome:
-        # Pause after first play
         await orch.pause("test")
         paused.set()
         return end_outcome
@@ -1242,20 +1157,11 @@ async def test_stop_wakes_paused_loop(tmp_path: Path) -> None:
     async with orch:
         with patch.object(orch._executor, "execute", new=mock_execute):
             task = asyncio.create_task(orch.run_until_idle())
-            # Wait deterministically until the loop has actually paused rather
-            # than sleeping a fixed interval (the prior wall-clock wait raced
-            # under xdist load, #13).
             await asyncio.wait_for(paused.wait(), timeout=5.0)
             assert not orch._runtime.pause_event.is_set()
-            # stop() should wake it
             await orch.stop()
             await asyncio.wait_for(task, timeout=5.0)
             assert task.done()
-
-
-# ---------------------------------------------------------------------------
-# Error-recovery: executor raises — loop continues, doesn't crash
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -1298,13 +1204,7 @@ async def test_executor_exception_does_not_crash_loop(tmp_path: Path) -> None:
         ):
             await asyncio.wait_for(orch.run_until_idle(), timeout=5.0)
 
-    # Both plays were attempted (failure didn't crash the loop)
     assert call_count == 2
-
-
-# ---------------------------------------------------------------------------
-# _process_completion handles cancelled task without crash
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -1315,7 +1215,7 @@ async def test_process_completion_handles_cancelled_task(tmp_path: Path) -> None
     orch = await Orchestrator.bootstrap(cfg=_cfg(), repo_root=tmp_path)
 
     async with orch:
-        # Create a cancelled task
+
         async def _noop() -> PlayOutcome:
             return _idle_outcome(PlayType.ISSUE_PICKUP)
 
@@ -1326,13 +1226,7 @@ async def test_process_completion_handles_cancelled_task(tmp_path: Path) -> None
         with contextlib.suppress(asyncio.CancelledError):
             await task
 
-        # Should not raise even with cancelled task and missing dispatch context
         await orch._completion.process_completion("nonexistent-dispatch-id", task)
-
-
-# ---------------------------------------------------------------------------
-# Bootstrap recipe: small-Claude included when tier is enabled
-# ---------------------------------------------------------------------------
 
 
 def _make_mock_orch() -> MagicMock:
@@ -1379,7 +1273,6 @@ def test_bootstrap_recipe_queues_configured_large_then_different_medium() -> Non
         ),
         (PlayType.GROOM_BACKLOG, PlayParams(bypass_preconditions=True)),
     ]
-    # Groom waits for the seed audit to complete before releasing.
     assert entries[3].wait_for_play_type == PlayType.SEED_PROJECT
 
 
@@ -1461,7 +1354,6 @@ def test_bootstrap_recipe_skips_medium_when_no_different_backend_available() -> 
         ),
         (PlayType.GROOM_BACKLOG, PlayParams(bypass_preconditions=True)),
     ]
-    # Even with no medium spawn, groom still runs after the seed audit.
     assert entries[2].wait_for_play_type == PlayType.SEED_PROJECT
 
 
@@ -1568,11 +1460,6 @@ def test_bootstrap_recipe_order() -> None:
     assert len(entries) == 4
 
 
-# ---------------------------------------------------------------------------
-# Bootstrap recipe: seed vs cleanup decision (desktop-65mq + desktop-arph)
-# ---------------------------------------------------------------------------
-
-
 def _bootstrap_cfg(
     *, cleanup_threshold: int = 50, disabled_plays: tuple[str, ...] = ()
 ) -> RuntimeConfig:
@@ -1592,7 +1479,6 @@ def test_bootstrap_first_play_is_seed_when_seed_path_provided(tmp_path: Path) ->
     orch = _make_mock_orch()
     seed_file = tmp_path / "seed.md"
     seed_file.write_text("# Seed", encoding="utf-8")
-    # High issue count would otherwise route to cleanup; seed_path overrides.
     _phase_queue_agent_instantiation(orch=orch, cfg=cfg, seed_path=seed_file, open_issues_count=500)
 
     entries = []
@@ -1633,8 +1519,6 @@ def test_bootstrap_open_start_spawns_full_fleet_then_groom_without_seed() -> Non
     while not orch._overrides.empty():
         entries.append(orch._overrides.get_nowait())
 
-    # claude_code + codex, each at every default tier (medium, small, large in
-    # enabled_model_tiers / MODEL_TIER_PRIORITY order), then groom.
     assert [e.play_type for e in entries] == [PlayType.INSTANTIATE_AGENT] * 6 + [
         PlayType.GROOM_BACKLOG
     ]
@@ -1649,12 +1533,6 @@ def test_bootstrap_open_start_spawns_full_fleet_then_groom_without_seed() -> Non
     ]
     assert all(e.kind is OverrideKind.BOOTSTRAP for e in entries)
     assert all(e.params.bypass_preconditions for e in entries[:6])
-    # Groom bypasses the warmup floor / beads gate so it runs immediately at
-    # bootstrap. As the first agent-consumer it carries NO wait_for gate — it
-    # claims an agent by queue position (mirroring SEED_PROJECT in the seed
-    # recipe) so PPO can't free-select onto an idle agent on a None override
-    # tick and starve groom of staffing. The 6 instantiate overrides all drain
-    # ahead of groom, so PPO never gets a turn until groom has dequeued.
     assert entries[6].params == PlayParams(bypass_preconditions=True)
     assert entries[6].wait_for_play_type is None
 
@@ -1684,10 +1562,8 @@ def test_bootstrap_open_start_no_epics_routes_to_seed_recipe() -> None:
         PlayType.INSTANTIATE_AGENT,
         PlayType.GROOM_BACKLOG,
     ]
-    # Seedless: SEED_PROJECT runs with no seed document.
     assert entries[1].params.seed_path is None
     assert entries[1].params.bypass_preconditions is True
-    # Groom still waits for the (seedless) seed audit to complete.
     assert entries[3].wait_for_play_type == PlayType.SEED_PROJECT
 
 
@@ -1719,8 +1595,6 @@ def test_bootstrap_graph_read_failed_routes_to_open_not_seed() -> None:
     while not orch._overrides.empty():
         entries.append(orch._overrides.get_nowait())
 
-    # Same shape as the graph_has_epics=True open-start recipe — NOT the
-    # seed recipe (no SEED_PROJECT anywhere in this queue).
     assert [e.play_type for e in entries] == [PlayType.INSTANTIATE_AGENT] * 6 + [
         PlayType.GROOM_BACKLOG
     ]
@@ -1745,7 +1619,6 @@ def test_bootstrap_open_start_skips_groom_when_user_disabled() -> None:
     while not orch._overrides.empty():
         entries.append(orch._overrides.get_nowait())
 
-    # Full enabled fleet (claude + codex × 3 tiers), no groom.
     assert [e.play_type for e in entries] == [PlayType.INSTANTIATE_AGENT] * 6
 
 
@@ -1782,7 +1655,6 @@ def test_bootstrap_open_start_ignores_backlog_size() -> None:
     while not orch._overrides.empty():
         entries.append(orch._overrides.get_nowait())
 
-    # Full enabled fleet (claude + codex × 3 tiers), then groom.
     assert [e.play_type for e in entries] == [PlayType.INSTANTIATE_AGENT] * 6 + [
         PlayType.GROOM_BACKLOG
     ]

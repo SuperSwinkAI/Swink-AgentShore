@@ -36,7 +36,7 @@ agent_defaults:
     # Current-gen Sonnet (claude-sonnet-5-5) rates.
     max_context: 1000000
     cost_per_1k_input: 0.002
-    cost_per_1k_cached_input: 0.0002
+    cost_per_1k_cached_input: 0.0001
     cost_per_1k_output: 0.01
   codex:
     max_context: 272000
@@ -74,15 +74,21 @@ models:
   # ── claude_code (Anthropic) ────────────────────────────────────────────────
   # Rates from Anthropic's published pricing (2026-10). Cache read/write use the
   # global multipliers unless Anthropic publishes an explicit cache-read rate.
-  # Current generation — the CLI aliases resolve here (verified live, claude
-  # 2.1.295): fable -> claude-fable-5-1, opus -> claude-opus-5-5,
-  # sonnet -> claude-sonnet-5-5, haiku -> claude-haiku-5-5.
-  claude-fable-5-1: &claude_fable_5_1_rates
+  # Current generation — the CLI aliases resolve here: fable -> claude-fable-5-2
+  # (claude 2.1.321+; earlier CLIs resolved it to claude-fable-5-1),
+  # opus -> claude-opus-5-5, sonnet -> claude-sonnet-5-5, haiku -> claude-haiku-5-5.
+  # Fable 5.2 is priced below 5.1: $8 / $40 per MTok, cache reads $0.20.
+  claude-fable-5-2: &claude_fable_5_2_rates
+    max_context: 1000000
+    cost_per_1k_input: 0.008
+    cost_per_1k_cached_input: 0.0002
+    cost_per_1k_output: 0.04
+  fable: *claude_fable_5_2_rates
+  claude-fable-5-1:
     max_context: 1000000
     cost_per_1k_input: 0.01
     cost_per_1k_cached_input: 0.00025
     cost_per_1k_output: 0.05
-  fable: *claude_fable_5_1_rates
   claude-opus-5-5: &claude_opus_5_5_rates
     max_context: 1000000
     cost_per_1k_input: 0.004
@@ -92,7 +98,7 @@ models:
   claude-sonnet-5-5: &claude_sonnet_5_5_rates
     max_context: 1000000
     cost_per_1k_input: 0.002
-    cost_per_1k_cached_input: 0.0002
+    cost_per_1k_cached_input: 0.0001
     cost_per_1k_output: 0.01
   sonnet: *claude_sonnet_5_5_rates
   # Prompts over 100K tokens bill at $0.50/$2.50 per MTok; the base rate is
@@ -150,6 +156,34 @@ models:
     max_context: 272000
     cost_per_1k_input: 0.001
     cost_per_1k_output: 0.006
+  gpt-6.2-astra:
+    max_context: 272000
+    cost_per_1k_input: 0.010
+    cost_per_1k_output: 0.060
+  gpt-6.2-sol:
+    max_context: 500000
+    cost_per_1k_input: 0.005
+    cost_per_1k_output: 0.030
+  gpt-6.1-terra:
+    max_context: 500000
+    cost_per_1k_input: 0.0025
+    cost_per_1k_output: 0.015
+  gpt-6.1-sol:
+    max_context: 500000
+    cost_per_1k_input: 0.005
+    cost_per_1k_output: 0.030
+  gpt-6-astra:
+    max_context: 272000
+    cost_per_1k_input: 0.010
+    cost_per_1k_output: 0.060
+  gpt-6-sol:
+    max_context: 272000
+    cost_per_1k_input: 0.005
+    cost_per_1k_output: 0.030
+  gpt-6-luna:
+    max_context: 272000
+    cost_per_1k_input: 0.001
+    cost_per_1k_output: 0.006
   gpt-5.5:
     # max_context verified live via codex-cli 0.144.1 (context_window: 272000).
     max_context: 272000
@@ -204,6 +238,12 @@ models:
   Gemini 3.5 Flash (High): *agy_gemini_rates
   Gemini 3.1 Pro (Low): *agy_gemini_rates
   Gemini 3.1 Pro (High): *agy_gemini_rates
+  Gemini 4 Argon (Low): *agy_gemini_rates
+  Gemini 4 Argon (Medium): *agy_gemini_rates
+  Gemini 4 Argon (High): *agy_gemini_rates
+  Gemini 4 Hydrogen (Low): *agy_gemini_rates
+  Gemini 4 Hydrogen (Medium): *agy_gemini_rates
+  Gemini 4 Hydrogen (High): *agy_gemini_rates
   Gemini 3.8 Flash (Low): *agy_gemini_rates
   Gemini 3.8 Flash (Medium): *agy_gemini_rates
   Gemini 3.8 Flash (High): *agy_gemini_rates

@@ -67,9 +67,6 @@ def _state(
     )
 
 
-# --- registry + slot --------------------------------------------------------
-
-
 def test_play_registered_under_reconcile_state() -> None:
     play = build_default_registry().get(PlayType.RECONCILE_STATE)
     assert isinstance(play, ReconcileStatePlay)
@@ -79,9 +76,6 @@ def test_play_registered_under_reconcile_state() -> None:
 
 def test_slot_11_is_reconcile_state() -> None:
     assert PLAY_TO_INDEX[PlayType.RECONCILE_STATE] == 11
-
-
-# --- declared gates ---------------------------------------------------------
 
 
 def test_play_declares_expected_gate_set() -> None:
@@ -94,9 +88,6 @@ def test_play_declares_expected_gate_set() -> None:
     assert gates[1].play_type == PlayType.RECONCILE_STATE
     assert isinstance(gates[2], ArmedByFailureGate)
     assert gates[2].play_type == PlayType.RECONCILE_STATE
-
-
-# --- preconditions wiring (gate behaviors covered in test_gates.py) ---------
 
 
 def test_masked_when_no_failures_yet() -> None:
@@ -160,9 +151,6 @@ def test_self_failure_does_not_self_arm() -> None:
     assert "no observable wedge" in reasons[0].text
 
 
-# --- capability + in-flight precedence --------------------------------------
-
-
 def test_capability_gate_fires_when_no_idle_agent() -> None:
     """No idle agent → ELIGIBILITY mask appears in the reason list."""
     busy = AgentSnapshot(
@@ -193,9 +181,6 @@ def test_in_flight_gate_fires_during_dispatch() -> None:
     )
     reasons = ReconcileStatePlay().preconditions(state)
     assert any("already in flight" in r.text for r in reasons)
-
-
-# --- reward shaping ---------------------------------------------------------
 
 
 def test_reward_bonus_applied_on_success() -> None:
@@ -244,9 +229,6 @@ def test_reward_breakdown_field_default_zero() -> None:
     """RewardBreakdown initializes the new field to 0.0 so legacy callers stay sound."""
     bd = RewardBreakdown()
     assert bd.reconcile_state_success_bonus == 0.0
-
-
-# --- active-play cross-check (#93) ------------------------------------------
 
 
 def _agent_snapshot_with_play(
@@ -325,9 +307,6 @@ def test_wedge_signals_active_agents_empty_when_all_idle(tmp_path: Path) -> None
     assert signals["active_agents_in_flight"] == []
 
 
-# --- mid-session orphan sweep (#330) -----------------------------------------
-
-
 class _FakeCtx:
     """Minimal PlayExecutionContext stand-in — mirrors test_trunk_artifacts.py's."""
 
@@ -345,7 +324,7 @@ async def _record_closed_cleanup_play(store: object, *, session_id: str) -> int:
             session_id=session_id,
             play_type=PlayType.CLEANUP.value,
             started_at="2026-06-12T00:01:00+00:00",
-            success=False,  # killed mid-flight: never stamped ended_at
+            success=False,
         )
     )
 
@@ -375,7 +354,7 @@ async def test_sweep_reclaims_prior_killed_play_orphan(tmp_path: Path) -> None:
         os.utime(orphan, (1900000000.0, 1900000000.0))
 
         ctx = _FakeCtx(store, repo, session_id="sess")
-        state = _state(agents=[_idle_agent()])  # nobody in flight
+        state = _state(agents=[_idle_agent()])
 
         await _sweep_mid_session_orphans(state, ctx)
 
@@ -411,7 +390,7 @@ async def test_sweep_protects_file_owned_by_active_trunk_play(tmp_path: Path) ->
         owner = await _record_closed_cleanup_play(store, session_id="sess")
         in_flight = repo / "in_flight.json"
         in_flight.write_text("{}")
-        os.utime(in_flight, (1900000200.0, 1900000200.0))  # after the busy agent started
+        os.utime(in_flight, (1900000200.0, 1900000200.0))
 
         busy_agent = AgentSnapshot(
             agent_id="agent-busy",
@@ -424,7 +403,7 @@ async def test_sweep_protects_file_owned_by_active_trunk_play(tmp_path: Path) ->
             tasks_failed=0,
             current_play_type=PlayType.CLEANUP,
             current_play_id=owner + 1,
-            current_play_started_at="2030-03-17T17:46:40+00:00",  # epoch 1900000000
+            current_play_started_at="2030-03-17T17:46:40+00:00",
         )
         state = _state(agents=[busy_agent])
 
@@ -449,5 +428,4 @@ async def test_sweep_exception_is_swallowed_and_does_not_raise(tmp_path: Path) -
     ctx = _FakeCtx(_ExplodingStore(), tmp_path, session_id="sess")
     state = _state(agents=[_idle_agent()])
 
-    # Must not raise.
     await _sweep_mid_session_orphans(state, ctx)

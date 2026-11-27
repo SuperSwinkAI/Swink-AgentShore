@@ -13,13 +13,13 @@ from unittest.mock import MagicMock
 
 import torch
 
-from agentshore.rl.checkpoint_store import canonical_lock_filename, canonical_weights_filename
+from agentshore.rl.checkpoint_store import (
+    canonical_lock_filename,
+    canonical_weights_filename,
+    shared_state,
+)
 from agentshore.rl.policy import ActorCritic
 from agentshore.rl.selector import _archive_old_canonicals, _prune_local_checkpoints
-
-# ---------------------------------------------------------------------------
-# _prune_local_checkpoints
-# ---------------------------------------------------------------------------
 
 
 def test_prune_keeps_last_n(tmp_path: Path) -> None:
@@ -74,7 +74,6 @@ def test_prune_does_not_touch_non_numbered_files(tmp_path: Path) -> None:
     for i in range(5):
         (weights_dir / f"policy_{i:06d}.pt").write_bytes(b"fake")
 
-    # These should never be pruned by _prune_local_checkpoints.
     canonical = weights_dir / canonical_weights_filename()
     canonical.write_bytes(b"canonical")
     legacy = weights_dir / "policy_legacy_v1.pt"
@@ -84,11 +83,6 @@ def test_prune_does_not_touch_non_numbered_files(tmp_path: Path) -> None:
 
     assert canonical.exists(), "canonical file was incorrectly deleted"
     assert legacy.exists(), "legacy file was incorrectly deleted"
-
-
-# ---------------------------------------------------------------------------
-# _archive_old_canonicals
-# ---------------------------------------------------------------------------
 
 
 def test_archive_renames_old_single_version_scheme(tmp_path: Path) -> None:
@@ -165,7 +159,7 @@ def test_archive_skips_already_legacy_named(tmp_path: Path) -> None:
 
     _archive_old_canonicals(weights_dir)
 
-    assert legacy_existing.exists()  # not double-archived
+    assert legacy_existing.exists()
 
 
 def test_archive_skips_numbered_local_checkpoints(tmp_path: Path) -> None:
@@ -188,11 +182,6 @@ def test_archive_empty_dir_is_noop(tmp_path: Path) -> None:
     weights_dir.mkdir()
     _archive_old_canonicals(weights_dir)
     assert list(weights_dir.iterdir()) == []
-
-
-# ---------------------------------------------------------------------------
-# _write_global_canonical — delta accumulation
-# ---------------------------------------------------------------------------
 
 
 def _make_selector_stub(weights_dir: Path) -> MagicMock:
@@ -235,7 +224,8 @@ def test_delta_full_write_when_no_base(tmp_path: Path) -> None:
 
     assert canonical.exists()
     loaded = ActorCritic.load(canonical)
-    for k in original_sd:
+    assert loaded.num_configs == 0  # config head is roster-specific; never shared
+    for k in shared_state(original_sd):
         assert torch.allclose(loaded.state_dict()[k], original_sd[k])
 
 
@@ -246,11 +236,9 @@ def test_delta_accumulates_onto_existing_global(tmp_path: Path) -> None:
     canonical = weights_dir / canonical_weights_filename()
     lock = weights_dir / canonical_lock_filename()
 
-    # The global canonical represents prior learning.
     global_sd = {k: v.clone() for k, v in ActorCritic().state_dict().items()}
     _policy_with_sd(global_sd).save(canonical)
 
-    # Session: reloaded global as base, PPO shifted all weights by +0.1.
     after_update_sd = _add_scalar_to_sd(global_sd, 0.1)
     stub = _make_selector_stub(weights_dir)
     stub._reload_base = {k: v.clone() for k, v in global_sd.items()}
@@ -259,8 +247,8 @@ def test_delta_accumulates_onto_existing_global(tmp_path: Path) -> None:
     stub._write_global_canonical_blocking(canonical, lock)
 
     merged = ActorCritic.load(canonical)
-    for k in global_sd:
-        expected = global_sd[k] + (after_update_sd[k] - global_sd[k])  # = global + 0.1
+    for k in shared_state(global_sd):
+        expected = global_sd[k] + (after_update_sd[k] - global_sd[k])
         assert torch.allclose(merged.state_dict()[k], expected, atol=1e-5), (
             f"delta not applied correctly for {k}"
         )
@@ -276,23 +264,19 @@ def test_delta_concurrent_sessions_both_preserved(tmp_path: Path) -> None:
     base_sd = {k: v.clone() for k, v in ActorCritic().state_dict().items()}
     _policy_with_sd(base_sd).save(canonical)
 
-    # Session A: delta +0.1 on all parameters.
     stub_a = _make_selector_stub(weights_dir)
     stub_a._reload_base = {k: v.clone() for k, v in base_sd.items()}
     stub_a._policy = _policy_with_sd(_add_scalar_to_sd(base_sd, 0.1))
 
-    # Session B: delta +0.2 on all parameters.
     stub_b = _make_selector_stub(weights_dir)
     stub_b._reload_base = {k: v.clone() for k, v in base_sd.items()}
     stub_b._policy = _policy_with_sd(_add_scalar_to_sd(base_sd, 0.2))
 
-    # A writes, then B reads current global (now base+0.1) and adds its delta.
     stub_a._write_global_canonical_blocking(canonical, lock)
     stub_b._write_global_canonical_blocking(canonical, lock)
 
-    # Final = base + 0.1 (from A) + 0.2 (B's delta applied on top) = base + 0.3.
     final = ActorCritic.load(canonical)
-    for k, base_v in base_sd.items():
+    for k, base_v in shared_state(base_sd).items():
         expected = base_v + 0.3
         assert torch.allclose(final.state_dict()[k], expected, atol=1e-5), (
             f"concurrent deltas not both preserved for {k}"

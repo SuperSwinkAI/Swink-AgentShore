@@ -24,8 +24,6 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 _TIMELINE_HEIGHT = 360
-# A capacity bar occupies the left gutter (before the y-axis labels), sharing
-# the same y-scale/gridlines as the stacked timeline to its right.
 _CAPACITY_BAR_LEFT = 34.0
 _CAPACITY_BAR_RIGHT = 64.0
 _TIMELINE_LEFT = 168.0
@@ -44,8 +42,6 @@ _HARNESS_LABELS: dict[str, str] = {
     "swink_coding": "Swink Coding",
 }
 
-# Keep these in sync with dashboard/src/agentRegistry.ts colorFill so ESR
-# timelines match dashboard agent markers/sprites.
 _HARNESS_COLORS: dict[str, tuple[str, str]] = {
     "antigravity": ("#4285F4", "rgba(66,133,244,0.22)"),
     "claude_code": ("#E07B39", "rgba(224,123,57,0.24)"),
@@ -228,8 +224,6 @@ def _build_timeline(
     peak_by_harness: dict[str, int],
     harness_capacity: dict[str, int],
 ) -> FleetConcurrencyTimelineData:
-    # Configured-but-idle harnesses (never actually busy this session) still
-    # count toward capacity and must appear in the shared ordering, at 0 peak.
     ordering_source = dict(peak_by_harness)
     for harness in harness_capacity:
         ordering_source.setdefault(harness, 0)
@@ -244,8 +238,6 @@ def _build_timeline(
     samples = _downsample_timeline_records(records)
     peak_busy = max((record["busy_total"] for record in records), default=0)
     capacity_total = sum(harness_capacity.get(harness, 0) for harness in harnesses)
-    # The shared y-axis always extends to the maximum possible (configured
-    # capacity), not just the historical peak, so the capacity bar never clips.
     y_max = max(1, ceil(max(peak_busy, capacity_total) / 5) * 5)
 
     parsed_start = _parse_ts(records[0]["ts"])
@@ -255,8 +247,6 @@ def _build_timeline(
         if parsed_start is not None and parsed_end is not None
         else None
     )
-    # Place samples at real elapsed offset so idle stretches render as flat gaps;
-    # fall back to ordinal spacing only without a usable span.
     use_time_axis = (
         parsed_start is not None and duration_seconds is not None and duration_seconds > 0
     )
@@ -387,7 +377,6 @@ def _x_axis_labels(
         x = _TIMELINE_LEFT + ((_TIMELINE_RIGHT - _TIMELINE_LEFT) * fraction) - 18.0
         if parsed_start is not None and parsed_end is not None and duration_seconds is not None:
             ts = parsed_start + (parsed_end - parsed_start) * fraction
-            # parsed_start/end are tz-aware (UTC); render in the viewer's local tz.
             label = _format_axis_timestamp(ts.astimezone(), duration_seconds)
         else:
             sample_index = round((len(records) - 1) * fraction)

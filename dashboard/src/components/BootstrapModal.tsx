@@ -4,8 +4,8 @@ import "./Modal.css";
 
 import { createNotifyStore } from "../notifyStore";
 
-// React port of `dashboard/src/hud/bootstrapModal.ts`. Host wires up
-// `notifyBootstrapModal`; the component re-renders + ticks elapsed-time via state.
+
+
 
 const PHASE_LABELS: Record<string, string> = {
   init_datastore: "Opening session database",
@@ -32,8 +32,8 @@ export interface BootstrapModalState {
 const store = createNotifyStore<BootstrapModalState>({ phase: null, startedAt: null });
 
 export function notifyBootstrapModal(state: BootstrapModalState): void {
-  // No-op on an unchanged state so the reconciliation calls on every
-  // state_update / play_event (#361) don't re-render the modal each frame.
+
+
   const current = store.get();
   if (current.phase === state.phase && current.startedAt === state.startedAt) return;
   store.notify({ phase: state.phase, startedAt: state.startedAt });
@@ -43,7 +43,7 @@ export function BootstrapModal(): React.ReactElement {
   const { phase, startedAt } = store.use();
   const visible = phase !== null;
 
-  // Tick every 250ms only while visible so the "Ns elapsed" line advances live.
+
   const [, forceTick] = useState(0);
   useEffect(() => {
     if (!visible) return undefined;

@@ -24,7 +24,6 @@ from .context import BuildContext, default_context
 from .phases import build_dashboard, build_frontend, build_wheel
 from .version import read_canonical
 
-# Pin uv for reproducible installer provisioning.
 PINNED_UV_VERSION = "uv 0.8.11"
 
 _SIGN_HELPER = Path(__file__).resolve().parent / "_win_signing.ps1"
@@ -63,10 +62,6 @@ def _signing_params(args: argparse.Namespace) -> list[str]:
 
 
 def _powershell() -> str:
-    # Prefer pwsh. When the build runs from a PowerShell 7 shell (via uv/python),
-    # Windows PowerShell 5.1 inherits pwsh's PSModulePath and then cannot bind
-    # the certificate provider's -CodeSigningCert dynamic parameter inside the
-    # signing helper ("A parameter cannot be found ... 'CodeSigningCert'").
     return shutil.which("pwsh") or require_tool("powershell", "this command must run on Windows")
 
 
@@ -147,7 +142,6 @@ def stop_processes() -> None:
 def _cargo_env(args: argparse.Namespace, **extra: str) -> dict[str, str]:
     env = {**os.environ, **extra}
     if args.allow_no_revocation_check:
-        # Avast HTTPS scanning breaks cargo TLS cert revocation (Schannel).
         env["CARGO_HTTP_CHECK_REVOKE"] = "false"
     return env
 
@@ -159,7 +153,6 @@ def build_tauri_exe(ctx: BuildContext, args: argparse.Namespace) -> Path:
     cmd = [npx, "tauri", "build"]
     if ctx.build_mode == "debug":
         cmd.append("--debug")
-    # Inno Setup packages the exe; Tauri bundling is not used on Windows.
     cmd += ["--no-bundle", "--", "--locked"]
     run(cmd, cwd=ctx.desktop_dir, env=_cargo_env(args))
     app_exe = ctx.target_dir / "agentshore-desktop.exe"
@@ -328,7 +321,7 @@ def run_windows(ctx: BuildContext, args: argparse.Namespace) -> None:
     setup_out = compile_inno(ctx, args)
 
     if not args.no_sign:
-        _sign_file(setup_out, args)  # best-effort; exe/provisioner already gated above
+        _sign_file(setup_out, args)
 
     log("Build complete")
     info(f"Installer: {setup_out}")

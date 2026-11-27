@@ -41,11 +41,11 @@ export type QuickStartSetupStep =
 function helperStepToUiStep(
   step: StartFromPersistedSetupStep,
 ): QuickStartSetupStep {
-  // ``project.select`` / ``project.inspect`` failing means the chooser
-  // couldn't even open the project — readiness is where the regular
-  // Setup-rail surfaces those problems. ``start`` / ``navigate`` failing
-  // means we got far enough that the start blockers panel is the right
-  // place to land.
+
+
+
+
+
   switch (step) {
     case "select":
     case "inspect":
@@ -246,10 +246,10 @@ export function ChooseProjectScreen({
       try {
         await adapter.touch(path);
 
-        // Select the project first so the sidecar's active_project_path
-        // is set before any RPC that requires it (set_budget, inspect).
-        // startSessionFromPersistedSetup also calls selectProject, but
-        // that's idempotent — doing it here unblocks the budget write.
+
+
+
+
         try {
           await adapter.select(path);
         } catch (err) {
@@ -257,15 +257,15 @@ export function ChooseProjectScreen({
           return;
         }
 
-        // Persist the localStorage budget to agentshore.yaml via
-        // project.set_budget (#580). Required because
-        // ``sessionClient.startSession`` only serializes
-        // ``progress_token`` + ``seed_input_path`` — a budget on the
-        // params would be silently dropped. The helper then reads the
-        // resolved budget back via ``project.inspect`` downstream. We
-        // skip this round-trip when no budget was persisted (older
-        // snapshot from before PR #576): in that case agentshore.yaml
-        // keeps whatever it already had.
+
+
+
+
+
+
+
+
+
         const persistedBudget = readBudget();
         if (persistedBudget !== null) {
           try {
@@ -276,8 +276,8 @@ export function ChooseProjectScreen({
           }
         }
 
-        // Hand off to the shared helper for
-        // select → inspect → start → navigate.
+
+
         await quickStart(path, {
           navigate,
           onError: (err, failedStep) => {

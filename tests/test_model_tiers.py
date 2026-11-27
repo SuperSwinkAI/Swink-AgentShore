@@ -41,11 +41,11 @@ def test_default_model_tiers_for_codex() -> None:
     tiers = default_model_tiers_for(AgentType.CODEX)
 
     assert set(tiers) == {"small", "medium", "large"}
-    assert tiers["small"].model == "gpt-5.6-luna"
+    assert tiers["small"].model == "gpt-6-luna"
     assert tiers["small"].reasoning_effort == "low"
-    assert tiers["medium"].model == "gpt-5.6-terra"
+    assert tiers["medium"].model == "gpt-6.1-terra"
     assert tiers["medium"].reasoning_effort == "medium"
-    assert tiers["large"].model == "gpt-5.6-sol"
+    assert tiers["large"].model == "gpt-6.2-sol"
     assert tiers["large"].reasoning_effort == "high"
 
 
@@ -53,11 +53,11 @@ def test_default_model_tiers_for_grok() -> None:
     tiers = default_model_tiers_for(AgentType.GROK)
 
     assert set(tiers) == {"small", "medium", "large"}
-    assert tiers["small"].model == "grok-4.5"
+    assert tiers["small"].model == "grok-4.7-build-fast"
     assert tiers["small"].reasoning_effort == "low"
-    assert tiers["medium"].model == "grok-4.5"
+    assert tiers["medium"].model == "grok-4.7"
     assert tiers["medium"].reasoning_effort == "medium"
-    assert tiers["large"].model == "grok-4.5"
+    assert tiers["large"].model == "grok-4.7"
     assert tiers["large"].reasoning_effort == "high"
 
 
@@ -65,11 +65,9 @@ def test_default_model_tiers_for_antigravity() -> None:
     tiers = default_model_tiers_for(AgentType.ANTIGRAVITY)
 
     assert set(tiers) == {"small", "medium", "large"}
-    # Small tier runs on the open-weight GPT-OSS 120B backend agy exposes.
     assert tiers["small"].model == "GPT-OSS 120B (Medium)"
-    assert tiers["medium"].model == "Gemini 3.8 Flash (High)"
-    assert tiers["large"].model == "Gemini 3.1 Pro (High)"
-    # Effort is baked into the display-name, so no separate effort flag.
+    assert tiers["medium"].model == "Gemini 4 Hydrogen (Medium)"
+    assert tiers["large"].model == "Gemini 4 Argon (High)"
     assert tiers["small"].reasoning_effort is None
     assert tiers["medium"].reasoning_effort is None
     assert tiers["large"].reasoning_effort is None
@@ -79,8 +77,6 @@ def test_default_model_tiers_for_swink_coding() -> None:
     tiers = default_model_tiers_for(AgentType.SWINK_CODING)
 
     assert set(tiers) == {"small", "medium", "large"}
-    # --model only accepts the tier aliases themselves; swink-coding's own
-    # config resolves the alias to a concrete model id.
     assert tiers["small"].model == "small"
     assert tiers["medium"].model == "medium"
     assert tiers["large"].model == "large"
@@ -197,12 +193,10 @@ def test_reasoning_efforts_claude_code_has_five_values() -> None:
 
 
 def test_reasoning_efforts_grok_is_common_subset() -> None:
-    # grok-4.5 rejects xhigh/max (grok 1.0.50), so the CLI-wide set is low..high.
     assert reasoning_efforts_for(AgentType.GROK) == ("low", "medium", "high")
 
 
 def test_reasoning_efforts_codex_matches_gpt_5_6() -> None:
-    # gpt-5.6-* reject "minimal"; "none" and "max" are accepted (codex-cli 0.144.1).
     assert reasoning_efforts_for(AgentType.CODEX) == (
         "none",
         "low",
@@ -230,15 +224,13 @@ def test_default_model_tiers_for_copilot_fall_back_to_auto() -> None:
         "medium": ("claude-sonnet-5.5", "medium"),
         "large": ("claude-opus-5.5", "high"),
     }
-    # A seat without Claude 5.5: small degrades to its family sibling, the
-    # rest to `auto`; efforts clamp to what the resolved model supports.
     live = model_discovery.DiscoveryResult(
         "copilot",
         ("auto", "claude-haiku-4.5", "mai-code-1.1-flash"),
         "ok",
         default="auto",
     )
-    model_resolver.record_discovery(AgentType.COPILOT, live)  # conftest resets
+    model_resolver.record_discovery(AgentType.COPILOT, live)
     resolved = default_model_tiers_for(AgentType.COPILOT)
     assert resolved["small"].model == "claude-haiku-4.5"
     assert resolved["medium"].model == "auto"

@@ -31,11 +31,6 @@ def _quote(
     )
 
 
-# ---------------------------------------------------------------------------
-# now_iso
-# ---------------------------------------------------------------------------
-
-
 def test_now_iso_is_parseable() -> None:
     ts = now_iso()
     dt = datetime.fromisoformat(ts)
@@ -51,11 +46,6 @@ def test_now_iso_is_monotonic() -> None:
     t1 = now_iso()
     t2 = now_iso()
     assert datetime.fromisoformat(t1) <= datetime.fromisoformat(t2)
-
-
-# ---------------------------------------------------------------------------
-# estimate_cost
-# ---------------------------------------------------------------------------
 
 
 def test_estimate_cost_zero_tokens_is_zero() -> None:
@@ -80,7 +70,6 @@ def test_estimate_cost_cached_input_cheaper() -> None:
 
 
 def test_estimate_cost_cached_multiplier_when_rate_absent() -> None:
-    # No explicit cached rate → the quote's cache_read_multiplier (0.1) applies.
     quote = _quote(cost_per_1k_cached_input=None, cache_read_multiplier=0.1)
     full_cost = estimate_cost(1000, 0, quote)
     cached_cost = estimate_cost(1000, 0, quote, cached_tokens_in=1000)
@@ -93,7 +82,6 @@ def test_estimate_cost_nonnegative_always() -> None:
 
 def test_estimate_cost_cached_capped_at_total_input() -> None:
     quote = _quote(cost_per_1k_cached_input=0.0003)
-    # cached > total_input should be clamped — must not raise or go negative
     cost = estimate_cost(500, 0, quote, cached_tokens_in=1000)
     assert cost >= 0.0
 
@@ -102,5 +90,4 @@ def test_estimate_cost_cache_write_rate_used() -> None:
     quote = _quote(cost_per_1k_cache_write_input=0.00375)
     cost_with_write = estimate_cost(1000, 0, quote, cache_write_tokens_in=1000)
     cost_without = estimate_cost(1000, 0, quote)
-    # cache_write rate (0.00375) > normal (0.003) so cost increases
     assert cost_with_write > cost_without

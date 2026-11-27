@@ -63,14 +63,10 @@ pub fn resolve_build_id() -> String {
     }
 }
 
-/// Budget for the initial ``app.handshake`` round-trip.
+/// Budget for the initial app.handshake round-trip.
 ///
-/// A Windows cold start under antivirus (Defender/Avast scanning ``python.exe``
-/// and the first ``import agentshore.sidecar``) routinely exceeds a 30s wall and
-/// would otherwise trip the supervisor into the fatal-error screen even though
-/// the sidecar is alive and about to answer. Give Windows a wider budget; other
-/// platforms keep the original 30s. Overridable via
-/// ``AGENTSHORE_HANDSHAKE_TIMEOUT_SECS`` for field diagnosis.
+/// Windows has a wider cold-start budget; other platforms use 30 seconds.
+/// AGENTSHORE_HANDSHAKE_TIMEOUT_SECS overrides the default.
 fn handshake_response_timeout() -> Duration {
     if let Ok(raw) = std::env::var(HANDSHAKE_TIMEOUT_ENV) {
         if let Ok(secs) = raw.trim().parse::<u64>() {
@@ -315,10 +311,8 @@ mod tests {
 
     #[test]
     fn handshake_response_timeout_covers_env_and_default() {
-        // Env override wins.
         std::env::set_var(HANDSHAKE_TIMEOUT_ENV, "7");
         assert_eq!(handshake_response_timeout(), Duration::from_secs(7));
-        // Non-positive / non-numeric override falls back to the platform default.
         std::env::set_var(HANDSHAKE_TIMEOUT_ENV, "  0 ");
         let default_secs = if cfg!(target_os = "windows") { 90 } else { 30 };
         assert_eq!(

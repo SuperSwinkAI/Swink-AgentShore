@@ -69,7 +69,6 @@ def test_parse_reports_missing_result_block() -> None:
     assert result.success is False
     assert result.error is not None
     assert "no valid result block" in result.error
-    # Short output (< 100 chars) is reported as "only N chars"
     assert "only 12 chars" in result.error
     assert "no json here" in result.error
 
@@ -89,16 +88,12 @@ def test_parse_reports_missing_success_envelope_distinctly() -> None:
     resume-retry can pick a defect-specific nudge), while keeping the shared prefix
     the base.py retry trigger keys on.
     """
-    # A structurally-complete JSON object (mirrors the live agy design_audit
-    # near-miss: prose bucket names serialized in place of the schema keys), but
-    # with no top-level boolean ``success``.
     output = '{"artifacts": [{"type": "design_audit"}], "gap_filled": ["Distribution"]}'
     result = parse_skill_result(output)
 
     assert result.success is False
     assert result.missing_success_envelope is True
     assert result.error is not None
-    # Shared prefix preserved so the JSON-retry trigger still fires.
     assert "no valid result block" in result.error
     assert "no top-level boolean 'success' field" in result.error
 
@@ -124,14 +119,13 @@ def test_parse_reports_long_output_with_no_json() -> None:
         "1. Include uv.lock in this branch.\n"
         "2. Discard uv.lock and continue.\n"
         "3. Inspect the uv.lock diff first.\n"
-    ) * 3  # >100 chars
+    ) * 3
     result = parse_skill_result(output)
 
     assert result.success is False
     assert result.error is not None
     assert f"{len(output)} chars but no JSON result block" in result.error
     assert "tail:" in result.error
-    # Tail must surface in error so operators can diagnose from the log line alone.
     assert "Inspect the uv.lock diff first" in result.error
 
 
@@ -398,9 +392,6 @@ def test_parse_extracts_review_patterns() -> None:
     ]
 
 
-# learnings extraction — Bug B
-
-
 def test_parse_extracts_learnings_list() -> None:
     """Top-level ``learnings`` array is normalized onto SkillResult.learnings."""
     output = """
@@ -507,9 +498,6 @@ def test_parse_learnings_non_list_treated_as_empty() -> None:
     assert result.learnings == []
 
 
-# learnings_compacted (groom re-distillation, wholesale replace)
-
-
 def test_parse_learnings_compacted_normalizes_entries() -> None:
     """``learnings_compacted`` items normalize to {pattern, category, merged_from};
     the agent's confidence is ignored, merged_from preserved."""
@@ -523,7 +511,7 @@ def test_parse_learnings_compacted_normalizes_entries() -> None:
                 {
                     "pattern": "merged insight",
                     "category": "conventions",
-                    "confidence": 0.99,  # ignored
+                    "confidence": 0.99,
                     "merged_from": ["id-a", "id-b"],
                 }
             ],
@@ -551,10 +539,10 @@ def test_parse_learnings_compacted_defaults_and_drops() -> None:
             "artifacts": [],
             "learnings_compacted": [
                 "not a dict",
-                {"category": "x"},  # no pattern
-                {"pattern": "", "merged_from": ["a"]},  # empty pattern
+                {"category": "x"},
+                {"pattern": "", "merged_from": ["a"]},
                 {"pattern": "keeper", "merged_from": ["ok", 7, None]},
-                {"pattern": "no-merge"},  # merged_from absent
+                {"pattern": "no-merge"},
             ],
         }
     )
@@ -578,9 +566,6 @@ def test_parse_learnings_compacted_defaults_to_empty() -> None:
     assert result.learnings_compacted == []
 
 
-# --- artifact `type` folding (#313) -------------------------------------------
-
-
 @pytest.mark.parametrize(
     ("raw", "expected"),
     [
@@ -591,15 +576,10 @@ def test_parse_learnings_compacted_defaults_to_empty() -> None:
         ("design__audit", "design_audit"),
         ("design_audit_results", "design_audit"),
         ("seed-audit", "seed_audit"),
-        # Folding is narrow on purpose: only case, separators, and ONE trailing
-        # _result/_results. Nothing else is rewritten.
         ("pull_request", "pull_request"),
         ("design_audit_summary", "design_audit_summary"),
         ("design_audit_result_result", "design_audit_result"),
-        # A bare "result"/"results" type folds to itself — stripping the suffix
-        # would leave an empty string, which is never a type.
         ("result", "result"),
-        # Non-strings and empties have no canonical form.
         ("", None),
         ("   ", None),
         ("---", None),

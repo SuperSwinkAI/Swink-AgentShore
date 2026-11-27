@@ -54,10 +54,6 @@ from agentshore.state import (
     TrajectorySnapshot,
 )
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 _NULL_CTX = ObservationContext(
     same_type_failure_streak=0,
     stagnation_counter=0,
@@ -123,22 +119,7 @@ def _budget(
     )
 
 
-# ---------------------------------------------------------------------------
-# Shape and dtype
-# ---------------------------------------------------------------------------
-
-
 def test_observation_dim_is_254():
-    # v0.15 Phase 5: action space grew 20 → 22 (spec block 60 → 66) and
-    # added a new executor_skip_rate slot at index 177. 238 → 245.
-    # desktop-8zzy: added pr_pressure_ratio at slot 178; spec block slid
-    # one slot down. 245 → 246.
-    # #91: PR-author block generalized from claude/codex (4 slots) to the 4
-    # curated CLI providers (8 slots); everything after shifted +4. 246 → 250.
-    # #325: swink_coding appended to the PR-author block (8 → 10 slots);
-    # everything after shifted +2. 250 → 252.
-    # v16: copilot appended to the PR-author block (10 → 12 slots);
-    # everything after shifted +2. 252 → 254.
     assert OBSERVATION_DIM == 254
 
 
@@ -158,11 +139,6 @@ def test_all_slots_in_range():
     assert obs.max() <= 1.0
 
 
-# ---------------------------------------------------------------------------
-# Determinism
-# ---------------------------------------------------------------------------
-
-
 def test_encode_deterministic_same_input():
     s = _state()
     a = encode_observation(s, _NULL_CTX)
@@ -177,15 +153,7 @@ def test_encode_identical_bytes_same_input():
     assert a == b
 
 
-# ---------------------------------------------------------------------------
-# Cluster group (slots 0-11)
-# goal_clusters removed in v0.10.0; slots 0-7 are always 0.0.
-# Epic slots 8-11 are populated from state.graph (beads ProjectGraph).
-# ---------------------------------------------------------------------------
-
-
-def test_dependency_and_retired_slots_zero_without_graph():
-    # Without a graph, dependency slots 0-1 and retired slots 2-7 are 0.0.
+def test_dependency_and_flow_slots_zero_on_empty_state():
     obs = encode_observation(_state(), _NULL_CTX)
     assert obs[_S_BLOCKED_TASK_RATIO] == pytest.approx(0.0)
     assert obs[_S_READY_TASK_RATIO] == pytest.approx(0.0)
@@ -193,23 +161,16 @@ def test_dependency_and_retired_slots_zero_without_graph():
 
 
 def test_epic_slots_zero_when_no_graph():
-    # Without a beads graph (state.graph is None), epic slots 8-11 must be 0.0.
     obs = encode_observation(_state(), _NULL_CTX)
     assert obs[_S_EPIC_GLOBAL_RATIO] == pytest.approx(0.0, abs=1e-5)
     assert obs[_S_EPIC_TOP0] == pytest.approx(0.0, abs=1e-5)
 
 
 def test_no_graph_zero_in_dependency_and_epic_slots():
-    # Without graph: dependency slots 0-1 and epic slots 8-11 are 0.0.
     obs = encode_observation(_state(), _NULL_CTX)
     assert obs[_S_BLOCKED_TASK_RATIO] == pytest.approx(0.0)
     assert obs[_S_READY_TASK_RATIO] == pytest.approx(0.0)
     assert obs[_S_EPIC_GLOBAL_RATIO : _S_EPIC_TOP0 + 3].sum() == pytest.approx(0.0)
-
-
-# ---------------------------------------------------------------------------
-# Issue group (12-16)
-# ---------------------------------------------------------------------------
 
 
 def test_issue_open_count_slot():
@@ -234,11 +195,6 @@ def test_issue_closed_and_created():
     )
     assert obs[_S_ISSUE_CLOSED] == pytest.approx(10 / 100.0, abs=1e-5)
     assert obs[_S_ISSUE_CREATED] == pytest.approx(5 / 50.0, abs=1e-5)
-
-
-# ---------------------------------------------------------------------------
-# Budget group (33-36)
-# ---------------------------------------------------------------------------
 
 
 def test_budget_remaining_and_spent():
@@ -275,28 +231,20 @@ def test_encode_observation_reads_trajectory_from_state():
     assert obs[_S_EST_COST] > 0.0
 
 
-# ---------------------------------------------------------------------------
-# Agent group (17-32)
-# ---------------------------------------------------------------------------
-
-
 def test_tier_fleet_aggregates_per_tier():
     """idle/busy/total counts roll up by ``model_tier`` into the 3-slot tier block."""
     agents = [
-        _agent("a0", AgentStatus.IDLE),  # no tier set → medium (idx 1)
-        _agent("a1", AgentStatus.BUSY),  # medium (idx 1)
-        _agent("a2", AgentStatus.ERROR),  # medium (idx 1), counted in total but not idle/busy
+        _agent("a0", AgentStatus.IDLE),
+        _agent("a1", AgentStatus.BUSY),
+        _agent("a2", AgentStatus.ERROR),
     ]
     obs = encode_observation(_state(agents=agents), _NULL_CTX)
-    # tier 0 (small) and tier 2 (large) are empty — their feature slots stay 0
-    # except for the avg-success slot, which is the neutral prior 0.5.
-    medium_base = 17 + 1 * 5  # = 22 (tier 1, start of medium fleet block)
-    assert obs[medium_base] == pytest.approx(1 / 10.0, abs=1e-5)  # idle count
-    assert obs[medium_base + 1] == pytest.approx(1 / 10.0, abs=1e-5)  # busy count
-    assert obs[medium_base + 2] == pytest.approx(0.5, abs=1e-5)  # success neutral
-    assert obs[medium_base + 3] == pytest.approx(0.0, abs=1e-5)  # avg context = 0
-    assert obs[medium_base + 4] == pytest.approx(3 / 10.0, abs=1e-5)  # total agents
-    # Empty tiers (small=0, large=2) — only the avg-success slot is neutral 0.5.
+    medium_base = 17 + 1 * 5
+    assert obs[medium_base] == pytest.approx(1 / 10.0, abs=1e-5)
+    assert obs[medium_base + 1] == pytest.approx(1 / 10.0, abs=1e-5)
+    assert obs[medium_base + 2] == pytest.approx(0.5, abs=1e-5)
+    assert obs[medium_base + 3] == pytest.approx(0.0, abs=1e-5)
+    assert obs[medium_base + 4] == pytest.approx(3 / 10.0, abs=1e-5)
     small_base = 17
     assert obs[small_base + 2] == pytest.approx(0.5, abs=1e-5)
     large_base = 17 + 2 * 5
@@ -310,26 +258,18 @@ def test_tier_fleet_routes_by_model_tier():
         _agent_with_tier("b", AgentType.CODEX, "small", AgentStatus.BUSY),
     ]
     obs = encode_observation(_state(agents=agents), _NULL_CTX)
-    small_base = 17  # tier 0
-    large_base = 17 + 2 * 5  # tier 2 → slot 27
-    # small tier has 1 busy agent (codex/small).
-    assert obs[small_base] == pytest.approx(0.0, abs=1e-5)  # idle
-    assert obs[small_base + 1] == pytest.approx(1 / 10.0, abs=1e-5)  # busy
-    # large tier has 1 idle agent (claude/large).
-    assert obs[large_base] == pytest.approx(1 / 10.0, abs=1e-5)  # idle
-    assert obs[large_base + 1] == pytest.approx(0.0, abs=1e-5)  # busy
+    small_base = 17
+    large_base = 17 + 2 * 5
+    assert obs[small_base] == pytest.approx(0.0, abs=1e-5)
+    assert obs[small_base + 1] == pytest.approx(1 / 10.0, abs=1e-5)
+    assert obs[large_base] == pytest.approx(1 / 10.0, abs=1e-5)
+    assert obs[large_base + 1] == pytest.approx(0.0, abs=1e-5)
 
 
 def test_active_agents_slot():
     agents = [_agent("a0", AgentStatus.IDLE), _agent("a1", AgentStatus.ERROR)]
     obs = encode_observation(_state(agents=agents), _NULL_CTX)
-    # Active = anything not error/terminated; normalized by _MAX_TOTAL_AGENTS (10).
     assert obs[_S_ACTIVE_AGENTS] == pytest.approx(1 / 10.0, abs=1e-5)
-
-
-# ---------------------------------------------------------------------------
-# History group (37-52)
-# ---------------------------------------------------------------------------
 
 
 def test_play_history_type_slots():
@@ -377,11 +317,6 @@ def test_total_plays_saturates_at_200():
     assert obs[_S_TOTAL_PLAYS] == pytest.approx(1.0, abs=1e-5)
 
 
-# ---------------------------------------------------------------------------
-# Health group (59-62)
-# ---------------------------------------------------------------------------
-
-
 def test_same_type_streak_slot():
     obs = encode_observation(_state(same_type_failure_streak=5), _NULL_CTX)
     assert obs[_S_STREAK] == pytest.approx(5 / 10.0, abs=1e-5)
@@ -415,19 +350,9 @@ def test_stagnation_counter_slot():
     assert obs[_S_STAGNATION] == pytest.approx(3 / 10.0, abs=1e-5)
 
 
-# ---------------------------------------------------------------------------
-# Handoff
-# ---------------------------------------------------------------------------
-
-
 def test_avg_context_loss_slot():
     obs = encode_observation(_state(), _ctx(rolling_avg_context_loss=0.6))
     assert obs[_S_AVG_CONTEXT_LOSS] == pytest.approx(0.6, abs=1e-5)
-
-
-# ---------------------------------------------------------------------------
-# PR group
-# ---------------------------------------------------------------------------
 
 
 def test_pr_slots():
@@ -437,14 +362,8 @@ def test_pr_slots():
     assert obs[_S_OPEN_PRS] == pytest.approx(3 / 10.0, abs=1e-5)
 
 
-# ---------------------------------------------------------------------------
-# Reserved version slot
-# ---------------------------------------------------------------------------
-
-
 def test_obs_version_slot():
     obs = encode_observation(_state(), _NULL_CTX)
-    # Self-normalizing marker: always 1.0 regardless of OBSERVATION_VERSION.
     assert obs[_S_OBS_VERSION] == pytest.approx(1.0, abs=1e-5)
 
 
@@ -453,15 +372,86 @@ def test_obs_version_is_nonzero():
     assert obs[_S_OBS_VERSION] > 0.0
 
 
-# ---------------------------------------------------------------------------
-# Saturation / clamp invariants
-# ---------------------------------------------------------------------------
+def _flow_issue(number: int, labels: list[str]) -> IssueSnapshot:
+    return IssueSnapshot(
+        issue_number=number, title="t", state="OPEN", priority=None, labels=labels, source=None
+    )
 
 
-def test_retired_slots_are_zero_regardless_of_ctx():
-    # Retired slots (2-7) are always 0.0; dependency slots 0-1 are 0.0 without graph.
-    obs = encode_observation(_state(), _NULL_CTX)
-    assert obs[2:8].sum() == pytest.approx(0.0, abs=1e-5)
+def _flow_agent(agent_id: str, tier: str, status: AgentStatus = AgentStatus.IDLE) -> AgentSnapshot:
+    return dataclasses.replace(_agent(agent_id, status), model_tier=tier)
+
+
+def test_flow_block_occupies_the_formerly_retired_slots():
+    from agentshore.rl.observation import FLOW_BLOCK_END, FLOW_BLOCK_START
+
+    assert (FLOW_BLOCK_START, FLOW_BLOCK_END) == (2, 8)
+
+
+def test_planned_backlog_counts_plans_nobody_is_implementing():
+    from agentshore.rl.observation import _S_PLANNED_BACKLOG
+
+    pr_for_three = dataclasses.replace(_author_pr(90, "codex"), issue_number=3)
+    state = _state(
+        open_issues=[
+            _flow_issue(1, ["agentshore/planned"]),
+            _flow_issue(2, []),
+            _flow_issue(3, ["agentshore/planned"]),
+            _flow_issue(4, ["agentshore/has-plan"]),
+            _flow_issue(5, []),
+        ],
+        planned_issues=frozenset({2}),
+        pull_requests=[pr_for_three],
+        in_flight_issues=[4],
+    )
+    obs = encode_observation(state, _NULL_CTX)
+    assert obs[_S_PLANNED_BACKLOG] == pytest.approx(2 / 20.0, abs=1e-5)
+
+
+def test_review_wait_and_since_merge_are_normalised_minutes():
+    from agentshore.rl.observation import _S_REVIEW_WAIT, _S_SINCE_MERGE
+
+    obs = encode_observation(
+        _state(), _ctx(oldest_review_wait_minutes=60.0, minutes_since_last_merge=480.0)
+    )
+    assert obs[_S_REVIEW_WAIT] == pytest.approx(0.25, abs=1e-5)
+    assert obs[_S_SINCE_MERGE] == pytest.approx(1.0, abs=1e-5)
+
+
+def test_review_demand_is_waiting_prs_per_review_capable_agent():
+    from agentshore.rl.observation import _S_REVIEW_DEMAND
+
+    ctx = _ctx(prs_awaiting_review=4)
+    fleet = [
+        _flow_agent("a", "large"),
+        _flow_agent("b", "large", AgentStatus.BUSY),
+        _flow_agent("c", "medium"),
+        _flow_agent("d", "large", AgentStatus.TERMINATED),
+    ]
+    obs = encode_observation(_state(agents=fleet), ctx)
+    assert obs[_S_REVIEW_DEMAND] == pytest.approx((4 / 2) / 5.0, abs=1e-5)
+    obs = encode_observation(_state(agents=[_flow_agent("c", "medium")]), ctx)
+    assert obs[_S_REVIEW_DEMAND] == pytest.approx(1.0)
+    obs = encode_observation(_state(agents=[]), _ctx(prs_awaiting_review=0))
+    assert obs[_S_REVIEW_DEMAND] == pytest.approx(0.0)
+
+
+def test_in_flight_planning_and_pr_flow_counts():
+    from agentshore.rl.observation import _S_INFLIGHT_PLANNING, _S_INFLIGHT_PR_FLOW
+
+    state = _state(
+        in_flight_plays=[
+            PlayType.WRITE_IMPLEMENTATION_PLAN,
+            PlayType.WRITE_IMPLEMENTATION_PLAN,
+            PlayType.REFINE_TASK_BREAKDOWN,
+            PlayType.CODE_REVIEW,
+            PlayType.MERGE_PR,
+            PlayType.ISSUE_PICKUP,
+        ]
+    )
+    obs = encode_observation(state, _NULL_CTX)
+    assert obs[_S_INFLIGHT_PLANNING] == pytest.approx(3 / 10.0, abs=1e-5)
+    assert obs[_S_INFLIGHT_PR_FLOW] == pytest.approx(2 / 10.0, abs=1e-5)
 
 
 def test_budget_remaining_clamps():
@@ -481,29 +471,14 @@ def test_all_values_non_negative():
     assert (obs >= 0.0).all()
 
 
-# ---------------------------------------------------------------------------
-# Cluster drift slot
-# ---------------------------------------------------------------------------
-
-
 def test_cluster_drift_slot():
     obs = encode_observation(_state(), _ctx(cluster_drift=0.42))
     assert obs[_S_CLUSTER_DRIFT] == pytest.approx(0.42, abs=1e-5)
 
 
-# ---------------------------------------------------------------------------
-# Alignment check time slot
-# ---------------------------------------------------------------------------
-
-
 def test_since_alignment_check_slot():
     obs = encode_observation(_state(), _ctx(minutes_since_last_alignment_check=30.0))
     assert obs[_S_SINCE_ALIGNMENT] == pytest.approx(0.5, abs=1e-5)
-
-
-# ---------------------------------------------------------------------------
-# Per-config block (slots 72..167) and PR-author block (168..179)
-# ---------------------------------------------------------------------------
 
 
 def _agent_with_tier(
@@ -530,7 +505,6 @@ def _agent_with_tier(
 
 def test_per_config_block_zero_when_index_empty():
     obs = encode_observation(_state(), _NULL_CTX)
-    # Slots 72..167 must be zero when no config index is supplied.
     assert np.all(obs[72:168] == 0.0)
 
 
@@ -544,11 +518,9 @@ def test_per_config_block_counts_idle_and_busy():
     )
     config_index = (("claude_code", "medium"), ("codex", "medium"))
     obs = encode_observation(state, _NULL_CTX, config_index=config_index)
-    # Config 0 = claude_code/medium: idle=1, busy=1, success_rate=0.5 (default).
-    assert obs[72] == pytest.approx(1 / 5.0, abs=1e-5)  # idle/_MAX_AGENTS
-    assert obs[73] == pytest.approx(1 / 5.0, abs=1e-5)  # busy
-    assert obs[74] == pytest.approx(0.5, abs=1e-5)  # neutral default success
-    # Config 1 = codex/medium: idle=1, busy=0.
+    assert obs[72] == pytest.approx(1 / 5.0, abs=1e-5)
+    assert obs[73] == pytest.approx(1 / 5.0, abs=1e-5)
+    assert obs[74] == pytest.approx(0.5, abs=1e-5)
     assert obs[75] == pytest.approx(1 / 5.0, abs=1e-5)
     assert obs[76] == 0.0
     assert obs[77] == pytest.approx(0.5, abs=1e-5)
@@ -567,7 +539,6 @@ def test_per_config_block_success_rate_uses_real_data():
         ]
     )
     obs = encode_observation(state, _NULL_CTX, config_index=(("claude_code", "medium"),))
-    # 8/(8+2) = 0.8
     assert obs[74] == pytest.approx(0.8, abs=1e-5)
 
 
@@ -591,9 +562,6 @@ def _author_pr(num: int, author: str | None, decision: str | None = None):
 
 
 def test_pr_author_slots_split_by_author_type():
-    # #91: one (open, awaiting) pair per curated CLI provider, in order
-    # claude_code(168/169), codex(170/171), grok(172/173), antigravity(174/175),
-    # swink_coding(176/177) (#325), copilot(178/179) (v16).
     state = _state(
         pull_requests=[
             _author_pr(1, "claude_code"),
@@ -612,29 +580,21 @@ def test_pr_author_slots_split_by_author_type():
         ]
     )
     obs = encode_observation(state, _NULL_CTX)
-    # 2 claude_code open, 1 awaiting review (#1 — #2 is APPROVED).
     assert obs[168] == pytest.approx(2 / 10.0, abs=1e-5)
     assert obs[169] == pytest.approx(1 / 10.0, abs=1e-5)
-    # 2 codex open, 2 awaiting review.
     assert obs[170] == pytest.approx(2 / 10.0, abs=1e-5)
     assert obs[171] == pytest.approx(2 / 10.0, abs=1e-5)
-    # 3 grok open, 2 awaiting (#6 APPROVED).
     assert obs[172] == pytest.approx(3 / 10.0, abs=1e-5)
     assert obs[173] == pytest.approx(2 / 10.0, abs=1e-5)
-    # 1 antigravity open, 1 awaiting.
     assert obs[174] == pytest.approx(1 / 10.0, abs=1e-5)
     assert obs[175] == pytest.approx(1 / 10.0, abs=1e-5)
-    # 2 swink_coding open, 1 awaiting (#10 APPROVED).
     assert obs[176] == pytest.approx(2 / 10.0, abs=1e-5)
     assert obs[177] == pytest.approx(1 / 10.0, abs=1e-5)
-    # 3 copilot open, 2 awaiting (#12 APPROVED).
     assert obs[178] == pytest.approx(3 / 10.0, abs=1e-5)
     assert obs[179] == pytest.approx(2 / 10.0, abs=1e-5)
 
 
 def test_pr_author_block_ignores_retired_and_unknown_authors():
-    # #91: Gemini was retired from AgentType; a stray gemini-authored PR (or any
-    # unknown / None author) must resolve to no slot and leave the whole block 0.
     state = _state(
         pull_requests=[
             _author_pr(1, "gemini"),
@@ -647,9 +607,6 @@ def test_pr_author_block_ignores_retired_and_unknown_authors():
 
 
 def test_pr_author_block_contract_is_pinned():
-    # #91: the curated provider order is the version-pinned slot contract — a
-    # silent enum reorder must NOT be able to rewrite it. Pin order, size, and
-    # the computed block/version anchors.
     from agentshore.rl.observation import (
         _PR_AUTHOR_AGENT_ORDER,
         _PR_AUTHOR_FEATURES,
@@ -671,22 +628,7 @@ def test_pr_author_block_contract_is_pinned():
 
 
 def test_observation_version_is_16():
-    # desktop-rni0: bumped 10 → 11 when IDLE_TICK / RECOVER were demoted.
-    # desktop-8zzy: bumped 11 → 12 when pr_pressure_ratio slot was added.
-    # Beads dependency: bumped 12 → 13 when blocked/ready task ratios
-    # repurposed retired cluster slots 0-1.
-    # #91: bumped 13 → 14 when the PR-author block generalized from
-    # claude/codex to the 4 curated CLI providers (4 → 8 slots).
-    # #325: bumped 14 → 15 when swink_coding was appended to the PR-author
-    # block (8 → 10 slots).
-    # v16: bumped 15 → 16 when copilot was appended to the PR-author block
-    # (10 → 12 slots).
-    assert OBSERVATION_VERSION == 16
-
-
-# ---------------------------------------------------------------------------
-# Velocity + busy-agents slots (Group B)
-# ---------------------------------------------------------------------------
+    assert OBSERVATION_VERSION == 17
 
 
 def test_velocity_slot_populated():
@@ -702,7 +644,6 @@ def test_busy_agents_slot_populated():
     from agentshore.rl.observation import _S_BUSY_AGENTS
 
     obs = encode_observation(_state(), _ctx(busy_agent_count=3))
-    # Normalized by _MAX_TOTAL_AGENTS (10): 3/10 = 0.3
     assert obs[_S_BUSY_AGENTS] == pytest.approx(3 / 10, abs=0.01)
 
 
@@ -710,13 +651,8 @@ def test_velocity_slot_clamped():
     """Rolling velocity is clamped to [0, 1] before encoding."""
     from agentshore.rl.observation import _S_ROLLING_VELOCITY
 
-    obs = encode_observation(_state(), _ctx(rolling_velocity=2.5))  # over 1.0
+    obs = encode_observation(_state(), _ctx(rolling_velocity=2.5))
     assert obs[_S_ROLLING_VELOCITY] <= 1.0 + 1e-6
-
-
-# ---------------------------------------------------------------------------
-# Specialization block (177..276) — Issue #333
-# ---------------------------------------------------------------------------
 
 
 def test_specialization_unobserved_cells_default_to_neutral():
@@ -737,7 +673,6 @@ def test_specialization_slots_encode_per_tier_play_rates():
     from agentshore.rl.observation import _S_SPEC_BLOCK_START
     from agentshore.state import AgentPlaySpecializationSnapshot
 
-    # One small-tier agent, one large-tier — they should land in tier 0 / tier 2.
     agents = [
         _agent_with_tier("a", AgentType.CLAUDE_CODE, "small"),
         _agent_with_tier("b", AgentType.CLAUDE_CODE, "large"),
@@ -761,7 +696,6 @@ def test_specialization_slots_encode_per_tier_play_rates():
             success_rate=0.5,
             rolling_success_rate=0.5,
         ),
-        # Legacy string play type — must be skipped from the fixed-shape block.
         AgentPlaySpecializationSnapshot(
             agent_id="a",
             play_type="legacy_play",
@@ -774,17 +708,13 @@ def test_specialization_slots_encode_per_tier_play_rates():
     )
     obs = encode_observation(_state(agents=agents), _ctx(agent_specialization=spec))
 
-    # tier 0 (small) × ISSUE_PICKUP cell: 3 successful / 4 total = 0.75.
     pickup_slot = _S_SPEC_BLOCK_START + 0 * NUM_ACTIONS + PLAY_TO_INDEX[PlayType.ISSUE_PICKUP]
-    # tier 2 (large) × CODE_REVIEW cell: 1 / 2 = 0.5.
     review_slot = _S_SPEC_BLOCK_START + 2 * NUM_ACTIONS + PLAY_TO_INDEX[PlayType.CODE_REVIEW]
     assert obs[pickup_slot] == pytest.approx(0.75, abs=1e-5)
     assert obs[review_slot] == pytest.approx(0.5, abs=1e-5)
 
-    # Untouched slots in the block remain at the neutral prior.
     untouched_slot = _S_SPEC_BLOCK_START + 0 * NUM_ACTIONS + PLAY_TO_INDEX[PlayType.RUN_QA]
     assert obs[untouched_slot] == pytest.approx(0.5, abs=1e-5)
-    # tier 1 (medium) has no agents in this scenario — entire row stays neutral.
     medium_pickup = _S_SPEC_BLOCK_START + 1 * NUM_ACTIONS + PLAY_TO_INDEX[PlayType.ISSUE_PICKUP]
     assert obs[medium_pickup] == pytest.approx(0.5, abs=1e-5)
 
@@ -821,7 +751,6 @@ def test_specialization_aggregates_multiple_agents_per_tier():
     )
     obs = encode_observation(_state(agents=agents), _ctx(agent_specialization=spec))
 
-    # Aggregate: 4 successful / 6 total = 0.6666… across both medium-tier agents.
     medium_pickup = _S_SPEC_BLOCK_START + 1 * NUM_ACTIONS + PLAY_TO_INDEX[PlayType.ISSUE_PICKUP]
     assert obs[medium_pickup] == pytest.approx(4 / 6, abs=1e-5)
 
@@ -830,7 +759,6 @@ def test_specialization_drops_unknown_tier_agents():
     """Agents with ``model_tier`` outside {small, medium, large} are silently dropped."""
     from agentshore.state import AgentPlaySpecializationSnapshot
 
-    # One agent with an unknown tier — encoder must skip it without raising.
     agents = [_agent_with_tier("x", AgentType.CLAUDE_CODE, "huge")]
     cell = AgentPlaySpecializationSnapshot(
         agent_id="x",
@@ -843,15 +771,9 @@ def test_specialization_drops_unknown_tier_agents():
     )
     obs = encode_observation(_state(agents=agents), _ctx(agent_specialization=(cell,)))
     assert obs.shape == (OBSERVATION_DIM,)
-    # No cell populated for an unknown tier — full block stays at neutral.
     from agentshore.rl.observation import _S_SPEC_BLOCK_END, _S_SPEC_BLOCK_START
 
     assert np.allclose(obs[_S_SPEC_BLOCK_START:_S_SPEC_BLOCK_END], 0.5)
-
-
-# ===========================================================================
-# v0.15 Phase 5 — executor_skip_rate_recent_50 slot (177)
-# ===========================================================================
 
 
 def test_executor_skip_rate_default_is_zero():
@@ -887,11 +809,6 @@ def test_executor_skip_rate_slot_index_is_185():
     from agentshore.rl.observation import _S_EXECUTOR_SKIP_RATE
 
     assert _S_EXECUTOR_SKIP_RATE == 185
-
-
-# ===========================================================================
-# desktop-8zzy — pr_pressure_ratio slot (186 after v16)
-# ===========================================================================
 
 
 def test_pr_pressure_ratio_slot_index_is_186():

@@ -73,10 +73,6 @@ def _row_to_session_record(row: aiosqlite.Row) -> SessionRecord:
 
 
 def _row_to_agent_record(row: aiosqlite.Row) -> AgentRecord:
-    # model_tier, display_name, dispatch_count all exist in every supported DB:
-    # the baseline schema declares them and the migrations carry pre-existing
-    # DBs forward. The single SELECT in ``get_agents`` projects the full column
-    # set, so reading them directly (a loud KeyError on drift) is correct.
     return AgentRecord(
         agent_id=row["agent_id"],
         session_id=row["session_id"],
@@ -202,13 +198,9 @@ def _decode_artifacts(raw_artifacts: str | None) -> list[JsonArtifact]:
 
 
 def _load_json_str_list(raw: str | None) -> list[str]:
-    """Decode a JSON string-list column defensively.
+    """Decode a JSON string-list column.
 
-    Returns ``[]`` for NULL/empty input, malformed JSON, or a non-list value
-    — the single failure policy shared by every label/list column (PR labels,
-    issue labels). A bare ``json.loads`` here previously raised and blew up the
-    whole ``get_open_issues`` / ``list_all_issues`` read on a malformed value.
-    """
+    Return [] for NULL, empty input, malformed JSON or a non-list value."""
     if not raw:
         return []
     try:
@@ -221,11 +213,6 @@ def _load_json_str_list(raw: str | None) -> list[str]:
 
 
 def _row_to_pull_request(row: aiosqlite.Row) -> PullRequestRecord:
-    # Every PR read selects the full ``_PULL_REQUEST_COLUMNS`` projection, so
-    # all columns are present in every row and are read directly. A missing
-    # column raising ``KeyError`` is the desired loud failure — defensive
-    # ``"x" in keys`` guards are what previously let ``base_ref`` rot into a
-    # silent write-only column.
     labels = _load_json_str_list(row["labels"])
     linked_issue_numbers: tuple[int, ...] = ()
     linked_issue_numbers_raw = row["linked_issue_numbers"]

@@ -61,9 +61,9 @@ export interface ProjectInspectResult {
   prerequisites: { git: boolean; bd: boolean; gh: boolean };
 }
 
-// ---------------------------------------------------------------------------
-// Budget conversion helpers (moved here from setup/projectYaml.ts; issue #123)
-// ---------------------------------------------------------------------------
+
+
+
 
 /**
  * Re-shape a ``ParsedYamlFields`` budget into the SetupState ``budget`` shape

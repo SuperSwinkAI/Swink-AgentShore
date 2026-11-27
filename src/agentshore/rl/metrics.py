@@ -54,9 +54,7 @@ async def _safe_query[T](query: str, coro: Awaitable[T], default: T) -> T:
         return default
 
 
-# _HIST_LEN imported from ``observation`` (single source) — the obs vector is
-# index-sensitive, so a divergent copy here would silently corrupt the encoding.
-_ROLLING_WINDOW = 10  # plays to average over
+_ROLLING_WINDOW = 10
 _AGENTSHORE_ISSUE_SOURCE_LABELS = frozenset(
     {"agentshore/intake", "agentshore/qa", "agentshore/review"}
 )
@@ -91,8 +89,6 @@ def compute_agent_specialization(
     for play in history:
         agent_id = play.agent_id
         play_type_raw = play.play_type
-        # Reject non-(str, str): MagicMock-stubbed history (common in tests) makes
-        # every attribute a Mock, which breaks tuple sorting downstream.
         if not isinstance(agent_id, str) or not isinstance(play_type_raw, str):
             continue
         buckets.setdefault((agent_id, play_type_raw), []).append(bool(play.success))
@@ -156,9 +152,6 @@ class MetricsEngine:
         self._learnings_file = learnings_file
         self._stagnation_warn_after = stagnation_warn_after
         self._velocity_provider = velocity_provider
-        # v0.15 Phase 5: orchestrator-owned rate over the last 50 executor outcomes.
-        # Skipped plays aren't persisted to the play history, so this can't be
-        # reconstructed from ``DataStore`` — it lives on the orchestrator.
         self._executor_skip_rate_provider = executor_skip_rate_provider
 
     async def _fetch_learnings(self) -> list[Learning]:
@@ -198,8 +191,6 @@ class MetricsEngine:
         )
         busy_count = sum(1 for a in state.agents if a.status == AgentStatus.BUSY)
 
-        # Epic-level metrics from beads graph (Track 5). Keyed under
-        # epic_closure_ratio_mean / epics_total / tasks_ready for dashboard + log grep.
         if state.graph is not None:
             epic_ratios = [e.closure_ratio for e in state.graph.epics]
             epic_closure_ratio_mean = sum(epic_ratios) / len(epic_ratios) if epic_ratios else 0.0
@@ -231,11 +222,6 @@ class MetricsEngine:
         )
 
 
-# ---------------------------------------------------------------------------
-# Pure computation (testable without DB)
-# ---------------------------------------------------------------------------
-
-
 def _build_context(
     state: OrchestratorState,
     history: list[PlayRecord],
@@ -253,14 +239,12 @@ def _build_context(
     n = len(history)
     recent = history[-_ROLLING_WINDOW:] if n >= _ROLLING_WINDOW else history
 
-    # Rolling stats
     rolling_success = sum(1 for p in recent if p.success) / len(recent) if recent else 0.0
     rolling_cost = sum(p.dollar_cost for p in recent) / len(recent) if recent else 0.0
     rolling_dur = (
         sum((p.duration_ms or 0) / 1000.0 for p in recent) / len(recent) if recent else 0.0
     )
 
-    # Last _HIST_LEN play types + success flags (oldest → newest)
     last_n = history[-_HIST_LEN:]
     last_types: list[PlayType | None] = [None] * _HIST_LEN
     last_success: list[bool | None] = [None] * _HIST_LEN
@@ -272,29 +256,24 @@ def _build_context(
             last_types[offset + i] = None
         last_success[offset + i] = p.success
 
-    # Issues closed/created this session.
     issues_closed = 0
     issues_created = issues_created_this_session if issues_created_this_session is not None else 0
     for p in history:
         if _play_closed_issue(p):
             issues_closed += 1
 
-    # Issue churn rate over the same rolling window.
     churn_recent = history[-_ROLLING_WINDOW:] if n > _ROLLING_WINDOW else history
     recent_closed = sum(1 for p in churn_recent if _play_closed_issue(p))
     total_issues = len(state.open_issues)
     issue_churn_rate = recent_closed / max(1, total_issues)
 
-    # Time-since metrics (seconds from last matching play)
     last = history[-1] if history else None
     now_epoch = _parse_iso_seconds(last.ended_at or last.started_at) if last else 0.0
     minutes_since_alignment = _minutes_since(history, {"calibrate_alignment"}, now_epoch)
     minutes_since_intake = _minutes_since(history, {"seed_project"}, now_epoch)
+    minutes_since_merge = _minutes_since_last_merge(history, now_epoch)
+    oldest_review_wait = _oldest_review_wait_minutes(prs_open, now_epoch)
 
-    # Stagnation = whole minutes that ALL agents have been idle.
-    # Any BUSY agent resets to 0 — work in progress is not stagnation.
-    # With no agents the session can't make progress either, so the same
-    # wall-clock-since-last-play rule applies.
     any_busy = any(a.status == AgentStatus.BUSY for a in state.agents)
     if any_busy:
         stagnation = 0
@@ -307,8 +286,6 @@ def _build_context(
                     latest_end = ts
         stagnation = max(0, int((time.time() - latest_end) // 60)) if latest_end > 0.0 else 0
 
-    # Cluster drift: per-epic imbalance (std-dev of closure ratios across epics).
-    # High drift means uneven progress — one epic racing ahead while others stall.
     if state.graph is not None and len(state.graph.epics) >= 2:
         ratios = [e.closure_ratio for e in state.graph.epics]
         mean_r = sum(ratios) / len(ratios)
@@ -316,14 +293,10 @@ def _build_context(
     else:
         cluster_drift = 0.0
 
-    # PR counts
     prs_open_count = len(prs_open)
-    # Awaiting review: open/review PRs without GitHub approval or AgentShore's
-    # current-head PASS verdict.
     prs_awaiting = sum(1 for pr in prs_open if pr_is_awaiting_review(pr))
     prs_approved_count = len(prs_approved)
 
-    # Handoff rolling stats over the latest handoff rows in this session.
     rolling_context_loss_values = [
         handoff.context_loss_estimate
         for handoff in handoffs
@@ -345,7 +318,6 @@ def _build_context(
         else 0.0
     )
 
-    # Learnings
     learning_count = len(learnings)
     confidences = [item.confidence for item in learnings]
     learning_avg_conf = sum(confidences) / len(confidences) if confidences else 0.0
@@ -380,7 +352,46 @@ def _build_context(
         ),
         agent_specialization=tuple(compute_agent_specialization(history)),
         executor_skip_rate_recent_50=executor_skip_rate_recent_50,
+        oldest_review_wait_minutes=oldest_review_wait,
+        minutes_since_last_merge=minutes_since_merge,
     )
+
+
+def _play_merged_pr(play: PlayRecord) -> bool:
+    """True when a successful play merged a PR (merge_pr, or unblock_pr merging in place)."""
+    if not play.success:
+        return False
+    if play.play_type == PlayType.MERGE_PR.value:
+        return True
+    return any(
+        isinstance(artifact, dict) and artifact.get("type") == "pr_merged"
+        for artifact in play.artifacts
+    )
+
+
+def _minutes_since_last_merge(history: list[PlayRecord], now_epoch: float) -> float:
+    """Minutes since a PR last merged this session; max staleness when none has."""
+    for p in reversed(history):
+        if _play_merged_pr(p):
+            ts = _parse_iso_seconds(p.ended_at or p.started_at)
+            if ts > 0.0 and now_epoch > 0.0:
+                return max(0.0, (now_epoch - ts) / 60.0)
+            return 0.0
+    return 480.0
+
+
+def _oldest_review_wait_minutes(prs_open: Sequence[PullRequestRecord], now_epoch: float) -> float:
+    """Minutes the oldest open PR still awaiting review has existed (0.0 when none)."""
+    if now_epoch <= 0.0:
+        return 0.0
+    oldest = 0.0
+    for pr in prs_open:
+        if not pr_is_awaiting_review(pr):
+            continue
+        created = _parse_iso_seconds(pr.created_at)
+        if created > 0.0:
+            oldest = max(oldest, (now_epoch - created) / 60.0)
+    return max(0.0, oldest)
 
 
 def _parse_iso_seconds(ts: str | None) -> float:
@@ -409,7 +420,7 @@ def _minutes_since(
             if ts > 0.0 and now_epoch > 0.0:
                 return max(0.0, (now_epoch - ts) / 60.0)
             return 0.0
-    return 480.0  # never ran → report max staleness
+    return 480.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -427,8 +438,6 @@ class _IssueClosureEvidence:
     merge_pr_artifact_present: bool
 
 
-# Artifact ``type`` strings carrying issue-closure evidence — named constants
-# so dispatch reads intent rather than scattering magic strings.
 _ARTIFACT_ISSUE_CLOSED = "issue_closed"
 _ARTIFACT_ISSUES_CLOSED = "issues_closed"
 _ARTIFACT_PR_MERGED_ISSUE_NUMBERS = "pr_merged_issue_numbers"

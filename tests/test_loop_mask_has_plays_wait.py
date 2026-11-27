@@ -1,13 +1,5 @@
-"""Regression for issue #562 — loop must wait, not exit, when the action
-mask shows ready plays even if ``candidate_plan.has_remaining_work`` is False.
-
-Before the fix, ``_continue_if_selector_idle_work_remains`` returned ``False``
-the moment ``has_remaining_work`` was False, which collapsed the outer
-``while`` in ``loop.py`` (``break  # truly idle``). After the idle_tick
-removal (PR #535) that exits the session even when PPO has mask-eligible
-plays — a real-world hang for users starting against an already-seeded
-project.
-"""
+"""Tests for loop must wait, not exit, when the action
+mask shows ready plays even if ``candidate_plan.has_remaining_work`` is False."""
 
 from __future__ import annotations
 
@@ -35,8 +27,6 @@ class _StateStub:
 def _orch(tmp_path: Path) -> Orchestrator:
     from tests.orchestrator_factory import make_test_orchestrator
 
-    # Default selector is a non-PPO MagicMock: all-masked idle is terminal (break).
-    # Live-PPO keep-polling tests swap this via a patched _ppo_selector_cls.
     orch = make_test_orchestrator(tmp_path)
     orch._session_id = "sess-562"
     return orch
@@ -152,7 +142,7 @@ async def test_all_masked_scripted_selector_breaks(info_calls: MagicMock, tmp_pa
     break the loop. An exhausted FixedPlanSelector / test mock will never produce
     another play and there is no fleet-idle backstop semantics in replay, so the
     loop must terminate (return False) and let the harness own teardown."""
-    orch = _orch(tmp_path)  # default _selector is a non-PPO MagicMock
+    orch = _orch(tmp_path)
     state = _StateStub(action_mask=(False, False, False, False))
 
     with (

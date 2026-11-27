@@ -118,26 +118,11 @@ if TYPE_CHECKING:
 
 _logger = structlog.get_logger(__name__)
 
-# Cap on how long ``first_snapshot`` waits for the orchestrator to publish
-# its first state. ``Orchestrator.publish_initial_state`` runs in the boot
-# task and completes immediately for empty projects; longer waits indicate
-# a stuck bootstrap, so we surface as a phase failure rather than block
-# session.start indefinitely.
 DEFAULT_FIRST_SNAPSHOT_TIMEOUT_SECONDS: float = 30.0
 
-# Cap on how long a new session.start waits for the *previous* orchestrator's
-# store teardown (``orch.stop()`` → ``DataStore.close()``) to finish before it
-# boots its own orchestrator (#283). The close does an Online-Backup snapshot +
-# ``os.replace`` of agentshore.db and holds the SQLite writer/checkpoint lock;
-# running a new ``store_init`` concurrently with it yields "database is locked".
-# The window is normally sub-second, but a large DB on throttled disk I/O can
-# legitimately take longer, so the bound is generous — exceeding it surfaces a
-# clean "still shutting down, retry" error instead of a raw lock failure.
 STORE_TEARDOWN_WAIT_SECONDS: float = 60.0
 
 
-# Canonical step IDs must stay in lockstep with
-# ``desktop/src/startupSteps.ts:STARTUP_STEP_IDS``.
 STEP_CONFIG_MERGE = "config_merge"
 STEP_CHECK_AGENT_AUTH = "check_agent_auth"
 STEP_INSTALL_SKILLS = "install_skills"
@@ -157,8 +142,6 @@ SESSION_START_STEP_IDS: tuple[str, ...] = (
 )
 
 
-# Mapping of step id → user-facing label. The ``running`` notification adds
-# an ellipsis suffix; the ``ok`` notification reuses the label verbatim.
 _STEP_LABELS: dict[str, str] = {
     STEP_CONFIG_MERGE: "Config merged",
     STEP_CHECK_AGENT_AUTH: "Agent auth checked",
@@ -283,9 +266,6 @@ def _check_config_merge(project_path: Path, *, require_tier_coverage: bool = Tru
     if not config_path.exists():
         msg = f"agentshore.yaml not found at {config_path}"
         raise SessionStartError(STEP_CONFIG_MERGE, -32602, msg)
-    # Lazy import: keeps the cold-start torch-free invariant intact —
-    # agentshore.config is light, but importing here mirrors the orchestrator
-    # boot pattern below.
     from agentshore.config import load_config
     from agentshore.errors import ConfigError
 
@@ -320,8 +300,10 @@ def _check_agent_auth(cfg: RuntimeConfig, project_path: Path) -> None:
     to skip the git-remote probe entirely, so a broken git credential slipped
     past launch and wedged mid-session instead of failing fast here):
 
-    1. Identities — enabled CLI agents must resolve to at least two distinct
-       GitHub logins so review/merge can satisfy anti-confirmation-bias, and
+    1. Identities — every configured identity token must resolve, validate
+       against GitHub, and reach this repository (gh-476); enabled CLI agents
+       must resolve to at least two distinct GitHub logins so review/merge
+       can satisfy anti-confirmation-bias, and
        every identity must cover all model tiers (small/medium/large) —
        code_review is large-tier-only, so concentrating ``large`` on one
        identity deadlocks review (no distinct-identity reviewer).
@@ -344,6 +326,9 @@ def _check_agent_auth(cfg: RuntimeConfig, project_path: Path) -> None:
     from agentshore.agents.auth_probe import probe_configured_cli_auth
     from agentshore.agents.git_auth_probe import probe_all_identities
     from agentshore.agents.identity import (
+        bad_identity_rows,
+        report_identities,
+        report_identity_repo_access,
         require_per_identity_model_tier_coverage,
         require_two_distinct_gh_identities,
     )
@@ -356,6 +341,16 @@ def _check_agent_auth(cfg: RuntimeConfig, project_path: Path) -> None:
             require_per_identity_model_tier_coverage(cfg)
         except ConfigError as exc:
             raise SessionStartError(STEP_CHECK_AGENT_AUTH, -32603, str(exc)) from exc
+        invalid = bad_identity_rows(report_identities(cfg))
+        if invalid:
+            details = "; ".join(f"{r.agent_key}: {r.detail}" for r in invalid)
+            msg = f"configured GitHub identity token failed validation: {details}"
+            raise SessionStartError(STEP_CHECK_AGENT_AUTH, -32603, msg)
+        blocked = [r for r in report_identity_repo_access(cfg, project_path) if not r.ok]
+        if blocked:
+            details = "; ".join(f"{r.agent_key}: {' '.join(r.detail.split())}" for r in blocked)
+            msg = f"configured GitHub identity token cannot access this repository: {details}"
+            raise SessionStartError(STEP_CHECK_AGENT_AUTH, -32603, msg)
 
     def _cli_agent_auth() -> None:
         results = probe_configured_cli_auth(cfg)
@@ -589,15 +584,13 @@ async def run_session_start(
     project_path: Path | None = (
         Path(state.active_project_path) if state.active_project_path else None
     )
-    # Always mint a fresh id (#283): the sidecar ``session.start`` has no
-    # resume-by-id semantics, and reusing a stale ``state.session_id`` left by a
-    # prior (naturally ended) session collides with that session's persisted
-    # ``sessions`` row → "UNIQUE constraint failed: sessions.session_id" on
-    # restart. ``state.session_id`` is an output of start, never an input.
     session_id = str(uuid.uuid4())
     state.session_id = session_id
 
-    # Phase 1: config_merge
+    from agentshore.agents.identity import reset_token_cache
+
+    reset_token_cache()
+
     cfg: RuntimeConfig | None = None
 
     async def _phase_config_merge() -> None:
@@ -607,67 +600,39 @@ async def run_session_start(
 
     await _run_phase(notify, progress_token, STEP_CONFIG_MERGE, _phase_config_merge)
 
-    # Bind the per-session NDJSON log file handler now — cfg and session_id
-    # are both available, and later phases (init_beads in particular) log
-    # warnings that would otherwise vanish before Orchestrator.bootstrap
-    # attaches a file sink in first_snapshot (gh-356).
     if project_path is not None and cfg is not None and cfg.logging.file:
         from agentshore.logging import attach_session_file_handler
 
         attach_session_file_handler(project_path / cfg.logging.log_dir, session_id)
 
-    # Phase 2: check_agent_auth — identities, then CLI-agent backend auth
-    # (e.g. the Codex CLI's cached chatgpt.com session), then git-remote auth,
-    # now that cfg is resolved but before anything expensive boots. A
-    # definitive failure in any of the three blocks the launch with a
-    # remediation message; transient probe failures are logged and tolerated.
-    # Skipped in legacy stub mode (no active project / cfg).
     async def _phase_check_agent_auth() -> None:
         if project_path is not None and cfg is not None:
             await asyncio.to_thread(_check_agent_auth, cfg, project_path)
 
     await _run_phase(notify, progress_token, STEP_CHECK_AGENT_AUTH, _phase_check_agent_auth)
 
-    # Phase 3: install_skills — copy bundled skill templates into
-    # ``.agents/skills/``. Idempotent: only stale templates are
-    # overwritten. Skipped when there's no active project so the
-    # legacy stub-mode call path stays a no-op.
     async def _phase_install_skills() -> None:
         if project_path is not None:
             _run_install_skills(project_path)
 
     await _run_phase(notify, progress_token, STEP_INSTALL_SKILLS, _phase_install_skills)
 
-    # Phase 4: init_beads
     async def _phase_init_beads() -> None:
         if project_path is not None:
             await _run_init_beads(project_path, cfg=cfg, session_id=session_id, notify=notify)
 
     await _run_phase(notify, progress_token, STEP_INIT_BEADS, _phase_init_beads)
 
-    # Phase 5: bind_ipc — always allocates a fresh endpoint, even without
-    # an active project.
     _emit(notify, progress_token, STEP_BIND_IPC, "running")
     if state.ipc_endpoint is None:
         state.ipc_endpoint = _allocate_ipc_endpoint()
     _emit(notify, progress_token, STEP_BIND_IPC, "ok")
 
-    # Phase 6: start_bridge — boot the EmbeddedBridge as a supervised
-    # asyncio task. The bridge serves empty state until the orchestrator
-    # publishes to the IPC endpoint allocated above. Failure here (e.g.
-    # port collision, missing static bundle) surfaces as a structured
-    # ``failed`` $/progress event followed by a SessionStartError.
     _emit(notify, progress_token, STEP_START_BRIDGE, "running")
     if start_bridge and project_path is not None and state.bridge is None:
         try:
             from agentshore.ipc.state_writer import reset_session_files
 
-            # Reset before the bridge primes. This stable session_dir may hold a
-            # prior session's state/event files, which the new bridge would
-            # otherwise prime before the orchestrator boots (phase 6) and resets
-            # them — the same prime-before-reset race as the CLI. The Tier 0
-            # session_id gate already rejects a stale snapshot; this makes the
-            # embedded path's ordering match the CLI's reset-before-prime.
             reset_session_files(session_dir(project_path))
             bridge = _make_bridge(project_path, state.ipc_endpoint, session_id=session_id)
             await bridge.start()
@@ -678,10 +643,6 @@ async def run_session_start(
         state.bridge = bridge
     _emit(notify, progress_token, STEP_START_BRIDGE, "ok")
 
-    # Optional: start a dashboard timelapse capture for this session. The
-    # per-session ``timelapse_enabled`` override (from the desktop Start
-    # toggle) wins over ``cfg.timelapse.enabled``. Best-effort — any failure
-    # is logged and swallowed so it can never block session start.
     if start_bridge and project_path is not None and state.bridge is not None:
         effective = (
             timelapse_enabled
@@ -691,11 +652,6 @@ async def run_session_start(
         if effective:
             await _maybe_start_timelapse(state, project_path)
 
-    # Phase 7: first_snapshot — when the orchestrator is enabled, this
-    # phase boots it and waits for the first state publish to reach the
-    # bridge's state_dir. When disabled, the bridge-ready signal from
-    # phase 5 is already sufficient evidence that the dashboard can
-    # subscribe; we emit ``ok`` immediately.
     async def _phase_first_snapshot() -> None:
         if start_orchestrator and project_path is not None and cfg is not None:
             try:
@@ -719,14 +675,6 @@ async def run_session_start(
     started_at = state.started_at or datetime.now(UTC).isoformat()
     state.started_at = started_at
 
-    # Make the desktop-mode session discoverable by the CLI's
-    # `agentshore stop` (desktop-r3o6). CLI sessions write
-    # ~/.config/swink/agentshore/sessions/<hash>/agentshore.pid + info.json with the IPC
-    # endpoint; the desktop sidecar took a separate path through
-    # session.start RPC and skipped this registration entirely, so
-    # `agentshore stop /path/to/project` reported "no running session".
-    # Mirror the same writes here when an active project is set so
-    # both stop paths converge.
     if project_path is not None:
         ipc_for_info: IpcEndpoint | None = None
         if isinstance(state.ipc_endpoint, dict):
@@ -867,11 +815,6 @@ async def _start_orchestrator(
     from agentshore.sidecar.notification_emitters import build_session_completed_emitter
     from agentshore.sidecar.server import SessionContext
 
-    # #283: a previous session's store teardown (orch.stop() → DataStore.close,
-    # which snapshots + os.replaces agentshore.db under the writer lock) may
-    # still be running — the ESR "restart" button unlocks before that close
-    # finishes. Wait for it to complete before opening this session's store, or
-    # the new store_init contends with the close and hits "database is locked".
     await _await_prior_store_teardown(state)
 
     sdir = _session_dir(project_path)
@@ -884,27 +827,12 @@ async def _start_orchestrator(
         repo_root=project_path,
         state_provider=provider,
         session_id=session_id,
-        # #5: forward the wizard-selected seed file so a desktop-launched
-        # session takes the seed bootstrap path instead of silently falling
-        # back to open-start (no_seed_input). None ⇒ open-start, as before.
         seed_path=Path(seed_path) if seed_path else None,
-        # Persist live budget changes (and SIGHUP reloads) to the project's
-        # agentshore.yaml — without this the orchestrator's _config_path stays
-        # None and Orchestrator.set_budget(persist=True) silently no-ops, so a
-        # desktop "Adjust Budget…" change would not survive a restart.
         config_path=project_path / "agentshore.yaml",
-        # Issue #561: tell the engine it's hosted inside the desktop sidecar
-        # so drain.py skips ``webbrowser.open`` and instead fires the
-        # esr_ready callback wired below.
         embedded_mode=True,
     )
     state.orchestrator = orch
 
-    # Wire the esr_ready emitter so drain.py can flag the desktop shell the
-    # moment the static ESR HTML lands, replacing the OS-browser handoff
-    # (issue #561). Done immediately after bootstrap and before
-    # ``publish_initial_state`` so even a fast-failing first snapshot still
-    # gets a clean teardown path.
     if notify is not None:
         from agentshore.sidecar.notification_emitters import build_esr_ready_emitter
 
@@ -929,19 +857,12 @@ async def _start_orchestrator(
 
         orch.register_esr_ready_callback(_record_and_emit_esr_ready)
 
-    # Wire the session.draining emitter so the Tauri shell's heartbeat
-    # watchdog can stand down the moment graceful shutdown begins, rather
-    # than waiting for $/esr_ready (which only arrives after the unbounded
-    # ESR HTML-generation step completes).
     if notify is not None:
         from agentshore.sidecar.notification_emitters import build_session_draining_emitter
 
         emit_session_draining = build_session_draining_emitter(notify)
         orch.register_session_draining_callback(emit_session_draining)
 
-    # Wait for the first state snapshot to land in dashboard_state.json so
-    # the bridge has something to fan out before the start-checklist's
-    # final phase is marked ok.
     try:
         await asyncio.wait_for(orch.publish_initial_state(), timeout=first_snapshot_timeout_seconds)
     except TimeoutError as exc:
@@ -949,17 +870,11 @@ async def _start_orchestrator(
             f"first state publish exceeded {first_snapshot_timeout_seconds}s — "
             "orchestrator bootstrap stalled"
         )
-        # Tear down the partially-booted orchestrator before propagating so
-        # the session is not left half-up.
         with contextlib.suppress(Exception):
             await orch.stop()
         state.orchestrator = None
         raise SessionStartError(STEP_FIRST_SNAPSHOT, -32603, msg) from exc
 
-    # Build a SessionContext now so session.stop's ESR path works. The
-    # report/log locators come from the core process via the esr_ready
-    # callback; until then report_path stays empty rather than inventing a
-    # placeholder path.
     archive_dir = project_path / ".agentshore" / "archives" / session_id
     log_path = orch._runtime.log_path
     state.session_context = SessionContext(
@@ -970,15 +885,9 @@ async def _start_orchestrator(
         log_path=state.esr_ready_log_path or (str(log_path) if log_path is not None else None),
     )
 
-    # Wire the natural-exit hook to fire session.completed. The hook
-    # itself only forms the JSON-RPC notification; the full ESR payload
-    # is built by the orchestrator-supervisor task after stop() finishes.
     emit_session_completed = build_session_completed_emitter(notify) if notify is not None else None
 
     async def _on_natural_exit(reason: str) -> None:
-        # The supervisor task below assembles the ESR payload and emits
-        # the notification once stop() returns; this hook only records
-        # the exit reason so session.stop's mode handling can short-circuit.
         _logger.info(
             "sidecar_orchestrator_natural_exit",
             session_id=session_id,
@@ -995,25 +904,10 @@ async def _start_orchestrator(
         except Exception:
             _logger.exception("sidecar_orchestrator_run_failed", session_id=session_id)
             raise
-        # Only the natural-exit path proceeds to ESR emission; explicit
-        # session.stop callers own their own ESR build in the stop path.
         if orch._runtime.natural_exit_reason is None:
             return
-        # Snapshot both locals immediately — a concurrent _clear_session_state
-        # (or the explicit-stop path) can null state.session_context during the
-        # run_until_idle/teardown window. Reading state.session_context live
-        # across awaits is the race that silently skips the rich payload and
-        # leaves only a bare $/esr_ready on natural exit. Mirror the robust
-        # explicit-stop snapshot in rpc/handlers/session.py:117.
         ctx = state.session_context
         reason = orch._runtime.natural_exit_reason
-        # Build the ESR payload BEFORE ``orch.stop()`` — ``stop()`` closes
-        # the underlying DataStore as part of shutdown_step:store_close
-        # (DESIGN §5.2), and ``ReportDataCollector.collect_end_session_report``
-        # then fails with "Session not found" because the SQLite handle is
-        # already torn down. Reversing the order keeps the read path
-        # talking to a live store and only tears down after we have the
-        # snapshot.
         payload: dict[str, object] | None = None
         if emit_session_completed is not None and ctx is not None:
             try:
@@ -1035,9 +929,6 @@ async def _start_orchestrator(
                     "sidecar_session_completed_payload_failed",
                     session_id=session_id,
                 )
-                # Fall through with a minimal payload so the dashboard
-                # still learns the session ended even when the collector
-                # could not produce a full summary.
                 payload = {
                     "session_id": ctx.session_id,
                     "exit_reason": reason,
@@ -1053,15 +944,10 @@ async def _start_orchestrator(
         if payload is not None and ctx is not None:
             payload["report_path"] = ctx.report_path
             payload["log_path"] = ctx.log_path
-        # Stop any timelapse capture (best-effort) and attach the MP4 path so
-        # the desktop opens it when the naturally-ended session completes.
         if payload is not None:
             payload["timelapse_output_path"] = await stop_timelapse_capture(state)
         if emit_session_completed is not None and payload is not None:
             emit_session_completed(payload)
-        # Natural exit closed the store above (stop_orchestrator_tracked) but, unlike
-        # the explicit-stop path, never cleared session state — leaving the stale
-        # session_id to be reused on the next start (#283). Clear it now.
         _clear_session_state(state)
 
     def _on_orchestrator_done(task: asyncio.Task[None]) -> None:
@@ -1090,10 +976,6 @@ async def _start_orchestrator(
                 await orch._store.fail_session(session_id, "orchestrator_task_crashed")
             except Exception:
                 _logger.exception("sidecar_fail_session_failed", session_id=session_id)
-            # A crashed run never reached stop_orchestrator_tracked in _supervise,
-            # so the store is still open. Close it (+ clear state) or the
-            # connection leaks into the long-lived sidecar and blocks the next
-            # session.start (#283). orch.stop() is re-entrancy safe.
             try:
                 await stop_orchestrator_tracked(state, orch)
             except Exception:

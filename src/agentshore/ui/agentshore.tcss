@@ -1,4 +1,4 @@
-/* AgentShore TUI — Dark Theme */
+
 
 App {
     background: #11131f;
@@ -56,17 +56,17 @@ Footer {
     min-height: 7;
 }
 
-/* Budget states */
+
 .budget--healthy { color: #9ece6a; }
 .budget--warning { color: #e0af68; }
 .budget--exhausted { color: #f7768e; }
 
-/* Alignment bar states */
+
 .bar--high { color: #9ece6a; }
 .bar--med { color: #e0af68; }
 .bar--low { color: #f7768e; }
 
-/* Alert bar */
+
 AlertBar { display: none; height: 3; }
 .alert--error { color: #f7768e; }
 .alert--warning { color: #e0af68; }
@@ -74,7 +74,7 @@ AlertBar { display: none; height: 3; }
 .alert--loop { background: #f7768e; color: #1a1b26; text-style: bold; }
 AlertBar.alert--loop { display: block; height: 1; width: 100%; }
 
-/* RL State bar */
+
 RLStateBar { height: 4; }
 .loop--warning { color: #e0af68; }
 .loop--force { color: #ff9e64; }
@@ -110,5 +110,5 @@ BudgetWidget { min-height: 6; }
     display: none;
 }
 
-/* Utility */
+
 .hidden { display: none; }

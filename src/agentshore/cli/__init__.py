@@ -33,8 +33,6 @@ def main() -> None:
     ensure_windows_event_loop_policy()
 
 
-# Subcommands self-register sub-subcommands via import-time decorators, so
-# importing the group object registers the full command tree.
 main.add_command(start)
 main.add_command(init)
 main.add_command(identity)

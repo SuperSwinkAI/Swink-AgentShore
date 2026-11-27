@@ -87,7 +87,6 @@ class MaskReason:
         return hash((self.text, self.classification, self.source))
 
 
-# Pre-allocated instances for fixed-text reasons — avoids per-tick allocation.
 SESSION_DRAINING: Final = MaskReason(
     text="Session draining: only end_agent permitted",
     classification=MaskClassification.INDEFINITE_WAIT,
@@ -113,22 +112,16 @@ SELECTED_CANDIDATE_NO_LONGER_AVAILABLE: Final = MaskReason(
     classification=MaskClassification.HARD,
     source=MaskSource.CANDIDATE,
 )
-# Trunk-pause latch: only end_agent / reconcile_state until healed. Transient.
 MAIN_REPO_DISPATCH_PAUSED: Final = MaskReason(
     text="main repo dispatch paused: only end_agent / reconcile_state permitted",
     classification=MaskClassification.TRANSIENT,
     source=MaskSource.CONTROL,
 )
-# END_SESSION already in-flight. Transient — clears when that dispatch resolves.
 END_SESSION_IN_FLIGHT: Final = MaskReason(
     text="end_session already in flight",
     classification=MaskClassification.TRANSIENT,
     source=MaskSource.CONTROL,
 )
-# User-disabled via global Preferences. HARD + structural: honored everywhere
-# (incl. reverse failsafe) so the escape hatch never resurrects a user choice.
-# Allowlist-guarded to non-critical plays so it can't wedge delivery; dedicated
-# source lets observability tell "user disabled" apart from a stuck all-masked state.
 USER_DISABLED: Final = MaskReason(
     text="disabled by user preference",
     classification=MaskClassification.HARD,

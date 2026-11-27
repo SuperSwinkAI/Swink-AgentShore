@@ -34,17 +34,11 @@ def maybe_re_exec_under_caffeinate() -> None:
         return
     if os.environ.get(_OPT_OUT_ENV) == "1":
         return
-    # Tests drive ``start`` in-process via CliRunner; re-execing would
-    # replace the pytest worker with caffeinate and detonate the run.
     if "PYTEST_CURRENT_TEST" in os.environ:
         return
     caffeinate = shutil.which("caffeinate")
     if caffeinate is None:
         return
 
-    # Set sentinel so the re-exec'd process short-circuits this check.
     os.environ[_SENTINEL_ENV] = "1"
-    # ``-i`` prevents idle system sleep (the I/O throttling that corrupts the
-    # WAL); it does NOT touch display sleep/screen lock, so battery/UX is
-    # unchanged. caffeinate exits with its child, so no -w pid plumbing needed.
     os.execvp(caffeinate, [caffeinate, "-i", *sys.argv])

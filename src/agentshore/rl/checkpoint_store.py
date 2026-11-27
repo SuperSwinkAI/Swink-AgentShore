@@ -58,15 +58,143 @@ class _WindowsLockingModule(Protocol):
     def locking(self, fd: int, mode: int, nbytes: int, /) -> int: ...
 
 
-# Local / canonical checkpoint lifecycle
-
-
 def _prune_local_checkpoints(weights_dir: Path, keep: int = _LOCAL_CHECKPOINT_KEEP) -> None:
     """Delete numbered local checkpoints beyond the most recent `keep` files."""
     numbered = sorted(weights_dir.glob("policy_[0-9][0-9][0-9][0-9][0-9][0-9].pt"))
     for stale in numbered[:-keep]:
         with contextlib.suppress(OSError):
             stale.unlink()
+
+
+_FLOW_BLOCK_MIGRATABLE_OBSERVATION_VERSIONS: frozenset[int] = frozenset({16})
+_FIRST_LAYER_WEIGHT_KEY = "trunk.0.weight"
+
+
+def migrate_flow_block_checkpoint(source: Path, dest: Path) -> bool:
+    """Carry a pre-v17 checkpoint forward to the current observation layout.
+
+    v17 reuses slots 2-7, which every earlier compatible version fed as constant
+    zeros. Zeroing the first layer's weights for those columns and re-stamping the
+    version gives a policy that produces the same outputs it did before for any
+    state (the new inputs are multiplied by zero), while leaving those weights
+    free to learn the new signals. Trained behaviour is preserved; nothing is
+    retrained.
+
+    Returns True when *dest* was written. Any other version, shape, or head
+    mismatch returns False and writes nothing — the caller then falls back to the
+    normal seed / cold-start path.
+    """
+    from agentshore.rl.observation import FLOW_BLOCK_END, FLOW_BLOCK_START, OBSERVATION_DIM
+
+    try:
+        payload = torch.load(source, map_location="cpu", weights_only=True)
+    except (OSError, RuntimeError, ValueError) as exc:
+        _logger.warning("flow_block_migration_load_failed", path=str(source), error=str(exc))
+        return False
+    if not isinstance(payload, dict):
+        return False
+    state_dict = payload.get("state_dict")
+    if not isinstance(state_dict, dict):
+        return False
+    weight = state_dict.get(_FIRST_LAYER_WEIGHT_KEY)
+    if (
+        payload.get("observation_version") not in _FLOW_BLOCK_MIGRATABLE_OBSERVATION_VERSIONS
+        or payload.get("action_space_version") != ACTION_SPACE_VERSION
+        or payload.get("policy_version") != POLICY_VERSION
+        or payload.get("obs_dim") != OBSERVATION_DIM
+        or not isinstance(weight, torch.Tensor)
+        or weight.ndim != 2
+        or weight.shape[1] != OBSERVATION_DIM
+    ):
+        return False
+
+    migrated_weight = weight.clone()
+    migrated_weight[:, FLOW_BLOCK_START:FLOW_BLOCK_END] = 0.0
+    migrated = dict(payload)
+    migrated["state_dict"] = {**state_dict, _FIRST_LAYER_WEIGHT_KEY: migrated_weight}
+    migrated["observation_version"] = OBSERVATION_VERSION
+
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=dest.parent, suffix=".tmp")
+    try:
+        os.close(fd)
+        torch.save(migrated, tmp)
+        os.replace(tmp, dest)
+    except (OSError, RuntimeError) as exc:
+        _logger.warning("flow_block_migration_write_failed", path=str(dest), error=str(exc))
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        return False
+    _logger.info(
+        "flow_block_checkpoint_migrated",
+        source=str(source),
+        dest=str(dest),
+        from_observation_version=payload.get("observation_version"),
+        to_observation_version=OBSERVATION_VERSION,
+    )
+    return True
+
+
+def migrate_previous_observation_canonical(weights_dir: Path) -> bool:
+    """Create the current canonical from a migratable previous-version one.
+
+    No-op when the current canonical already exists (never overwrite live
+    weights) or no migratable predecessor is present. The predecessor is left in
+    place for ``_archive_old_canonicals`` to quarantine as usual.
+    """
+    current = weights_dir / canonical_weights_filename()
+    if current.exists():
+        return False
+    for version in sorted(_FLOW_BLOCK_MIGRATABLE_OBSERVATION_VERSIONS, reverse=True):
+        previous = weights_dir / f"policy_a{ACTION_SPACE_VERSION}_o{version}_p{POLICY_VERSION}.pt"
+        if previous.is_file() and migrate_flow_block_checkpoint(previous, current):
+            return True
+    return False
+
+
+def graft_config_head(
+    policy: ActorCritic, config_index: tuple[tuple[str, str], ...]
+) -> ActorCritic:
+    """Resize a loaded policy's config head to this install's roster.
+
+    The shipped seed strips its config head (``num_configs == 0``) because the
+    head is roster-specific; a canonical trained on another roster carries a head
+    of the wrong width. Either way ``ActorCritic.load`` sizes the head from the
+    checkpoint, which leaves agent-config choice unlearnable (width 0) or
+    shape-mismatched against ``config_index``. This keeps the trunk, play head,
+    and value head exactly and replaces only the config head with a fresh
+    cold-start-biased one at the runtime width. Returns *policy* unchanged when
+    the widths already agree or there is no roster.
+    """
+    if not config_index or policy.num_configs == len(config_index):
+        return policy
+    from agentshore.rl.cold_start import apply_cold_start_config_bias
+
+    grafted = _rebuild(policy, shared_state(policy.state_dict()), len(config_index))
+    apply_cold_start_config_bias(grafted, config_index)
+    grafted.eval()
+    _logger.info("config_head_grafted", saved=policy.num_configs, current=len(config_index))
+    return grafted
+
+
+def shared_state(state_dict: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+    """The roster-independent weights: everything except the config head."""
+    return {k: v for k, v in state_dict.items() if not k.startswith("config_head.")}
+
+
+def _rebuild(like: ActorCritic, shared: dict[str, torch.Tensor], num_configs: int) -> ActorCritic:
+    """A policy shaped like *like* with *shared* weights and a fresh config head."""
+    from agentshore.rl.policy import ActorCritic
+
+    first = cast("torch.nn.Linear", like.trunk[0])
+    out = ActorCritic(
+        obs_dim=first.in_features,
+        num_actions=like.actor.out_features,
+        hidden=first.out_features,
+        num_configs=num_configs,
+    )
+    out.load_state_dict(shared, strict=False)
+    return out
 
 
 def _archive_old_canonicals(weights_dir: Path) -> None:
@@ -81,12 +209,12 @@ def _archive_old_canonicals(weights_dir: Path) -> None:
     Sibling to cleanup_stale_canonical_weights (which handles the legacy unnamed
     policy.pt). Never deletes — renames so the user can inspect.
     """
+    migrate_previous_observation_canonical(weights_dir)
     current = weights_dir / canonical_weights_filename()
     for f in sorted(weights_dir.glob("policy_*.pt")):
         if f == current or f.name.startswith("policy_legacy_"):
             continue
-        stem = f.stem  # e.g. "policy_v2" or "policy_a13_o12_p5"
-        # Skip numbered local checkpoints — managed by _prune_local_checkpoints, not here.
+        stem = f.stem
         suffix = stem[len("policy_") :]
         if suffix.isdigit():
             continue
@@ -109,7 +237,6 @@ def cleanup_stale_canonical_weights(weights_dir: Path) -> None:
         from agentshore.rl.policy import IncompatibleCheckpointError
 
         ActorCritic.load(legacy)
-        # Compatible — leave it alone.
     except IncompatibleCheckpointError:
         try:
             payload = torch.load(legacy, map_location="cpu", weights_only=True)
@@ -128,9 +255,6 @@ def cleanup_stale_canonical_weights(weights_dir: Path) -> None:
         )
     except (OSError, RuntimeError, ValueError) as exc:
         _logger.warning("cleanup_stale_canonical_failed", error=str(exc))
-
-
-# Cross-platform advisory file locks
 
 
 @contextmanager
@@ -181,9 +305,6 @@ def _prepare_windows_lock_byte(lock_file: BinaryIO) -> None:
     lock_file.seek(0)
 
 
-# Global canonical delta-merge write
-
-
 def write_global_canonical_blocking(
     policy: ActorCritic,
     reload_base: dict[str, torch.Tensor] | None,
@@ -198,37 +319,35 @@ def write_global_canonical_blocking(
 
     This function performs only synchronous I/O and must be called via
     ``asyncio.to_thread`` from the async ``save_checkpoint`` path.
+
+    The canonical is written head-stripped (``num_configs == 0``), like the
+    bundled seed: the config head is sized and ordered by one project's roster,
+    and the canonical is shared by every project, so only the roster-independent
+    weights go into it. Each session grafts its own head on load.
     """
     from agentshore.rl.policy import ActorCritic, IncompatibleCheckpointError
 
-    current_sd = policy.state_dict()
+    current_sd = shared_state(policy.state_dict())
 
     if reload_base is not None:
-        # Compute what this PPO update actually changed.
         try:
             delta: dict[str, torch.Tensor] | None = {
-                k: current_sd[k] - reload_base[k] for k in reload_base
+                k: current_sd[k] - reload_base[k] for k in current_sd
             }
         except (KeyError, RuntimeError):
-            # Shape mismatch — architecture changed mid-session; full write.
             delta = None
     else:
-        delta = None  # No base snapshot; write full weights.
+        delta = None
 
     with _exclusive_file_lock(lock_path):
+        merged_sd = current_sd
         if delta is not None and canonical.exists():
             try:
-                base = ActorCritic.load(canonical)
-                if base.num_configs == policy.num_configs:
-                    merged_sd = {k: base.state_dict()[k] + delta[k] for k in delta}
-                    base.load_state_dict(merged_sd)
-                    to_save = base
-                else:
-                    to_save = policy  # config index mismatch; full write
+                base_sd = shared_state(ActorCritic.load(canonical).state_dict())
+                merged_sd = {k: base_sd[k] + delta[k] for k in delta}
             except (IncompatibleCheckpointError, KeyError, RuntimeError):
-                to_save = policy  # incompatible global; full write
-        else:
-            to_save = policy  # no delta or no existing global; full write
+                merged_sd = current_sd
+        to_save = _rebuild(policy, merged_sd, 0)
 
         canonical.parent.mkdir(parents=True, exist_ok=True)
         tmp_fd, tmp_path = tempfile.mkstemp(dir=canonical.parent, suffix=".pt.tmp")

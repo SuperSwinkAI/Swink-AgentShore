@@ -84,9 +84,6 @@ async def test_play_completion_emits_agent_idle(tmp_path: Path) -> None:
     state_provider.on_session_paused = AsyncMock()
     orch._runtime.state_provider = state_provider
 
-    # Pretend "agent-1" is currently registered with the agent manager.
-    # Pin the circuit-breaker counters to real ints — build_state copies these
-    # onto the AgentSnapshot, and the eligibility reaper compares them with >=.
     handle = MagicMock()
     handle.timeout_count = 0
     handle.consecutive_timeouts = 0
@@ -95,8 +92,6 @@ async def test_play_completion_emits_agent_idle(tmp_path: Path) -> None:
     async with orch:
         await _drive_completion(orch, _outcome(agent_id="agent-1"))
 
-    # The IDLE notification was emitted at least once with the right args,
-    # in addition to the on_play_completed and post on_state_update calls.
     state_provider.on_play_completed.assert_awaited()
     idle_calls = [
         call
@@ -125,13 +120,11 @@ async def test_play_completion_skips_idle_emit_when_agent_unknown(tmp_path: Path
     state_provider.on_session_paused = AsyncMock()
     orch._runtime.state_provider = state_provider
 
-    # No "agent-1" handle registered.
     orch._manager.handles.pop("agent-1", None)
 
     async with orch:
         await _drive_completion(orch, _outcome(agent_id="agent-1"))
 
-    # No IDLE call for the unknown agent.
     idle_calls = [
         call
         for call in state_provider.on_agent_changed.await_args_list

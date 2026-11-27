@@ -42,7 +42,7 @@ export interface Character {
   state: CharacterState;
   direction: Direction;
 
-  // position in world pixels
+
   x: number;
   y: number;
 
@@ -56,14 +56,14 @@ export interface Character {
 
   wanderTimer: number;
 
-  // reserved seat key (for cleanup on reassign/removal)
+
   reservedSeatKey: string | null;
 
-  // Most recent play_id; ignore stale play_completed events arriving after a newer play_started.
+
   activePlayId: number | null;
   activePlayType: string | null;
 
-  // agent status from AgentShore
+
   status: string;
 
   bubble: CharacterBubble | null;
@@ -106,7 +106,7 @@ export interface AgentColors {
   label: string;
 }
 
-// Derived from the canonical AGENT_REGISTRY — no second color definition needed.
+
 export const AGENT_COLORS: Record<string, AgentColors> = Object.fromEntries(
   Object.entries(AGENT_REGISTRY).map(([key, entry]) => [
     key,

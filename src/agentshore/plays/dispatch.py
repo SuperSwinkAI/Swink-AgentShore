@@ -23,10 +23,6 @@ if TYPE_CHECKING:
 _logger = structlog.get_logger(__name__)
 
 
-# Plays that need the full open_issues list — they reason across the whole
-# issue landscape (selection, prioritization, scoring) rather than acting on one
-# specific issue. Every other play either targets a single issue (filtered by
-# params.issue_number) or doesn't reference issues at all.
 _FULL_ISSUES_PLAYS: frozenset[PlayType] = frozenset(
     {
         PlayType.REFINE_TASK_BREAKDOWN,
@@ -38,9 +34,6 @@ _FULL_ISSUES_PLAYS: frozenset[PlayType] = frozenset(
     }
 )
 
-# Plays that need the full pull_requests list. Most PR-targeted plays are
-# scoped to a single PR via params.pr_number; only cross-PR analysis warrants
-# the full list.
 _FULL_PRS_PLAYS: frozenset[PlayType] = frozenset(
     {
         PlayType.CALIBRATE_ALIGNMENT,
@@ -48,15 +41,10 @@ _FULL_PRS_PLAYS: frozenset[PlayType] = frozenset(
 )
 
 
-# ---------------------------------------------------------------------------
-# Skill specs — single source of truth for play → skill name + arg fields
-# ---------------------------------------------------------------------------
-
-
 @dataclass(frozen=True)
 class _SkillSpec:
     name: str
-    args: list[str]  # ordered PlayParams field names passed as positional args
+    args: list[str]
 
 
 _SKILL_SPECS: dict[PlayType, _SkillSpec] = {
@@ -78,26 +66,18 @@ _SKILL_SPECS: dict[PlayType, _SkillSpec] = {
     PlayType.RECONCILE_STATE: _SkillSpec("agentshore-reconcile-state", []),
 }
 
-# Derived lookups — add new plays to _SKILL_SPECS only, these stay in sync.
 PLAY_SKILL_MAP: dict[PlayType, str] = {pt: spec.name for pt, spec in _SKILL_SPECS.items()}
 _SKILL_ARGS: dict[str, list[str]] = {spec.name: spec.args for spec in _SKILL_SPECS.values()}
 
 DEFAULT_CONTEXT_RELATIVE_PATH = ".agentshore/context.json"
 
-# Skills permitted to read the full ``.agentshore/learnings.json`` directly
-# (rather than only the compact ``learnings`` field of context.json). The groom
-# play front-loads a learnings re-distillation step that needs the whole store
-# as input — see ``agentshore-groom-backlog`` and the harvester's
-# ``learnings_compacted`` replace branch.
 _FULL_LEARNINGS_SKILLS: frozenset[str] = frozenset({PLAY_SKILL_MAP[PlayType.GROOM_BACKLOG]})
 
-# Default discipline: read only the compact context, never the full store.
 _LEARNINGS_DIRECTIVE_COMPACT = (
     "Use its `learnings` field as the compact learning-history input. For this skill, do not\n"
     "read `.agentshore/learnings.json`; if the compact context is missing, continue without\n"
     "learning-history context."
 )
-# Carve-out for re-distillation skills: the full store is the compaction input.
 _LEARNINGS_DIRECTIVE_FULL = (
     "Use its `learnings` field as the compact learning-history input. This skill MAY\n"
     "additionally read the full `.agentshore/learnings.json` directly — its entire contents\n"
@@ -141,11 +121,6 @@ on interactive input.
 The closing reminder below restates the result block you must emit before you stop.
 """
 
-# Appended to the VERY END of every rendered skill prompt (after the SKILL.md body), so
-# the completion contract sits in the most attention-privileged position — closest to
-# where the agent acts. Bookends the start-of-prompt discipline: terminal instructions
-# (emit the result block; do not pause to wait) are recency-sensitive, and in ``-p`` mode
-# the start of the prompt is far in the past by the time a long tool-use trajectory ends.
 _COMPLETION_CONTRACT_TEMPLATE = """## Before you stop — required
 
 Emit the fenced JSON result block defined above as the final thing you do. This was a
@@ -155,13 +130,6 @@ block. Omitting the block records the play as failed (`no valid result block`) a
 discards everything you did, including any PR you opened.
 """
 
-# Interpolated into ``_CONTEXT_DISCIPLINE_TEMPLATE`` as ``{cwd_block}`` when the
-# dispatcher allocated an isolated worktree for this play. Tells the agent where
-# it is — the single biggest source of "file does not exist" / "cannot change to
-# worktree" retries was agents guessing absolute/stale paths because the preamble
-# never named their cwd. The reclaimed-mid-play instruction matches the
-# orchestrator's recoverable-crash mapping (a reaped cwd surfaces as a recoverable
-# AgentProcessCrashed, not a hard failure).
 _CWD_DISCIPLINE_TEMPLATE = """
 **Your working directory.** You are running inside an isolated git worktree at
 `{dispatch_cwd}`. That path is your current working directory — every relative path
@@ -171,11 +139,6 @@ missing or the working directory no longer exists, stop immediately and emit
 `worktree reclaimed mid-play` in your result — do not retry, recreate the directory, or
 run `git worktree add`.
 """
-
-
-# ---------------------------------------------------------------------------
-# Prompt renderer
-# ---------------------------------------------------------------------------
 
 
 async def render_skill_prompt(
@@ -214,7 +177,6 @@ async def render_skill_prompt(
 
     skill_content = await _read_skill_md(project_path, skill_name)
     if skill_content is None:
-        # Auto-reinstall from bundled package templates and re-attempt.
         from agentshore.skills import install_skills
 
         await asyncio.to_thread(install_skills, Path(project_path), only=[skill_name], force=False)
@@ -228,6 +190,8 @@ async def render_skill_prompt(
     allow_full_learnings = skill_name in _FULL_LEARNINGS_SKILLS
     if not allow_full_learnings:
         skill_content = _strip_full_learnings_reads(skill_content)
+    if context_path != DEFAULT_CONTEXT_RELATIVE_PATH:
+        skill_content = skill_content.replace(DEFAULT_CONTEXT_RELATIVE_PATH, context_path)
     header = f"$ARGUMENTS: {arg_str}" if arg_str else "$ARGUMENTS: (none)"
     cwd_block = (
         _CWD_DISCIPLINE_TEMPLATE.format(dispatch_cwd=dispatch_cwd)
@@ -275,11 +239,6 @@ def _quote_arg(value: str) -> str:
     return value
 
 
-# ---------------------------------------------------------------------------
-# Context file writer
-# ---------------------------------------------------------------------------
-
-
 def play_context_relative_path(play_id: int, *, session_id: str | None = None) -> str:
     """Return the per-dispatch context path, relative to project root."""
     if session_id:
@@ -317,29 +276,14 @@ def _scope_prs(
 
 
 def _json_safe_extras(extras: dict[str, object]) -> dict[str, object]:
-    """Return a copy of ``params.extras`` safe to ``json.dump``.
+    """Return a JSON-serializable copy of params.extras.
 
-    Issue #565 moved the worktree allocation dataclass off ``extras`` onto
-    a private ``PlayParams._runtime_allocation`` field, so the original
-    motivating leak (TrunkAllocation/Path/PlayType) can no longer reach
-    this helper. The conversion logic stays as defense-in-depth: ``extras``
-    is still typed ``dict[str, object]``, so anything else stamped here in
-    the future is normalised before ``json.dump``.
-
-    Conversions: ``Path`` → str, ``Enum`` → ``.value``, dataclasses → dict
-    via field walk, dict/list/tuple → recursed. Other values pass through;
-    if ``json.dump`` later fails on something exotic, it raises at the
-    actual write site (where the offending key is visible in the
-    traceback), which is more debuggable than masking with ``str()``.
-    """
+    Convert Path to str, Enum to its value, and dataclasses to field dictionaries.
+    Recurse through dict, list and tuple. Other values pass through; unsupported
+    values raise at the JSON write site."""
 
     def _convert(value: object) -> object:
         if isinstance(value, Path):
-            # as_posix(), not str(): this dict is a JSON wire/replay format, so
-            # serialize paths deterministically with forward slashes rather than
-            # the host's native separator (backslash on Windows). Windows tools
-            # accept forward-slash paths, and the runtime cwd uses the private
-            # _runtime_allocation Path, never this serialized copy.
             return value.as_posix()
         if isinstance(value, Enum):
             return value.value

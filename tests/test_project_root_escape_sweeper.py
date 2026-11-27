@@ -76,7 +76,6 @@ def test_sweeper_does_not_auto_delete(parent_with_escape: tuple[Path, Path]) -> 
     project, leaked = parent_with_escape
     found = find_path_escape_siblings(project)
     assert leaked in found
-    # Critical: the helper observes only — it must never remove the sibling.
     assert leaked.exists()
     assert (leaked / "sentinel.txt").read_text() == "must-not-delete\n"
 
@@ -119,7 +118,6 @@ async def test_phase_git_safety_sweep_emits_warning_and_preserves_dir(
 
     event_names = [str(e.get("event", "")) for e in captured]
     assert "project_root_escape_detected" in event_names
-    # Auto-delete must NEVER happen.
     assert leaked.exists()
     assert (leaked / "sentinel.txt").read_text() == "must-not-delete\n"
 
@@ -153,8 +151,6 @@ async def test_phase_git_safety_sweep_restores_poisoned_head(
     _git(["commit", "-m", "leftover"], repo)
     _git(["push", "-u", "origin", "agentshore/153-leftover"], repo)
     _git(["remote", "set-head", "origin", "main"], repo)
-    # IMPORTANT: leave the working repo checked out on agentshore/X to simulate
-    # a poisoned session start.
 
     orch = Orchestrator.__new__(Orchestrator)
     orch._main_repo = MainRepoGuard()
@@ -170,5 +166,4 @@ async def test_phase_git_safety_sweep_restores_poisoned_head(
     assert "main_repo_branch_mutated" in event_names
     assert "main_repo_branch_restored" in event_names
     assert current_head_ref(repo) == "refs/heads/main"
-    # Default branch resolved into the orchestrator cache.
     assert orch._main_repo.default_branch == "main"

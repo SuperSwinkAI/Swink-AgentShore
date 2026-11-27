@@ -31,13 +31,7 @@ class BlockingDependencyOutcome(StrEnum):
     """Result of :func:`add_blocking_dependency`."""
 
     LINKED = "linked"
-    #: bd rejected the edge because the opposite edge already exists between
-    #: the same two beads. This is not retry-worthy: the edge can never land
-    #: without first removing the conflicting one, so the caller should
-    #: escalate to a human rather than fall back to an ordinary label gate.
     CYCLE_CONFLICT = "cycle_conflict"
-    #: Beads not initialised, empty/equal ids, or a bd error unrelated to a
-    #: cycle. The caller falls back to a label gate.
     UNAVAILABLE = "unavailable"
 
 
@@ -142,9 +136,6 @@ async def add_blocking_dependency(
                 error=str(exc),
             )
             return BlockingDependencyOutcome.CYCLE_CONFLICT
-        # Version-proof fallback (#4): the stderr substring didn't match —
-        # bd may have reworded its error text — so confirm client-side via a
-        # fresh graph reachability check before conceding UNAVAILABLE.
         if await _confirm_cycle_via_reachability(project_path, blocked_bead_id, blocker_bead_id):
             _logger.warning(
                 "beads_add_blocking_dependency_cycle_conflict_reachability",

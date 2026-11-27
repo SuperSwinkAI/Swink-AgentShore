@@ -42,8 +42,6 @@ def isolated_sessions_dir(monkeypatch: pytest.MonkeyPatch) -> Path:
     ``session_dir``/``session_socket_path`` etc., so patching it there is
     what actually redirects them.
     """
-    # POSIX: force /tmp so AF_UNIX socket paths stay under the ~104-char
-    # sun_path limit (macOS). Windows has neither AF_UNIX nor /tmp.
     tmp_root = None if sys.platform.startswith("win") else "/tmp"
     sessions_dir = Path(tempfile.mkdtemp(prefix="fm_sessions_process_", dir=tmp_root))
     monkeypatch.setattr(sp, "_SESSIONS_DIR", sessions_dir)
@@ -133,8 +131,6 @@ def test_stop_dashboard_process_pinned_pid_ignores_overwritten_file(
     monkeypatch.setattr(spr.sys, "platform", "linux")
     project = tmp_path / "repo"
     project.mkdir()
-    # dashboard.pid has already been overwritten with the new/self pid (9999),
-    # but we want to reap the prior dashboard (8001) we validated earlier.
     sp.write_dashboard_pid(project, 9999)
 
     killed: list[tuple[int, int]] = []
@@ -157,7 +153,6 @@ def test_stop_dashboard_process_pinned_pid_ignores_overwritten_file(
 
     assert spr.stop_dashboard_process(project, pid=8001) is True
     assert (8001, _signal.SIGTERM) in killed
-    # The self pid in dashboard.pid was never touched.
     assert all(pid != 9999 for pid, _ in killed)
 
 
@@ -209,7 +204,6 @@ def test_stop_session_signals_both_groups_and_cleans_up(
 
     def fake_killpg(pid: int, sig: int) -> None:
         killed.append((pid, sig))
-        # Simulate process exit on SIGTERM
         if sig == _signal.SIGTERM:
             alive.discard(pid)
 
@@ -226,7 +220,6 @@ def test_stop_session_signals_both_groups_and_cleans_up(
     assert spr.hard_stop_session(project) is True
     assert (4001, _signal.SIGTERM) in killed
     assert (4002, _signal.SIGTERM) in killed
-    # No SIGKILL needed because the SIGTERM "killed" them in our fake
     assert all(sig != _signal.SIGKILL for _pid, sig in killed)
     assert not sp.session_pid_path(project).exists()
     assert not sp.dashboard_pid_path(project).exists()
@@ -246,7 +239,6 @@ def test_stop_session_escalates_to_sigkill_on_straggler(
     sp.session_pid_path(project).parent.mkdir(parents=True)
     sp.session_pid_path(project).write_text("5001", encoding="utf-8")
 
-    # Cap the grace windows so the test stays quick.
     monkeypatch.setattr(spr, "_STOP_GRACE_SECONDS", 0.05)
     monkeypatch.setattr(spr, "_STOP_POLL_INTERVAL", 0.01)
     monkeypatch.setattr(spr, "_DASHBOARD_STOP_GRACE_SECONDS", 0.05)
@@ -257,7 +249,7 @@ def test_stop_session_escalates_to_sigkill_on_straggler(
     def fake_killpg(pid: int, sig: int) -> None:
         killed.append((pid, sig))
         if sig == _signal.SIGKILL:
-            alive.discard(pid)  # SIGKILL finally takes effect
+            alive.discard(pid)
 
     def fake_kill(pid: int, sig: int) -> None:
         if sig == 0:
@@ -296,11 +288,11 @@ def test_hard_stop_returns_false_when_process_survives_sigkill(
     sp.session_pid_path(project).write_text("5101", encoding="utf-8")
 
     def fake_killpg(pid: int, sig: int) -> None:
-        pass  # process is unkillable in this scenario
+        pass
 
     def fake_kill(pid: int, sig: int) -> None:
         if sig == 0:
-            return  # always alive
+            return
 
     monkeypatch.setattr(spr.os, "killpg", fake_killpg, raising=False)
     monkeypatch.setattr(spr.os, "kill", fake_kill)
@@ -319,7 +311,7 @@ def test_signal_group_falls_back_to_bare_pid_when_not_group_leader(
     import signal as _signal
 
     def fake_killpg(pid: int, sig: int) -> None:
-        raise ProcessLookupError  # pid is not a group leader
+        raise ProcessLookupError
 
     individual: list[tuple[int, int]] = []
 
@@ -348,7 +340,7 @@ def test_stop_session_handles_already_dead_process(
 
     def fake_kill(pid: int, sig: int) -> None:
         if sig == 0:
-            raise OSError  # already dead
+            raise OSError
         return
 
     monkeypatch.setattr(spr.os, "killpg", fake_killpg, raising=False)
@@ -378,11 +370,9 @@ def test_stop_session_uses_taskkill_on_windows(
     def fake_run(args: list[str], **_kwargs: object) -> _Completed:
         calls.append(args)
         if "/F" in args:
-            alive.discard(7001)  # force kill takes effect
+            alive.discard(7001)
         return _Completed()
 
-    # Drive liveness through _process_alive: on Windows the probe is the Win32
-    # OpenProcess path, not os.kill(pid, 0), so the test must mock the helper.
     monkeypatch.setattr(spr.subprocess, "run", fake_run)
     monkeypatch.setattr(spr, "_process_alive", lambda pid: pid in alive)
 
@@ -407,9 +397,8 @@ def test_terminate_process_tree_warns_when_process_survives(
     mock_logger = MagicMock()
     monkeypatch.setattr(spr.subprocess, "run", fake_run)
     monkeypatch.setattr(spr, "_logger", mock_logger)
-    monkeypatch.setattr(spr, "_process_alive", lambda _pid: True)  # kill failed, still running
+    monkeypatch.setattr(spr, "_process_alive", lambda _pid: True)
 
-    # Must not raise despite the taskkill failure.
     spr._terminate_process_tree(7001, force=False)
 
     warnings = [
@@ -434,7 +423,7 @@ def test_terminate_process_tree_quiet_when_process_already_gone(
     monkeypatch.setattr(spr.subprocess, "run", lambda args, **_kw: _Completed())
     mock_logger = MagicMock()
     monkeypatch.setattr(spr, "_logger", mock_logger)
-    monkeypatch.setattr(spr, "_process_alive", lambda _pid: False)  # already gone
+    monkeypatch.setattr(spr, "_process_alive", lambda _pid: False)
 
     spr._terminate_process_tree(7001, force=False)
 
@@ -496,19 +485,13 @@ def test_discover_socket_ignores_info_json_when_target_missing(tmp_path: Path) -
     """If info.json points at a missing socket, fall back to the well-known path."""
     project = tmp_path / "repo"
     project.mkdir()
-    explicit = tmp_path / "vanished.sock"  # never created
+    explicit = tmp_path / "vanished.sock"
 
     sp.write_session_info(project, socket_path=explicit)
     well_known = sp.session_socket_path(project)
     _create_unix_socket_file(well_known)
 
     assert spr.discover_socket(project) == well_known
-
-
-# ---------------------------------------------------------------------------
-# Windows liveness probe (#71 follow-up): os.kill(pid, 0) is CTRL_C_EVENT on
-# Windows, not a null-signal probe, so _process_alive must use the Win32 API.
-# ---------------------------------------------------------------------------
 
 
 def _fake_kernel32(*, open_returns: int, wait_returns: int | None = None) -> MagicMock:
@@ -522,7 +505,7 @@ def _fake_kernel32(*, open_returns: int, wait_returns: int | None = None) -> Mag
 def test_process_alive_windows_running(monkeypatch: pytest.MonkeyPatch) -> None:
     import ctypes
 
-    kernel32 = _fake_kernel32(open_returns=1234, wait_returns=0x00000102)  # WAIT_TIMEOUT
+    kernel32 = _fake_kernel32(open_returns=1234, wait_returns=0x00000102)
     monkeypatch.setattr(ctypes, "WinDLL", lambda *a, **kw: kernel32, raising=False)
     assert spr._process_alive_windows(4321) is True
     kernel32.CloseHandle.assert_called_once()
@@ -531,7 +514,7 @@ def test_process_alive_windows_running(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_process_alive_windows_exited(monkeypatch: pytest.MonkeyPatch) -> None:
     import ctypes
 
-    kernel32 = _fake_kernel32(open_returns=1234, wait_returns=0x00000000)  # WAIT_OBJECT_0
+    kernel32 = _fake_kernel32(open_returns=1234, wait_returns=0x00000000)
     monkeypatch.setattr(ctypes, "WinDLL", lambda *a, **kw: kernel32, raising=False)
     assert spr._process_alive_windows(4321) is False
     kernel32.CloseHandle.assert_called_once()
@@ -540,11 +523,9 @@ def test_process_alive_windows_exited(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_process_alive_windows_no_such_pid_is_dead(monkeypatch: pytest.MonkeyPatch) -> None:
     import ctypes
 
-    kernel32 = _fake_kernel32(open_returns=0)  # NULL handle
+    kernel32 = _fake_kernel32(open_returns=0)
     monkeypatch.setattr(ctypes, "WinDLL", lambda *a, **kw: kernel32, raising=False)
-    monkeypatch.setattr(
-        ctypes, "get_last_error", lambda: 87, raising=False
-    )  # ERROR_INVALID_PARAMETER
+    monkeypatch.setattr(ctypes, "get_last_error", lambda: 87, raising=False)
     assert spr._process_alive_windows(4321) is False
     kernel32.CloseHandle.assert_not_called()
 
@@ -555,7 +536,7 @@ def test_process_alive_windows_access_denied_is_alive(monkeypatch: pytest.Monkey
 
     kernel32 = _fake_kernel32(open_returns=0)
     monkeypatch.setattr(ctypes, "WinDLL", lambda *a, **kw: kernel32, raising=False)
-    monkeypatch.setattr(ctypes, "get_last_error", lambda: 5, raising=False)  # ERROR_ACCESS_DENIED
+    monkeypatch.setattr(ctypes, "get_last_error", lambda: 5, raising=False)
     assert spr._process_alive_windows(4321) is True
 
 

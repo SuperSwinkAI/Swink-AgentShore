@@ -43,17 +43,8 @@ if TYPE_CHECKING:
 _logger = get_logger(__name__)
 
 
-_DEFAULT_TIMEOUT = 10800  # seconds (3h) — max-runtime wall-clock backstop when
-# neither AgentConfig.timeout nor a resolved default_timeout is supplied. The
-# primary kill is the silence-based stream_idle watchdog (default 1800s); this
-# only bounds an agent that streams output for the full duration without
-# finishing. See AgentManager.dispatch / RuntimeConfig.agent_timeout.
-_ARGV_PREVIEW_MAX_CHARS = 256  # log clamp; full prompt is reconstructible from skill+params
-
-
-# ---------------------------------------------------------------------------
-# Core dispatch helper
-# ---------------------------------------------------------------------------
+_DEFAULT_TIMEOUT = 10800
+_ARGV_PREVIEW_MAX_CHARS = 256
 
 
 def _build_dispatch_argv(
@@ -67,6 +58,7 @@ def _build_dispatch_argv(
     prompt_file: str | None = None,
     pinned_session_id: str | None = None,
     disallowed_tools: tuple[str, ...] = (),
+    result_schema: str | None = None,
 ) -> _DispatchArgv:
     """Build the subprocess argv list and log-preview fields for a single dispatch.
 
@@ -81,14 +73,13 @@ def _build_dispatch_argv(
     the pin — IS forwarded on the resume path, since the retry continues the
     same play. The test-shim path ignores it: the shim is a Python mock with no
     tool surface to deny.
+    *result_schema*, when set, asks schema-capable CLIs to enforce it on the
+    final message (see ``cli_argv.with_result_schema``); forwarded on the resume
+    path too, and likewise ignored by the test shim.
     """
     prompt_on_stdin = cli_argv._prompt_on_stdin(python_executable)
     if python_executable is not None:
-        # Test shim: invoke cfg.binary as a Python script.
         argv: list[str] = [python_executable, cfg.binary or ""]
-        # A resuming shim dispatch keeps the minimal claude-style --resume shape
-        # (the shim is a python mock, not a real CLI — only the flag's presence
-        # matters to the tests that exercise this path).
         if resume_session_id is not None and handle.agent_type == AgentType.CLAUDE_CODE:
             argv = [
                 argv[0],
@@ -102,8 +93,6 @@ def _build_dispatch_argv(
             if not prompt_on_stdin:
                 argv.append(prompt)
     elif resume_session_id is not None and handle.agent_type in cli_argv._RESUMABLE_AGENT_TYPES:
-        # desktop-dy2j: narrow JSON-retry re-entry of the prior session so the
-        # agent emits the structured trailer it missed. Per-agent resume shape.
         argv = cli_argv.build_resume_argv(
             handle.agent_type,
             prompt,
@@ -134,22 +123,17 @@ def _build_dispatch_argv(
             disallowed_tools=disallowed_tools,
         )
 
+    if python_executable is None:
+        argv = cli_argv.with_result_schema(handle.agent_type, argv, result_schema)
+
     prompt_bytes = len(prompt.encode("utf-8"))
 
-    # Clamp argv_preview: the last argv element is the full skill prompt (~7 KB);
-    # logging it every dispatch bloats the log ~1 MB/session. Reconstructible from
-    # skill template + PlayParams, so keep only the leading flags.
     argv_str = " ".join(argv[:10])
     if len(argv_str) > _ARGV_PREVIEW_MAX_CHARS:
         truncated = len(argv_str) - _ARGV_PREVIEW_MAX_CHARS
         argv_str = argv_str[:_ARGV_PREVIEW_MAX_CHARS] + f"…(+{truncated} chars truncated)"
 
     return _DispatchArgv(argv=argv, prompt_bytes=prompt_bytes, argv_str=argv_str)
-
-
-# ---------------------------------------------------------------------------
-# Core dispatch
-# ---------------------------------------------------------------------------
 
 
 async def dispatch_cli(
@@ -167,6 +151,7 @@ async def dispatch_cli(
     resume_session_id: str | None = None,
     first_byte_timeout_override: float | None = None,
     disallowed_tools: tuple[str, ...] = (),
+    result_schema: str | None = None,
     supervisor: ProcessRunner | None = None,
     driver_registry: CliDriverRegistry = DEFAULT_CLI_DRIVERS,
 ) -> AgentInvocationResult:
@@ -225,18 +210,11 @@ async def dispatch_cli(
     """
     timeout = cfg.timeout if cfg.timeout is not None else default_timeout
     stream_idle_timeout = float(cfg.stream_idle_timeout)
-    # Safety clamp (#177): a misconfigured ``stream_idle_timeout`` larger than the
-    # wall-clock ``timeout`` would let the silence watchdog never fire before the
-    # dispatch is force-killed — effectively disabling early silence detection. Cap
-    # it at the dispatch timeout so the idle watcher always gets a chance to run.
     stream_idle_timeout = min(stream_idle_timeout, float(timeout))
     max_bytes = cfg.max_output_size
 
     effective_cwd = cwd_override if cwd_override is not None else handle.working_dir
 
-    # Build the subprocess environment before the provider driver creates any
-    # temporary resource, so preparation cleanup only needs to surround argv
-    # construction and process execution.
     identity = identity_env or {}
     token = identity.get("GH_TOKEN") or identity.get("GITHUB_TOKEN")
     git_overlay = dict(identity)
@@ -267,6 +245,7 @@ async def dispatch_cli(
         prompt_file=(str(preparation.prompt_file) if preparation.prompt_file is not None else None),
         pinned_session_id=preparation.pinned_session_id,
         disallowed_tools=disallowed_tools,
+        result_schema=result_schema,
     )
     argv, prompt_bytes, argv_str = _argv.argv, _argv.prompt_bytes, _argv.argv_str
 
@@ -284,16 +263,8 @@ async def dispatch_cli(
 
     t_start = time.monotonic()
 
-    # Resolve npm-shim agent binaries (codex.cmd etc.) to a full path so they
-    # spawn on Windows; CreateProcess only finds bare names ending in .exe.
     argv = cli_argv._resolve_executable(argv)
 
-    # On Windows the prompt is fed over stdin to dodge the cmd.exe command-line
-    # limit (see build_argv); elsewhere stdin stays closed. Two exceptions keep
-    # stdin closed because they never read the prompt from it: Grok (it's in
-    # --prompt-file) and Antigravity (``agy`` has no stdin mode — the prompt is
-    # always in ``-p``). Opening a PIPE and writing a prompt the child never
-    # drains could block on a full pipe buffer.
     prompt_on_stdin = (
         cli_argv._prompt_on_stdin(python_executable)
         and preparation.prompt_file is None
@@ -307,7 +278,6 @@ async def dispatch_cli(
         env=env,
         prompt=prompt,
         prompt_on_stdin=prompt_on_stdin,
-        # A Python test shim has no terminal dependency and must stay on pipes.
         allow_conpty=python_executable is None,
         max_bytes=max_bytes,
         stream_idle_timeout=stream_idle_timeout,
@@ -356,14 +326,9 @@ async def dispatch_cli(
             proc, handle, cfg=cfg, rc=rc or 1, raw_output=raw_output, sniffer=stderr_sniffer
         )
         if recovered:
-            # Teardown-only SessionEnd-hook failure (#253): the model's response
-            # is already on stdout. Normalise the exit so the dispatch flows
-            # through the success path and the result block parses, instead of
-            # discarding finished work as error_class=unknown.
             rc = 0
 
     if usage.reported_cost > 0:
-        # Vendor-authoritative cost (Claude Code's total_cost_usd). See _UsageTotals.
         dollar_cost = usage.reported_cost
         cost_source = "vendor_reported"
     else:

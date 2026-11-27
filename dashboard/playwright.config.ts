@@ -1,9 +1,9 @@
 import { defineConfig, devices } from "@playwright/test";
 
-// Opt-in gate: the Playwright suite is heavy (browser launch + dev-server + mock
-// WS) and only meaningful when verifying UI integrity. Default invocations of
-// `playwright test` or `npm run test:e2e` match zero specs; the explicit
-// `npm run ui-integrity-check` sets UI_INTEGRITY_CHECK=1 and runs the suite.
+
+
+
+
 const enabled = process.env.UI_INTEGRITY_CHECK === "1";
 
 export default defineConfig({

@@ -31,11 +31,6 @@ import pytest
 
 NATURAL_EXIT_TIMEOUT_SECONDS = 180.0
 
-# session.stop's ESR response carries (at minimum) these keys; the
-# natural-exit emitter uses build_esr_payload so the same shape is
-# expected. archive_path/report_path/log_path are paths that may not exist on
-# disk in this minimal-project case, so we don't assert their content,
-# only that the keys are present.
 EXPECTED_ESR_KEYS = frozenset(
     {
         "session_id",
@@ -90,7 +85,7 @@ pytestmark = pytest.mark.skipif(
 
 
 def _sidecar_command() -> list[str]:
-    return [sys.executable, "-m", "agentshore.sidecar"]
+    return [sys.executable, str(Path(__file__).with_name("_offline_identity_sidecar.py"))]
 
 
 def _send(child: subprocess.Popen[str], req_id: int, method: str, params: object = None) -> None:
@@ -118,16 +113,13 @@ def _readline_with_deadline(child: subprocess.Popen[str], deadline: float) -> st
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             return None
-        # Cap the per-poll wait so test cancellation stays responsive.
         ready, _, _ = select.select([fd], [], [], min(remaining, 1.0))
         if ready:
             line = child.stdout.readline()
             if line == "":
-                # EOF — sidecar exited.
                 return None
             return line
         if child.poll() is not None:
-            # Sidecar died without writing anything more.
             return None
 
 
@@ -179,8 +171,6 @@ def test_natural_exit_emits_session_completed_with_esr_payload(
     """
     project_path = tmp_path / "natural-exit-project"
     project_path.mkdir()
-    # max_plays=0 → first tick: total_plays=0 >= 0 → terminate with
-    # reason="max_plays", which is a natural exit (not "stop_requested").
     (project_path / "agentshore.yaml").write_text(
         f"{VALID_TIERED_CONFIG}session:\n  max_plays: 0\n",
         encoding="utf-8",
@@ -196,7 +186,6 @@ def test_natural_exit_emits_session_completed_with_esr_payload(
         bufsize=1,
     )
     try:
-        # Handshake first so the rest of the methods are accepted.
         from agentshore.sidecar.build_id import load_build_info
 
         overall_deadline = time.monotonic() + NATURAL_EXIT_TIMEOUT_SECONDS
@@ -212,18 +201,14 @@ def test_natural_exit_emits_session_completed_with_esr_payload(
         handshake = _read_response(child, 1, deadline=overall_deadline)
         assert "result" in handshake, handshake
 
-        # project.select binds the cwd-equivalent.
         _send(child, 2, "project.select", {"path": str(project_path)})
         select_resp = _read_response(child, 2, deadline=overall_deadline)
         assert "result" in select_resp, select_resp
 
-        # session.start boots the orchestrator. The handler skips
-        # $/progress notifications when reading the response.
         _send(child, 3, "session.start")
         start_resp = _read_response(child, 3, deadline=overall_deadline)
         assert "result" in start_resp, start_resp
 
-        # Now wait for the natural-exit notification.
         notif = _read_until_notification(child, "session.completed", deadline=overall_deadline)
     finally:
         if child.poll() is None:
@@ -233,7 +218,6 @@ def test_natural_exit_emits_session_completed_with_esr_payload(
             except subprocess.TimeoutExpired:
                 child.kill()
                 child.wait(timeout=2)
-        # Always capture stderr so a failing assert below has context.
         try:
             stderr_output = child.stderr.read() if child.stderr is not None else ""
         except Exception:
@@ -253,7 +237,6 @@ def test_natural_exit_emits_session_completed_with_esr_payload(
     missing = EXPECTED_ESR_KEYS - set(params.keys())
     assert not missing, f"session.completed payload missing keys: {sorted(missing)}"
 
-    # The exit_reason must be a natural-exit reason (not stop_requested).
     assert params.get("exit_reason") in {
         "max_plays",
         "drain_complete",

@@ -1,9 +1,4 @@
-"""Regression guard: report templates must not carry the legacy project name.
-
-The ESR header/title/footer rendered "Foreman" after the rebrand; this asserts
-zero legacy refs across the report templates and that the ESR identifies as
-AgentShore.
-"""
+"""Regression guard: report templates must not carry the legacy project name."""
 
 from __future__ import annotations
 

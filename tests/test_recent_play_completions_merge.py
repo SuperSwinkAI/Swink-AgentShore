@@ -35,8 +35,6 @@ def test_returns_db_history_unchanged_when_shadow_is_empty() -> None:
 
 
 def test_appends_shadow_plays_missing_from_db() -> None:
-    # Simulates the WAL-lag race: DB read returned plays 1..3 but play 4
-    # was recorded just before this state-build and hasn't flushed yet.
     db = [_play(1), _play(2), _play(3)]
     shadow = collections.deque([_play(4)])
     out = _merge_recent_completions(db, shadow)
@@ -44,8 +42,6 @@ def test_appends_shadow_plays_missing_from_db() -> None:
 
 
 def test_skips_shadow_plays_already_in_db() -> None:
-    # Once the WAL flush catches up, the shadow still holds the play but the
-    # DB is now authoritative — no duplication.
     db = [_play(1), _play(2), _play(3)]
     shadow = collections.deque([_play(2), _play(3)])
     out = _merge_recent_completions(db, shadow)
@@ -53,8 +49,6 @@ def test_skips_shadow_plays_already_in_db() -> None:
 
 
 def test_deduplicates_repeated_play_ids_in_shadow() -> None:
-    # Production play_ids are unique per record_play; this guards against
-    # test fixtures that reuse a single play_id across mock dispatches.
     db = [_play(1)]
     shadow = collections.deque([_play(2), _play(2), _play(2)])
     out = _merge_recent_completions(db, shadow)

@@ -46,30 +46,16 @@ from agentshore.state import CLI_AGENT_TYPES, AgentType
 if TYPE_CHECKING:
     from agentshore.config.models import AgentConfig, RuntimeConfig
 
-# Shared status vocabulary. The desktop setup screen and the launch gate both
-# consume these exact strings, so a status here maps 1:1 to a frontend badge.
 AUTH_OK = "ok"
 AUTH_EXPIRED = "expired"
 AUTH_TIMEOUT = "timeout"
 AUTH_ERROR = "error"
 AUTH_UNPROBEABLE = "unprobeable"
 
-# Only these statuses gate a launch. ``error`` (binary missing / unexpected
-# non-zero with no auth marker) and ``timeout`` are surfaced but NOT blocking:
-# a transient probe hiccup must never strand an otherwise-fine session, and the
-# runtime auth-suppression backstop (ErrorClass.AUTH parking) catches a genuine
-# failure that slips through.
 _BLOCKING_STATUSES = frozenset({AUTH_EXPIRED})
 
-# Default probe timeout. Auth-status is a local credential read; 10s is ample
-# and keeps the setup screen / launch gate responsive.
 DEFAULT_PROBE_TIMEOUT_S = 10.0
 
-# Per-type auth-status command (args appended to the resolved binary). Only
-# Claude, Codex and swink-coding expose a reliable, non-interactive,
-# non-mutating status verb today; the others fall through to UNPROBEABLE until
-# a trustworthy command is confirmed (a wrong probe that blocks launch is worse
-# than no probe).
 _PROBE_ARGV: dict[AgentType, tuple[str, ...]] = {
     AgentType.CLAUDE_CODE: ("auth", "status"),
     AgentType.CODEX: ("login", "status"),
@@ -82,30 +68,12 @@ _DEFAULT_BINARY: dict[AgentType, str] = {
     AgentType.GROK: "grok",
     AgentType.ANTIGRAVITY: "agy",
     AgentType.SWINK_CODING: "swink-coding",
-    # copilot has no auth-status verb (`copilot login` only mutates), and its
-    # stored OAuth login lives in the OS credential store, so it stays
-    # UNPROBEABLE; runtime auth failures classify via error_markers.
     AgentType.COPILOT: "copilot",
 }
 
-# agy has no non-mutating status verb, and — unlike the other CLIs — a dead
-# Antigravity OAuth session in ``-p`` mode does NOT error-and-exit: it drops into
-# an interactive re-login prompt and HANGS at zero output until killed (observed
-# 24 min). So a probe that reaches its timeout is the authoritative "logged out"
-# signal. Probe actively with a trivial prompt (healthy ~3-10s); a wedged agy runs
-# to the ceiling and is classified EXPIRED (launch-gating).
 _ANTIGRAVITY_PROBE_PROMPT = "Reply with the single word OK and nothing else."
 
-# Generous so a cold agy (language-server + model spin-up) never false-trips:
-# healthy probes return in seconds, so this ceiling is only reached by a
-# genuinely wedged (logged-out) agy.
 ANTIGRAVITY_PROBE_TIMEOUT_S = 45.0
-
-# Not-authenticated / dead-session markers (matched case-insensitively against
-# stdout+stderr) live in the single ``error_markers`` registry as
-# ``PROBE_NOT_AUTHED_MARKERS`` (imported above). They include the Codex TTL-expiry
-# signatures so the same vocabulary classifying a mid-run hang (ErrorClass.AUTH)
-# also classifies this pre-launch probe.
 
 
 @dataclass(frozen=True)
@@ -150,10 +118,6 @@ def probe_cli_auth(
     async callers should wrap it in ``asyncio.to_thread``.
     """
     if agent_type == AgentType.ANTIGRAVITY:
-        # agy needs an active liveness probe (no status verb; logged-out = hang)
-        # with a longer ceiling than the generic status-command default. Honor an
-        # explicitly-passed timeout (tests force a tiny one); otherwise use the
-        # agy ceiling so a cold-but-healthy agy never false-trips.
         agy_timeout = ANTIGRAVITY_PROBE_TIMEOUT_S if timeout == DEFAULT_PROBE_TIMEOUT_S else timeout
         return _probe_antigravity_auth(env, binary=binary, timeout=agy_timeout)
 
@@ -170,21 +134,10 @@ def probe_cli_auth(
 
     full_env = {**os.environ, **(env or {})}
     try:
-        # Popen (not subprocess.run) so a timeout can tree-kill: the probed CLIs
-        # (codex) are node shims that spawn children; subprocess.run's own
-        # timeout kill reaps only the direct child and leaves the node subtree
-        # alive. CREATE_NO_WINDOW + new process group (Windows; 0 elsewhere)
-        # suppresses the console flash / AV window-hooking latency this module
-        # exists to avoid and roots the child in a killable group, matching the
-        # dispatch path in cli_agent and the hardened runner in command.py.
         proc = subprocess.Popen(  # noqa: S603 — fixed argv, resolved binary
             [resolved, *argv_tail],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            # Pin stdin (never inherit the parent's): the desktop sidecar's
-            # stdin is the live Tauri JSON-RPC pipe, and the very CLIs we probe
-            # (codex) wedge on a contended/empty stdin. Enforced by
-            # tests/test_subprocess_stdin_guard.py.
             stdin=subprocess.DEVNULL,
             text=True,
             env=full_env,
@@ -196,8 +149,6 @@ def probe_cli_auth(
     try:
         stdout, stderr = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
-        # Kill the whole tree (codex → node), not just the direct child, so
-        # nothing lingers past the probe.
         if proc.pid is not None:
             subprocess_env.kill_tree_sync(proc.pid)
         proc.kill()
@@ -207,7 +158,6 @@ def probe_cli_auth(
     stdout = stdout or ""
     stderr = stderr or ""
     if agent_type == AgentType.CLAUDE_CODE:
-        # Structured JSON is authoritative; skip the free-text marker scan.
         return _classify_claude_status(stdout, proc.returncode)
     combined = f"{stdout}\n{stderr}".lower()
     if any(marker in combined for marker in _NOT_AUTHED_MARKERS):
@@ -271,11 +221,7 @@ def _probe_antigravity_auth(
     if resolved is None:
         return AuthProbeResult(at, AUTH_ERROR, f"{exe!r} not found on PATH")
 
-    # Wind agy's own internal task wait down just under our hard ceiling so the
-    # process is already tearing itself down as the outer timeout fires.
     inner_s = max(5, int(timeout) - 5)
-    # ``--dangerously-skip-permissions`` matches the dispatch invocation and
-    # auto-approves agy's permission/trust prompts so neither path stalls on one.
     argv = [
         resolved,
         "--print-timeout",
@@ -284,22 +230,17 @@ def _probe_antigravity_auth(
         "-p",
         _ANTIGRAVITY_PROBE_PROMPT,
     ]
-    # Hardened, headless env (CI/NO_COLOR/TERM=dumb) matching the dispatch path so
-    # the probe exercises the same conditions a real agy run sees.
     full_env = subprocess_env.hardened_env(overlay=env or {}, for_antigravity=True)
 
     returncode: int | None
     timed_out = False
     if conpty.should_use_conpty(at):
-        # Windows: agy must run under a ConPTY or it hangs on its terminal
-        # Device-Attributes query *regardless of auth*, which would make this
-        # probe a false-negative that gates the agent off for everyone.
         try:
             raw_stdout, returncode, timed_out = conpty.run_sync(argv, env=full_env, timeout=timeout)
         except OSError as exc:
             return AuthProbeResult(at, AUTH_ERROR, str(exc)[:200])
         stdout = cli_antigravity.strip_ansi(raw_stdout)
-        stderr = ""  # ConPTY merges stderr into the single stream
+        stderr = ""
     else:
         try:
             proc = subprocess.Popen(  # noqa: S603 — fixed argv, resolved binary
@@ -350,8 +291,6 @@ def _probe_antigravity_auth(
             if detail
             else f"agy auth probe exited {returncode}",
         )
-    # Clean exit but empty output: a rare agy no-op. Auth itself isn't disproven,
-    # so surface it as a non-blocking error rather than gating the launch.
     return AuthProbeResult(at, AUTH_ERROR, "agy returned empty output (auth inconclusive)")
 
 
@@ -391,8 +330,6 @@ def probe_configured_cli_auth(cfg: RuntimeConfig) -> list[AuthProbeResult]:
         try:
             env = resolve_identity_env(cfg, agent_cfg)
         except Exception:
-            # Identity resolution failures are a GitHub-token concern surfaced by
-            # preflight_identities; don't let one block the backend-auth probe.
             env = {}
         results.append(probe_cli_auth(agent_type, env, binary=agent_cfg.binary))
     return results

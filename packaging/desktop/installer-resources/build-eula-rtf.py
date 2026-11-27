@@ -26,7 +26,6 @@ _ACK_BODY = (
     "THAT CAN MISINTERPRET INSTRUCTIONS AND MAKE MISTAKES."
 )
 
-# RTF preamble matching textutil's cocoartf output format.
 _PREAMBLE = (
     "{\\rtf1\\ansi\\ansicpg1252\\cocoartf2822\n"
     "\\cocoatextscaling0\\cocoaplatform0"
@@ -74,7 +73,7 @@ def main() -> None:
     lines: list[str] = [_PREAMBLE]
     for i, para in enumerate(paras):
         if i > 0:
-            lines.append("\\\n")  # blank separator between paragraphs
+            lines.append("\\\n")
         if para == _ACK_HDR:
             lines.append(_rtf_line(para, bold=True, fs=32))
         elif para.startswith("I FULLY UNDERSTAND THAT AI AGENTS"):

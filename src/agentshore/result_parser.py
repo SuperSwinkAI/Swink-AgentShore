@@ -11,17 +11,22 @@ if TYPE_CHECKING:
 
 from agentshore.state import JsonArtifact, JsonIssueRef, JsonObject, SkillResult
 
-# Upper bound on parsed ``learnings_compacted`` entries. Set well above the
-# default ``LearningsConfig.max_entries`` (200) so a legitimate full-store
-# re-distillation is never truncated at parse time — the harvester's
-# ``top_k(max_entries)`` is the real bound — while still capping a pathological
-# array. result_parser is config-agnostic, hence a constant rather than the cfg.
 _MAX_COMPACTED_ENTRIES = 500
 
 
-# Suffixes agents tack onto an artifact ``type`` when restating it in their own
-# words ("design_audit" → "design-audit-result"). Stripped once, from the tail only.
 _ARTIFACT_TYPE_NOISE_SUFFIXES: tuple[str, ...] = ("_result", "_results")
+
+
+RESULT_ENVELOPE_JSON_SCHEMA: dict[str, object] = {
+    "type": "object",
+    "properties": {
+        "success": {"type": "boolean"},
+        "artifacts": {"type": "array", "items": {"type": "object"}},
+        "error": {"type": ["string", "null"]},
+    },
+    "required": ["success", "artifacts"],
+}
+RESULT_ENVELOPE_SCHEMA_JSON: str = json.dumps(RESULT_ENVELOPE_JSON_SCHEMA, separators=(",", ":"))
 
 
 def normalize_artifact_type(value: object) -> str | None:
@@ -233,19 +238,9 @@ def parse_skill_result(output: str) -> SkillResult:
     for candidate in _candidate_result_objects(cleaned):
         data = candidate
     if data is None:
-        # desktop-zzt: operators need to distinguish "agent crashed with no
-        # output" from "agent ran fine but never emitted the JSON contract".
-        # Include the output length and a short tail so the failure mode is
-        # diagnosable from the play_completed log line alone.
         output_length = len(output)
         tail = output[-200:] if output else ""
-        # Collapse whitespace runs so the tail fits on one log line.
         tail_one_line = " ".join(tail.split())
-        # #229: a balanced JSON object that lacked a top-level boolean ``success``
-        # is a near-miss, not a no-JSON failure. Distinguish it so operators (and
-        # the resume-retry nudge) can name the actual defect. The prefix stays
-        # "no valid result block found in agent output (...)" so the base.py retry
-        # trigger keys on it unchanged.
         if _has_balanced_json_object(cleaned):
             detail = (
                 f"agent produced {output_length} chars with a JSON object but no "
@@ -312,8 +307,6 @@ def parse_skill_result(output: str) -> SkillResult:
     if error is not None:
         error = str(error)
 
-    # When success=False and the skill left error=null, synthesize the error
-    # from verification_failures so play_completed always carries a diagnostic.
     if not success and error is None:
         vf = data.get("verification_failures")
         if isinstance(vf, list) and vf:
@@ -342,17 +335,13 @@ def parse_skill_result(output: str) -> SkillResult:
 
     prior_blocking_findings = _coerce_blocking(_json_object(data.get("prior_findings_count")))
 
-    # ``issues_closed`` is a top-level list of issue numbers the skill closed
-    # during the play (agentshore-merge-pr emits it from Closes/Fixes/Resolves
-    # references on the merged PR). Coerce strings and floats to int; skip
-    # anything else.
     issues_closed_raw = data.get("issues_closed", [])
     if not isinstance(issues_closed_raw, list):
         issues_closed_raw = []
     issues_closed: list[int] = []
     for item in issues_closed_raw:
         if isinstance(item, bool):
-            continue  # bool is a subclass of int; reject explicit booleans
+            continue
         if isinstance(item, int):
             issues_closed.append(item)
             continue
@@ -370,10 +359,6 @@ def parse_skill_result(output: str) -> SkillResult:
     verification_evidence = _json_object_list(data, "verification_evidence")
     review_patterns = _json_object_list(data, "review_patterns")
 
-    # Extract top-level ``learnings`` array emitted by agents. Each element must
-    # be a dict with a non-empty ``pattern`` string; malformed entries are dropped.
-    # Normalized to {"pattern": str, "confidence": float, "category": str} and
-    # capped at 10 entries.
     from agentshore.core.learnings_harvester import (  # noqa: PLC0415
         DEFAULT_LEARNING_CONFIDENCE,
     )
@@ -394,15 +379,6 @@ def parse_skill_result(output: str) -> SkillResult:
             category = str(raw_item.get("category", "general"))
             learnings.append({"pattern": pattern, "confidence": confidence, "category": category})
 
-    # Extract the top-level ``learnings_compacted`` array — the wholesale
-    # replacement store emitted by the groom re-distillation step. Unlike
-    # ``learnings`` (incremental), each entry carries ``merged_from`` (source
-    # learning ids absorbed) instead of a ``confidence``; confidence/recency are
-    # re-derived deterministically by the harvester. Normalized to
-    # {"pattern": str, "category": str, "merged_from": list[str]}. Capped well
-    # above max_entries (the harvester's top_k is the real bound) so a full-store
-    # compaction is never truncated here, while a pathological array still can't
-    # grow unbounded.
     compacted_raw = data.get("learnings_compacted", [])
     learnings_compacted: list[JsonObject] = []
     if isinstance(compacted_raw, list):
@@ -449,9 +425,6 @@ def _coerce_blocking(findings_obj: JsonObject | None) -> int | None:
     if findings_obj is None:
         return None
     raw_blocking = findings_obj.get("blocking")
-    # bool is a subclass of int; accept only real ints. JSON-shaped input can
-    # plausibly carry a numeric string ("3"); accept that too. Anything else
-    # is dropped.
     if isinstance(raw_blocking, bool):
         return None
     if isinstance(raw_blocking, int):

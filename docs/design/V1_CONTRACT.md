@@ -75,12 +75,12 @@ The policy consumes a fixed-size float32 vector built by `encode_observation` in
 `src/agentshore/rl/observation.py`. The layout is locked; changing any slot bumps
 `OBSERVATION_VERSION`.
 
-`{"observation_version": 16, "observation_dim": 254}`
+`{"observation_version": 17, "observation_dim": 254}`
 
 | Slots | Block | Contents |
 |---:|---|---|
 | 0-1 | dependency | beads blocked-task-ratio + ready-task-ratio |
-| 2-7 | retired | permanently zero-filled |
+| 2-7 | flow | planned backlog, oldest review wait, minutes since last merge, review demand per review-capable agent, in-flight planning plays, in-flight PR plays (v17; zero-filled through v16) |
 | 8-11 | epic | global closure ratio + top-3 epic closure ratios |
 | 12-16 | issue | open, closed, created, net-velocity, scope-completion |
 | 17-32 | tier-fleet | 3 tiers × 5 features + active-count |

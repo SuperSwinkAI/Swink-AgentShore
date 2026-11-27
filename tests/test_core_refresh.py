@@ -38,12 +38,10 @@ def _make_orchestrator() -> Orchestrator:
     store.enqueue_review = AsyncMock(return_value=0)
     store.get_open_issues = AsyncMock(return_value=[])
     store.update_issue_state = AsyncMock()
-    # None cursor forces a full sweep (same path as pre-pagination).
     store.get_last_issue_sync_at = AsyncMock(return_value=None)
     store.set_last_issue_sync_at = AsyncMock()
 
     orch = make_test_orchestrator(Path("."), cfg, store=store)
-    # Rebuild _completion with session_id "s1" (assertions match on it).
     orch._session_id = "s1"
     orch._completion = CompletionProcessor(
         host=orch,
@@ -114,19 +112,16 @@ async def test_refresh_resyncs_pr_dropped_from_open_fetch() -> None:
     the cache, and the resolver keeps targeting them for ARF.
     """
     orch = _make_orchestrator()
-    # Local cache thinks PR #15 is still open.
     orch._store.list_open_pull_requests = AsyncMock(return_value=[_pr_record(15)])
 
     gh = MagicMock()
     gh.probe = AsyncMock()
     gh.available = True
     gh.list_issues = AsyncMock(return_value=[])
-    # state="open" returns []  (PR #15 was merged on GitHub)
-    # state="all" returns the now-merged PR #15
     gh.list_pull_requests = AsyncMock(
         side_effect=[
-            [],  # first call: state="open"
-            [_pr_record(15, state="MERGED")],  # second call: state="all"
+            [],
+            [_pr_record(15, state="MERGED")],
         ]
     )
 
@@ -135,8 +130,7 @@ async def test_refresh_resyncs_pr_dropped_from_open_fetch() -> None:
 
     orch._store.cache_pull_requests.assert_awaited_once()
     cached_args = orch._store.cache_pull_requests.await_args
-    assert cached_args is not None  # type-checker guard
-    # args[0]=session_id, args[1]=records.
+    assert cached_args is not None
     assert cached_args.args[0] == "s1"
     cached_prs = cached_args.args[1]
     assert len(cached_prs) == 1
@@ -189,7 +183,6 @@ async def test_refresh_no_resync_when_open_fetch_is_complete() -> None:
     with patch("agentshore.github.adapter.GitHubAdapter", return_value=gh):
         await orch._completion.refresh_issues()
 
-    # Only one list_pull_requests call (state="open"); no state="all" follow-up.
     assert gh.list_pull_requests.await_count == 1
     call = gh.list_pull_requests.await_args
     assert call.kwargs.get("state") == "open"
@@ -233,14 +226,12 @@ async def test_refresh_evicts_pr_absent_from_github() -> None:
     gh.probe = AsyncMock()
     gh.available = True
     gh.list_issues = AsyncMock(return_value=[])
-    gh.list_pull_requests = AsyncMock(side_effect=[[], []])  # both empty: #99 is a phantom
+    gh.list_pull_requests = AsyncMock(side_effect=[[], []])
 
     with patch("agentshore.github.adapter.GitHubAdapter", return_value=gh):
         await orch._completion.refresh_issues()
 
-    # No record fabricated/cached...
     orch._store.cache_pull_requests.assert_not_awaited()
-    # ...but the phantom is evicted from the mirror.
     orch._store.mark_pull_request_absent.assert_awaited_once_with("s1", 99)
 
 
@@ -273,11 +264,9 @@ async def test_refresh_sweeps_reviewable_prs_and_drains_manual_required() -> Non
     with patch("agentshore.github.adapter.GitHubAdapter", return_value=gh):
         await orch._completion.refresh_issues()
 
-    # Reviewable PR 30 swept into the queue; manual-required 31 is NOT enqueued.
     enqueued_prs = {call.args[0].pr_number for call in orch._store.enqueue_review.await_args_list}
     assert 30 in enqueued_prs
     assert 31 not in enqueued_prs
-    # Manual-required 31's queue rows are drained.
     orch._store.drain_review_queue_for_prs.assert_awaited_once_with("s1", [31])
 
 
@@ -288,7 +277,6 @@ async def test_refresh_does_not_evict_trust_filtered_live_pr() -> None:
     the raw state="all" set). The reaper must NOT evict it — only genuine 404s
     are phantoms."""
     orch = _make_orchestrator()
-    # #21 is locally open; its author "stranger" is untrusted (cfg trusts only "trusted").
     orch._store.list_open_pull_requests = AsyncMock(
         return_value=[_pr_record(21, github_author="stranger")]
     )
@@ -298,8 +286,6 @@ async def test_refresh_does_not_evict_trust_filtered_live_pr() -> None:
     gh.probe = AsyncMock()
     gh.available = True
     gh.list_issues = AsyncMock(return_value=[])
-    # state="open" raw includes #21 (filtered out as untrusted → fetched_open empty);
-    # state="all" raw still includes #21 → GitHub knows it → NOT a phantom.
     gh.list_pull_requests = AsyncMock(
         side_effect=[
             [_pr_record(21, github_author="stranger")],
@@ -319,7 +305,6 @@ async def test_refresh_closes_externally_closed_issue_via_state_all() -> None:
     in ``cache_github_issues`` flips the local row's state. No second fetch is
     issued — the open→all resync that lived here historically is gone."""
     orch = _make_orchestrator()
-    # Local cache says issue #7 is open; GH now reports it closed.
     orch._store.get_open_issues = AsyncMock(return_value=[_issue_record(7, state="open")])
 
     gh = MagicMock()
@@ -331,7 +316,6 @@ async def test_refresh_closes_externally_closed_issue_via_state_all() -> None:
     with patch("agentshore.github.adapter.GitHubAdapter", return_value=gh):
         await orch._completion.refresh_issues()
 
-    # One state="all" fetch; the upsert handles the open→closed transition.
     assert gh.list_issues.await_count == 1
     assert gh.list_issues.await_args.kwargs.get("state") == "all"
     orch._store.cache_github_issues.assert_awaited_once()
@@ -359,7 +343,6 @@ async def test_refresh_incremental_uses_since_when_cursor_set() -> None:
 
     assert gh.list_issues.await_count == 1
     assert gh.list_issues.await_args.kwargs.get("since") == "2026-05-23T22:00:00+00:00"
-    # Cursor advanced on success even though no issues changed.
     orch._store.set_last_issue_sync_at.assert_awaited_once()
 
 
@@ -408,7 +391,6 @@ async def test_refresh_force_full_sync_overrides_cursor() -> None:
             force_full_sync=True,
         )
 
-    # Force flag drops since= to None despite cursor + ISSUE_PICKUP.
     assert gh.list_issues.await_args.kwargs.get("since") is None
 
 
@@ -551,8 +533,7 @@ async def test_cache_github_issues_reopen_clears_closed_at() -> None:
     async with aiosqlite.connect(":memory:") as conn:
         conn.row_factory = aiosqlite.Row
         store = DataStore.__new__(DataStore)
-        store._db = conn  # bypass initialize(); _conn property reads _db
-        # Bootstrap schema — only the tables we need.
+        store._db = conn
         await conn.executescript(
             """
             CREATE TABLE sessions (
@@ -593,7 +574,6 @@ async def test_cache_github_issues_reopen_clears_closed_at() -> None:
         )
         await store.cache_github_issues("s1", [closed_issue])
 
-        # Re-open the issue on GitHub (state='open', closed_at=None from adapter).
         reopened = GitHubIssueRecord(
             issue_number=5,
             session_id="s1",

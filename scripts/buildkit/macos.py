@@ -90,8 +90,6 @@ def clean_stale(ctx: BuildContext) -> None:
             shutil.rmtree(bundle)
             info("Removed old bundle at target/.../bundle/macos/")
         except OSError:
-            # Tauri signs via the codesign daemon (root), so the bundle ends up
-            # root-owned. Authenticated GUI delete — no TTY sudo needed.
             script = f"do shell script \"rm -rf '{bundle}'\" with administrator privileges"
             if run_ok(["osascript", "-e", script]):
                 info("Removed old bundle (authenticated via GUI)")
@@ -102,8 +100,6 @@ def clean_stale(ctx: BuildContext) -> None:
     if installed.is_dir() and ctx.do_install and run_ok(["sudo", "rm", "-rf", str(installed)]):
         info("Removed installed app from /Applications/")
 
-    # Best-effort pre-install cleanup: -n so it never blocks on a password prompt
-    # (forgets only when sudo creds are already cached; harmless to skip otherwise).
     receipts = run_text(["pkgutil", "--pkgs"], check=False).split()
     for receipt in (APP_BUNDLE_ID, "ai.agentshore.app", "ai.agentshore.cli"):
         if receipt in receipts and run_ok(["sudo", "-n", "pkgutil", "--forget", receipt]):
@@ -174,7 +170,7 @@ def build_pkg(ctx: BuildContext) -> None:
     log("Building .pkg installer")
     require_tool("pkgbuild", "install Xcode Command Line Tools")
     require_tool("productbuild", "install Xcode Command Line Tools")
-    assert ctx.bundled_wheel is not None  # set by build_wheel
+    assert ctx.bundled_wheel is not None
     wheel = ctx.bundled_wheel
     version = read_canonical(ctx.root)
 
@@ -187,7 +183,6 @@ def build_pkg(ctx: BuildContext) -> None:
     shutil.rmtree(component_dir, ignore_errors=True)
     component_dir.mkdir(parents=True, exist_ok=True)
 
-    # — Desktop component (BundleIsRelocatable=false) —
     app_component_pkg = component_dir / "agentshore-desktop-component.pkg"
     app_component_plist = component_dir / "agentshore-desktop-component.plist"
     app_component_plist.write_text(_COMPONENT_PLIST.format(app_name=APP_NAME))
@@ -221,7 +216,6 @@ def build_pkg(ctx: BuildContext) -> None:
     _raise_pkg_timeout(app_component_pkg, component_dir / "agentshore-desktop-expanded")
     info(f"Wrote desktop component pkg: {app_component_pkg}")
 
-    # — CLI component (nopayload) —
     cli_component_pkg = component_dir / "agentshore-cli-component.pkg"
     cli_scripts = ctx.tauri_dir / "target" / "pkg-cli-scripts"
     _stage_scripts(
@@ -248,7 +242,6 @@ def build_pkg(ctx: BuildContext) -> None:
     )
     info(f"Wrote CLI component pkg: {cli_component_pkg}")
 
-    # — Timelapse component (nopayload, opt-in) —
     timelapse_component_pkg = component_dir / "agentshore-timelapse-component.pkg"
     timelapse_scripts = ctx.tauri_dir / "target" / "pkg-timelapse-scripts"
     _stage_scripts(
@@ -275,7 +268,6 @@ def build_pkg(ctx: BuildContext) -> None:
     _raise_pkg_timeout(timelapse_component_pkg, component_dir / "agentshore-timelapse-expanded")
     info(f"Wrote timelapse component pkg: {timelapse_component_pkg}")
 
-    # — productbuild distribution —
     if not distribution_template.is_file():
         raise die(f"Distribution template missing: {distribution_template}")
     eula_builder = installer_resources / "build-eula-rtf.sh"

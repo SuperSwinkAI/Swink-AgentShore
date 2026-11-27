@@ -23,9 +23,6 @@ if TYPE_CHECKING:
 
 log = structlog.get_logger(__name__)
 
-#: Sibling of ``worktrees/`` where a dirty orphan's tree is moved before removal
-#: so uncommitted work is recoverable (#164). Local literal to keep this module
-#: dependency-light; canonical owner is ``trunk_artifacts.QUARANTINE_DIRNAME``.
 _RECLAIMED_DIRNAME = "reclaimed"
 
 
@@ -61,9 +58,6 @@ class AllocateResult:
     created: bool
     fetched: bool
     head_sha: str
-    # Detached-HEAD at ``base_ref`` instead of on ``branch_name`` because that
-    # branch is already checked out in another worktree (git forbids the same
-    # branch twice). Skill still pushes by explicit refspec. Issue #60 / Piece B.
     detached: bool = False
 
 
@@ -181,13 +175,12 @@ async def _add_worktree_with_collision_retry(
         and safe_to_force_remove(Path(collision.group(1)))
     )
     if not reclaimable or branch_name is None:
-        # Not a reclaimable collision (or detached path) — bubble the original error.
         raise WorktreeAllocationFailed(
             f"git {' '.join(args)} failed (rc={rc}): {stderr.strip()}",
             reason=f"git_{args[0]}_failed",
         )
 
-    assert collision is not None  # guarded by the `reclaimable` check above
+    assert collision is not None
     colliding_path = Path(collision.group(1))
     log.warning(
         "worktree_allocate_collision_detected",
@@ -204,7 +197,6 @@ async def _add_worktree_with_collision_retry(
             reason="pickup_collision_remove_failed",
         )
 
-    # Retry once; a second failure bubbles via the normal failure path.
     rc2, _, stderr2 = await _run_git(*args, cwd=main_repo, check=False, timeout=180.0)
     if rc2 != 0:
         raise WorktreeAllocationFailed(
@@ -446,10 +438,6 @@ async def ensure_worktree(
         return AllocateResult(path=worktree_path, created=False, fetched=fetched, head_sha=head)
 
     if already_registered and not worktree_path.exists():
-        # Stale registration: git thinks the worktree exists but the directory
-        # is gone (killed mid-session, manual cleanup, etc.). Prune the stale
-        # entry so the subsequent ``git worktree add`` succeeds. Without this,
-        # the allocator retries the same path every tick and never recovers.
         log.warning(
             "worktree_stale_registration_pruned",
             worktree_path=str(worktree_path),
@@ -457,18 +445,6 @@ async def ensure_worktree(
         await _run_git("worktree", "prune", cwd=main_repo, check=False)
 
     if worktree_path.exists():
-        # Orphan directory: path exists but git doesn't know it as a worktree.
-        # Common causes: a prior session was force-killed mid-allocate, or the
-        # skill exited without ``git worktree remove`` cleanup. A clean orphan
-        # is rebuildable debris (committed work is already in git, and orphans
-        # are never re-adopted), so delete it and proceed — raising here used to
-        # permanently block any future play that needed the same branch (93
-        # consecutive code_review dispatches failed against orphan dirs). A
-        # dirty orphan's working tree is quarantined under ``.agentshore/
-        # reclaimed/`` (recoverable) and then removed, so uncommitted work
-        # survives without wedging allocation (#164). Only a quarantine *failure*
-        # leaves the dir in place — the rare last resort that still surfaces for
-        # manual resolution rather than risk losing the work.
         reclaimed_root = worktree_path.parent.parent / _RECLAIMED_DIRNAME
         disposition = await _dispose_orphan(
             main_repo=main_repo, path=worktree_path, reclaimed_root=reclaimed_root
@@ -481,12 +457,6 @@ async def ensure_worktree(
                 reason="orphan_dirty_uncommitted",
             )
 
-    # When a specific branch is requested but it's already checked out in
-    # another worktree (the primary tree holding the repo default, a sibling
-    # worktree), ``git worktree add -B <branch>`` cannot succeed — git forbids
-    # the same branch in two worktrees. Fall back to a detached-HEAD checkout at
-    # ``base_ref``; the caller/skill pushes by explicit refspec rather than
-    # relying on being "on" the branch. Issue #60 / Piece B.
     detached = branch_name is not None and await _branch_checked_out_in_primary(
         main_repo, branch_name
     )
@@ -504,8 +474,6 @@ async def ensure_worktree(
         args.extend(["--detach", str(worktree_path), base_ref])
 
     try:
-        # In detached mode there is no branch to collide on, so pass
-        # branch_name=None to keep the collision-retry path's branch logic off.
         await _add_worktree_with_collision_retry(
             args,
             main_repo=main_repo,
@@ -575,26 +543,6 @@ async def remove_worktree(
     return not worktree_path.exists()
 
 
-# --- Orphan deletion + on-disk reconciliation -------------------------------
-#
-# The worktree allocator and ``git worktree list`` are the source of truth for
-# "this path is a valid worktree". Reality can diverge: a prior session may
-# have been force-killed mid-allocate, leaving a directory on disk without a
-# matching registration; or git may carry a stale registration pointing at a
-# directory the user manually deleted. Both states block future allocations
-# at the same path (``git worktree add`` refuses to overwrite).
-#
-# The functions below converge from any starting state to a clean one:
-#   - ``_dispose_orphan``        : delete one orphan dir (preserve if dirty)
-#   - ``reconcile_worktrees``    : sweep the whole worktree_root + prune
-# Orphans are never re-adopted and their (gitignored) build caches are never
-# reused, so a clean orphan is deleted outright rather than quarantined; only a
-# dirty orphan (uncommitted work) is left in place for manual recovery.
-# ``ensure_worktree`` calls ``_dispose_orphan`` inline whenever it hits an
-# orphan at the target path; the manager's ``reap_session_start`` calls
-# ``reconcile_worktrees`` once at session boot for the big-picture sweep.
-
-
 @dataclass(frozen=True, slots=True)
 class ReconcileReport:
     """Outcome of ``reconcile_worktrees``.
@@ -650,8 +598,6 @@ async def _quarantine_dirty_orphan(*, main_repo: Path, path: Path, reclaimed_roo
             error=str(exc),
         )
         return False
-    # The working tree was moved out from under git's registration; drop the
-    # registration for real (best-effort remove + prune) so the path is free.
     await remove_worktree(main_repo=main_repo, worktree_path=path, force=True)
     log.info(
         "worktree_orphan_quarantined",
@@ -687,10 +633,6 @@ async def _dispose_orphan(*, main_repo: Path, path: Path, reclaimed_root: Path) 
     Returns ``"deleted"``, ``"quarantined"``, or ``"preserved"`` (the last only
     when quarantine itself failed). Best-effort; never raises.
     """
-    # Orphans are de-registered, so ``git status`` inside them fails until the
-    # admin link is repaired. Re-link best-effort so we can inspect for
-    # uncommitted work; if repair/status still can't introspect the dir, treat
-    # it as detached debris and delete (committed work is safe in git).
     await _run_git("worktree", "repair", str(path), cwd=main_repo, check=False)
     rc, out, _ = await _run_git(
         "status", "--porcelain", "--untracked-files=no", cwd=path, check=False
@@ -705,7 +647,6 @@ async def _dispose_orphan(*, main_repo: Path, path: Path, reclaimed_root: Path) 
             main_repo=main_repo, path=path, reclaimed_root=reclaimed_root
         ):
             return "quarantined"
-        # Quarantine failed — leave the work in place rather than destroy it.
         return "preserved"
     await remove_worktree(main_repo=main_repo, worktree_path=path, force=True)
     log.info("worktree_orphan_deleted", orphan_path=str(path))
@@ -807,7 +748,6 @@ async def reconcile_worktrees(
     if scan is None:
         scan = await _walk_worktree_root_once(main_repo=main_repo, worktree_root=worktree_root)
     if not scan.git_list_ok:
-        # Cannot enumerate git's view → can't safely identify orphans.
         return ReconcileReport()
 
     reclaimed_root = worktree_root.parent / _RECLAIMED_DIRNAME
@@ -825,7 +765,6 @@ async def reconcile_worktrees(
         else:
             preserved_dirty.append(entry)
 
-    # Prune any stale registrations whose on-disk dir is gone.
     if main_repo.exists():
         await _run_git("worktree", "prune", cwd=main_repo, check=False)
 

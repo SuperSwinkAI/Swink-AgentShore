@@ -172,14 +172,8 @@ class StateBuilder:
         self._velocity = velocity
         self._recovery = recovery
         self._overrides = overrides
-        # Per-agent idle-tick counter for stale claim release (owned here).
         self._idle_agent_claim_ticks: dict[str, int] = {}
-        # Cached (total_plays, total_cost) so the budget-countdown heartbeat can
-        # re-derive remaining time off a fresh clock without a DB read. None
-        # until the first full state assembly.
         self._last_budget_inputs: tuple[int, float] | None = None
-
-    # ------------------------------------------------------------------
 
     async def fetch_state_data(self) -> _StateData:
         """Fan out independent DB reads concurrently and return a ``_StateData``.
@@ -251,21 +245,12 @@ class StateBuilder:
         learnings_count = learnings_count_task.result()
         human_feedback_count = human_feedback_count_task.result()
 
-        # WAL flush is async: freshly-recorded plays can lag get_play_history by
-        # tens-hundreds of ms, long enough for same-tick instantiate_agent pairs
-        # to slip past the cooldown mask (desktop-65bg). Deque capped at 64.
         play_history = _merge_recent_completions(
             play_history, self._runtime.recent_play_completions
         )
 
-        # Sibling shadow for per-issue applied labels (desktop-quv9): the gh CLI
-        # label-add + add_issue_labels write lag a fast follow-up get_open_issues
-        # read, so without overlaying the shadow a just-labelled issue would be
-        # re-selected next tick (issue_available_for_debug filter misses it).
         open_issues = _merge_recent_applied_labels(open_issues, self._runtime.recent_applied_labels)
 
-        # Recently-closed issues feed the dashboard Done column; frontend routes
-        # state="closed" there, so the same projection as open issues suffices.
         return _StateData(
             issue_records=open_issues + recently_closed_issues,
             pr_records=pr_records,
@@ -374,9 +359,6 @@ class StateBuilder:
 
         claims = await find_method(self._session_id, idle_ids)
         protected_claim_group_ids = self._in_flight_claim_group_ids()
-        # #205: a claim group in ``retrying`` has no live dispatch (retry queued
-        # in the override channel), so without this it looks idle-owned and gets
-        # released out from under the pending retry. Protect those groups too.
         list_retrying = getattr(self._store, "list_retrying_claim_group_ids", None)
         if callable(list_retrying):
             retrying_group_ids = await list_retrying(self._session_id)
@@ -530,15 +512,11 @@ class StateBuilder:
 
         manager_wedged: set[str] = getattr(self._manager, "wedge_cooldown_types", set())
         reasons_map: dict[str, str] = getattr(self._manager, "wedge_cooldown_reasons", {})
-        # Snapshot before mutating: everything observed here is consumed below.
         observed = set(manager_wedged)
         newly_wedged = sorted(observed - set(cooldown_until))
         for agent_type in newly_wedged:
             cooldown_until[agent_type] = current_tick + _GROK_WEDGE_COOLDOWN_TICKS
         if newly_wedged:
-            # Reason tag per type (#233): "launch_wedge" (Grok first-byte) vs
-            # "stream_hang_cluster" (agy zero-stdout). Collapse to one label when
-            # uniform, else "mixed".
             reasons = {reasons_map.get(t, "launch_wedge") for t in newly_wedged}
             reason = reasons.pop() if len(reasons) == 1 else "mixed"
             _logger.warning(
@@ -549,16 +527,10 @@ class StateBuilder:
                 cooldown_ticks=_GROK_WEDGE_COOLDOWN_TICKS,
                 expires_at_tick=current_tick + _GROK_WEDGE_COOLDOWN_TICKS,
             )
-        # Consume the inbox (seeded AND already-cooling entries alike) so no entry
-        # can re-seed itself once its expiry passes. Safe to mutate in place: this
-        # method has no awaits, so the manager cannot record a new wedge between the
-        # snapshot above and here. A stub manager without the attributes yields
-        # throwaway defaults, making this a no-op.
         manager_wedged.difference_update(observed)
         for agent_type in observed:
             reasons_map.pop(agent_type, None)
 
-        # Drop expired entries (current tick reached expiry) so the type recovers.
         expired = [
             agent_type for agent_type, expiry in cooldown_until.items() if current_tick >= expiry
         ]
@@ -639,18 +611,11 @@ class StateBuilder:
 
         No I/O. Unit-testable by constructing a ``_StateData`` directly.
         """
-        # Backend-auth failures are no longer benched session-wide: an AUTH-class
-        # ERROR handle is routed through the standard take_break recovery
-        # (recovery_tracker), exactly like a quota/rate-limit hold, so it recovers
-        # back to work rather than disabling the whole agent type for the session.
         wedge_cooldown_types = self._drain_wedge_cooldowns()
         cfg = self._runtime.cfg
         agents = self._snapshots.build_agent_snapshots(data.play_history)
         open_issues = self._snapshots.project_open_issues(data.issue_records, data.graph)
         pull_requests = self._snapshots.project_pull_requests(data.pr_records)
-        # Piece C: when target_branch is set, drop open PRs whose known base
-        # differs — out of scope and must not reach dashboard/candidates/
-        # backpressure. PRs with unknown base are kept; skipped when unset.
         pull_requests, ignored_pr_count = self._filter_pull_requests_to_target(
             pull_requests, cfg.project.target_branch
         )
@@ -666,8 +631,6 @@ class StateBuilder:
             if r.queue_id is not None and r.pr_number in active_pr_numbers
         ]
 
-        # total_plays excludes internal plays; same filter as compute_session_stats
-        # so the HUD counter matches ESR.
         internal_play_values = {pt.value for pt in INTERNAL_PLAY_TYPES}
         total_plays = sum(1 for p in data.play_history if p.play_type not in internal_play_values)
         total_cost = sum(p.dollar_cost for p in data.play_history)
@@ -694,8 +657,6 @@ class StateBuilder:
             budget_cfg=self._host.effective_budget_caps(),
             elapsed_minutes=elapsed_minutes,
         )
-        # Cache dollar inputs so the budget heartbeat re-derives the countdown
-        # off a fresh clock without a DB read.
         self._last_budget_inputs = (total_plays, total_cost)
         trajectory = self._snapshots.extract_trajectory(data.trajectory_record)
         stats = self._snapshots.compute_session_stats(data.play_history)
@@ -715,10 +676,6 @@ class StateBuilder:
             if dispatch_id in in_flight and not in_flight[dispatch_id].done()
         ]
 
-        # Snapshot runtime latches so the mask hides the matching plays from PPO;
-        # dispatch_play gates 1-2 still re-check live (state can flip between
-        # selection and dispatch). end_session_in_flight mirrors gate 2 (started
-        # latch OR any in-flight END_SESSION dispatch).
         main_repo_dispatch_paused = self._main_repo.dispatch_paused
         trunk_wedged = self._main_repo.is_trunk_wedged()
         end_session_in_flight = self._runtime.end_session_dispatch_started or (
@@ -776,6 +733,7 @@ class StateBuilder:
             human_feedback_count=data.human_feedback_count,
         )
 
+        state.cooled_down_targets = self._runtime.target_attempts.cooled_down(state)
         self.annotate_action_mask(state)
         return state
 

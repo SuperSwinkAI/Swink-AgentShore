@@ -21,12 +21,6 @@ from agentshore.plays.dispatch import (
 )
 from agentshore.state import IssueSnapshot, PlayType, PullRequestSnapshot
 
-# ---------------------------------------------------------------------------
-# render_skill_prompt — argument handling (with auto-reinstall from bundled)
-# NOTE: render no longer returns a literal slash-command; it always embeds the
-# SKILL.md body, so these tests pass a real project_path and rely on auto-reinstall.
-# ---------------------------------------------------------------------------
-
 
 async def test_render_prompt_with_issue_number(tmp_path: Path) -> None:
     params = PlayParams(issue_number=42)
@@ -36,8 +30,6 @@ async def test_render_prompt_with_issue_number(tmp_path: Path) -> None:
     assert "`.agentshore/context.json`" in result
     assert "Do not unset" in result or "Do not unset them" in result
     assert "gh api user --jq .login" in result
-    # The completion contract bookends the prompt: terminal reminder is the last thing
-    # the agent reads, after the skill body. See _COMPLETION_CONTRACT_TEMPLATE.
     assert result.rstrip().endswith("including any PR you opened.")
     assert "## Before you stop — required" in result
 
@@ -118,7 +110,6 @@ async def test_render_prompt_injects_worktree_cwd_block(tmp_path: Path) -> None:
     assert "Your working directory" in result
     assert cwd in result
     assert "worktree reclaimed mid-play" in result
-    # The cwd block sits inside the discipline preamble, ahead of the context line.
     assert result.index("Your working directory") < result.index("immediately before this play")
 
 
@@ -135,9 +126,35 @@ async def test_render_prompt_omits_cwd_block_when_no_allocation(tmp_path: Path) 
     assert "## AgentShore Context Discipline" in result
 
 
-# ---------------------------------------------------------------------------
-# render_skill_prompt — auto-reinstall fallback
-# ---------------------------------------------------------------------------
+async def test_render_prompt_rewrites_body_context_references_to_play_file(
+    tmp_path: Path,
+) -> None:
+    """Skill bodies must read this play's context file, not the shared latest copy.
+
+    Templates name ``.agentshore/context.json``; with several plays in flight
+    that file can belong to another play. The renderer points every body
+    reference at the per-play path, so only the preamble's explicit "legacy
+    copy" sentence still names the shared file.
+    """
+    play_context = ".agentshore/contexts/sess/play-7.json"
+    result = await render_skill_prompt(
+        "agentshore-issue-pickup",
+        PlayParams(issue_number=42),
+        project_path=tmp_path,
+        context_path=play_context,
+    )
+
+    assert f'"${{AGENTSHORE_PROJECT_PATH:-$(pwd)}}/{play_context}"' in result
+    assert f"`$AGENTSHORE_PROJECT_PATH/{play_context}`" in result
+    assert result.count(".agentshore/context.json") == 1
+    assert "legacy `.agentshore/context.json` file" in result
+
+
+async def test_render_prompt_keeps_default_context_path_untouched(tmp_path: Path) -> None:
+    result = await render_skill_prompt(
+        "agentshore-issue-pickup", PlayParams(issue_number=42), project_path=tmp_path
+    )
+    assert '"${AGENTSHORE_PROJECT_PATH:-$(pwd)}/.agentshore/context.json"' in result
 
 
 async def test_render_skill_prompt_uses_existing_skill_md(tmp_path: Path) -> None:
@@ -165,7 +182,6 @@ Pre-existing custom body.
 
     assert result.startswith("$ARGUMENTS: /seed")
     assert "Pre-existing custom body." in result
-    # Confirm we did *not* re-install over the existing file.
     assert "Pre-existing custom body." in (skill_dir / "SKILL.md").read_text()
 
 
@@ -175,7 +191,6 @@ async def test_render_skill_prompt_auto_reinstalls_when_missing(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     """When SKILL.md is missing, render self-heals from bundled templates."""
-    # Project has an empty .agents/skills/ — no agentshore-seed-project subdir.
     (tmp_path / ".agents" / "skills").mkdir(parents=True)
 
     skill_file = tmp_path / ".agents" / "skills" / "agentshore-seed-project" / "SKILL.md"
@@ -188,18 +203,14 @@ async def test_render_skill_prompt_auto_reinstalls_when_missing(
             project_path=tmp_path,
         )
 
-    # The skill file should now exist (bundled templates were reinstalled).
     assert skill_file.exists(), "auto-reinstall must materialise the SKILL.md"
 
-    # The returned prompt embeds the SKILL.md body, not a slash-command string.
     assert result.startswith("$ARGUMENTS: /seed.md")
     assert "## AgentShore Context Discipline" in result
     assert not result.startswith("/agentshore-seed-project"), (
         "must not return literal slash-command fallback"
     )
 
-    # The auto-reinstall log event was emitted. structlog routing varies by
-    # test ordering — accept either capsys (PrintLogger) or caplog (stdlib).
     captured = capsys.readouterr()
     in_capsys = "skill_template_auto_reinstalled" in (captured.out + captured.err)
     in_caplog = any("skill_template_auto_reinstalled" in rec.getMessage() for rec in caplog.records)
@@ -231,16 +242,12 @@ async def test_render_skill_prompt_includes_forbidden_mutations(skill: str, tmp_
 
     rendered = await render_skill_prompt(skill, PlayParams(), project_path=tmp_path)
 
-    # Forbidden section exists in some form (## heading or **bold** inline) — style-agnostic.
     assert _re.search(r"(?:^|\n)(?:#+\s*Forbidden|\*\*Forbidden)", rendered), (
         f"{skill}: missing 'Forbidden' section in rendered prompt"
     )
     assert ".github/workflows" in rendered, (
         f"{skill}: missing '.github/workflows' path glob in rendered prompt"
     )
-    # agentshore-run-qa's escape clause is "file an issue instead" — the other
-    # five mutating skills must surface the policy-error string verbatim so
-    # a downstream agent emits the canonical failure code.
     if skill != "agentshore-run-qa":
         assert "ci-change requested but forbidden by skill policy" in rendered, (
             f"{skill}: missing canonical policy-error string in rendered prompt"
@@ -318,18 +325,12 @@ async def test_render_prompt_turn_discipline_permits_long_foreground_builds(
         project_path=tmp_path,
     )
 
-    # The kill-the-build license is gone.
     assert "kill it and proceed with what you have" not in result
     assert "finish it or kill it" not in result
-    # Builds/tests/lock waits are no longer in the never-wait list.
     assert "a build\nor test run" not in result
-    # Long foreground waits are explicitly authorised, and the real constraint
-    # (silence, not duration) is stated.
     assert "Waiting in the foreground is not the same as ending your turn" in result
     assert "Duration alone will not cut you off" in result
     assert "do not impose a time budget on yourself" in result.lower()
-    # The #242 anti-async-handoff directive survives, in both the preamble and the
-    # recency-privileged completion contract.
     assert "there is no callback and no scheduler" in result
     assert "never put a command in the background expecting to be re-invoked" in result
     assert "do not end the turn expecting to be re-invoked" in result
@@ -361,16 +362,9 @@ Read the full `.agentshore/learnings.json` and re-distill it.
 
     assert "## AgentShore Context Discipline" in result
     assert "Use its `learnings` field" in result
-    # Allowance directive, NOT the prohibition.
     assert "MAY\nadditionally read the full `.agentshore/learnings.json`" in result
     assert "do not\nread `.agentshore/learnings.json`" not in result
-    # The skill's own full-store read line survives (strip carve-out for groom).
     assert "Read the full `.agentshore/learnings.json` and re-distill it." in result
-
-
-# ---------------------------------------------------------------------------
-# serialize_state_for_skill
-# ---------------------------------------------------------------------------
 
 
 def test_serialize_state_json_round_trips() -> None:
@@ -526,12 +520,6 @@ def test_params_to_json_safe_dict_handles_worktree_allocation_with_playtype() ->
     }
 
 
-# ---------------------------------------------------------------------------
-# Issue #565 (Track 4): _runtime_allocation is runtime-only and never
-# leaks across the JSON boundary.
-# ---------------------------------------------------------------------------
-
-
 def test_runtime_allocation_is_not_serialized_by_params_to_json_safe_dict() -> None:
     """``_runtime_allocation`` is a private runtime-only handle.
 
@@ -561,10 +549,8 @@ def test_runtime_allocation_is_not_serialized_by_params_to_json_safe_dict() -> N
     raw = json.dumps(payload)
     data = json.loads(raw)
 
-    # Top-level keys must not include _runtime_allocation (or any spelling).
     assert "_runtime_allocation" not in data
     assert "runtime_allocation" not in data
-    # And the executor's runtime read site still works.
     assert params._runtime_allocation is allocation
 
 
@@ -611,7 +597,6 @@ def test_serialize_state_for_skill_omits_runtime_allocation() -> None:
 
     assert "_runtime_allocation" not in data["params"]
     assert "worktree_allocation" not in data["params"]["extras"]
-    # The two string-shaped views skills actually read stay present.
     assert data["params"]["extras"]["worktree_path"] == "/tmp/wt-3"
     assert data["params"]["extras"]["worktree_scope"] == "branch_creating"
 
@@ -712,11 +697,6 @@ def test_serialize_state_project_path_defaults_to_none() -> None:
     assert payload["project_path"] is None
 
 
-# ---------------------------------------------------------------------------
-# write_play_context
-# ---------------------------------------------------------------------------
-
-
 def test_write_play_context_creates_context_file(tmp_path: Path) -> None:
     payload = {"schema_version": 1, "test": True}
     write_play_context(tmp_path, payload)
@@ -812,11 +792,6 @@ def test_write_play_context_preserves_prior_play_context(tmp_path: Path) -> None
     assert first_data["context_file"] == first_path
     assert latest_data["assigned_github_identity"] == "bot-user"
     assert latest_data["context_file"] == second_path
-
-
-# ---------------------------------------------------------------------------
-# Per-play context scoping
-# ---------------------------------------------------------------------------
 
 
 def _issues(*nums: int) -> list[IssueSnapshot]:

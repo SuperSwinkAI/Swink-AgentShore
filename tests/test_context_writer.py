@@ -51,12 +51,10 @@ class TestWriteContextFile:
         target = tmp_path / "context.json"
         payload = {"atomic": True}
 
-        # os.replace is the atomic swap — confirm it fires.
         os_replace = __import__("os").replace
         with patch("agentshore.agents.context_writer.os.replace", wraps=os_replace) as mock_replace:
             write_context_file(target, payload)
             mock_replace.assert_called_once()
-            # First arg is a temp path, second is the final target.
             call_args = mock_replace.call_args[0]
             assert str(call_args[1]) == str(target)
 

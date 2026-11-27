@@ -40,10 +40,6 @@ from agentshore.state import (
     SessionState,
 )
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 
 def _snap(
     agent_id: str = "a1",
@@ -157,18 +153,12 @@ def _ctx() -> MagicMock:
     return ctx
 
 
-# ---------------------------------------------------------------------------
-# Newly filled slot plays
-# ---------------------------------------------------------------------------
-
-
 def test_unblock_pr_precondition_requires_idle_implementer() -> None:
     agents = [_snap(status=AgentStatus.BUSY)]
     assert UnblockPrPlay().preconditions(_state(agents=agents)) != []
 
 
 def test_unblock_pr_precondition_requires_blocked_pr() -> None:
-    # An open but non-blocked PR is not enough — needs at least one blocked PR.
     prs = [_pr(num=1, state="open", blocked=False)]
     assert UnblockPrPlay().preconditions(_state(agents=[_snap()], pull_requests=prs)) != []
 
@@ -299,7 +289,6 @@ async def test_unblock_pr_reconciles_merged_blocker() -> None:
     assert outcome.success is True
     reconcile.assert_awaited_once()
     assert reconcile.await_args.args[0] == 99
-    # Only the target flows through review; the merged blocker is reconciled.
     ctx.store.update_pr_last_reviewed_sha.assert_awaited_once_with(
         40, "sess", "tgt040", status="PASS"
     )
@@ -392,7 +381,7 @@ async def test_reconcile_merged_pr_marks_completes_and_closes() -> None:
     ctx.store.complete_reviews_for_pr = AsyncMock()
     ctx.store.update_issues_state_batch = AsyncMock()
     ctx.cfg.project.target_branch = "integration"
-    state = _state()  # graph defaults to None → beads loop is a no-op
+    state = _state()
 
     with (
         patch(
@@ -501,7 +490,6 @@ def test_write_plan_unblocked_when_eligible_issue_remains() -> None:
         blocked=False,
         blocked_reasons=[],
     )
-    # Issue 1 is covered, but issue 2 is free — precondition should pass.
     errs = WriteImplementationPlanPlay().preconditions(
         _state(issues=[_issue(num=1), _issue(num=2)], pull_requests=[pr])
     )
@@ -556,11 +544,6 @@ def test_systematic_debugging_ignores_issue_linked_to_open_pr() -> None:
     assert errors
 
 
-# ---------------------------------------------------------------------------
-# IssuePickupPlay
-# ---------------------------------------------------------------------------
-
-
 def test_issue_pickup_precondition_met_with_issue_and_implementer() -> None:
     assert IssuePickupPlay().preconditions(_state(agents=[_snap()], issues=[_issue()])) == []
 
@@ -578,7 +561,7 @@ def test_issue_pickup_blocked_when_open_pr_queue_full() -> None:
     issue_pickup so the policy clears review/merge work first instead of
     piling on more PRs that won't drain.
     """
-    prs = [_pr(num=i, state="open") for i in range(1, 12)]  # 11 open PRs
+    prs = [_pr(num=i, state="open") for i in range(1, 12)]
     errors = IssuePickupPlay().preconditions(
         _state(agents=[_snap()], issues=[_issue()], pull_requests=prs)
     )
@@ -588,7 +571,7 @@ def test_issue_pickup_blocked_when_open_pr_queue_full() -> None:
 
 def test_issue_pickup_blocked_at_threshold() -> None:
     """Exactly 10 open PRs is the first blocked count (inclusive gate)."""
-    prs = [_pr(num=i, state="open") for i in range(1, 11)]  # 10 open PRs
+    prs = [_pr(num=i, state="open") for i in range(1, 11)]
     errors = IssuePickupPlay().preconditions(
         _state(agents=[_snap()], issues=[_issue()], pull_requests=prs)
     )
@@ -598,7 +581,7 @@ def test_issue_pickup_blocked_at_threshold() -> None:
 
 def test_issue_pickup_allowed_below_threshold() -> None:
     """9 open PRs is below the threshold and is allowed."""
-    prs = [_pr(num=i, state="open") for i in range(1, 10)]  # 9 open PRs
+    prs = [_pr(num=i, state="open") for i in range(1, 10)]
     errors = IssuePickupPlay().preconditions(
         _state(agents=[_snap()], issues=[_issue()], pull_requests=prs)
     )
@@ -609,16 +592,11 @@ def test_issue_pickup_ignores_closed_prs_for_queue_count() -> None:
     """Only PRs in state='open' count toward the queue threshold —
     closed/merged PRs were drained already and shouldn't gate new pickup.
     """
-    prs = [_pr(num=i, state="closed") for i in range(1, 12)]  # 11 closed PRs
+    prs = [_pr(num=i, state="closed") for i in range(1, 12)]
     errors = IssuePickupPlay().preconditions(
         _state(agents=[_snap()], issues=[_issue()], pull_requests=prs)
     )
     assert errors == []
-
-
-# ---------------------------------------------------------------------------
-# CodeReviewPlay
-# ---------------------------------------------------------------------------
 
 
 def test_code_review_precondition_no_pending_reviews() -> None:
@@ -729,7 +707,6 @@ async def test_code_review_writes_last_reviewed_sha_on_success() -> None:
         outcome = await play.execute(_state(), PlayParams(pr_number=42), ctx=ctx)
 
     assert outcome.success is True
-    # status=None: patched execute leaves _last_skill_result unset (SHA-path only).
     ctx.store.update_pr_last_reviewed_sha.assert_awaited_once_with(
         42, "sess", "abc123", status=None
     )
@@ -758,7 +735,7 @@ async def test_code_review_skip_zero_diff_persists_sha_via_state_fallback() -> N
         duration_seconds=1.0,
         token_cost=10,
         dollar_cost=0.0,
-        artifacts=[],  # parser drops top-level head_sha — no artifact carries it
+        artifacts=[],
         alignment_delta=0.0,
         error="zero-diff PR; no review needed",
     )
@@ -1204,7 +1181,7 @@ async def test_code_review_skip_no_backfill_when_prior_unparseable() -> None:
     )
 
     play = CodeReviewPlay()
-    play._last_skill_result = SkillResult(success=True)  # no prior_verdict
+    play._last_skill_result = SkillResult(success=True)
     ctx = _ctx()
     ctx.store.update_pr_last_reviewed_sha = AsyncMock()
     with patch.object(SkillBackedPlay, "execute", AsyncMock(return_value=skill_outcome)):
@@ -1514,7 +1491,7 @@ async def test_prune_execute_flags_when_protected_worktree_was_removed(tmp_path:
     from agentshore.errors import FailureKind
     from agentshore.state import SkillResult
 
-    clobbered_path = str(tmp_path) + "/pickup-42-clobbered"  # never created — simulates removal
+    clobbered_path = str(tmp_path) + "/pickup-42-clobbered"
 
     worktrees_manager = MagicMock()
     worktrees_manager.live_protected_paths = AsyncMock(return_value=set())
@@ -1684,18 +1661,12 @@ async def test_prune_execute_succeeds_when_vanished_rows_are_stale_bookkeeping(
     assert outcome.error is None or merged_path not in outcome.error
 
 
-# ---------------------------------------------------------------------------
-# RunQAPlay
-# ---------------------------------------------------------------------------
-
-
 def test_run_qa_precondition_no_idle_tester() -> None:
     agents = [_snap(status=AgentStatus.BUSY)]
     assert RunQAPlay().preconditions(_state(agents=agents)) != []
 
 
 def test_run_qa_precondition_met() -> None:
-    # Simulate a session past the first-run floor with a prior QA run recorded.
     state = _state(
         agents=[_snap()],
         plays_since_last_play_type={PlayType.RUN_QA: 42},
@@ -1732,11 +1703,6 @@ def test_run_qa_allows_after_cooldown() -> None:
     )
 
 
-# ---------------------------------------------------------------------------
-# MergePRPlay
-# ---------------------------------------------------------------------------
-
-
 _MERGE_PR_BLOCK_ERR = (
     "no PR with GitHub or AgentShore approval at current head_sha "
     "and mergeable=MERGEABLE (awaiting review or CI)"
@@ -1755,7 +1721,6 @@ def test_merge_pr_precondition_met_with_claude() -> None:
 
 
 def test_merge_pr_blocked_when_no_mergeable_pr() -> None:
-    # Approved PRs exist but none are MERGEABLE (CI pending or merge conflicts)
     prs = [
         _pr(review_decision="APPROVED", mergeable="UNKNOWN"),
         _pr(num=2, review_decision="APPROVED", mergeable="CONFLICTING"),
@@ -1766,8 +1731,6 @@ def test_merge_pr_blocked_when_no_mergeable_pr() -> None:
 
 
 def test_merge_pr_blocked_when_pr_mergeable_but_not_approved() -> None:
-    # Regression: needs approval from one source (GH APPROVED or AgentShore
-    # PASS@head); unapproved+mergeable must not satisfy.
     prs = [_pr(state="open", mergeable="MERGEABLE")]
     errors = MergePRPlay().preconditions(_state(agents=[_snap()], pull_requests=prs))
     assert [e.text for e in errors] == [_MERGE_PR_BLOCK_ERR]
@@ -1779,9 +1742,6 @@ def test_merge_pr_blocked_when_no_prs() -> None:
 
 
 def test_merge_pr_precondition_met_via_agentshore_internal_pass() -> None:
-    # Single-user setup: GitHub blocks self-approval so review_decision is None,
-    # but AgentShore's own code_review play returned PASS at the current head SHA.
-    # That must be sufficient for merge_pr.
     prs = [
         _pr(
             mergeable="MERGEABLE",
@@ -1795,8 +1755,6 @@ def test_merge_pr_precondition_met_via_agentshore_internal_pass() -> None:
 
 
 def test_merge_pr_blocked_when_agentshore_pass_is_stale() -> None:
-    # AgentShore approved an older SHA, but a new commit has since been pushed.
-    # The SHA mismatch must invalidate the approval automatically.
     prs = [
         _pr(
             mergeable="MERGEABLE",
@@ -1811,7 +1769,6 @@ def test_merge_pr_blocked_when_agentshore_pass_is_stale() -> None:
 
 
 def test_merge_pr_blocked_when_agentshore_block_at_current_head() -> None:
-    # AgentShore returned BLOCK at the current head — must not be merge-eligible.
     prs = [
         _pr(
             mergeable="MERGEABLE",
@@ -1823,11 +1780,6 @@ def test_merge_pr_blocked_when_agentshore_block_at_current_head() -> None:
     ]
     errors = MergePRPlay().preconditions(_state(agents=[_snap()], pull_requests=prs))
     assert [e.text for e in errors] == [_MERGE_PR_BLOCK_ERR]
-
-
-# ---------------------------------------------------------------------------
-# RefineTaskBreakdownPlay
-# ---------------------------------------------------------------------------
 
 
 def test_refine_tasks_requires_open_issues() -> None:
@@ -1854,17 +1806,6 @@ def test_refine_tasks_masked_when_no_issue_needs_refinement() -> None:
     )
 
 
-# ---------------------------------------------------------------------------
-# CleanupPlay
-# (see tests/test_plays_cleanup.py for full precondition coverage)
-# ---------------------------------------------------------------------------
-
-
-# ---------------------------------------------------------------------------
-# execute() — parametrized happy-path and failure-path for base-class plays
-# ---------------------------------------------------------------------------
-
-
 _RAW_OK = '{"success": true, "artifacts": ["done"]}'
 _RAW_FAIL = '{"success": false, "error": "boom"}'
 
@@ -1889,7 +1830,6 @@ def _ctx_for_execute() -> MagicMock:
     return ctx
 
 
-# Plays that use the base-class execute() without override (or trivial override)
 _BASE_PLAYS: list[tuple[str, object, PlayParams]] = [
     ("UnblockPr", UnblockPrPlay(), PlayParams(agent_id="a1")),
     ("CalibrateAlignment", CalibrateAlignmentPlay(), PlayParams(agent_id="a1")),
@@ -2106,12 +2046,12 @@ async def test_execute_reclaimed_worktree_returns_recoverable_failure(
     from agentshore.state import PlayType, SkillResult
 
     assert isinstance(tmp_path, Path)
-    missing_worktree = tmp_path / "worktrees" / "pickup-159"  # never created
+    missing_worktree = tmp_path / "worktrees" / "pickup-159"
     assert not missing_worktree.exists()
 
     play = IssuePickupPlay()
     ctx = _ctx_for_execute()
-    ctx.project_path = tmp_path  # real path so the isolation guard can resolve()
+    ctx.project_path = tmp_path
 
     params = PlayParams(
         agent_id="a1",
@@ -2142,18 +2082,12 @@ async def test_execute_reclaimed_worktree_returns_recoverable_failure(
     ):
         outcome = await play.execute(_state(), params, ctx=ctx)
 
-    # The dispatch must NOT have happened — short-circuited before the spawn.
     ctx.manager.dispatch.assert_not_awaited()
     assert outcome.success is False
     assert outcome.agent_id == "a1"
     assert outcome.failure_kind == FailureKind.AGENT_ERROR
     assert outcome.retry_requested is True
     assert "worktree reclaimed before dispatch" in (outcome.error or "")
-
-
-# ---------------------------------------------------------------------------
-# MergePRPlay execute()
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -2191,8 +2125,6 @@ async def test_merge_pr_execute_dispatches_when_no_pending(tmp_path: object) -> 
         )
 
     assert outcome.success is True
-    # Post-merge write-through: mark MERGED now so the resolver doesn't
-    # re-target it for unblock_pr.
     ctx.store.mark_pr_merged.assert_awaited_once_with(1, "sess")
 
 

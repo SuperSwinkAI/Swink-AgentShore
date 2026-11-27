@@ -120,11 +120,6 @@ async def rekey_worktree(
             status="stale",
             failure_reason=f"rekey_rename_failed: {exc}",
         )
-        # The old ``pickup-NNN`` directory still exists on disk and still
-        # holds the agent-created branch checked out. Release the branch
-        # lock immediately so the next allocation on that branch (e.g. a
-        # code_review for the just-opened PR) doesn't hit a collision while
-        # waiting for the next session-start sweep. Best-effort.
         await _release_orphaned_worktree(
             main_repo=(
                 worktree_root.parent if worktree_root.parent.exists() else current_path.parent
@@ -147,13 +142,6 @@ async def rekey_worktree(
             worktree_id=row.worktree_id,
             error=str(exc),
         )
-        # The directory move already succeeded — pass the new on-disk path
-        # to mark_status so the row points at it. The next reap pass can
-        # then remove the actual worktree instead of looking at the stale
-        # pre-rekey path that no longer exists. The row stays at status='stale'
-        # with the new path so list_orphans picks it up at next session start.
-        # Also repair git's internal metadata so any future ``worktree list``
-        # against the moved path resolves correctly.
         await mark_status(
             store,
             worktree_id=row.worktree_id,

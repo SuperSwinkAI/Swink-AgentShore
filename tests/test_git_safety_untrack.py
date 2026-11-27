@@ -47,7 +47,6 @@ def _init_repo(repo: Path) -> None:
 def test_untracks_already_committed_beads(tmp_path: Path) -> None:
     repo = tmp_path / "proj"
     _init_repo(repo)
-    # Commit a .beads file BEFORE it is ignored — the regression scenario.
     beads = repo / ".beads"
     beads.mkdir()
     (beads / "graph.db").write_text("data")
@@ -61,11 +60,9 @@ def test_untracks_already_committed_beads(tmp_path: Path) -> None:
 
     assert ".beads/" in untracked
     assert committed is True
-    # No longer tracked, but the working-tree copy survives (--cached).
     assert _git(repo, "ls-files", ".beads").strip() == ""
     assert (beads / "graph.db").exists()
     assert ".beads/" in (repo / ".gitignore").read_text()
-    # Clean tree after the commit (the removal + .gitignore are committed).
     assert _git(repo, "status", "--porcelain").strip() == ""
 
 
@@ -84,7 +81,6 @@ def test_untracked_artifacts_no_longer_dirty_trunk(tmp_path: Path) -> None:
     _git(repo, "add", "README.md")
     _git(repo, "commit", "-q", "-m", "init")
 
-    # Prior-run residue, all untracked at the repo root.
     (repo / "timelapse-runs").mkdir()
     (repo / "timelapse-runs" / "frame-0001.png").write_text("png")
     (repo / "closed_issue_refs.txt").write_text("gh-1\n")
@@ -95,7 +91,6 @@ def test_untracked_artifacts_no_longer_dirty_trunk(tmp_path: Path) -> None:
     untrack_ignored_entries(repo)
     commit_gitignore_if_dirty(repo)
 
-    # Trunk is clean — the artifacts survive on disk but are ignored.
     assert _git(repo, "status", "--porcelain").strip() == ""
     assert (repo / "timelapse-runs" / "frame-0001.png").exists()
     assert (repo / "closed_issue_refs.txt").exists()
@@ -110,12 +105,10 @@ def test_idempotent_when_nothing_tracked(tmp_path: Path) -> None:
 
     ensure_gitignore_entries(repo)
     untracked = untrack_ignored_entries(repo)
-    # Nothing was tracked, so nothing to untrack; only .gitignore was created.
     assert untracked == []
     committed = commit_gitignore_if_dirty(repo)
-    assert committed is True  # the new .gitignore is committed
+    assert committed is True
 
-    # Second pass is a clean no-op.
     assert ensure_gitignore_entries(repo) == []
     assert untrack_ignored_entries(repo) == []
     assert commit_gitignore_if_dirty(repo) is False

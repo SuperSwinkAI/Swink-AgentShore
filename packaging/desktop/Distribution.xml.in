@@ -1,24 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!--
-  productbuild Distribution definition for AgentShore.
 
-  Three components are declared so the wizard's Customize panel shows them as
-  deliberate user-visible choices:
-    - Desktop is required (start_selected + enabled="false").
-    - Timelapse is opt-in (start_selected="false") — a heavier optional
-      toolchain (Homebrew ffmpeg/Node + a headless Chromium).
-    - CLI is opt-out (start_selected="true").
-
-  Outline order is install order: Desktop first (provisions the managed venv
-  the Timelapse component reuses), then Timelapse, then CLI last (it owns the
-  Installer auto-close in cli-postinstall).
-
-  build-macos.sh substitutes:
-    @VERSION@                  — pyproject + tauri.conf.json version string
-    @APP_COMPONENT_PKG@        — filename of the desktop component pkg
-    @TIMELAPSE_COMPONENT_PKG@  — filename of the timelapse component pkg
-    @CLI_COMPONENT_PKG@        — filename of the CLI component pkg
--->
 <installer-gui-script minSpecVersion="2">
     <title>AgentShore</title>
     <license file="EULA.rtf" mime-type="application/rtf"/>

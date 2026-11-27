@@ -28,25 +28,25 @@ export function SessionDashboardScreen() {
     [dashboardUrl],
   );
 
-  // Wire the File > Stop Session menu (lib.rs build_app_menu) to a
-  // graceful drain. Ignore re-fires while a stop is already in flight
-  // so double-clicking the menu doesn't queue duplicate session.stop
-  // RPCs.
+
+
+
+
   const stoppingRef = useRef(false);
-  // File > Adjust Budget… (lib.rs build_app_menu) emits "menu:adjust_budget".
-  // We open a modal that reads/writes the running session's budget over the
-  // live session.get_budget / session.set_budget RPCs (issue #43).
+
+
+
   const [budgetDialogOpen, setBudgetDialogOpen] = useState(false);
-  // Latest session lifecycle phase, fed by the Dashboard on every state_update.
-  // Once draining / shutting_down the absolute "Adjust Budget" override silently
-  // no-ops (the loop only dispatches end_agent past drain), so we lock the
-  // control rather than letting it fail silently (#244).
+
+
+
+
   const [sessionState, setSessionState] = useState<SessionState | undefined>();
   const budgetLocked =
     sessionState === "draining" || sessionState === "shutting_down";
-  // Read the latest locked value inside the menu listener (registered once) so a
-  // stale closure doesn't open the dialog after drain begins — mirrors the
-  // stoppingRef pattern below.
+
+
+
   const budgetLockedRef = useRef(false);
   budgetLockedRef.current = budgetLocked;
   useEffect(() => {
@@ -106,17 +106,17 @@ export function SessionDashboardScreen() {
       </main>
     );
   }
-  // Mount the same dashboard tree the CLI bridge uses so desktop and CLI
-  // dashboard chrome stay visually aligned.
+
+
   return (
     <>
       <Dashboard
         wsUrl={wsUrl}
-        // Dismiss the "Starting your session..." overlay on whichever
-        // signal arrives first: the first instantiate_agent dispatch
-        // (fast-path when there's work) or the first state_update (the
-        // engine is confirmed live even for a no-work session that never
-        // spawns an agent — issue #10).
+
+
+
+
+
         onFirstAgentInstantiated={() => setSessionStarting(false)}
         onFirstStateUpdate={() => setSessionStarting(false)}
         onSessionStateChange={setSessionState}

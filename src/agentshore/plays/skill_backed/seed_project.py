@@ -31,8 +31,6 @@ class SeedProjectPlay(SkillBackedPlay):
 
     gates = (InFlightGate(PlayType.SEED_PROJECT),)
 
-    # Named in the missing-envelope retry nudge so a re-emission restates the exact
-    # ``type`` string this play validates against (#313).
     required_artifact_types = ("seed_audit",)
 
     def __init__(
@@ -59,16 +57,10 @@ class SeedProjectPlay(SkillBackedPlay):
         if reasons:
             return reasons
 
-        # Carve-out for projects that truly need seeding: empty bd graph (#566).
-        # Keying on first-play-of-session conflated that with "needs seeding" and
-        # let a fresh session against an already-seeded project bypass the ceiling;
-        # has_epics is the real signal.
         graph_is_empty = state.graph is None or not state.graph.has_epics
         if graph_is_empty:
             return []
 
-        # Already-seeded: allow iff open_issues < ceiling. Ceiling blocks the
-        # unlimited-retry pattern behind the 17-back-to-back-seeds incident.
         count = len(state.open_issues)
         ceiling = self._mid_session_issue_ceiling
         if count >= ceiling:
@@ -110,7 +102,6 @@ class SeedProjectPlay(SkillBackedPlay):
         )
 
 
-# Implausibly many new issues per run → fail for human review.
 _SEED_PROJECT_MAX_NEW_ISSUES_PER_RUN = 25
 
 
@@ -174,8 +165,6 @@ def _validate_seed_audit_artifact(artifacts: list[JsonArtifact]) -> str | None:
 
 
 def _find_seed_audit_artifact(artifacts: list[JsonArtifact]) -> JsonObject | None:
-    # #313: same exact-match trap design_audit hit — tolerate the agent's spelling
-    # of the ``type`` string. The required fields above are still validated in full.
     return find_artifact(artifacts, "seed_audit")
 
 

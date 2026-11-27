@@ -81,8 +81,6 @@ def test_rate_limit_on_grok_does_not_zero_claude_codex_eligibility() -> None:
 
     mask = compute_agent_eligibility_mask(state, registry, cfg=_cfg())
 
-    # claude/codex work plays must stay eligible — grok's rate_limit must not
-    # collapse the fleet. CODE_REVIEW needs a PR snapshot, covered separately below.
     for play in (PlayType.ISSUE_PICKUP, PlayType.RUN_QA, PlayType.WRITE_IMPLEMENTATION_PLAN):
         assert mask[PLAY_TO_INDEX[play]], f"{play.value} was zeroed by grok rate_limit"
 
@@ -101,7 +99,6 @@ def test_rate_limit_does_not_zero_code_review_when_a_reviewable_pr_exists() -> N
             status=AgentStatus.ERROR,
             last_error_class=ErrorClass.RATE_LIMIT,
         ),
-        # code_review is large-only (#254); the healthy reviewers must be large.
         _agent(agent_id="cl-1", agent_type=AgentType.CLAUDE_CODE, model_tier="large"),
         _agent(agent_id="cx-1", agent_type=AgentType.CODEX, model_tier="large"),
     ]

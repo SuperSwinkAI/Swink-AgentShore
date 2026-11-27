@@ -242,8 +242,6 @@ identities:
 """
     )
     cfg = load_config(_write(tmp_path, yaml_text))
-    # Validator must not rewrite the stored path (agentshore.yaml is shared
-    # across machines and ``~`` expands per-host at dispatch time).
     assert cfg.identities["bot"].ssh_key_path == "~/.ssh/id_ed25519"
 
 
@@ -264,7 +262,7 @@ def test_ssh_key_path_rejects_shell_metacharacters(
     so anything that breaks ``ssh -i <path> -o IdentitiesOnly=yes`` —
     whether by injection or by argument splitting — must fail fast at load.
     """
-    del label  # purely descriptive; surfaces in the parametrize id
+    del label
     yaml_text = (
         _BASE_AGENTS_YAML
         + f"""

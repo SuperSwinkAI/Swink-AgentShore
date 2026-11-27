@@ -73,9 +73,6 @@ def test_start_config_flag_loads_specified_file(tmp_path: Path) -> None:
     )
 
 
-# Hard-fail: no agents AND no API keys
-
-
 def test_start_hard_fail_no_agents_no_keys(tmp_path: Path) -> None:
     repo = _make_git_repo(tmp_path)
     runner = CliRunner()

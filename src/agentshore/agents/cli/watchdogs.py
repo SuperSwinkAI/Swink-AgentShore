@@ -26,68 +26,18 @@ from agentshore.state import AgentType
 
 _logger = get_logger(__name__)
 
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
 
 _POST_RESPONSE_GRACE_S: Final[float] = 60.0
 
-# Launch-to-first-byte deadline (#177). A wedged child (the intermittent codex
-# rollout-thread / keychain race) produces *nothing* and otherwise rides the full
-# wall-clock ``timeout`` (default 3h, configurable via ``agent_timeout``) before any
-# watchdog fires — the existing ``stream_idle_timeout`` (default 1800s) only catches
-# first-byte silence at its
-# own, much larger, bound. This dedicated deadline caps the blast radius of a
-# launch wedge so the orchestrator retries promptly. It only governs the *first*
-# byte; once any stdout arrives, ``_watch_stream_idle`` owns silence detection.
-# Recoverable like the other timeouts — the orchestrator re-picks.
-#
-# The bound is deliberately generous (#213). The original tight 120s cap was
-# calibrated to a fast-launch assumption that does not hold for reasoning models:
-# Grok (CLI 0.2.32) measures 30–70s to first byte with a variance tail past 90s,
-# and on heavy ``code_review`` prompts Grok (killed at its old 240s) went silent
-# past its window — the model/relay first-token latency, not local startup, dominates and
-# is irreducible via flags. The first-byte deadline's job is catching a *broken*
-# child that emits nothing, not bounding slow-but-healthy first-token latency
-# (the 3h wall-clock is the real hang backstop). So all streaming agents now
-# share one 600s deadline: it clears the measured first-token distribution with
-# wide margin while still turning a genuine launch wedge around in ~10 min rather
-# than the full hour. Trade-off (#177): a true codex rollout/keychain wedge now
-# rides to 600s before the fast-kill instead of 120s. An explicit per-agent
-# ``first_byte_timeout_seconds`` in config still overrides this for tuning.
 _FIRST_BYTE_DEADLINE_S: Final[float] = 600.0
 
-# Per-agent-type override of the global first-byte deadline. Streaming agents
-# (codex, claude, grok) all use the global 600s above; the overrides are
-# antigravity (structurally non-streaming) and swink-coding (below).
 _FIRST_BYTE_DEADLINE_BY_TYPE: dict[AgentType, float] = {
-    # agy uses an async task system and emits no stdout until the task completes
-    # (#217); first byte = task done, which can take up to ~30 min for a heavy
-    # coding task. The watchdog still fires for genuine hangs (process exits
-    # before emitting anything). This is a structural carve-out, NOT a slow-model
-    # tuning — collapsing it to the global
-    # 600s would kill healthy long-running agy tasks.
     AgentType.ANTIGRAVITY: 1800.0,
-    # swink-coding (>= 0.2.0) contractually emits and flushes ``session.started``
-    # before the first backend request (SuperSwink-Coding#278, pinned upstream by
-    # a hung-backend test), so first byte arrives at spawn regardless of model
-    # TTFB. 60s is pure spawn/config headroom; only a genuinely wedged launch
-    # reaches it.
     AgentType.SWINK_CODING: 60.0,
-    # copilot (1.0.94) emits ``session.mcp_server_status_changed`` within ~1s of
-    # spawn, before any model request, so first byte is spawn-bound like
-    # swink-coding's.
     AgentType.COPILOT: 60.0,
 }
 
-# Effectively-infinite sleep used to park the first-byte watchdog once it has
-# handed off to the idle watcher; the caller always cancels the task on read
-# completion, so this never actually elapses.
 _NEVER_S: Final[float] = 365 * 24 * 3600.0
-
-# ---------------------------------------------------------------------------
-# Dataclasses
-# ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,7 +51,7 @@ class _DispatchArgv:
 
     argv: list[str]
     prompt_bytes: int
-    argv_str: str  # truncated preview for ``cli_dispatch_start`` log event
+    argv_str: str
 
 
 @dataclass(slots=True)
@@ -109,12 +59,6 @@ class _StdoutActivity:
     last_stdout_at: float
     received_any: bool = False
     response_complete: bool = False
-    # Monotonic dispatch-start reference (set by ``_await_output_or_timeout`` from
-    # the pre-spawn ``t_start``) and the monotonic instant the first stdout byte
-    # arrived. Together they give an accurate time-to-first-byte for #212. Left at
-    # the 0.0 / None defaults when the activity is constructed without a dispatch
-    # context (e.g. focused unit tests of ``_read_output``), which suppresses the
-    # ``cli_first_byte`` emission below rather than logging a garbage elapsed.
     dispatch_start: float = 0.0
     first_byte_at: float | None = None
 
@@ -153,10 +97,7 @@ class _StderrSniffer:
        ``_classify_error`` correctly buckets it as ``CRASH_ENOSPC``.
     """
 
-    # Bounded tail inspected for auth markers (case-insensitive). 8 KiB easily
-    # covers the multi-line Codex auth banner without scanning unbounded output.
     tail_window: int = 8192
-    # Cap on the stderr text retained for _finalize_nonzero_exit classification.
     capture_cap: int = 65536
     tail: str = ""
     captured: str = ""
@@ -169,36 +110,12 @@ class _StderrSniffer:
         self.tail = (self.tail + text)[-self.tail_window :]
         if not self.auth_hit:
             lowered = self.tail.lower()
-            # Host disk exhaustion (Codex "No space left on device (os error 28)")
-            # is a fatal-environment condition, never an auth death — even though
-            # it is commonly paired with "failed to renew cache TTL", which is
-            # also one of the cache-renewal auth markers below. Suppress the live
-            # auth abort here so the dispatch resolves normally and
-            # ``_classify_error`` (which now checks ENOSPC before auth) buckets it
-            # as ``CRASH_ENOSPC``, routing it out of take_break entirely instead of
-            # into the auth-abort recovery path that can never fix a full disk
-            # (#332). Mirrors the ENOSPC-before-auth ordering in ``_classify_error``.
             if any(p in lowered for p in _ENOSPC_PATTERNS):
                 return False
-            # A quota/billing exhaustion (Grok "spending-limit / out of credits",
-            # Codex "usage limit") is a RECOVERABLE rate-limit, not an auth death —
-            # even though Grok wraps it in a 403/Forbidden that matches the auth
-            # markers below. Suppress the live auth abort for these so the dispatch
-            # resolves normally and ``_classify_error`` (which checks rate_limit
-            # before auth) buckets it as rate_limit → transient cooldown, not a
-            # permanent session-wide auth suppression. Mirrors the rate_limit-wins
-            # ordering in ``_classify_error``.
             if any(p in lowered for p in _RATE_LIMIT_PATTERNS):
                 return False
-            # #190: a genuine auth marker that is NOT one of the cache-renewal
-            # markers (e.g. 401/403/unauthorized/invalid api key) always trips,
-            # even if a transient cache-renewal+EOF line coexists in the tail.
             hard_auth = any(p in lowered for p in _AUTH_PATTERNS if p not in _CACHE_RENEWAL_MARKERS)
             cache_auth = any(p in lowered for p in _CACHE_RENEWAL_MARKERS)
-            # Cache-renewal-only signal is suppressed when it is the transient
-            # EOF-parse variant; a bare cache-renewal line still trips. #231:
-            # if the EOF shape is followed by Codex's stdin-closed write failure,
-            # the dispatch is unrecoverably hung and must fast-fail as auth.
             cache_stdin_hang = _is_cache_renewal_stdin_hang(lowered)
             if hard_auth or (
                 cache_auth and (not _is_transient_cache_blip(lowered) or cache_stdin_hang)
@@ -206,11 +123,6 @@ class _StderrSniffer:
                 self.auth_hit = True
                 return True
         return False
-
-
-# ---------------------------------------------------------------------------
-# Async watchdog coroutines
-# ---------------------------------------------------------------------------
 
 
 async def _watch_stderr_auth(
@@ -244,8 +156,6 @@ async def _watch_stderr_auth(
                     )
         except (OSError, EOFError):
             pass
-    # stderr drained without an auth hit (or no stderr pipe): yield to the
-    # read/idle race, which will cancel this task once the dispatch resolves.
     while True:
         await asyncio.sleep(3600.0)
 
@@ -325,8 +235,6 @@ async def _watch_first_byte(
     while True:
         await asyncio.sleep(sleep_s)
         if stdout_activity.received_any:
-            # First byte arrived — hand off to the idle watcher and stop here by
-            # sleeping forever (the caller cancels this task on read completion).
             await asyncio.sleep(_NEVER_S)
         if time.monotonic() - start >= deadline:
             tier_label = model_tier or "?"

@@ -32,7 +32,6 @@ async def store(tmp_path):
 async def _seed(store: DataStore) -> tuple[str, int]:
     """Create a session + one play row.  Return (session_id, play_id)."""
     sid = "sess-p3-test"
-    # Session is older than the play so the relative ordering is preserved.
     await store.create_session(
         SessionRecord(session_id=sid, project_path="/tmp", started_at=_ts(-60))
     )
@@ -49,7 +48,7 @@ async def _seed(store: DataStore) -> tuple[str, int]:
 
 async def test_record_experience_returns_id_and_stores_blobs(store):
     sid, play_id = await _seed(store)
-    state_vec = b"\x00\x01\x02" * 24  # 72 floats of garbage
+    state_vec = b"\x00\x01\x02" * 24
     next_state = b"\x03\x04\x05" * 24
     mask = b"\xff" * 20
 
@@ -96,7 +95,7 @@ async def test_iter_experience_yields_in_step_index_order(store):
         PlayRecord(
             session_id=sid,
             play_type="code_review",
-            started_at=_ts(60),  # later than the seeded play
+            started_at=_ts(60),
             success=True,
         )
     )
@@ -147,7 +146,6 @@ async def test_iter_experience_round_trips_mask_reason(store):
     rows = [r async for r in store.iter_experience_for_replay(sid, 1, "abc")]
     assert len(rows) == 1
     assert rows[0].mask_reason == "merge_pr: no approved PR"
-    # The no-config-hash SELECT must agree.
     rows_all = [r async for r in store.iter_experience_for_replay(sid, 1)]
     assert rows_all[0].mask_reason == "merge_pr: no approved PR"
 
@@ -168,7 +166,7 @@ async def test_iter_experience_version_mismatch_returns_empty(store):
         )
     )
 
-    rows = [r async for r in store.iter_experience_for_replay(sid, 2)]  # wrong version
+    rows = [r async for r in store.iter_experience_for_replay(sid, 2)]
     assert rows == []
 
 
@@ -178,7 +176,7 @@ async def test_iter_experience_config_hash_filter(store):
         PlayRecord(
             session_id=sid,
             play_type="run_qa",
-            started_at=_ts(60),  # later than the seeded play
+            started_at=_ts(60),
             success=True,
         )
     )

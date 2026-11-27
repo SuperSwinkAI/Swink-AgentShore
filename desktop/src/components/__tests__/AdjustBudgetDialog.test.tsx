@@ -44,9 +44,9 @@ describe("AdjustBudgetDialog", () => {
   });
 
   it("shows a loading indicator (not an empty dialog) while getBudget is in flight (#281)", async () => {
-    // Reproduces the hang report: a slow get_budget prefill left the dialog
-    // empty — header + buttons, no sliders, no error. Now a loading status
-    // shows until the prefill resolves.
+
+
+
     let resolveBudget: (v: { budget: typeof APPLIED_CAPPED }) => void = () => {};
     getBudgetMock.mockReturnValueOnce(
       new Promise((resolve) => {
@@ -55,7 +55,7 @@ describe("AdjustBudgetDialog", () => {
     );
     render(<AdjustBudgetDialog onClose={() => {}} />);
 
-    // While pending: loading visible, no sliders, no error banner.
+
     expect(screen.getByTestId("adjust-budget-loading")).toHaveTextContent(
       "Loading current budget…",
     );
@@ -66,7 +66,7 @@ describe("AdjustBudgetDialog", () => {
     expect(screen.queryByTestId("budget-slider")).not.toBeInTheDocument();
     expect(screen.queryByTestId("adjust-budget-load-error")).not.toBeInTheDocument();
 
-    // Once it resolves: loading gone, sliders present.
+
     resolveBudget({ budget: APPLIED_CAPPED });
     await waitFor(() =>
       expect(screen.getByTestId("budget-slider")).toBeInTheDocument(),
@@ -137,11 +137,11 @@ describe("AdjustBudgetDialog", () => {
     await waitFor(() =>
       expect(screen.getByTestId("budget-slider")).toBeInTheDocument(),
     );
-    // Header sub-copy frames this as setting (not adding to) the caps.
+
     expect(screen.getByText(/Set this running session's caps/)).toBeInTheDocument();
-    // Each slider panel's aria-label reads "Set … cap to…" — assert via the
-    // testId'd inputs (the time panel is unlimited/aria-hidden here, so a
-    // role query would miss it).
+
+
+
     expect(screen.getByTestId("budget-slider")).toHaveAttribute(
       "aria-label",
       "Set dollar cap to…",

@@ -57,8 +57,6 @@ class OrchestratorApp(App[None]):
         ("i", "show_issues", "Issues"),
     ]
 
-    # ---- Messages (provider -> app) ----
-
     class StateUpdated(Message):
         def __init__(self, state: OrchestratorState) -> None:
             super().__init__()
@@ -124,8 +122,6 @@ class OrchestratorApp(App[None]):
             self.phase = phase
             self.status = status
             self.elapsed_ms = elapsed_ms
-
-    # ---- Lifecycle ----
 
     def __init__(self, wiring: AppWiring | None = None) -> None:
         super().__init__()
@@ -220,8 +216,6 @@ class OrchestratorApp(App[None]):
                 exc_info=True,
             )
 
-    # ---- Message handlers (state tracking) ----
-
     def on_orchestrator_app_state_updated(self, event: StateUpdated) -> None:
         self._latest_state = event.state
         self._forward_to_screen(event)
@@ -310,12 +304,9 @@ class OrchestratorApp(App[None]):
                     self._paused = False
                     self.run_worker(self._orch.add_budget(delta_usd=delta))
             else:
-                # Dismissed without action — resume session
                 self._paused = False
 
         self.push_screen(EscalationModal(event.reason), callback=_on_result)
-
-    # ---- Action implementations ----
 
     async def action_drain_session(self) -> None:
         if self._orch is None:

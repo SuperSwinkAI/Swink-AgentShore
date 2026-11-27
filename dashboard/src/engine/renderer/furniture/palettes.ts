@@ -9,9 +9,9 @@ export interface WorkbenchCasePalette {
   frontRail: string;
 }
 
-// Shared electronics/workbench enclosure colors reused by the grid workbenches
-// (assembly, prototype, electronics benches) and the parts-bin cabinet — same
-// physical case molding, different internals layered on top per piece.
+
+
+
 export const WORKBENCH_CASE_PALETTES: Record<
   ResolvedTheme,
   WorkbenchCasePalette
@@ -34,9 +34,9 @@ export const WORKBENCH_CASE_PALETTES: Record<
   },
 };
 
-// Recurring grid-kit accent colors: the same literal hex pair shows up across
-// science, editor, zen, grid-war, and workbench draw functions. Hoisted here
-// rather than left as repeated `theme === "dark" ? "#.." : "#.."` literals.
+
+
+
 export const CYAN_ACCENT: Record<ResolvedTheme, string> = {
   dark: "#39D9FF",
   light: "#008BBC",

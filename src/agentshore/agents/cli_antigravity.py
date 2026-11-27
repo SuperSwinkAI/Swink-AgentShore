@@ -2,7 +2,7 @@
 
 The Antigravity CLI is invoked headless as::
 
-    agy --model "<MODEL>" --add-dir "<project_dir>" --print-timeout 50m0s \
+    agy --model "<MODEL>" --add-dir "<project_dir>" --print-timeout 24h0m0s \
         --output-format stream-json --dangerously-skip-permissions -p "<PROMPT>"
 
 ``agy`` (verified 1.3.2) offers ``--output-format text|json|stream-json``. AgentShore
@@ -34,17 +34,9 @@ from pathlib import Path
 from agentshore.agents._jsonl import _iter_json_events, _safe_int, _UsageTotals
 from agentshore.state import AgentType
 
-# Terminal-control escape sequences. Under a ConPTY (the Windows spawn path —
-# see ``agents/cli/conpty.py``) ``agy`` emits a terminal prelude before its real
-# output, e.g. ``ESC[1t ESC[c ESC[?1004h ESC[?9001h`` (window-title stack,
-# Device-Attributes query, focus reporting, win32 input mode) plus cursor/colour
-# codes interleaved through the stream. These must be stripped before the result
-# parser sees the text. Covers CSI (``ESC[ … final``), OSC (``ESC] … BEL/ST``),
-# and the short two-byte ``ESC<char>`` forms.
 _ANSI_CSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 _ANSI_OSC_RE = re.compile(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
 _ANSI_2BYTE_RE = re.compile(r"\x1b[@-Z\\-_]")
-# Residual C0 control bytes to drop after escape removal (keep \n and \t).
 _C0_CTRL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
 
 
@@ -64,8 +56,6 @@ def strip_ansi(text: str) -> str:
     return _C0_CTRL_RE.sub("", text)
 
 
-# agy persists a {<abs cwd>: <conversation-uuid>} map here, keyed by the
-# directory it ran in. Relative to the agy process's HOME.
 _CONVERSATIONS_CACHE_RELPATH = (
     ".gemini",
     "antigravity-cli",
@@ -73,14 +63,8 @@ _CONVERSATIONS_CACHE_RELPATH = (
     "last_conversations.json",
 )
 
-# agy's global CLI settings file (theme, model, verbosity, …). Relative to HOME.
 _SETTINGS_RELPATH = (".gemini", "antigravity-cli", "settings.json")
 
-# #242: agy auto-backgrounds long commands and ends the ``-p`` turn narrating it is "waiting
-# for the background task" (prose, no JSON). Appended to the INITIAL dispatch so the handoff
-# is prevented, not just retried (verified Gemini 3.5 Flash + 3.1 Pro: ~0/4 without → ~7/8
-# with; residual leak caught by ``is_async_handoff`` below). agy-only — other CLIs don't
-# auto-background.
 _ANTIGRAVITY_SYNCHRONOUS_DIRECTIVE = (
     "\n\n## Antigravity: run every command synchronously\n\n"
     "Run every shell command in the FOREGROUND and BLOCK until it returns, no matter how "
@@ -139,15 +123,7 @@ def build_argv(
         args += ["--model", model]
     if project_dir:
         args += ["--add-dir", project_dir]
-    # agy's print-mode wait defaults to 5m0s — far too short for coding tasks
-    # (8-15 min) and there is no documented "disable" sentinel (0s would time out
-    # immediately). Pass a generous 50m ceiling so agy doesn't self-time-out
-    # before AgentShore's own bounds apply; AgentShore owns the dispatch timeout
-    # via the wall-clock budget and the 1800s first-byte watchdog, exactly as it
-    # does for the other CLIs (Claude/Codex have no internal wall-clock). (#216)
-    args += ["--print-timeout", "50m0s"]
-    # ponytail: Windows stays plain text — ConPTY may wrap NDJSON lines; enable
-    # once a Windows run confirms stream-json survives the pseudo-console intact.
+    args += ["--print-timeout", "24h0m0s"]
     if sys.platform != "win32":
         args += ["--output-format", "stream-json"]
     args.extend(extra_flags)
@@ -250,7 +226,6 @@ def parse_stream_json(raw: str) -> tuple[str, _UsageTotals, str | None]:
     inputs = [_safe_int(u.get("input_tokens")) for u in turns]
     totals = _UsageTotals(
         tokens_in=sum(inputs),
-        # Gemini bills thinking as output; agy reports it separately.
         tokens_out=sum(
             _safe_int(u.get("output_tokens")) + _safe_int(u.get("thinking_tokens")) for u in turns
         ),
@@ -262,16 +237,6 @@ def parse_stream_json(raw: str) -> tuple[str, _UsageTotals, str | None]:
     return text, totals, conversation_id
 
 
-# #236: agy ends its turn by deferring real work to an async/background task and
-# "waiting" for it, instead of running it to completion and emitting a JSON result
-# block. The first observed variant delegated to the internal ``manage_task`` tool
-# ("Obtaining command output... manage_task status <id>"); a later variant phrased
-# the same behaviour with no ``manage_task`` token at all ("I will pause calling
-# tools and wait for the cargo clippy background task to finish"). Match the
-# *behaviour* (turn ended waiting on deferred work), not one literal tool name.
-# Safe to keep liberal: this only runs when no JSON result block was produced, so
-# the work is already incomplete — a false positive merely uses the (correct)
-# "re-run synchronously" nudge instead of the generic one.
 _ASYNC_HANDOFF_MARKERS: tuple[str, ...] = (
     "manage_task",
     "pause calling tools",
@@ -281,11 +246,6 @@ _ASYNC_HANDOFF_MARKERS: tuple[str, ...] = (
     "obtaining command output",
     "wait for notification",
     "wait for the task notification",
-    # #242: real-world phrasings the original markers missed (16/16 undetected),
-    # observed across Gemini 3.5 Flash + 3.1 Pro when agy auto-backgrounds a build/
-    # test command and ends the turn waiting. Liberal by design — this runs only on
-    # the no-JSON failure path, so a false positive merely picks the (correct)
-    # "re-run synchronously" nudge.
     "in the background",
     "to the background",
     "for the background",
@@ -297,21 +257,11 @@ _ASYNC_HANDOFF_MARKERS: tuple[str, ...] = (
     "notify me when",
     "we will be notified",
     "notified upon its completion",
-    # #313: every marker above needs the literal token "background", a "notify"
-    # variant, or a pronoun form ("wait for it/them/the task to ..."). The miss is
-    # the *named-noun-phrase* form — "I will pause to wait for the git switch
-    # command to finish." is one word away from "pause calling tools" yet went
-    # undetected, so the 19-min issue_pickup that produced it was never classified.
     "pause to wait",
     "pausing to wait",
     "paused to wait",
 )
 
-# #313: the named-noun-phrase generalization the literal markers cannot express —
-# "wait for the <X> command to finish", "wait for the cargo test run to complete".
-# Deliberately bounded: the noun phrase may not cross a sentence or line boundary
-# and is capped at 60 chars, so this matches a turn-ending wait, not ordinary prose
-# that happens to contain "wait" and "finish" paragraphs apart.
 _ASYNC_HANDOFF_NAMED_WAIT_RE = re.compile(
     r"wait for (?:the|this|that|my|our)\s[^.\n]{0,60}?\bto (?:finish|complete|return|be done)\b"
 )
@@ -364,7 +314,6 @@ def build_resume_argv(
         prompt_file=prompt_file,
         model_tier=model_tier,
     )
-    # argv[0] is the binary; inject --conversation <id> directly after it.
     return [argv[0], "--conversation", resume_session_id, *argv[1:]]
 
 
@@ -424,11 +373,10 @@ def ensure_low_verbosity_setting(*, home: str | None = None) -> bool:
         if isinstance(loaded, dict):
             data = loaded
     except (OSError, ValueError):
-        # Missing / unreadable / malformed → start from an empty object.
         data = {}
 
     if "verbosity" in data:
-        return False  # respect the user's existing choice
+        return False
 
     data["verbosity"] = "low"
     try:

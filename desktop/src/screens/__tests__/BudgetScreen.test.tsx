@@ -98,7 +98,7 @@ describe("BudgetScreen", () => {
     const onChange = vi.fn();
     renderScreen(sel({ mode: "capped", total: 200 }), onChange);
     const slider = screen.getByTestId("budget-slider") as HTMLInputElement;
-    // Simulate a browser-clamped value at the floor.
+
     fireEvent.change(slider, { target: { value: String(BUDGET_MIN_USD) } });
     expect(onChange).toHaveBeenCalledWith(
       expect.objectContaining({ mode: "capped", total: BUDGET_MIN_USD }),
@@ -122,8 +122,8 @@ describe("BudgetScreen", () => {
 
     await user.click(screen.getByTestId("budget-mode-capped"));
 
-    // When unlimited had total=0, the screen restores the default dollar
-    // amount rather than emitting an invalid (below-min) payload.
+
+
     expect(onChange).toHaveBeenCalledWith(
       expect.objectContaining({ mode: "capped", total: BUDGET_DEFAULT_USD }),
     );
@@ -146,7 +146,7 @@ describe("BudgetScreen", () => {
     renderScreen(sel({ mode: "capped", total: 200 }), onChange);
     const slider = screen.getByTestId("budget-slider") as HTMLInputElement;
     fireEvent.change(slider, { target: { value: "455" } });
-    // 455 is not a step boundary; the screen snaps to the nearest $5 step.
+
     expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ mode: "capped", total: 455 }));
   });
 
@@ -191,16 +191,16 @@ describe("BudgetScreen", () => {
   });
 
   it("flushes onSave when leaving via Back (rail-style navigation, not Continue)", async () => {
-    // Regression: editing the budget then leaving via the left rail / Back
-    // used to skip onSave entirely, so the change reached localStorage but
-    // never agentshore.yaml. Leaving by any path must persist the selection.
+
+
+
     const onSave = vi.fn().mockResolvedValue(undefined);
     renderScreen(sel({ mode: "capped", total: 300 }), () => {}, onSave);
     const user = userEvent.setup();
 
     await user.click(screen.getByTestId("budget-back"));
 
-    // Back navigates to /setup/agents → BudgetScreen unmounts → flush fires.
+
     await waitFor(() => expect(screen.getByTestId("agents-sentinel")).toBeInTheDocument());
     await waitFor(() =>
       expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ mode: "capped", total: 300 })),
@@ -214,7 +214,7 @@ describe("BudgetScreen", () => {
 
     await user.click(screen.getByTestId("budget-continue"));
     await waitFor(() => expect(screen.getByTestId("start-sentinel")).toBeInTheDocument());
-    // Continue already saved once; unmounting must not trigger a second write.
+
     unmount();
     expect(onSave).toHaveBeenCalledTimes(1);
   });
@@ -229,12 +229,12 @@ describe("BudgetScreen", () => {
     await waitFor(() => expect(onSave).toHaveBeenCalled());
     const errorBanner = await screen.findByTestId("budget-save-error");
     expect(errorBanner).toHaveTextContent(/rpc boom/u);
-    // Continue button is re-enabled and we never navigated away.
+
     expect(screen.queryByTestId("start-sentinel")).not.toBeInTheDocument();
     expect(screen.getByTestId("budget-continue")).not.toBeDisabled();
   });
 
-  // ----- Time dimension (independent soft cap) ----------------------------- //
+
 
   it("renders the time live label as Unlimited when timeMode is unlimited", () => {
     renderScreen(sel({ timeMode: "unlimited" }));
@@ -303,7 +303,7 @@ describe("BudgetScreen", () => {
     const user = userEvent.setup();
     const info = screen.getByTestId("budget-estimate-info");
 
-    // Collapsed by default.
+
     expect(info).toHaveAttribute("aria-expanded", "false");
     expect(screen.queryByTestId("budget-estimate-note")).not.toBeInTheDocument();
 

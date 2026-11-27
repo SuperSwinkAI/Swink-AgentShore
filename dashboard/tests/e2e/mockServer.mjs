@@ -190,7 +190,7 @@ wss.on("connection", (ws) => {
       );
     }
     if (text.includes('"command":"adjust_budget"')) {
-      // acknowledge with a state_update (no budget model in mock)
+
       ws.send(JSON.stringify({ ...state }));
     }
   });

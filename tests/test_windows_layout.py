@@ -28,12 +28,6 @@ def _canonical_paths_for(tool: str) -> list[Path]:
     return list(subprocess_env._canonical_windows_paths(tool))
 
 
-# ---------------------------------------------------------------------------
-# Cross-platform PATH-safety tests (run on all platforms)
-# These run unconditionally — the safety property must hold everywhere.
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.parametrize("tool", ["git", "gh"])
 def test_canonical_paths_never_empty_string(tool: str, monkeypatch: pytest.MonkeyPatch) -> None:
     """No candidate from ``_canonical_windows_paths`` may be an empty path.
@@ -51,7 +45,6 @@ def test_canonical_paths_never_empty_string(tool: str, monkeypatch: pytest.Monke
     """
     from agentshore import subprocess_env
 
-    # Simulate POSIX with PROGRAMDATA accidentally set.
     monkeypatch.setattr(subprocess_env.sys, "platform", "linux")
     monkeypatch.setenv("PROGRAMDATA", r"C:\ProgramData")
 
@@ -60,7 +53,6 @@ def test_canonical_paths_never_empty_string(tool: str, monkeypatch: pytest.Monke
         assert str(path) != "", (
             f"Empty path in _canonical_windows_paths({tool!r}) on POSIX: {candidates}"
         )
-        # Guard partial-path bugs: never a bare drive letter / root sans subdir.
         assert len(path.parts) >= 2, (
             f"Suspiciously short path in _canonical_windows_paths({tool!r}): {path}"
         )

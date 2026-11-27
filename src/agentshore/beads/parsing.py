@@ -166,15 +166,6 @@ def _parent_id_from_raw(raw: RawBead) -> str | None:
     return None
 
 
-# Dependency-relationship types (bd CLI: blocks | tracks | related |
-# parent-child | discovered-from) that represent a true *blocking* edge — the
-# bead is not ready until the referenced bead closes. bd emits ``blocks`` for
-# `bd dep add` / `bd link` (its default). ``parent-child`` is containment (a
-# rollup, handled by ``_parent_id_from_raw``) and must NOT block; ``tracks``,
-# ``related`` and ``discovered-from`` are informational and also non-blocking.
-#
-# Recognising ``blocks`` here keeps this parser's readiness view consistent
-# with bd's own ``bd ready`` (which treats ``blocks`` as blocking).
 _BLOCKING_DEPENDENCY_TYPES: frozenset[str] = frozenset({"blocks"})
 
 

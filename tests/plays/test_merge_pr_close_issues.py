@@ -32,9 +32,6 @@ def _ctx() -> Any:
     ctx.store.update_issue_state = AsyncMock()
     ctx.store.update_issues_state_batch = AsyncMock()
     ctx.cfg = MagicMock()
-    # Real empty identities so the post-merge ff-sync's fetch-overlay resolver
-    # (resolve_ff_fetch_overlay → select_default_git_identity) returns None
-    # cleanly instead of choking on a MagicMock's empty-iterable .items() (#178).
     ctx.cfg.identities = {}
     ctx.manager = MagicMock()
     ctx.project_path = MagicMock()
@@ -76,8 +73,6 @@ async def test_merge_marks_referenced_issues_closed() -> None:
     ctx = _ctx()
 
     async def _super_execute(*args: object, **kwargs: object) -> PlayOutcome:
-        # Reproduce what SkillBackedPlay.execute does: populate
-        # _last_skill_result on the play instance, then return an outcome.
         play._last_skill_result = SkillResult(success=True, issues_closed=[17, 23])
         return _success_outcome()
 
@@ -164,7 +159,6 @@ async def test_merge_continues_when_batch_update_fails() -> None:
     ):
         outcome = await play.execute(_state(), _params(), ctx=ctx)
 
-    # The merge outcome itself stays success=True; the issue-cache write is best-effort.
     assert outcome.success is True
     ctx.store.update_issues_state_batch.assert_awaited_once_with([17, 23], "test-session", "closed")
 
@@ -201,7 +195,6 @@ async def test_merge_records_pr_merged_issue_numbers_artifact() -> None:
     assert len(closure_artifacts) == 1
     assert closure_artifacts[0]["pr"] == 42
     assert closure_artifacts[0]["issue_numbers"] == [17, 23]
-    # Pre-existing artifacts from the underlying outcome are preserved.
     assert any(isinstance(a, dict) and a.get("type") == "merge" for a in outcome.artifacts)
 
 
@@ -276,9 +269,6 @@ async def test_merge_failure_does_not_record_closure_artifact() -> None:
     )
 
 
-# desktop-8otp: infer_pr_issue_links integration + issues_closed artifact key
-
-
 @pytest.mark.asyncio
 async def test_merge_uses_pr_links_when_fetch_succeeds() -> None:
     """When _fetch_pr_links returns numbers, they are unioned with skill result.
@@ -291,7 +281,6 @@ async def test_merge_uses_pr_links_when_fetch_succeeds() -> None:
     ctx = _ctx()
 
     async def _super_execute(*args: object, **kwargs: object) -> PlayOutcome:
-        # Skill reports nothing closed (PR body lacked closing keyword).
         play._last_skill_result = SkillResult(success=True, issues_closed=[])
         return _success_outcome()
 
@@ -308,7 +297,6 @@ async def test_merge_uses_pr_links_when_fetch_succeeds() -> None:
         outcome = await play.execute(_state(), _params(), ctx=ctx)
 
     assert outcome.success is True
-    # Issue 17 discovered via branch/link inference must appear in the DB write.
     ctx.store.update_issues_state_batch.assert_awaited_once_with([17], "test-session", "closed")
 
 
@@ -449,9 +437,6 @@ async def test_merge_falls_back_to_body_when_links_fetch_fails() -> None:
     ctx.store.update_issues_state_batch.assert_awaited_once_with([17], "test-session", "closed")
 
 
-# _fetch_pr_links unit tests (desktop-8otp: infer_pr_issue_links integration)
-
-
 @pytest.mark.asyncio
 async def test_fetch_pr_links_parses_body_and_branch() -> None:
     """_fetch_pr_links calls infer_pr_issue_links with body, headRefName, and
@@ -480,9 +465,46 @@ async def test_fetch_pr_links_parses_body_and_branch() -> None:
     ):
         numbers = await _fetch_pr_links(42, Path("/fake/project"))
 
-    # Issue 17 from body keyword; issue 23 from agentshore branch prefix.
     assert 17 in numbers
     assert 23 in numbers
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        ("Refs #23\n\nPartial: parser only.", (17,)),
+        ("Closes #23", (23, 17)),
+        ("No references.", (17, 23)),
+    ],
+)
+async def test_fetch_pr_links_refs_body_overrides_branch_prefix(
+    body: str, expected: tuple[int, ...]
+) -> None:
+    import json as _json
+    from pathlib import Path
+    from unittest.mock import MagicMock
+
+    from agentshore.command import CommandResult
+
+    payload = _json.dumps(
+        {
+            "body": body,
+            "headRefName": "agentshore/23-some-feature",
+            "closingIssuesReferences": [{"number": 17}],
+        }
+    )
+    mock_result = MagicMock(spec=CommandResult)
+    mock_result.returncode = 0
+    mock_result.stdout = payload
+
+    with patch(
+        "agentshore.plays.skill_backed.merge_pr.run_command",
+        new=AsyncMock(return_value=mock_result),
+    ):
+        numbers = await _fetch_pr_links(42, Path("/fake/project"))
+
+    assert sorted(numbers) == sorted(expected)
 
 
 @pytest.mark.asyncio
